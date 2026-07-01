@@ -4487,6 +4487,73 @@ async function deriveMarkdownProjectionFromFragment(doc: Y.Doc): Promise<string 
   }
 }
 
+// Normalize raw markdown into the canonical serialization the collab fragment
+// produces. Storing this at write time keeps `documents.markdown` byte-identical
+// to what the projection later derives from the seeded Yjs fragment, so the
+// projection stays fresh instead of wedging on `readSource=yjs_fallback` /
+// `mutationReady=false`.
+//
+// This must run the SAME seed -> derive pipeline the load path uses. A plain
+// parse -> serialize is NOT equivalent: the fragment round trip
+// (prosemirrorToYXmlFragment / yXmlFragmentToProseMirrorRootNode) reformats GFM
+// tables (column padding + explicit `:---` alignment markers), and only the
+// fragment-derived form is a stable fixed point. Returns the input unchanged if
+// the parser is unavailable — the load-time reconcile heals it later.
+export async function deriveCanonicalMarkdownForStorage(markdown: string): Promise<string> {
+  const input = markdown ?? '';
+  if (input.trim().length === 0) return input;
+  try {
+    const ydoc = new Y.Doc();
+    await seedFragmentFromLegacyMarkdown(ydoc, input);
+    const derived = await deriveMarkdownProjectionFromFragment(ydoc);
+    return derived ?? input;
+  } catch (error) {
+    console.warn('[collab] failed to normalize canonical markdown for storage; storing raw', {
+      error: summarizeParseError(error),
+    });
+    return input;
+  }
+}
+
+// Heal an EXISTING document whose stored canonical markdown predates the
+// write-time normalization above (e.g. a doc created with a raw GFM table before
+// this fix). Rewrites `documents.markdown` to the collab fragment's serialization
+// and refreshes the projection so it converges to fresh. Idempotent: a no-op when
+// the canonical markdown already matches the fragment serialization.
+export async function healCanonicalMarkdownForCollabFragment(
+  slug: string,
+): Promise<{ healed: boolean; reason: string; before?: number; after?: number }> {
+  const row = getDocumentBySlug(slug);
+  if (!row) return { healed: false, reason: 'missing_doc' };
+  if (row.share_state === 'DELETED') return { healed: false, reason: 'deleted' };
+  const current = stripEphemeralCollabSpans(row.markdown ?? '');
+  if (current.trim().length === 0) return { healed: false, reason: 'empty' };
+
+  const normalized = await deriveCanonicalMarkdownForStorage(current);
+  if (normalized === current) return { healed: false, reason: 'already_canonical' };
+  // Only structural divergence wedges a projection — the read/snapshot path
+  // tolerates trailing-whitespace differences (a bare trailing newline never
+  // wedges). Skip cosmetic-only diffs so the heal doesn't churn healthy docs.
+  if (normalized.trimEnd() === current.trimEnd()) return { healed: false, reason: 'cosmetic_only' };
+
+  const marks = parseStoredMarks(row.marks);
+  const yStateVersion = getLatestYStateVersion(slug);
+  const now = new Date().toISOString();
+  const db = getDb();
+  const tx = db.transaction(() => {
+    db.prepare(
+      "UPDATE documents SET markdown = ?, updated_at = ? WHERE slug = ? AND share_state IN ('ACTIVE', 'PAUSED')",
+    ).run(normalized, now, slug);
+    replaceDocumentProjection(slug, normalized, marks, yStateVersion, {
+      health: 'healthy',
+      healthReason: null,
+    });
+  });
+  tx();
+  invalidateCollabDocument(slug);
+  return { healed: true, reason: 'normalized', before: current.length, after: normalized.length };
+}
+
 let canonicalSyncPostApplyFailureForTests: string | null = null;
 let canonicalSyncForcedRefusalForTests: CanonicalCollabSyncFailureReason | null = null;
 let canonicalSyncParseFailureForTests = false;
