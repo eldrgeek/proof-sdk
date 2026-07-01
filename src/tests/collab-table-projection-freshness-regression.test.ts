@@ -85,6 +85,15 @@ async function run(): Promise<void> {
     // The table's semantic content must survive normalization.
     assert(storedMarkdown.includes('Alice') && storedMarkdown.includes('Bob'), 'Table content must be preserved');
 
+    // Pin the corrected VALUE, not just self-consistency: the stored canonical
+    // must be the fragment fixed point, which serializes tables with explicit
+    // `:--` alignment markers. Raw input (`---`) or a plain parse->serialize
+    // (also `---`) would wedge; only the fragment form has the colon markers.
+    assert(
+      /\|\s*:--/.test(storedMarkdown),
+      `Stored canonical must be the fragment form (\`:--\` alignment markers), got:\n${JSON.stringify(storedMarkdown)}`,
+    );
+
     console.log('✓ table document stays projection-fresh and round-trips to stored canonical');
   } finally {
     if (previousDbPath === undefined) {

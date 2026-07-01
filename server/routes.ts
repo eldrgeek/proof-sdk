@@ -1084,7 +1084,11 @@ export async function handleShareMarkdown(req: Request, res: Response): Promise<
 
   const slug = generateSlug();
   const ownerSecret = randomUUID();
-  const doc = createDocument(slug, sanitizedMarkdown, marks, title, ownerId, ownerSecret);
+  // Normalize to the collab fragment's serialization so structural markdown
+  // (GFM tables, list-then-heading) doesn't wedge the projection. Same rationale
+  // as POST /documents.
+  const canonicalMarkdown = await deriveCanonicalMarkdownForStorage(sanitizedMarkdown);
+  const doc = createDocument(slug, canonicalMarkdown, marks, title, ownerId, ownerSecret);
   const access = createDocumentAccessToken(slug, requestedRole);
   const links = buildShareLink(req, doc.slug);
   const shareUrlWithToken = withShareToken(links.shareUrl, access.secret);

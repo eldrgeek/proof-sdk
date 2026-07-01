@@ -31,8 +31,11 @@ async function main(): Promise<void> {
   for (const doc of docs) {
     try {
       if (dryRun) {
-        // In dry-run, compute the normalized form without writing.
-        const current = (doc.markdown ?? '');
+        // In dry-run, compute the normalized form without writing. Mirror the
+        // real heal's gate exactly, including stripEphemeralCollabSpans, so the
+        // count doesn't mislead the operator.
+        const current = collab.stripEphemeralCollabSpans(doc.markdown ?? '');
+        if (current.trim().length === 0) { skipped += 1; continue; }
         const normalized = await collab.deriveCanonicalMarkdownForStorage(current);
         // Match healCanonicalMarkdownForCollabFragment's gate: only structural
         // divergence wedges; trailing-whitespace-only diffs are skipped.

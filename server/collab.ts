@@ -4502,8 +4502,8 @@ async function deriveMarkdownProjectionFromFragment(doc: Y.Doc): Promise<string 
 export async function deriveCanonicalMarkdownForStorage(markdown: string): Promise<string> {
   const input = markdown ?? '';
   if (input.trim().length === 0) return input;
+  const ydoc = new Y.Doc();
   try {
-    const ydoc = new Y.Doc();
     await seedFragmentFromLegacyMarkdown(ydoc, input);
     const derived = await deriveMarkdownProjectionFromFragment(ydoc);
     return derived ?? input;
@@ -4512,6 +4512,32 @@ export async function deriveCanonicalMarkdownForStorage(markdown: string): Promi
       error: summarizeParseError(error),
     });
     return input;
+  } finally {
+    ydoc.destroy();
+  }
+}
+
+// Derive the canonical (fragment-fixed-point) markdown for a ProseMirror document
+// that is about to be written into a collab fragment via prosemirrorToYXmlFragment.
+// Mutation write paths (PUT / rewrite / agent edits) build the fragment from a
+// parsed ProseMirror doc and must store the SAME serialization the fragment will
+// later derive, or the doc re-wedges on the next read exactly like a raw-markdown
+// create did. Building the fragment from the identical doc guarantees the match.
+// Returns null on failure so callers can fall back to their existing value.
+export async function deriveCanonicalMarkdownFromProseMirrorDoc(
+  doc: ProseMirrorNode,
+): Promise<string | null> {
+  const ydoc = new Y.Doc();
+  try {
+    prosemirrorToYXmlFragment(doc, ydoc.getXmlFragment('prosemirror') as any);
+    return await deriveMarkdownProjectionFromFragment(ydoc);
+  } catch (error) {
+    console.warn('[collab] failed to derive canonical markdown from ProseMirror doc', {
+      error: summarizeParseError(error),
+    });
+    return null;
+  } finally {
+    ydoc.destroy();
   }
 }
 
@@ -4528,6 +4554,15 @@ export async function healCanonicalMarkdownForCollabFragment(
   if (row.share_state === 'DELETED') return { healed: false, reason: 'deleted' };
   const current = stripEphemeralCollabSpans(row.markdown ?? '');
   if (current.trim().length === 0) return { healed: false, reason: 'empty' };
+
+  // Only heal seed-only wedged documents. A doc with persisted incremental Yjs
+  // updates may hold live edits not yet compacted into the canonical row; healing
+  // re-seeds the collab room from the canonical row and clears persisted Yjs
+  // state, which would drop those edits. Docs that receive edits are kept
+  // consistent by write-path normalization instead, so skip them here.
+  if (getYUpdatesAfter(slug, 0).length > 0) {
+    return { healed: false, reason: 'has_persisted_edits' };
+  }
 
   const normalized = await deriveCanonicalMarkdownForStorage(current);
   if (normalized === current) return { healed: false, reason: 'already_canonical' };
@@ -4550,6 +4585,9 @@ export async function healCanonicalMarkdownForCollabFragment(
     });
   });
   tx();
+  // Safe because the guard above ensures there are no persisted incremental
+  // updates: clearing lets the next load re-seed the room from the healed
+  // canonical row so the fragment, markdown mirror, and projection all agree.
   invalidateCollabDocument(slug);
   return { healed: true, reason: 'normalized', before: current.length, after: normalized.length };
 }
