@@ -80,20 +80,68 @@ const MARK_TYPE_NAMES = {
 
 const RESOLVED_MARK_TOMBSTONE_TTL_MS = 30 * 60 * 1000;
 const RESOLVED_COMMENT_TOMBSTONE_TTL_MS = 30 * 60 * 1000;
-const MARK_ANCHOR_HYDRATION_FAILURE_TTL_MS = 2 * 60 * 1000;
+const MARK_ANCHOR_HYDRATION_FAILURE_MAX_ENTRIES = 20_000;
+const MARK_ANCHOR_RESOLUTION_FLUSH_INTERVAL_MS = 30 * 1000;
+const MARK_ANCHOR_RESOLUTION_MAX_REQUESTS_PER_PAGE = 8;
 const AUTHORED_ANCHOR_HYDRATION_FAILURE_BUDGET_PER_PASS = 20;
 type MarkTombstoneReason = 'resolved' | 'deleted';
 type MarkTombstone = { expiresAt: number; reason: MarkTombstoneReason };
 const resolvedMarkTombstones = new Map<string, MarkTombstone>();
 type MarkAnchorHydrationFailure = { docFingerprint: string; lastAttemptAt: number };
 const markAnchorHydrationFailures = new Map<string, MarkAnchorHydrationFailure>();
+type MarkAnchorResolutionResult = 'success' | 'failure';
+type MarkAnchorResolutionCounts = { success: number; failure: number };
+const pendingMarkAnchorResolutionCounts: MarkAnchorResolutionCounts = { success: 0, failure: 0 };
+let markAnchorResolutionFlushTimer: ReturnType<typeof setTimeout> | null = null;
+let markAnchorResolutionRequestsSent = 0;
+let markAnchorResolutionPagehideListenerInstalled = false;
+let markAnchorResolutionPagehideListener: (() => void) | null = null;
 
-function reportMarkAnchorResolution(result: 'success' | 'failure'): void {
+function queueMarkAnchorResolutionReport(result: MarkAnchorResolutionResult): void {
   if (typeof window === 'undefined') return;
   const path = window.location.pathname;
   if (!path.startsWith('/d/')) return;
+  if (!markAnchorResolutionPagehideListenerInstalled && typeof window.addEventListener === 'function') {
+    markAnchorResolutionPagehideListener = () => {
+      flushQueuedMarkAnchorResolutionReports();
+    };
+    window.addEventListener('pagehide', markAnchorResolutionPagehideListener);
+    markAnchorResolutionPagehideListenerInstalled = true;
+  }
+  pendingMarkAnchorResolutionCounts[result] += 1;
+  if (markAnchorResolutionFlushTimer !== null) return;
+  if (markAnchorResolutionRequestsSent >= MARK_ANCHOR_RESOLUTION_MAX_REQUESTS_PER_PAGE) return;
+  markAnchorResolutionFlushTimer = setTimeout(() => {
+    markAnchorResolutionFlushTimer = null;
+    flushQueuedMarkAnchorResolutionReports();
+  }, MARK_ANCHOR_RESOLUTION_FLUSH_INTERVAL_MS);
+}
+
+function flushQueuedMarkAnchorResolutionReports(): void {
+  if (typeof window === 'undefined') return;
+  const path = window.location.pathname;
+  if (!path.startsWith('/d/')) return;
+  if (markAnchorResolutionFlushTimer !== null) {
+    clearTimeout(markAnchorResolutionFlushTimer);
+    markAnchorResolutionFlushTimer = null;
+  }
+  const successCount = pendingMarkAnchorResolutionCounts.success;
+  const failureCount = pendingMarkAnchorResolutionCounts.failure;
+  if (successCount <= 0 && failureCount <= 0) return;
+  if (markAnchorResolutionRequestsSent >= MARK_ANCHOR_RESOLUTION_MAX_REQUESTS_PER_PAGE) {
+    pendingMarkAnchorResolutionCounts.success = 0;
+    pendingMarkAnchorResolutionCounts.failure = 0;
+    return;
+  }
+  markAnchorResolutionRequestsSent += 1;
+  pendingMarkAnchorResolutionCounts.success = 0;
+  pendingMarkAnchorResolutionCounts.failure = 0;
   const url = `${window.location.origin}/api/metrics/mark-anchor`;
-  const payload = JSON.stringify({ result, source: 'web' });
+  const payload = JSON.stringify({
+    source: 'web',
+    successCount,
+    failureCount,
+  });
   if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
     try {
       navigator.sendBeacon(url, new Blob([payload], { type: 'application/json' }));
@@ -110,6 +158,10 @@ function reportMarkAnchorResolution(result: 'success' | 'failure'): void {
   }).catch(() => {
     // best-effort observability only
   });
+}
+
+function reportMarkAnchorResolution(result: MarkAnchorResolutionResult): void {
+  queueMarkAnchorResolutionReport(result);
 }
 
 function shouldReportMarkAnchorResolution(kind: MarkKind): boolean {
@@ -149,11 +201,15 @@ function buildMarkAnchorHydrationDocFingerprint(doc: ProseMirrorNode): string {
   return documentId ? `doc:${documentId}:${base}` : `hash:${base}`;
 }
 
-function pruneMarkAnchorHydrationFailures(now: number = Date.now()): void {
-  for (const [id, entry] of markAnchorHydrationFailures.entries()) {
-    if (now - entry.lastAttemptAt >= MARK_ANCHOR_HYDRATION_FAILURE_TTL_MS) {
-      markAnchorHydrationFailures.delete(id);
-    }
+function pruneMarkAnchorHydrationFailures(_now: number = Date.now()): void {
+  if (markAnchorHydrationFailures.size <= MARK_ANCHOR_HYDRATION_FAILURE_MAX_ENTRIES) return;
+  const entries = [...markAnchorHydrationFailures.entries()]
+    .sort((a, b) => a[1].lastAttemptAt - b[1].lastAttemptAt);
+  const overflowCount = markAnchorHydrationFailures.size - MARK_ANCHOR_HYDRATION_FAILURE_MAX_ENTRIES;
+  for (let index = 0; index < overflowCount; index += 1) {
+    const id = entries[index]?.[0];
+    if (!id) continue;
+    markAnchorHydrationFailures.delete(id);
   }
 }
 
@@ -164,10 +220,6 @@ function shouldAttemptMarkAnchorHydration(
 ): boolean {
   const entry = markAnchorHydrationFailures.get(id);
   if (!entry) return true;
-  if (now - entry.lastAttemptAt >= MARK_ANCHOR_HYDRATION_FAILURE_TTL_MS) {
-    markAnchorHydrationFailures.delete(id);
-    return true;
-  }
   const docFingerprint = buildMarkAnchorHydrationDocFingerprint(doc);
   if (entry.docFingerprint !== docFingerprint) {
     markAnchorHydrationFailures.delete(id);
@@ -181,6 +233,7 @@ function recordMarkAnchorHydrationFailure(id: string, doc: ProseMirrorNode, now:
     docFingerprint: buildMarkAnchorHydrationDocFingerprint(doc),
     lastAttemptAt: now,
   });
+  pruneMarkAnchorHydrationFailures(now);
 }
 
 function clearMarkAnchorHydrationFailure(id: string): void {
@@ -198,6 +251,51 @@ export function __resetMarkAnchorHydrationFailures(): void {
 
 export function __getMarkAnchorHydrationFailureCount(): number {
   return markAnchorHydrationFailures.size;
+}
+
+// Test-only helpers for mark-anchor telemetry batching.
+export function __reportMarkAnchorResolutionForTests(result: MarkAnchorResolutionResult): void {
+  queueMarkAnchorResolutionReport(result);
+}
+
+export function __flushMarkAnchorResolutionTelemetryForTests(): void {
+  flushQueuedMarkAnchorResolutionReports();
+}
+
+export function __resetMarkAnchorResolutionTelemetryForTests(): void {
+  if (markAnchorResolutionFlushTimer !== null) {
+    clearTimeout(markAnchorResolutionFlushTimer);
+    markAnchorResolutionFlushTimer = null;
+  }
+  if (
+    markAnchorResolutionPagehideListenerInstalled
+    && markAnchorResolutionPagehideListener
+    && typeof window !== 'undefined'
+    && typeof window.removeEventListener === 'function'
+  ) {
+    window.removeEventListener('pagehide', markAnchorResolutionPagehideListener);
+  }
+  markAnchorResolutionPagehideListenerInstalled = false;
+  markAnchorResolutionPagehideListener = null;
+  markAnchorResolutionRequestsSent = 0;
+  pendingMarkAnchorResolutionCounts.success = 0;
+  pendingMarkAnchorResolutionCounts.failure = 0;
+}
+
+export function __getMarkAnchorResolutionTelemetryStateForTests(): {
+  pendingSuccessCount: number;
+  pendingFailureCount: number;
+  requestsSent: number;
+  flushIntervalMs: number;
+  maxRequestsPerPage: number;
+} {
+  return {
+    pendingSuccessCount: pendingMarkAnchorResolutionCounts.success,
+    pendingFailureCount: pendingMarkAnchorResolutionCounts.failure,
+    requestsSent: markAnchorResolutionRequestsSent,
+    flushIntervalMs: MARK_ANCHOR_RESOLUTION_FLUSH_INTERVAL_MS,
+    maxRequestsPerPage: MARK_ANCHOR_RESOLUTION_MAX_REQUESTS_PER_PAGE,
+  };
 }
 
 function markResolvedMarkIds(

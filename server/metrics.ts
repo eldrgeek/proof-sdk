@@ -402,6 +402,15 @@ function readResult(body: unknown): 'success' | 'failure' | null {
   return raw === 'success' || raw === 'failure' ? raw : null;
 }
 
+function readMetricCount(body: unknown, key: 'successCount' | 'failureCount'): number | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  const raw = (body as { successCount?: unknown; failureCount?: unknown })[key];
+  if (raw === undefined) return 0;
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return null;
+  if (raw < 0) return null;
+  return Math.floor(raw);
+}
+
 export function recordShareLinkOpen(
   result: 'success' | 'failure',
   state: string,
@@ -981,17 +990,22 @@ export function recordCollabSessionBuildLatency(result: string, role: string, du
   });
 }
 
-export function recordMarkAnchorResolution(result: 'success' | 'failure', source: string): void {
+export function recordMarkAnchorResolution(
+  result: 'success' | 'failure',
+  source: string,
+  count: number = 1
+): void {
+  const normalizedCount = Number.isFinite(count) && count > 0 ? Math.floor(count) : 1;
   markAnchorResolutionCounter.inc({
     result,
     source: source || 'unknown',
-  });
-  incrementAppsignalCounter('proof.mark_anchor_resolution_total', 1, {
+  }, normalizedCount);
+  incrementAppsignalCounter('proof.mark_anchor_resolution_total', normalizedCount, {
     result,
     source: source || 'unknown',
   });
-  markAnchorTotal += 1;
-  if (result === 'failure') markAnchorFailures += 1;
+  markAnchorTotal += normalizedCount;
+  if (result === 'failure') markAnchorFailures += normalizedCount;
 }
 
 export function recordCollabReconnect(durationMs: number, source: string): void {
@@ -1022,14 +1036,35 @@ metricsApiRoutes.post('/collab-reconnect', (req: Request, res: Response) => {
 });
 
 metricsApiRoutes.post('/mark-anchor', (req: Request, res: Response) => {
+  const source = typeof req.body?.source === 'string' && req.body.source.trim()
+    ? req.body.source.trim()
+    : 'web';
+  const successCount = readMetricCount(req.body, 'successCount');
+  const failureCount = readMetricCount(req.body, 'failureCount');
+  const hasCountPayload = successCount !== 0 || failureCount !== 0;
+  const hasInvalidCountPayload = successCount === null || failureCount === null;
+
+  if (hasCountPayload && !hasInvalidCountPayload) {
+    if ((successCount ?? 0) > 0) {
+      recordMarkAnchorResolution('success', source, successCount ?? 0);
+    }
+    if ((failureCount ?? 0) > 0) {
+      recordMarkAnchorResolution('failure', source, failureCount ?? 0);
+    }
+    res.json({ success: true });
+    return;
+  }
+
+  if (hasInvalidCountPayload) {
+    res.status(400).json({ success: false, error: 'successCount/failureCount must be non-negative numbers' });
+    return;
+  }
+
   const result = readResult(req.body);
   if (!result) {
     res.status(400).json({ success: false, error: 'result must be success or failure' });
     return;
   }
-  const source = typeof req.body?.source === 'string' && req.body.source.trim()
-    ? req.body.source.trim()
-    : 'web';
   recordMarkAnchorResolution(result, source);
   res.json({ success: true });
 });
