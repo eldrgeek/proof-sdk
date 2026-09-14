@@ -38,8 +38,8 @@ async function run(): Promise<void> {
   assert(markAcceptShareBlock.includes('this.applyAuthoritativeShareMarks(serverMarks);'));
   assert(markAcceptShareBlock.includes('this.recoverAuthoritativeShareMarks('));
   assert(
-    editorSource.includes('clearResolvedMarkTombstones(pendingIds);'),
-    'Failed optimistic accepts must allow still-pending authoritative marks to be reapplied',
+    editorSource.includes('this.applyAuthoritativeShareDocument(doc);'),
+    'Failed optimistic accepts must restore authoritative server markdown and marks together',
   );
 
   const markAcceptAllBlock = sliceBetween(
@@ -53,12 +53,13 @@ async function run(): Promise<void> {
     '\n    let count = 0;',
   );
   assert(
-    markAcceptAllShareBlock.indexOf('acceptedCount = acceptAll(view, parser);')
-      < markAcceptAllShareBlock.indexOf('shareClient.acceptSuggestion(suggestionId, actor)'),
-    'Share accept-all must apply all suggestions locally before persisting their ids',
+    markAcceptAllShareBlock.indexOf('if (acceptMark(view, id, parser))')
+      < markAcceptAllShareBlock.indexOf("this.reconcileShareSuggestionBatch(acceptedIds, 'accepted', actor)"),
+    'Share accept-all must apply mutually pending suggestions locally before persisting their ids',
   );
-  assert(markAcceptAllShareBlock.includes('acceptedIds = pendingIds.filter((id) => !remainingIds.has(id));'));
-  assert(markAcceptAllShareBlock.includes('this.applyAuthoritativeShareMarks(latestServerMarks);'));
+  assert(markAcceptAllShareBlock.includes('this.isSuggestionPendingOnServer(id)'));
+  assert(markAcceptAllShareBlock.includes('!this.shareRejectedSuggestionIdsBlockedFromAcceptAll.has(id)'));
+  assert(markAcceptAllShareBlock.includes("this.reconcileShareSuggestionBatch(acceptedIds, 'accepted', actor)"));
   assert(markAcceptAllShareBlock.includes('this.recoverAuthoritativeShareMarks('));
 
   const originalFetch = globalThis.fetch;

@@ -150,10 +150,19 @@ import {
 import { syncAgentSessions } from '../analytics/agent-sessions';
 import { initThemePicker, getThemePicker } from '../ui/theme-picker';
 import { fileClient } from '../bridge/file-client';
-import { shareClient, type CollabSessionInfo, type SharePendingEvent } from '../bridge/share-client';
+import {
+  shareClient,
+  type CollabSessionInfo,
+  type ShareOpenContext,
+  type SharePendingEvent,
+} from '../bridge/share-client';
 import { collabClient, type CollabSyncStatus } from '../bridge/collab-client';
 import { shouldDeferShareMarksRefresh } from './share-marks-refresh';
-import { recoverShareMarksAfterMutationFailure } from './share-mark-mutation';
+import {
+  reconcileShareMarkMutationBatch,
+  recoverShareMarksAfterMutationFailure,
+  type ShareSuggestionFinalStatus,
+} from './share-mark-mutation';
 import {
   createShareSuggestionReviewUpdateScheduler,
   shouldUpdateShareSuggestionReviewDisplay,
@@ -1075,6 +1084,7 @@ class ProofEditorImpl implements ProofEditor {
   private pendingProjectionPublish: boolean = false;
   private initialMarksSynced: boolean = false;
   private lastReceivedServerMarks: Record<string, StoredMark> = {};
+  private shareRejectedSuggestionIdsBlockedFromAcceptAll = new Set<string>();
   private collabTemplateSeedClaimId: string | null = null;
   private collabTemplateClaimCheckTimer: ReturnType<typeof setTimeout> | null = null;
   private collabTemplateRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1689,6 +1699,7 @@ class ProofEditorImpl implements ProofEditor {
     if (!hasShareConfig) return false;
     this.collabCanComment = false;
     this.collabCanEdit = false;
+    this.shareRejectedSuggestionIdsBlockedFromAcceptAll.clear();
     setShareRuntimeCapabilities({ canComment: false, canEdit: false });
 
     this.shareRuntimeActivationInFlight = true;
@@ -1712,6 +1723,7 @@ class ProofEditorImpl implements ProofEditor {
     this.collabUnhealthySinceMs = null;
     this.collabLastRecoveryAttemptMs = 0;
     this.collabSessionRefreshInFlight = false;
+    this.shareRejectedSuggestionIdsBlockedFromAcceptAll.clear();
     this.resetPendingCollabTemplateState(true);
     this.resetShareMarksSyncState();
     this.resetProjectionPublishState();
@@ -2777,25 +2789,53 @@ class ProofEditorImpl implements ProofEditor {
     this.applyExternalMarks(serverMarks);
   }
 
+  private applyAuthoritativeShareDocument(doc: ShareOpenContext['doc']): void {
+    const serverMarks = (doc.marks && typeof doc.marks === 'object' && !Array.isArray(doc.marks))
+      ? doc.marks as Record<string, StoredMark>
+      : {};
+    this.lastReceivedServerMarks = { ...serverMarks };
+    this.initialMarksSynced = true;
+    this.loadDocument(embedMarks(doc.markdown, serverMarks), { allowShareContentMutation: true });
+    this.applyExternalMarks(serverMarks);
+  }
+
   private async recoverAuthoritativeShareMarks(
     failure: unknown,
     fallbackMessage: string,
     optimisticMarkIds: string[] = [],
+    finalStatus?: ShareSuggestionFinalStatus,
   ): Promise<void> {
-    await recoverShareMarksAfterMutationFailure({
+    const recovery = await recoverShareMarksAfterMutationFailure({
       failure,
       fallbackMessage,
       fetchOpenContext: () => shareClient.fetchOpenContext(),
       showErrorBanner: (message) => this.showErrorBanner(message),
       applyServerMarks: (marks) => {
+        this.applyAuthoritativeShareMarks(marks);
+      },
+      applyServerDocument: (doc) => {
+        const marks = doc.marks as Record<string, StoredMark>;
         const pendingIds = optimisticMarkIds.filter((id) => {
           const mark = marks[id];
           return Boolean(mark && mark.status !== 'accepted' && mark.status !== 'rejected');
         });
         clearResolvedMarkTombstones(pendingIds);
-        this.applyAuthoritativeShareMarks(marks);
+        this.applyAuthoritativeShareDocument(doc);
       },
+      expectedResolutions: finalStatus
+        ? Object.fromEntries(optimisticMarkIds.map((id) => [id, finalStatus]))
+        : undefined,
     });
+    if (finalStatus === 'rejected') {
+      const unresolvedIds = new Set(recovery.unresolvedIds);
+      for (const id of optimisticMarkIds) {
+        if (unresolvedIds.has(id)) {
+          this.shareRejectedSuggestionIdsBlockedFromAcceptAll.add(id);
+        } else {
+          this.shareRejectedSuggestionIdsBlockedFromAcceptAll.delete(id);
+        }
+      }
+    }
   }
 
   private getViewerText(otherViewerCount: number): string {
@@ -8844,6 +8884,53 @@ class ProofEditorImpl implements ProofEditor {
     (this as any).bridge?.authorshipStatsUpdated?.(stats);
   }
 
+  private isSuggestionPendingOnServer(markId: string): boolean {
+    const mark = this.lastReceivedServerMarks[markId];
+    if (!mark) return false;
+    if (mark.kind !== 'insert' && mark.kind !== 'delete' && mark.kind !== 'replace') return false;
+    return mark.status !== 'accepted' && mark.status !== 'rejected';
+  }
+
+  private async reconcileShareSuggestionBatch(
+    markIds: string[],
+    finalStatus: ShareSuggestionFinalStatus,
+    actor: string,
+  ): Promise<void> {
+    const fallbackMessage = finalStatus === 'accepted'
+      ? 'Unable to accept every suggestion.'
+      : 'Unable to reject every suggestion.';
+    const reconciliation = await reconcileShareMarkMutationBatch({
+      markIds,
+      finalStatus,
+      mutate: (markId) => finalStatus === 'accepted'
+        ? shareClient.acceptSuggestion(markId, actor)
+        : shareClient.rejectSuggestion(markId, actor),
+      fetchOpenContext: () => shareClient.fetchOpenContext(),
+      fallbackMessage,
+      showErrorBanner: (message) => this.showErrorBanner(message),
+      applyServerMarks: (marks) => this.applyAuthoritativeShareMarks(marks),
+      applyServerDocument: (doc) => {
+        const marks = doc.marks as Record<string, StoredMark>;
+        const pendingIds = markIds.filter((id) => {
+          const mark = marks[id];
+          return Boolean(mark && mark.status !== 'accepted' && mark.status !== 'rejected');
+        });
+        clearResolvedMarkTombstones(pendingIds);
+        this.applyAuthoritativeShareDocument(doc);
+      },
+    });
+    if (finalStatus === 'rejected') {
+      const unresolvedIds = new Set(reconciliation.unresolvedIds);
+      for (const id of markIds) {
+        if (unresolvedIds.has(id)) {
+          this.shareRejectedSuggestionIdsBlockedFromAcceptAll.add(id);
+        } else {
+          this.shareRejectedSuggestionIdsBlockedFromAcceptAll.delete(id);
+        }
+      }
+    }
+  }
+
   /**
    * Accept a suggestion and apply the change
    */
@@ -8877,13 +8964,15 @@ class ProofEditorImpl implements ProofEditor {
         return false;
       }
 
+      this.shareRejectedSuggestionIdsBlockedFromAcceptAll.delete(markId);
       const actor = getCurrentActor();
       void shareClient.acceptSuggestion(markId, actor).then(async (result) => {
         if (!result || 'error' in result || result.success !== true) {
           await this.recoverAuthoritativeShareMarks(
             result,
-            'Unable to accept suggestion. The latest server state has been restored.',
+            'Unable to accept suggestion.',
             [markId],
+            'accepted',
           );
           return;
         }
@@ -8896,8 +8985,9 @@ class ProofEditorImpl implements ProofEditor {
         console.error('[markAccept] Failed to persist suggestion acceptance via share mutation:', error);
         void this.recoverAuthoritativeShareMarks(
           error,
-          'Unable to accept suggestion. The latest server state has been restored.',
+          'Unable to accept suggestion.',
           [markId],
+          'accepted',
         );
       });
       captureEvent('suggestion_accepted', { count: 1 });
@@ -8950,9 +9040,19 @@ class ProofEditorImpl implements ProofEditor {
         return false;
       }
 
+      this.shareRejectedSuggestionIdsBlockedFromAcceptAll.add(markId);
       const actor = getCurrentActor();
       void shareClient.rejectSuggestion(markId, actor).then(async (result) => {
-        if (!result || 'error' in result || result.success !== true) return;
+        if (!result || 'error' in result || result.success !== true) {
+          await this.recoverAuthoritativeShareMarks(
+            result,
+            'Unable to reject suggestion.',
+            [markId],
+            'rejected',
+          );
+          return;
+        }
+        this.shareRejectedSuggestionIdsBlockedFromAcceptAll.delete(markId);
         const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
           ? result.marks as Record<string, StoredMark>
           : null;
@@ -8960,6 +9060,12 @@ class ProofEditorImpl implements ProofEditor {
         this.applyAuthoritativeShareMarks(serverMarks);
       }).catch((error) => {
         console.error('[markReject] Failed to persist suggestion rejection via share mutation:', error);
+        void this.recoverAuthoritativeShareMarks(
+          error,
+          'Unable to reject suggestion.',
+          [markId],
+          'rejected',
+        );
       });
 
       captureEvent('suggestion_rejected', { count: 1 });
@@ -8993,17 +9099,38 @@ class ProofEditorImpl implements ProofEditor {
       this.editor.action((ctx) => {
         const view = ctx.get(editorViewCtx);
         const parser = ctx.get(parserCtx);
-        const pendingIds = getPendingSuggestions(getMarks(view.state)).map((mark) => mark.id);
+        const pendingIds = getPendingSuggestions(getMarks(view.state))
+          .map((mark) => mark.id)
+          .filter((id) => (
+            this.isSuggestionPendingOnServer(id)
+            && !this.shareRejectedSuggestionIdsBlockedFromAcceptAll.has(id)
+          ));
         if (pendingIds.length === 0) return;
+        const pendingIdSet = new Set(pendingIds);
         this.suppressMarksSync = true;
         try {
-          acceptedCount = acceptAll(view, parser);
+          const acceptedIdSet = new Set<string>();
+          for (let pass = 0; pass < 4; pass += 1) {
+            const remaining = getPendingSuggestions(getMarks(view.state))
+              .filter((mark) => pendingIdSet.has(mark.id))
+              .map((mark) => mark.id)
+              .reverse();
+            if (remaining.length === 0) break;
+            let acceptedInPass = 0;
+            for (const id of remaining) {
+              if (acceptMark(view, id, parser)) {
+                acceptedIdSet.add(id);
+                acceptedInPass += 1;
+              }
+            }
+            if (acceptedInPass === 0) break;
+          }
+          acceptedIds = [...acceptedIdSet];
+          acceptedCount = acceptedIds.length;
         } finally {
           this.suppressMarksSync = false;
         }
         if (acceptedCount <= 0) return;
-        const remainingIds = new Set(getPendingSuggestions(getMarks(view.state)).map((mark) => mark.id));
-        acceptedIds = pendingIds.filter((id) => !remainingIds.has(id));
         const metadata = getMarkMetadataWithQuotes(view.state);
         this.lastReceivedServerMarks = { ...metadata };
         this.initialMarksSynced = true;
@@ -9013,32 +9140,13 @@ class ProofEditorImpl implements ProofEditor {
       if (acceptedCount <= 0 || acceptedIds.length === 0) return 0;
 
       const actor = getCurrentActor();
-      void (async () => {
-        let latestServerMarks: Record<string, StoredMark> | null = null;
-        for (const suggestionId of acceptedIds) {
-          const result = await shareClient.acceptSuggestion(suggestionId, actor);
-          if (!result || 'error' in result || result.success !== true) {
-            await this.recoverAuthoritativeShareMarks(
-              result,
-              'Unable to accept every suggestion. The latest server state has been restored.',
-              acceptedIds,
-            );
-            continue;
-          }
-          const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
-            ? result.marks as Record<string, StoredMark>
-            : null;
-          if (!serverMarks) continue;
-          latestServerMarks = serverMarks;
-        }
-        if (!latestServerMarks) return;
-        this.applyAuthoritativeShareMarks(latestServerMarks);
-      })().catch((error) => {
+      void this.reconcileShareSuggestionBatch(acceptedIds, 'accepted', actor).catch((error) => {
         console.error('[markAcceptAll] Failed to persist suggestion acceptance via share mutation:', error);
         void this.recoverAuthoritativeShareMarks(
           error,
-          'Unable to accept every suggestion. The latest server state has been restored.',
+          'Unable to accept every suggestion.',
           acceptedIds,
+          'accepted',
         );
       });
       captureEvent('suggestion_accepted', { count: acceptedCount });
@@ -9075,11 +9183,18 @@ class ProofEditorImpl implements ProofEditor {
       let rejectedCount = 0;
       this.editor.action((ctx) => {
         const view = ctx.get(editorViewCtx);
-        rejectedIds = getPendingSuggestions(getMarks(view.state)).map((mark) => mark.id);
+        rejectedIds = getPendingSuggestions(getMarks(view.state))
+          .map((mark) => mark.id)
+          .filter((id) => this.isSuggestionPendingOnServer(id));
         if (rejectedIds.length === 0) return;
         this.suppressMarksSync = true;
         try {
-          rejectedCount = rejectAll(view);
+          const rejectedIdSet = new Set<string>();
+          for (const id of [...rejectedIds].reverse()) {
+            if (rejectMark(view, id)) rejectedIdSet.add(id);
+          }
+          rejectedIds = rejectedIds.filter((id) => rejectedIdSet.has(id));
+          rejectedCount = rejectedIds.length;
         } finally {
           this.suppressMarksSync = false;
         }
@@ -9091,22 +9206,18 @@ class ProofEditorImpl implements ProofEditor {
 
       if (rejectedCount <= 0 || rejectedIds.length === 0) return 0;
 
+      for (const id of rejectedIds) {
+        this.shareRejectedSuggestionIdsBlockedFromAcceptAll.add(id);
+      }
       const actor = getCurrentActor();
-      void (async () => {
-        let latestServerMarks: Record<string, StoredMark> | null = null;
-        for (const suggestionId of rejectedIds) {
-          const result = await shareClient.rejectSuggestion(suggestionId, actor);
-          if (!result || 'error' in result || result.success !== true) continue;
-          const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
-            ? result.marks as Record<string, StoredMark>
-            : null;
-          if (!serverMarks) continue;
-          latestServerMarks = serverMarks;
-        }
-        if (!latestServerMarks) return;
-        this.applyAuthoritativeShareMarks(latestServerMarks);
-      })().catch((error) => {
+      void this.reconcileShareSuggestionBatch(rejectedIds, 'rejected', actor).catch((error) => {
         console.error('[markRejectAll] Failed to persist suggestion rejection via share mutation:', error);
+        void this.recoverAuthoritativeShareMarks(
+          error,
+          'Unable to reject every suggestion.',
+          rejectedIds,
+          'rejected',
+        );
       });
 
       captureEvent('suggestion_rejected', { count: rejectedCount });
