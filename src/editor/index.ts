@@ -64,6 +64,7 @@ import {
 import {
   markPopoverPlugin,
   openCommentComposer,
+  openMarkPopover,
   captureCommentPopoverDraft,
   restoreCommentPopoverDraft,
   type CommentPopoverDraftSnapshot,
@@ -1011,6 +1012,8 @@ class ProofEditorImpl implements ProofEditor {
   private isCliMode: boolean = false;
   private isShareMode: boolean = false;
   private shareBannerSuggestBtnEl: HTMLButtonElement | null = null;
+  private shareBannerSuggestionReviewBtnEl: HTMLButtonElement | null = null;
+  private shareSuggestionReviewSignature: string = '';
   private suggestDefaultApplied = false;
   private shareViewerName: string | null = null;
   private isReadOnly: boolean = false;
@@ -1067,6 +1070,7 @@ class ProofEditorImpl implements ProofEditor {
   private shareMenuCleanup: (() => void) | null = null;
   private presenceMenuCleanup: (() => void) | null = null;
   private agentMenuCleanup: (() => void) | null = null;
+  private suggestionReviewMenuCleanup: (() => void) | null = null;
   private shareWelcomeToast: HTMLElement | null = null;
   private shareDocTitle: string = 'Untitled';
   private shareBannerTitleEl: HTMLElement | null = null;
@@ -2531,6 +2535,7 @@ class ProofEditorImpl implements ProofEditor {
       if (this.resolveInitialSuggestMode() === 'suggest') this.enableSuggestions();
     }
     this.updateSuggestToggleDisplay();
+    this.updateShareSuggestionReviewDisplay();
     // Only block content mutations for true view-only sessions.
     // Avoid using filterTransaction as a temporary "sync lock", since it can deadlock hydration.
     this.setShareContentFilterEnabled(this.collabEnabled && !this.collabCanEdit);
@@ -2742,6 +2747,12 @@ class ProofEditorImpl implements ProofEditor {
           // best-effort refresh for server-originated mark updates
         });
     }, this.shareDocumentUpdatedDebounceMs);
+  }
+
+  private applyAuthoritativeShareMarks(serverMarks: Record<string, StoredMark>): void {
+    this.lastReceivedServerMarks = { ...serverMarks };
+    this.initialMarksSynced = true;
+    this.applyExternalMarks(serverMarks);
   }
 
   private getViewerText(otherViewerCount: number): string {
@@ -3202,6 +3213,7 @@ class ProofEditorImpl implements ProofEditor {
     const openPresenceMenu = () => {
       this.closeShareMenu();
       this.closeAgentMenu();
+      this.closeSuggestionReviewMenu();
       if (this.presenceMenuCleanup) {
         this.closePresenceMenu();
         return;
@@ -3415,6 +3427,8 @@ class ProofEditorImpl implements ProofEditor {
       && this.shareBannerAgentSlotEl
       && this.shareBannerSyncDotEl
       && this.shareBannerSyncLabelEl
+      && this.shareBannerSuggestBtnEl
+      && this.shareBannerSuggestionReviewBtnEl
       && banner.contains(this.shareBannerTitleEl)
     ) {
       this.updateShareBannerTitleDisplay();
@@ -3422,6 +3436,7 @@ class ProofEditorImpl implements ProofEditor {
       this.updateShareBannerAgentControlDisplay();
       this.updateShareBannerSyncDisplay();
       this.updateSuggestToggleDisplay();
+      this.updateShareSuggestionReviewDisplay();
       this.scheduleBannerLayoutUpdate();
       return;
     }
@@ -3474,8 +3489,21 @@ class ProofEditorImpl implements ProofEditor {
     const shareBtn = this.createShareMenuButton();
 
     const suggestToggle = this.createSuggestToggleButton();
-    banner.replaceChildren(wordmark, separator, title, syncStatusSep, syncStatusInline, avatars, suggestToggle, agentSlot, shareBtn);
+    const suggestionReview = this.createShareSuggestionReviewButton();
+    banner.replaceChildren(
+      wordmark,
+      separator,
+      title,
+      syncStatusSep,
+      syncStatusInline,
+      avatars,
+      suggestToggle,
+      suggestionReview,
+      agentSlot,
+      shareBtn,
+    );
     this.updateSuggestToggleDisplay();
+    this.updateShareSuggestionReviewDisplay();
     this.scheduleBannerLayoutUpdate();
   }
 
@@ -3533,6 +3561,197 @@ class ProofEditorImpl implements ProofEditor {
     btn.setAttribute('aria-pressed', String(on));
     btn.setAttribute('aria-label', on ? 'Suggesting: your edits are tracked. Click to edit directly.' : 'Editing directly. Click to suggest changes instead.');
     btn.title = on ? 'Suggesting: your edits appear as tracked changes others can accept or reject' : 'Editing: your edits change the text directly';
+  }
+
+  private getAnchoredPendingSuggestions(viewOverride?: EditorView): Mark[] {
+    const collect = (view: EditorView): Mark[] => getPendingSuggestions(getMarks(view.state))
+      .filter((mark) => {
+        const range = mark.range;
+        return Boolean(range && Number.isFinite(range.from) && Number.isFinite(range.to) && range.to > range.from);
+      })
+      .sort((a, b) => (a.range?.from ?? 0) - (b.range?.from ?? 0));
+
+    if (viewOverride) return collect(viewOverride);
+    if (!this.editor) return [];
+
+    let pending: Mark[] = [];
+    this.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      pending = collect(view);
+    });
+    return pending;
+  }
+
+  private openSuggestionPopover(markId: string): void {
+    if (!this.editor) return;
+    this.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      openMarkPopover(view, markId);
+    });
+  }
+
+  private createShareSuggestionReviewButton(): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'share-pill-suggestion-review';
+    btn.style.cssText = `
+      display:none;align-items:center;justify-content:center;gap:6px;min-height:44px;min-width:44px;padding:0 12px;
+      background:rgba(255,255,255,0.7);border:1px solid rgba(17,24,39,0.10);border-radius:22px;color:#111827;
+      font-size:12px;font-weight:600;cursor:pointer;transition:background 0.15s,border-color 0.15s;flex-shrink:0;font-family:inherit;
+      font-variant-numeric: tabular-nums;
+    `;
+    btn.setAttribute('aria-haspopup', 'menu');
+    btn.setAttribute('aria-expanded', 'false');
+    btn.onmouseenter = () => { btn.style.background = '#fff'; btn.style.borderColor = 'rgba(17,24,39,0.20)'; };
+    btn.onmouseleave = () => { btn.style.background = 'rgba(255,255,255,0.7)'; btn.style.borderColor = 'rgba(17,24,39,0.10)'; };
+    btn.onclick = () => {
+      this.triggerHaptic('selection');
+      this.closeShareMenu();
+      this.closePresenceMenu();
+      this.closeAgentMenu();
+      if (this.suggestionReviewMenuCleanup) {
+        this.closeSuggestionReviewMenu();
+        return;
+      }
+      const pending = this.getAnchoredPendingSuggestions();
+      if (pending.length === 0) {
+        this.updateShareSuggestionReviewDisplay();
+        return;
+      }
+
+      const parent = btn.parentElement;
+      if (!parent) return;
+
+      const menu = document.createElement('div');
+      menu.setAttribute('role', 'menu');
+      menu.style.cssText = `
+        position:absolute;top:calc(100% + 8px);right:0;min-width:220px;
+        background:rgba(17,24,39,0.96);border:1px solid rgba(255,255,255,0.12);
+        border-radius:12px;padding:6px;z-index:1002;
+        box-shadow:0 16px 40px rgba(0,0,0,0.35);
+        backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+      `;
+
+      const addActionItem = (title: string, onSelect: () => boolean) => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.setAttribute('role', 'menuitem');
+        item.style.cssText = `
+          width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;
+          padding:10px 12px;min-height:44px;border-radius:10px;border:0;background:transparent;
+          color:rgba(255,255,255,0.92);font-size:12px;font-weight:600;cursor:pointer;text-align:left;
+        `;
+        item.onmouseenter = () => { item.style.background = 'rgba(255,255,255,0.08)'; };
+        item.onmouseleave = () => { item.style.background = 'transparent'; };
+        const left = document.createElement('span');
+        left.textContent = title;
+        const right = document.createElement('span');
+        right.textContent = '›';
+        right.style.cssText = 'font-weight:700;opacity:0.8';
+        item.append(left, right);
+        item.onclick = () => {
+          const ok = onSelect();
+          if (ok) cleanup();
+        };
+        menu.appendChild(item);
+      };
+
+      addActionItem('Next suggestion', () => {
+        const markId = this.navigateToNextSuggestion();
+        if (!markId) return false;
+        this.openSuggestionPopover(markId);
+        return true;
+      });
+      addActionItem('Accept all', () => {
+        const count = this.getAnchoredPendingSuggestions().length;
+        if (count <= 0) return false;
+        const confirmed = window.confirm(`Accept all ${count} suggestion${count === 1 ? '' : 's'}?`);
+        if (!confirmed) return false;
+        this.markAcceptAll();
+        return true;
+      });
+      addActionItem('Reject all', () => {
+        const count = this.getAnchoredPendingSuggestions().length;
+        if (count <= 0) return false;
+        const confirmed = window.confirm(`Reject all ${count} suggestion${count === 1 ? '' : 's'}?`);
+        if (!confirmed) return false;
+        this.markRejectAll();
+        return true;
+      });
+
+      const container = document.createElement('div');
+      container.style.cssText = 'position:relative;display:inline-flex;align-items:center;';
+      btn.replaceWith(container);
+      container.appendChild(btn);
+      container.appendChild(menu);
+      this.clampMenuToViewport(menu);
+      btn.setAttribute('aria-expanded', 'true');
+
+      const onDocMouseDown = (ev: MouseEvent) => {
+        if (!(ev.target instanceof Node)) return;
+        if (container.contains(ev.target)) return;
+        cleanup();
+      };
+      const onKeyDown = (ev: KeyboardEvent) => {
+        if (ev.key === 'Escape') cleanup();
+      };
+      const cleanup = () => {
+        document.removeEventListener('mousedown', onDocMouseDown, true);
+        document.removeEventListener('keydown', onKeyDown, true);
+        if (menu.isConnected) menu.remove();
+        if (container.isConnected) {
+          container.replaceWith(btn);
+        }
+        btn.setAttribute('aria-expanded', 'false');
+        if (this.suggestionReviewMenuCleanup === cleanup) this.suggestionReviewMenuCleanup = null;
+      };
+
+      this.suggestionReviewMenuCleanup = cleanup;
+      document.addEventListener('mousedown', onDocMouseDown, true);
+      document.addEventListener('keydown', onKeyDown, true);
+    };
+    this.shareBannerSuggestionReviewBtnEl = btn;
+    return btn;
+  }
+
+  private updateShareSuggestionReviewDisplay(viewOverride?: EditorView): void {
+    const btn = this.shareBannerSuggestionReviewBtnEl;
+    if (!btn) return;
+    const canShow = this.isShareMode && this.collabCanEdit;
+    if (!canShow) {
+      if (this.shareSuggestionReviewSignature !== 'hidden') {
+        btn.style.display = 'none';
+        this.shareSuggestionReviewSignature = 'hidden';
+        this.closeSuggestionReviewMenu();
+        this.scheduleBannerLayoutUpdate();
+      }
+      return;
+    }
+
+    const pending = this.getAnchoredPendingSuggestions(viewOverride);
+    if (pending.length === 0) {
+      if (this.shareSuggestionReviewSignature !== 'hidden') {
+        btn.style.display = 'none';
+        this.shareSuggestionReviewSignature = 'hidden';
+        this.closeSuggestionReviewMenu();
+        this.scheduleBannerLayoutUpdate();
+      }
+      return;
+    }
+
+    const label = `${pending.length} suggestion${pending.length === 1 ? '' : 's'}`;
+    const signature = `${label}:${pending.map((mark) => mark.id).join(',')}`;
+    if (this.shareSuggestionReviewSignature === signature) return;
+
+    this.shareSuggestionReviewSignature = signature;
+    btn.style.display = 'inline-flex';
+    btn.replaceChildren();
+    const countLabel = document.createElement('span');
+    countLabel.textContent = label;
+    btn.appendChild(countLabel);
+    btn.title = 'Review pending suggestions';
+    btn.setAttribute('aria-label', `${label}. Open suggestion review actions.`);
+    this.scheduleBannerLayoutUpdate();
   }
 
   private uninstallShareAgentPresenceObservers(): void {
@@ -3918,6 +4137,13 @@ class ProofEditorImpl implements ProofEditor {
     cleanup();
   }
 
+  private closeSuggestionReviewMenu(): void {
+    if (!this.suggestionReviewMenuCleanup) return;
+    const cleanup = this.suggestionReviewMenuCleanup;
+    this.suggestionReviewMenuCleanup = null;
+    cleanup();
+  }
+
   private clampMenuToViewport(menu: HTMLElement): void {
     const margin = 12;
     const rect = menu.getBoundingClientRect();
@@ -4153,6 +4379,7 @@ class ProofEditorImpl implements ProofEditor {
     const openMenu = () => {
       this.closeAgentMenu();
       this.closePresenceMenu();
+      this.closeSuggestionReviewMenu();
       if (this.shareMenuCleanup) {
         this.closeShareMenu();
         return;
@@ -4472,6 +4699,7 @@ class ProofEditorImpl implements ProofEditor {
     const openMenu = () => {
       this.closeShareMenu();
       this.closePresenceMenu();
+      this.closeSuggestionReviewMenu();
       if (this.agentMenuCleanup) {
         this.closeAgentMenu();
         return;
@@ -4725,12 +4953,16 @@ class ProofEditorImpl implements ProofEditor {
     this.closeShareMenu();
     this.closePresenceMenu();
     this.closeAgentMenu();
+    this.closeSuggestionReviewMenu();
     this.shareBannerTitleEditing = false;
     this.shareBannerTitleEl = null;
     this.shareBannerAvatarsEl = null;
     this.shareBannerAgentSlotEl = null;
     this.shareBannerSyncDotEl = null;
     this.shareBannerSyncLabelEl = null;
+    this.shareBannerSuggestBtnEl = null;
+    this.shareBannerSuggestionReviewBtnEl = null;
+    this.shareSuggestionReviewSignature = '';
     if (this.shareStatusHideTimer) {
       clearTimeout(this.shareStatusHideTimer);
       this.shareStatusHideTimer = null;
@@ -4758,6 +4990,7 @@ class ProofEditorImpl implements ProofEditor {
       // Use applyRemoteMarks to create ProseMirror anchors for new marks
       // (using the `quote` field) and merge metadata for existing marks.
       applyRemoteMarks(view, marks, { hydrateAnchors: this.collabCanEdit });
+      this.updateShareSuggestionReviewDisplay(view);
     });
   }
 
@@ -5359,6 +5592,7 @@ class ProofEditorImpl implements ProofEditor {
           beforeSelectionEmpty,
           originalDispatch,
         );
+        this.updateShareSuggestionReviewDisplay(view);
       };
 
       console.log('[setupSuggestionsInterceptor] Suggestions interceptor installed');
@@ -8647,36 +8881,48 @@ class ProofEditorImpl implements ProofEditor {
       return false;
     }
 
+    if (this.isShareMode) {
+      let rejected = false;
+      this.editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx);
+        this.suppressMarksSync = true;
+        try {
+          rejected = rejectMark(view, markId);
+        } finally {
+          this.suppressMarksSync = false;
+        }
+        if (!rejected) return;
+        const metadata = getMarkMetadataWithQuotes(view.state);
+        this.lastReceivedServerMarks = { ...metadata };
+        this.initialMarksSynced = true;
+      });
+
+      if (!rejected) {
+        console.warn('[markReject] Suggestion not pending in share mode:', markId);
+        return false;
+      }
+
+      const actor = getCurrentActor();
+      void shareClient.rejectSuggestion(markId, actor).then(async (result) => {
+        if (!result || 'error' in result || result.success !== true) return;
+        const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
+          ? result.marks as Record<string, StoredMark>
+          : null;
+        if (!serverMarks) return;
+        this.applyAuthoritativeShareMarks(serverMarks);
+      }).catch((error) => {
+        console.error('[markReject] Failed to persist suggestion rejection via share mutation:', error);
+      });
+
+      captureEvent('suggestion_rejected', { count: 1 });
+      return true;
+    }
+
     let success = false;
     this.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx);
       success = rejectMark(view, markId);
       console.log('[markReject] Rejected:', success);
-      if (success && this.isShareMode) {
-        const metadata = getMarkMetadataWithQuotes(view.state);
-        this.lastReceivedServerMarks = { ...metadata };
-        this.initialMarksSynced = true;
-
-        const actor = getCurrentActor();
-        void shareClient.rejectSuggestion(markId, actor).then((result) => {
-          if (!result || 'error' in result || result.success !== true) return;
-          const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
-            ? result.marks as Record<string, StoredMark>
-            : null;
-          if (!serverMarks) return;
-          this.lastReceivedServerMarks = { ...serverMarks };
-          this.initialMarksSynced = true;
-          if (this.editor) {
-            this.editor.action((innerCtx) => {
-              const innerView = innerCtx.get(editorViewCtx);
-              const mergedMetadata = mergePendingServerMarks(getMarkMetadataWithQuotes(innerView.state), serverMarks);
-              setMarkMetadata(innerView, mergedMetadata);
-            });
-          }
-        }).catch((error) => {
-          console.error('[markReject] Failed to persist suggestion rejection via share mutation:', error);
-        });
-      }
       if (success) {
         captureEvent('suggestion_rejected', { count: 1 });
       }
@@ -8792,44 +9038,54 @@ class ProofEditorImpl implements ProofEditor {
       return 0;
     }
 
-    let count = 0;
-    let rejectedIds: string[] = [];
-    this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
-      rejectedIds = getPendingSuggestions(getMarks(view.state)).map((mark) => mark.id);
-      count = rejectAll(view);
-      console.log('[markRejectAll] Rejected:', count);
-      if (count > 0 && this.isShareMode && rejectedIds.length > 0) {
+    if (this.isShareMode) {
+      let rejectedIds: string[] = [];
+      let rejectedCount = 0;
+      this.editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx);
+        rejectedIds = getPendingSuggestions(getMarks(view.state)).map((mark) => mark.id);
+        if (rejectedIds.length === 0) return;
+        this.suppressMarksSync = true;
+        try {
+          rejectedCount = rejectAll(view);
+        } finally {
+          this.suppressMarksSync = false;
+        }
+        if (rejectedCount <= 0) return;
         const metadata = getMarkMetadataWithQuotes(view.state);
         this.lastReceivedServerMarks = { ...metadata };
         this.initialMarksSynced = true;
+      });
 
-        const actor = getCurrentActor();
-        void (async () => {
-          let latestServerMarks: Record<string, StoredMark> | null = null;
-          for (const suggestionId of rejectedIds) {
-            const result = await shareClient.rejectSuggestion(suggestionId, actor);
-            if (!result || 'error' in result || result.success !== true) continue;
-            const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
-              ? result.marks as Record<string, StoredMark>
-              : null;
-            if (!serverMarks) continue;
-            latestServerMarks = serverMarks;
-          }
-          if (!latestServerMarks) return;
-          this.lastReceivedServerMarks = { ...latestServerMarks };
-          this.initialMarksSynced = true;
-          if (this.editor) {
-            this.editor.action((innerCtx) => {
-              const innerView = innerCtx.get(editorViewCtx);
-              const mergedMetadata = mergePendingServerMarks(getMarkMetadataWithQuotes(innerView.state), latestServerMarks!);
-              setMarkMetadata(innerView, mergedMetadata);
-            });
-          }
-        })().catch((error) => {
-          console.error('[markRejectAll] Failed to persist suggestion rejection via share mutation:', error);
-        });
-      }
+      if (rejectedCount <= 0 || rejectedIds.length === 0) return 0;
+
+      const actor = getCurrentActor();
+      void (async () => {
+        let latestServerMarks: Record<string, StoredMark> | null = null;
+        for (const suggestionId of rejectedIds) {
+          const result = await shareClient.rejectSuggestion(suggestionId, actor);
+          if (!result || 'error' in result || result.success !== true) continue;
+          const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
+            ? result.marks as Record<string, StoredMark>
+            : null;
+          if (!serverMarks) continue;
+          latestServerMarks = serverMarks;
+        }
+        if (!latestServerMarks) return;
+        this.applyAuthoritativeShareMarks(latestServerMarks);
+      })().catch((error) => {
+        console.error('[markRejectAll] Failed to persist suggestion rejection via share mutation:', error);
+      });
+
+      captureEvent('suggestion_rejected', { count: rejectedCount });
+      return rejectedCount;
+    }
+
+    let count = 0;
+    this.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      count = rejectAll(view);
+      console.log('[markRejectAll] Rejected:', count);
       if (count > 0) {
         captureEvent('suggestion_rejected', { count });
         const stats = getAuthorshipStats(view);
