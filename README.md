@@ -49,6 +49,8 @@ npm run serve
 
 The default setup serves the editor on `http://localhost:3000` and the API/server on `http://localhost:4000`.
 
+For production self-hosting (environment variables, reverse proxy, WebSockets), see [docs/self-hosting.md](docs/self-hosting.md).
+
 ## Core Routes
 
 Canonical Proof SDK routes:
