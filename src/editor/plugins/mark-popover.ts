@@ -1221,18 +1221,31 @@ class MarkPopoverController {
     header.className = 'mark-popover-header';
     header.textContent = 'Suggestion';
 
+    const actor = document.createElement('div');
+    actor.className = 'mark-popover-meta';
+    actor.textContent = `Suggested by ${getActorName(mark.by)}`;
+
     const body = document.createElement('div');
     body.className = 'mark-popover-body';
 
     let detail = '';
     if (mark.kind === 'insert') {
       const data = mark.data as InsertData | undefined;
-      detail = data?.content ?? '';
+      const inserted = data?.content ?? '';
+      detail = inserted
+        ? `Insert: ${inserted}`
+        : 'Insert: (empty)';
     } else if (mark.kind === 'replace') {
       const data = mark.data as ReplaceData | undefined;
-      detail = data?.content ?? '';
+      const replacement = data?.content ?? '';
+      const original = mark.quote ?? '';
+      detail = original
+        ? `Replace: ${original}\nWith: ${replacement || '(empty)'}`
+        : `Replace with: ${replacement || '(empty)'}`;
     } else if (mark.kind === 'delete') {
-      detail = mark.quote ?? '';
+      detail = mark.quote
+        ? `Delete: ${mark.quote}`
+        : 'Delete selected text';
     }
     body.textContent = detail;
 
@@ -1242,7 +1255,7 @@ class MarkPopoverController {
 
     const applyButton = document.createElement('button');
     applyButton.type = 'button';
-    applyButton.textContent = 'Apply';
+    applyButton.textContent = 'Accept';
     installTouchSafeButton(applyButton, () => {
       if (!canEdit) return;
       const proof = getProofEditorApi();
@@ -1282,6 +1295,7 @@ class MarkPopoverController {
     actions.appendChild(closeButton);
 
     this.popover.appendChild(header);
+    this.popover.appendChild(actor);
     this.popover.appendChild(body);
     this.popover.appendChild(actions);
   }
