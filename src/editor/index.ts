@@ -148,6 +148,10 @@ import { fileClient } from '../bridge/file-client';
 import { shareClient, type CollabSessionInfo, type SharePendingEvent } from '../bridge/share-client';
 import { collabClient, type CollabSyncStatus } from '../bridge/collab-client';
 import { shouldDeferShareMarksRefresh } from './share-marks-refresh';
+import {
+  createShareSuggestionReviewUpdateScheduler,
+  shouldUpdateShareSuggestionReviewDisplay,
+} from './share-suggestion-review';
 import { collabCursorBuilder, collabSelectionBuilder } from './plugins/collab-cursors';
 import { isAgentScopedId } from '../shared/agent-identity';
 import {
@@ -1010,6 +1014,22 @@ class ProofEditorImpl implements ProofEditor {
   private shareBannerSuggestBtnEl: HTMLButtonElement | null = null;
   private shareBannerSuggestionReviewBtnEl: HTMLButtonElement | null = null;
   private shareSuggestionReviewSignature: string = '';
+  private readonly shareSuggestionReviewUpdateScheduler = createShareSuggestionReviewUpdateScheduler(
+    (run: () => void) => {
+      if (typeof window.requestAnimationFrame === 'function') {
+        return window.requestAnimationFrame(() => run());
+      }
+      return window.setTimeout(run, 16);
+    },
+    (frameId: number) => {
+      if (typeof window.cancelAnimationFrame === 'function') {
+        window.cancelAnimationFrame(frameId);
+        return;
+      }
+      window.clearTimeout(frameId);
+    },
+  );
+  private pendingShareSuggestionReviewView: EditorView | null = null;
   private suggestDefaultApplied = false;
   private shareViewerName: string | null = null;
   private isReadOnly: boolean = false;
@@ -3738,6 +3758,22 @@ class ProofEditorImpl implements ProofEditor {
     this.scheduleBannerLayoutUpdate();
   }
 
+  private scheduleShareSuggestionReviewDisplay(viewOverride?: EditorView): void {
+    if (viewOverride) {
+      this.pendingShareSuggestionReviewView = viewOverride;
+    }
+    this.shareSuggestionReviewUpdateScheduler.schedule(() => {
+      const scheduledView = this.pendingShareSuggestionReviewView ?? undefined;
+      this.pendingShareSuggestionReviewView = null;
+      this.updateShareSuggestionReviewDisplay(scheduledView);
+    });
+  }
+
+  private cancelShareSuggestionReviewDisplayUpdate(): void {
+    this.pendingShareSuggestionReviewView = null;
+    this.shareSuggestionReviewUpdateScheduler.cancel();
+  }
+
   private uninstallShareAgentPresenceObservers(): void {
     this.clearShareAgentPresenceExpiryTimer();
     if (this.shareAgentPresenceCleanup) {
@@ -4947,6 +4983,7 @@ class ProofEditorImpl implements ProofEditor {
     this.shareBannerSuggestBtnEl = null;
     this.shareBannerSuggestionReviewBtnEl = null;
     this.shareSuggestionReviewSignature = '';
+    this.cancelShareSuggestionReviewDisplayUpdate();
     if (this.shareStatusHideTimer) {
       clearTimeout(this.shareStatusHideTimer);
       this.shareStatusHideTimer = null;
@@ -4974,7 +5011,7 @@ class ProofEditorImpl implements ProofEditor {
       // Use applyRemoteMarks to create ProseMirror anchors for new marks
       // (using the `quote` field) and merge metadata for existing marks.
       applyRemoteMarks(view, marks, { hydrateAnchors: this.collabCanEdit });
-      this.updateShareSuggestionReviewDisplay(view);
+      this.scheduleShareSuggestionReviewDisplay(view);
     });
   }
 
@@ -5510,7 +5547,8 @@ class ProofEditorImpl implements ProofEditor {
         const beforeSelectionFrom = view.state.selection.from;
         const beforeSelectionEmpty = view.state.selection.empty;
         const isRemoteContentChange = Boolean(tr?.docChanged) && this.isYjsChangeOriginTransaction(tr);
-        const isMarksOnlyChange = tr?.getMeta?.(marksPluginKey) !== undefined;
+        const marksMeta = tr?.getMeta?.(marksPluginKey);
+        const isMarksOnlyChange = marksMeta !== undefined;
         const isDocumentLoad = tr?.getMeta?.('document-load') !== undefined;
         const isLocalContentChange = Boolean(tr?.docChanged)
           && !isRemoteContentChange
@@ -5534,37 +5572,24 @@ class ProofEditorImpl implements ProofEditor {
           // Don't intercept meta transactions (like enabling/disabling suggestions)
           if (tr.getMeta(suggestionsPluginKey) !== undefined) {
             dispatchWithRevision(tr);
-            return;
-          }
-
-          // Don't intercept marks operations (accept/reject suggestions)
-          // These are internal operations that should not be converted to suggestions
-          if (tr.getMeta(marksPluginKey) !== undefined) {
+          } else if (marksMeta !== undefined) {
+            // Don't intercept marks operations (accept/reject suggestions)
+            // These are internal operations that should not be converted to suggestions
             dispatchWithRevision(tr);
-            return;
-          }
-
-          // Don't intercept document load transactions
-          if (tr.getMeta('document-load') !== undefined) {
+          } else if (tr.getMeta('document-load') !== undefined) {
+            // Don't intercept document load transactions
             dispatchWithRevision(tr);
-            return;
-          }
-
-          // Don't intercept Yjs-origin collaborative transactions.
-          if (this.isYjsChangeOriginTransaction(tr)) {
+          } else if (this.isYjsChangeOriginTransaction(tr)) {
+            // Don't intercept Yjs-origin collaborative transactions.
             originalDispatch(tr);
-            return;
-          }
-
-          // Don't intercept undo/redo transactions (from history plugin)
-          if (tr.getMeta('history$') !== undefined || tr.getMeta('addToHistory') === false) {
+          } else if (tr.getMeta('history$') !== undefined || tr.getMeta('addToHistory') === false) {
+            // Don't intercept undo/redo transactions (from history plugin)
             dispatchWithRevision(tr);
-            return;
+          } else {
+            // Wrap the transaction to convert edits to suggestions
+            const wrappedTr = wrapTransactionForSuggestions(tr, view.state, true);
+            dispatchWithRevision(wrappedTr);
           }
-
-          // Wrap the transaction to convert edits to suggestions
-          const wrappedTr = wrapTransactionForSuggestions(tr, view.state, true);
-          dispatchWithRevision(wrappedTr);
         } else {
           dispatchWithRevision(tr);
         }
@@ -5576,7 +5601,12 @@ class ProofEditorImpl implements ProofEditor {
           beforeSelectionEmpty,
           originalDispatch,
         );
-        this.updateShareSuggestionReviewDisplay(view);
+        if (shouldUpdateShareSuggestionReviewDisplay({
+          docChanged: Boolean(tr?.docChanged),
+          marksMeta,
+        })) {
+          this.scheduleShareSuggestionReviewDisplay(view);
+        }
       };
 
       console.log('[setupSuggestionsInterceptor] Suggestions interceptor installed');
