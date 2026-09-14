@@ -1944,6 +1944,15 @@ export function openCommentComposer(view: EditorView, range: MarkRange, by: stri
   controller.openComposer(range, by);
 }
 
+export function openMarkPopover(view: EditorView, markId: string): boolean {
+  const controller = controllers.get(view);
+  if (!controller) return false;
+  const mark = getMarks(view.state).find((entry) => entry.id === markId);
+  if (!mark) return false;
+  controller.openForMark(markId);
+  return true;
+}
+
 export function captureCommentPopoverDraft(view: EditorView): CommentPopoverDraftSnapshot | null {
   const controller = controllers.get(view);
   if (!controller) return null;
