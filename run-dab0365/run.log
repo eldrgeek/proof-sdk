@@ -1,0 +1,66 @@
+dab0365 deploy: merge live-collab suggestion resolution (B7)
+deploy: 15da3fd -> dab0365 (fork/deploy/vps)
+deploy: editor.js built=5156724afec0ccfb served=5156724afec0ccfb http=200
+deploy: OK dab0365
+e2e-doc-plain-6 nsd0hhue
+e2e-doc-bracket-6 x4kusy5x
+accept-probe-doc-6 wolzeh9h
+closetab-6a eqnciymr
+closetab-6b l0mtc2jq
+=== PROBE (timeline)
+probe m1789415593735_1
+   before: marked(" probe words")
+   change at 5814: marked(" probe words") -> unmarked via at sOe.dispatch (https://proof.vpsmikewolf.duckdns.org/assets/editor.j < at o.dispatch (https://proof.vpsmikewolf.duckdns.org/assets/editor.js: < at https://proof.vpsmikewolf.duckdns
+   markAccept returned true; same tick: unmarked
+   +100ms: unmarked
+   +500ms: unmarked
+   +1000ms: unmarked
+   +2000ms: unmarked
+   +4000ms: unmarked
+   +8000ms: unmarked
+=== CLOSE-TAB 300ms
+accept: {"found":true,"id":"m1789415608976_1","returned":true,"stillMarkedSameTick":false}
+tab closed 300 ms after Accept; REST accept/reject calls from the tab: 0
+server: {"readSource":"projection","projectionFresh":true,"mutationReady":true,"repairPending":false,"wordsStoredTimes":1,"markupInText":false,"pending":[]}
+fresh reader: {"wordsShownTimes":1,"pendingShown":0}
+=== CLOSE-TAB 0ms
+accept: {"found":true,"id":"m1789415622738_1","returned":true,"stillMarkedSameTick":false}
+tab closed 0 ms after Accept; REST accept/reject calls from the tab: 0
+server: {"readSource":"canonical_row","projectionFresh":false,"mutationReady":true,"repairPending":true,"wordsStoredTimes":1,"markupInText":false,"pending":[]}
+fresh reader: {"wordsShownTimes":1,"pendingShown":0}
+=== PLAIN
+PASS open a fresh document in Suggesting mode — {"suggesting":true,"pending":0}
+PASS type an insertion key by key: drawn green, attributed — {"id":"m1789415637122_1","kind":"insert","by":"human:Claude E2E","text":" E2E insert words","content":" E2E insert words","drawn":{"text":" E2E insert words","title":"Suggested by Claude E2E","cls":"mark-insert"}}
+PASS suggest a deletion: drawn red — {"id":"m1789415639976_2","kind":"delete","by":"human:Claude E2E","text":"teh","content":null,"drawn":{"text":"teh","title":"Suggested by Claude E2E","cls":"mark-delete"}}
+PASS reload: both suggestions persist and are drawn — {"insert":{"id":"m1789415637122_1","kind":"insert","by":"human:Claude E2E","text":" E2E insert words","content":" E2E insert words","drawn":{"text":" E2E insert words","title":"Suggested by Claude E2E","cls":"mark-insert"}},"delete":{"id":"m178
+PASS click the insertion: card shows author and change — {"header":"Suggestion","meta":"Suggested by Claude E2E","body":"Insert:  E2E insert words"}
+PASS accept the insertion — {"pending":1}
+PASS reject the deletion — {"pending":0}
+PASS reload: accept and reject persisted — {"pending":0}
+PASS accept a deletion: text removed exactly once — {"tail":" is ready.DIANA\nThe second act needs scene. E2E insert words"}
+PASS review pill counts two new suggestions — "2 suggestions"
+PASS reject all — {"pill":null}
+PASS accept all — {"pill":null}
+PASS final reload — {"tail":"\nI think teh play is ready.DIANA\nThe second act needs scene. E2E insert words bulk B words"}
+server /state: {"projectionFresh":true,"readSource":"projection","revision":12,"markdownTail":"# Proof E2E\n\nERIC\\\nI think teh play is ready.\n\nDIANA\\\nThe second act needs scene. E2E insert words bulk B words\n","pendingSuggestions":0}
+13/13 steps passed; crashed=false; console errors: 0
+=== BRACKETS
+PASS open a fresh document in Suggesting mode — {"suggesting":true,"pending":0}
+PASS type an insertion key by key: drawn green, attributed — {"id":"m1789415690602_1","kind":"insert","by":"human:Claude E2E","text":" [E2E insert]","content":" [E2E insert]","drawn":{"text":" [E2E insert]","title":"Suggested by Claude E2E","cls":"mark-insert"}}
+PASS suggest a deletion: drawn red — {"id":"m1789415693216_2","kind":"delete","by":"human:Claude E2E","text":"teh","content":null,"drawn":{"text":"teh","title":"Suggested by Claude E2E","cls":"mark-delete"}}
+PASS reload: both suggestions persist and are drawn — {"insert":{"id":"m1789415690602_1","kind":"insert","by":"human:Claude E2E","text":" [E2E insert]","content":" [E2E insert]","drawn":{"text":" [E2E insert]","title":"Suggested by Claude E2E","cls":"mark-insert"}},"delete":{"id":"m1789415693216_2
+PASS click the insertion: card shows author and change — {"header":"Suggestion","meta":"Suggested by Claude E2E","body":"Insert:  [E2E insert]"}
+PASS accept the insertion — {"pending":1}
+PASS reject the deletion — {"pending":0}
+PASS reload: accept and reject persisted — {"pending":0}
+PASS accept a deletion: text removed exactly once — {"tail":"play is ready.DIANA\nThe second act needs scene. [E2E insert]"}
+PASS review pill counts two new suggestions — "2 suggestions"
+PASS reject all — {"pill":null}
+PASS accept all — {"pill":null}
+PASS final reload — {"tail":" E2EERIC\nI think teh play is ready.DIANA\nThe second act needs scene. [E2E insert] [bulk B]"}
+server /state: {"projectionFresh":true,"readSource":"projection","revision":12,"markdownTail":"# Proof E2E\n\nERIC\\\nI think teh play is ready.\n\nDIANA\\\nThe second act needs scene. [E2E insert] [bulk B]\n","pendingSuggestions":0}
+13/13 steps passed; crashed=false; console errors: 0
+=== HOW-TO
+jdx1z5e0 {'readSource': 'projection', 'projectionFresh': True, 'mutationReady': True, 'revision': 1} chars 38653 markup-in-text: False pending: 0
+
+[exited with code 0]
