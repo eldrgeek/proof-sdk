@@ -51,6 +51,7 @@ import {
   type StoredMark,
 } from '../formats/marks.js';
 import {
+  createDecorations,
   resolveMarks,
   marksPluginKey,
   accept as acceptMark,
@@ -2326,6 +2327,52 @@ test('comment anchors without metadata are not surfaced or flushed as empty comm
   assertEqual((comment?.data as CommentData | undefined)?.text, 'Hi there');
   const flushedHydrated = getMarkMetadataWithQuotes(state);
   assertEqual((flushedHydrated.c1 as any)?.text, 'Hi there');
+});
+
+test('persisted suggestion anchors stay pending and show actor attribution without metadata', () => {
+  const suggestionMark = marksSchema.marks.proofSuggestion.create({
+    id: 's-persisted-insert',
+    kind: 'insert',
+    by: 'human:Claude',
+  });
+  const doc = marksSchema.node('doc', null, [
+    marksSchema.node('paragraph', null, [
+      marksSchema.text('Hello '),
+      marksSchema.text('world', [suggestionMark]),
+    ]),
+  ]);
+  const marksStatePlugin = new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: {}, activeMarkId: null, composeAnchorRange: null }),
+      apply: (_tr, value) => value,
+    },
+  });
+  const state = EditorState.create({
+    schema: marksSchema,
+    doc,
+    plugins: [marksStatePlugin],
+  });
+
+  const marks = getMarks(state);
+  const pendingInsert = marks.find(mark => mark.id === 's-persisted-insert');
+  assert(pendingInsert !== undefined, 'Persisted proofSuggestion anchor should produce a mark');
+  assertEqual(
+    (pendingInsert?.data as InsertData | undefined)?.status,
+    'pending',
+    'Suggestion anchor without metadata should default to pending',
+  );
+
+  const decorations = createDecorations(state, marks, null, null).find();
+  const insertDecoration = decorations.find(
+    decoration => (decoration.type as any).attrs?.['data-mark-id'] === 's-persisted-insert',
+  );
+  assert(insertDecoration !== undefined, 'Pending persisted insert should produce a decoration');
+  assertEqual(
+    (insertDecoration?.type as any).attrs?.title,
+    'Suggested by Claude',
+    'Pending suggestion decoration should display its actor without the prefix',
+  );
 });
 
 test('comment anchors with empty text metadata are treated as invalid (not surfaced or flushed)', () => {

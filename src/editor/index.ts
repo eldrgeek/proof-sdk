@@ -136,6 +136,7 @@ import {
   findMark,
   resolveMarks,
 } from './plugins/marks';
+import { evaluateShareEditHydrationGate } from './share-collab-hydration-equivalence';
 import {
   executeBatch as executeBatchImpl,
   type BatchOperation,
@@ -2503,14 +2504,19 @@ class ProofEditorImpl implements ProofEditor {
       && this.collabConnectionStatus === 'connected'
       && this.collabIsSynced
       && !awaitingTemplateSeed;
-    const hydrated = !baseAllowLocalEdits ? true : this.isCollabHydratedForEditing();
-    if (baseAllowLocalEdits && !hydrated) {
+    const hydrationGate = evaluateShareEditHydrationGate({
+      baseAllowLocalEdits,
+      hasCompletedInitialCollabHydration: this.hasCompletedInitialCollabHydration,
+      isCollabHydratedForEditing: !baseAllowLocalEdits
+        || this.hasCompletedInitialCollabHydration
+        || this.isCollabHydratedForEditing(),
+    });
+    if (hydrationGate.shouldKickCollabHydration) {
       // Prevent "type into blank doc" races that can overwrite remote Yjs state.
       this.kickCollabHydration();
     }
-    const allowLocalEdits = baseAllowLocalEdits && hydrated;
-    this.shareAllowLocalEdits = allowLocalEdits;
-    if (allowLocalEdits && !this.suggestDefaultApplied) {
+    this.shareAllowLocalEdits = hydrationGate.allowLocalEdits;
+    if (hydrationGate.allowLocalEdits && !this.suggestDefaultApplied) {
       this.suggestDefaultApplied = true;
       if (this.resolveInitialSuggestMode() === 'suggest') this.enableSuggestions();
     }
