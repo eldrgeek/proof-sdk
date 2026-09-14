@@ -80,14 +80,27 @@ No setting fixes it, because the projection repair never rewrites the stored mar
 document made from the How-To's original markdown was stale from the start, and an AI suggestion returned 409. After
 the fix, the same test was fresh, and the suggestion returned 200.
 
-## Known limitation, with its fix in progress
+## Rerun on build 0b3f8dd (C4 merged)
 
-If an AI agent rejects a suggestion through the REST API while a person has the document open, the server rebuilds
-its shared copy of the document. After that, the person's later edits are not stored. People's own Accept and Reject
-in the browser no longer take that path, because of B7.
+Before C4, rejecting a suggestion through the REST API made the server rebuild its shared copy of the document. After
+that rebuild, a person who had the document open lost every later edit. C4 applies the reject to the live copy
+instead, and the server now logs any live update it drops.
 
-A fix is in progress as C4. It stops the rebuild for a document someone has open, and it makes the server log any
-update it drops.
+On `0b3f8dd` both 13-step tests pass again (`run-0b3f8dd/plain` and `run-0b3f8dd/brackets`). In a separate check, an AI
+rejected a suggestion through the REST API while a person was editing. The person's text from before and after the
+reject was all stored, and the server stayed fresh. The server logged no rebuilds and no dropped live updates for any
+of the five test documents (`run-0b3f8dd/run.log`).
+
+## Known gaps, with fixes in progress
+
+- **An AI's suggested insertion loses its text when accepted.** The API anchors an AI insertion on existing text and
+  keeps the new text only inside the suggestion, so Accept removes the suggestion without inserting anything. AI
+  replacements and deletions work. Fix B8 is being built. Until then, an AI can write an insertion as a replacement
+  of an anchor by the anchor plus the new text.
+- **An AI's REST Accept or Reject does not stick while someone has the page open.** The server applies it, but the
+  open page writes the suggestion back. Nothing typed is lost. Fix C4b is being built.
+- **Deleting a phrase at the start of a line leaves a leading space.** The server stores it as `&#x20;`. This is
+  cosmetic.
 
 ## Branches in the fork
 
@@ -103,4 +116,6 @@ update it drops.
 - `cursor/legacy-create-170543` (D) and `cursor/create-auth-171017` (D2): `POST /documents` creates documents
   again, and it requires the API key.
 - `cursor/selfhost-docs-170832` (E) and `cursor/docs-fixes-171653` (E2): the self-hosting settings guide.
+- `cursor/live-reseed-193822` (C4): a REST accept or reject on a document someone has open no longer rebuilds it,
+  and the server logs any live update it drops.
 - `deploy/vps`: all of the above, merged. It is what the server runs.
