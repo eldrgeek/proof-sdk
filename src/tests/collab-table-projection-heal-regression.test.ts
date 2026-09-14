@@ -13,7 +13,8 @@
 import { unlinkSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { yXmlFragmentToProseMirrorRootNode } from 'y-prosemirror';
+import { prosemirrorToYXmlFragment, yXmlFragmentToProseMirrorRootNode } from 'y-prosemirror';
+import * as Y from 'yjs';
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -28,76 +29,238 @@ async function run(): Promise<void> {
   const db = await import('../../server/db.ts');
   const collab = await import('../../server/collab.ts');
   const { getHeadlessMilkdownParser, serializeMarkdown } = await import('../../server/milkdown-headless.ts');
+  const parser = await getHeadlessMilkdownParser();
 
-  async function fragmentDerivedMarkdown(): Promise<string> {
-    const handle = await collab.loadCanonicalYDoc(slug);
-    const parser = await getHeadlessMilkdownParser();
+  async function fragmentDerivedMarkdown(slug: string): Promise<string> {
+    const handle = await collab.loadCanonicalYDoc(slug, {
+      preferPersisted: true,
+      allowFragmentRecovery: false,
+    });
+    assert(Boolean(handle), `Expected canonical Yjs handle for ${slug}`);
     const root = yXmlFragmentToProseMirrorRootNode(
       handle!.ydoc.getXmlFragment('prosemirror') as any,
       parser.schema as any,
     );
-    return serializeMarkdown(root as any);
+    try {
+      return await serializeMarkdown(root as any);
+    } finally {
+      await handle?.cleanup?.();
+    }
   }
 
-  const slug = `table-heal-${Math.random().toString(36).slice(2, 10)}`;
-  // Raw, un-normalized table markdown — how a pre-fix doc was stored.
-  const rawMarkdown = [
-    '# Heal Doc',
-    '',
-    '| A | B |',
-    '| --- | --- |',
-    '| one | two |',
-    '| three | four |',
-    '',
-  ].join('\n');
+  function parseMarks(raw: string): Record<string, unknown> {
+    return JSON.parse(raw || '{}') as Record<string, unknown>;
+  }
+
+  function stableJson(value: unknown): string {
+    if (Array.isArray(value)) {
+      return `[${value.map((entry) => stableJson(entry)).join(',')}]`;
+    }
+    if (value && typeof value === 'object') {
+      const entries = Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`);
+      return `{${entries.join(',')}}`;
+    }
+    return JSON.stringify(value);
+  }
+
+  function buildRestPutUpdate(markdown: string, marks: Record<string, unknown>): Uint8Array {
+    const ydoc = new Y.Doc();
+    try {
+      ydoc.transact(() => {
+        ydoc.getText('markdown').insert(0, markdown);
+        const map = ydoc.getMap('marks');
+        for (const [key, value] of Object.entries(marks)) {
+          map.set(key, value);
+        }
+        const parsed = parser.parseMarkdown(markdown);
+        prosemirrorToYXmlFragment(parsed as any, ydoc.getXmlFragment('prosemirror') as any);
+      }, 'rest-put');
+      return Y.encodeStateAsUpdate(ydoc);
+    } finally {
+      ydoc.destroy();
+    }
+  }
 
   try {
-    // Simulate a pre-fix document: raw markdown stored directly (bypassing the
-    // create route's normalization).
-    db.createDocument(slug, rawMarkdown, {}, 'table projection heal');
-
-    // Pre-heal: the fragment serialization diverges from stored canonical — this
-    // is the wedge (projection can never converge; agent mutations 409).
-    const derivedBefore = await fragmentDerivedMarkdown();
-    const canonicalBefore = db.getDocumentBySlug(slug)?.markdown ?? '';
+    // Case 1: persisted REST-style update exists, but fragment already equals the
+    // normalized canonical form -> heal is safe and must preserve Yjs state.
+    const slugEquivalent = `table-heal-equivalent-${Math.random().toString(36).slice(2, 8)}`;
+    const equivalentRaw = [
+      '# Heal Equivalent',
+      '',
+      '| A | B |',
+      '| --- | --- |',
+      '| one | two |',
+      '| three | four |',
+      '',
+    ].join('\n');
+    const equivalentMarks = {
+      'c-1': { kind: 'comment', text: 'keep this mark', resolved: false },
+      's-1': { kind: 'insert', status: 'pending', actor: 'agent' },
+    };
+    db.createDocument(slugEquivalent, equivalentRaw, equivalentMarks, 'table projection heal equivalent');
+    const equivalentUpdate = buildRestPutUpdate(equivalentRaw, equivalentMarks);
+    const equivalentSeq = db.appendYUpdate(slugEquivalent, equivalentUpdate, 'rest-put');
+    db.saveYSnapshot(slugEquivalent, 1, equivalentUpdate);
     assert(
-      derivedBefore !== canonicalBefore,
-      'Precondition: raw-table doc should be wedged (fragment serialization != canonical)',
+      db.updateDocument(slugEquivalent, equivalentRaw, equivalentMarks, equivalentSeq),
+      'Precondition: expected canonical row y_state_version to advance for persisted REST-style update',
+    );
+    const equivalentUpdateMeta = db.getYUpdateMetaPage(slugEquivalent, null, 5);
+    const equivalentUpdateSeqsBefore = db.getYUpdatesAfter(slugEquivalent, 0).map((entry) => entry.seq);
+    assert(
+      equivalentUpdateMeta.length === 1 && equivalentUpdateMeta[0]?.source_actor === 'rest-put',
+      'Precondition: expected one persisted REST-style Yjs update',
     );
 
-    // Heal it.
-    const result = await collab.healCanonicalMarkdownForCollabFragment(slug);
-    assert(result.healed, `Expected heal to run, got reason=${result.reason}`);
-
-    // Post-heal: canonical now equals the fragment serialization — converged.
-    const derivedAfter = await fragmentDerivedMarkdown();
-    const canonicalAfter = db.getDocumentBySlug(slug)?.markdown ?? '';
+    const equivalentDerivedBefore = await fragmentDerivedMarkdown(slugEquivalent);
+    const equivalentCanonicalBefore = db.getDocumentBySlug(slugEquivalent)?.markdown ?? '';
     assert(
-      derivedAfter === canonicalAfter,
-      `Post-heal: fragment serialization must equal canonical.\nCanonical:\n${JSON.stringify(canonicalAfter)}\n\nDerived:\n${JSON.stringify(derivedAfter)}`,
+      equivalentDerivedBefore !== equivalentCanonicalBefore,
+      'Precondition: persisted-equivalent doc should start wedged (fragment serialization != canonical)',
     );
 
-    // Content preserved.
+    const equivalentResult = await collab.healCanonicalMarkdownForCollabFragment(slugEquivalent);
+    assert(equivalentResult.healed, `Expected persisted-equivalent heal to run, got reason=${equivalentResult.reason}`);
     assert(
-      canonicalAfter.includes('one') && canonicalAfter.includes('four'),
-      'Table content must be preserved after heal',
+      equivalentResult.reason === 'normalized_persisted_equivalent',
+      `Expected persisted-equivalent heal reason, got ${equivalentResult.reason}`,
     );
 
-    // The heal updates canonical + projection but leaves the Yjs `markdown` text
-    // mirror as-seeded. Confirm the sync read path does not re-wedge on a
-    // canonical-vs-mirror mismatch (loaded_doc_ahead).
-    const readable = collab.getCanonicalReadableDocumentSync(slug, 'snapshot');
-    assert(Boolean(readable), 'Expected a readable document post-heal');
+    const equivalentDerivedAfter = await fragmentDerivedMarkdown(slugEquivalent);
+    const equivalentRowAfter = db.getDocumentBySlug(slugEquivalent);
+    assert(Boolean(equivalentRowAfter), 'Expected persisted-equivalent row after heal');
+    const equivalentCanonicalAfter = equivalentRowAfter?.markdown ?? '';
     assert(
-      (readable as any).read_source === 'projection' && (readable as any).mutation_ready === true,
-      `Post-heal sync read must be fresh + writable, not re-wedged. read_source=${(readable as any)?.read_source} mutation_ready=${(readable as any)?.mutation_ready}`,
+      equivalentDerivedAfter === equivalentCanonicalAfter,
+      `Persisted-equivalent heal must converge canonical and fragment.\nCanonical:\n${JSON.stringify(equivalentCanonicalAfter)}\n\nDerived:\n${JSON.stringify(equivalentDerivedAfter)}`,
+    );
+    assert(
+      equivalentCanonicalAfter.includes('one') && equivalentCanonicalAfter.includes('four'),
+      'Persisted-equivalent heal must preserve table content',
+    );
+    assert(
+      stableJson(parseMarks(equivalentRowAfter?.marks ?? '{}')) === stableJson(equivalentMarks),
+      'Persisted-equivalent heal must preserve canonical marks exactly',
+    );
+    const equivalentProjection = db.getDocumentProjectionBySlug(slugEquivalent);
+    assert(Boolean(equivalentProjection), 'Expected persisted-equivalent projection row after heal');
+    assert(
+      stableJson(parseMarks(equivalentProjection?.marks_json ?? '{}')) === stableJson(equivalentMarks),
+      'Persisted-equivalent heal must preserve projection marks exactly',
+    );
+    const equivalentUpdatesAfter = db.getYUpdatesAfter(slugEquivalent, 0);
+    const equivalentSnapshotAfter = db.getLatestYSnapshot(slugEquivalent);
+    assert(
+      equivalentUpdatesAfter.length >= equivalentUpdateSeqsBefore.length
+        && equivalentUpdateSeqsBefore.every((seq) => equivalentUpdatesAfter.some((update) => update.seq === seq))
+        && equivalentUpdatesAfter.some((update) => update.seq === equivalentSeq),
+      'Persisted-equivalent heal must preserve existing persisted Yjs updates',
+    );
+    assert(
+      equivalentSnapshotAfter?.version === 1,
+      'Persisted-equivalent heal must not clear persisted Yjs snapshots',
+    );
+    const equivalentReadable = collab.getCanonicalReadableDocumentSync(slugEquivalent, 'snapshot');
+    assert(Boolean(equivalentReadable), 'Expected a readable persisted-equivalent document post-heal');
+    assert(
+      (equivalentReadable as any).read_source === 'projection' && (equivalentReadable as any).mutation_ready === true,
+      `Persisted-equivalent post-heal read must be fresh + writable. read_source=${(equivalentReadable as any)?.read_source} mutation_ready=${(equivalentReadable as any)?.mutation_ready}`,
     );
 
-    // Idempotent: a second heal is a no-op.
-    const second = await collab.healCanonicalMarkdownForCollabFragment(slug);
-    assert(!second.healed && second.reason === 'already_canonical', `Second heal should be a no-op, got ${JSON.stringify(second)}`);
+    // Case 2: persisted update contains real edits not reflected in canonical ->
+    // skip with fragment_differs and change nothing.
+    const slugDiffers = `table-heal-differs-${Math.random().toString(36).slice(2, 8)}`;
+    const differsRaw = [
+      '# Heal Differs',
+      '',
+      '| K | V |',
+      '| --- | --- |',
+      '| base | row |',
+      '',
+    ].join('\n');
+    const differsMarks = { 'c-2': { kind: 'comment', text: 'mark to preserve', resolved: false } };
+    db.createDocument(slugDiffers, differsRaw, differsMarks, 'table projection heal differs');
+    const differsCanonicalBefore = db.getDocumentBySlug(slugDiffers)?.markdown ?? '';
+    const differsProjectionBefore = db.getDocumentProjectionBySlug(slugDiffers);
+    const differsUpdate = buildRestPutUpdate(
+      `${differsRaw}\nReal live edit line.\n`,
+      differsMarks,
+    );
+    const differsSeq = db.appendYUpdate(slugDiffers, differsUpdate, 'rest-put');
+    db.saveYSnapshot(slugDiffers, 1, differsUpdate);
+    assert(
+      db.updateDocument(slugDiffers, differsRaw, differsMarks, differsSeq),
+      'Precondition: expected differing canonical row y_state_version to advance for persisted update',
+    );
 
-    console.log('✓ heal un-wedges an existing raw-table doc and is idempotent');
+    const differsResult = await collab.healCanonicalMarkdownForCollabFragment(slugDiffers);
+    assert(!differsResult.healed, 'Expected differing-fragment doc to be skipped');
+    assert(
+      differsResult.reason === 'fragment_differs',
+      `Expected differing-fragment skip reason=fragment_differs, got ${differsResult.reason}`,
+    );
+    const differsRowAfter = db.getDocumentBySlug(slugDiffers);
+    const differsProjectionAfter = db.getDocumentProjectionBySlug(slugDiffers);
+    assert(
+      (differsRowAfter?.markdown ?? '') === differsCanonicalBefore,
+      'Differing-fragment skip must not rewrite canonical markdown',
+    );
+    assert(
+      (differsProjectionAfter?.markdown ?? '') === (differsProjectionBefore?.markdown ?? ''),
+      'Differing-fragment skip must not rewrite projection markdown',
+    );
+    assert(
+      stableJson(parseMarks(differsRowAfter?.marks ?? '{}')) === stableJson(differsMarks),
+      'Differing-fragment skip must preserve canonical marks',
+    );
+
+    // Case 3: seed-only wedged doc still heals (legacy path unchanged).
+    const slugSeedOnly = `table-heal-seed-only-${Math.random().toString(36).slice(2, 8)}`;
+    const seedOnlyRaw = [
+      '# Heal Seed Only',
+      '',
+      '| A | B |',
+      '| --- | --- |',
+      '| left | right |',
+      '',
+    ].join('\n');
+    db.createDocument(slugSeedOnly, seedOnlyRaw, {}, 'table projection heal seed only');
+    const seedOnlyDerivedBefore = await fragmentDerivedMarkdown(slugSeedOnly);
+    const seedOnlyCanonicalBefore = db.getDocumentBySlug(slugSeedOnly)?.markdown ?? '';
+    assert(
+      seedOnlyDerivedBefore !== seedOnlyCanonicalBefore,
+      'Precondition: seed-only raw-table doc should start wedged',
+    );
+    assert(
+      db.getYUpdatesAfter(slugSeedOnly, 0).length === 0,
+      'Precondition: seed-only case should have no persisted incremental updates',
+    );
+
+    const seedOnlyResult = await collab.healCanonicalMarkdownForCollabFragment(slugSeedOnly);
+    assert(seedOnlyResult.healed, `Expected seed-only heal to run, got reason=${seedOnlyResult.reason}`);
+    assert(
+      seedOnlyResult.reason === 'normalized_seed_only',
+      `Expected seed-only heal reason, got ${seedOnlyResult.reason}`,
+    );
+    const seedOnlyDerivedAfter = await fragmentDerivedMarkdown(slugSeedOnly);
+    const seedOnlyCanonicalAfter = db.getDocumentBySlug(slugSeedOnly)?.markdown ?? '';
+    assert(
+      seedOnlyDerivedAfter === seedOnlyCanonicalAfter,
+      'Seed-only heal must converge canonical and fragment serialization',
+    );
+    const seedOnlyReadable = collab.getCanonicalReadableDocumentSync(slugSeedOnly, 'snapshot');
+    assert(Boolean(seedOnlyReadable), 'Expected readable seed-only document post-heal');
+    assert(
+      (seedOnlyReadable as any).read_source === 'projection' && (seedOnlyReadable as any).mutation_ready === true,
+      `Seed-only post-heal read must be fresh + writable. read_source=${(seedOnlyReadable as any)?.read_source} mutation_ready=${(seedOnlyReadable as any)?.mutation_ready}`,
+    );
+    const seedOnlySecond = await collab.healCanonicalMarkdownForCollabFragment(slugSeedOnly);
+    assert(!seedOnlySecond.healed && seedOnlySecond.reason === 'already_canonical', 'Seed-only second heal should be a no-op');
+
+    console.log('✓ heal handles persisted-equivalent, persisted-different, and seed-only wedge cases');
   } finally {
     if (previousDbPath === undefined) {
       delete process.env.DATABASE_PATH;

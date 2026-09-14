@@ -15,53 +15,85 @@
 //   DATABASE_PATH=$HOME/.proof/proof-share.db npx tsx scripts/heal-table-projection-wedge.ts
 //   DATABASE_PATH=... npx tsx scripts/heal-table-projection-wedge.ts --dry-run
 
-const dryRun = process.argv.includes('--dry-run');
+type CliOptions = {
+  dryRun: boolean;
+  slugs: string[];
+};
+
+function parseCliOptions(argv: string[]): CliOptions {
+  let dryRun = false;
+  const slugs: string[] = [];
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i] ?? '';
+    if (arg === '--dry-run') {
+      dryRun = true;
+      continue;
+    }
+    if (arg === '--slug') {
+      const next = (argv[i + 1] ?? '').trim();
+      if (!next || next.startsWith('--')) {
+        throw new Error('Missing value for --slug');
+      }
+      slugs.push(next);
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith('--slug=')) {
+      const value = arg.slice('--slug='.length).trim();
+      if (!value) throw new Error('Missing value for --slug');
+      slugs.push(value);
+      continue;
+    }
+    throw new Error(`Unknown argument: ${arg}`);
+  }
+  return { dryRun, slugs };
+}
+
+const cli = parseCliOptions(process.argv.slice(2));
+const dryRun = cli.dryRun;
 
 async function main(): Promise<void> {
   const db = await import('../server/db.ts');
   const collab = await import('../server/collab.ts');
 
-  const docs = db.listActiveDocuments();
-  console.log(`[heal] scanning ${docs.length} active document(s)${dryRun ? ' (dry run)' : ''}`);
+  const targetSlugs = cli.slugs.length > 0
+    ? Array.from(new Set(cli.slugs))
+    : db.listActiveDocuments().map((doc) => doc.slug);
+  console.log(`[heal] scanning ${targetSlugs.length} document(s)${dryRun ? ' (dry run)' : ''}`);
 
   let healed = 0;
   let skipped = 0;
   let failed = 0;
 
-  for (const doc of docs) {
+  for (const slug of targetSlugs) {
     try {
       if (dryRun) {
-        // In dry-run, compute the normalized form without writing. Mirror the
-        // real heal's gate exactly, including stripEphemeralCollabSpans, so the
-        // count doesn't mislead the operator.
-        const current = collab.stripEphemeralCollabSpans(doc.markdown ?? '');
-        if (current.trim().length === 0) { skipped += 1; continue; }
-        const normalized = await collab.deriveCanonicalMarkdownForStorage(current);
-        // Match healCanonicalMarkdownForCollabFragment's gate: only structural
-        // divergence wedges; trailing-whitespace-only diffs are skipped.
-        if (normalized.trimEnd() !== current.trimEnd()) {
+        const preview = await collab.previewCanonicalMarkdownHealForCollabFragment(slug);
+        if (preview.wouldHeal) {
           healed += 1;
-          console.log(`[heal] WOULD heal ${doc.slug} (${current.length} -> ${normalized.length} chars)`);
+          console.log(`[heal] WOULD heal ${slug} reason=${preview.reason} (${preview.before} -> ${preview.after} chars)`);
         } else {
           skipped += 1;
+          console.log(`[heal] skip ${slug} reason=${preview.reason}`);
         }
         continue;
       }
 
-      const result = await collab.healCanonicalMarkdownForCollabFragment(doc.slug);
+      const result = await collab.healCanonicalMarkdownForCollabFragment(slug);
       if (result.healed) {
         healed += 1;
-        console.log(`[heal] healed ${doc.slug} (${result.before} -> ${result.after} chars)`);
+        console.log(`[heal] healed ${slug} reason=${result.reason} (${result.before} -> ${result.after} chars)`);
       } else {
         skipped += 1;
+        console.log(`[heal] skip ${slug} reason=${result.reason}`);
       }
     } catch (error) {
       failed += 1;
-      console.error(`[heal] FAILED ${doc.slug}:`, error instanceof Error ? error.message : String(error));
+      console.error(`[heal] FAILED ${slug}:`, error instanceof Error ? error.message : String(error));
     }
   }
 
-  console.log(`[heal] done — ${healed} ${dryRun ? 'would be ' : ''}healed, ${skipped} already canonical, ${failed} failed`);
+  console.log(`[heal] done — ${healed} ${dryRun ? 'would be ' : ''}healed, ${skipped} skipped, ${failed} failed`);
   await collab.stopCollabRuntime();
 }
 
