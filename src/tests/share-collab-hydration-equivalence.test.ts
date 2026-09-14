@@ -1,4 +1,7 @@
-import { isShareCollabHydrationEquivalent } from '../editor/share-collab-hydration-equivalence.js';
+import {
+  evaluateShareEditHydrationGate,
+  isShareCollabHydrationEquivalent,
+} from '../editor/share-collab-hydration-equivalence.js';
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -52,11 +55,44 @@ function run(): void {
     }) === false,
     'Expected unreadable live fragment hydration to fail closed and force a reset before collab bind',
   );
+
+  const initialMismatch = evaluateShareEditHydrationGate({
+    baseAllowLocalEdits: true,
+    hasCompletedInitialCollabHydration: false,
+    isCollabHydratedForEditing: false,
+  });
+  assert(
+    initialMismatch.allowLocalEdits === false
+      && initialMismatch.shouldKickCollabHydration === true,
+    'Expected an initial hydration mismatch to keep edits gated and force hydration',
+  );
+
+  const localEditInFlight = evaluateShareEditHydrationGate({
+    baseAllowLocalEdits: true,
+    hasCompletedInitialCollabHydration: true,
+    isCollabHydratedForEditing: false,
+  });
+  assert(
+    localEditInFlight.allowLocalEdits === true
+      && localEditInFlight.shouldKickCollabHydration === false,
+    'Expected a post-hydration mismatch to preserve a local edit in flight',
+  );
+
+  const rebindMismatch = evaluateShareEditHydrationGate({
+    baseAllowLocalEdits: true,
+    hasCompletedInitialCollabHydration: false,
+    isCollabHydratedForEditing: false,
+  });
+  assert(
+    rebindMismatch.allowLocalEdits === false
+      && rebindMismatch.shouldKickCollabHydration === true,
+    'Expected a reconnect or rebind reset to require hydration again',
+  );
 }
 
 try {
   run();
-  console.log('✓ share collab hydration equivalence requires markdown structure parity');
+  console.log('✓ share collab hydration gate protects initial sync without discarding local edits');
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
