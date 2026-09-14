@@ -2354,6 +2354,7 @@ async function updateSuggestionStatusAsync(
         baseRevision: doc.revision,
         strictLiveDoc: true,
         guardPathologicalGrowth: true,
+        resolvedSuggestionId: markId,
       });
       if (!mutation.ok) {
         return {
@@ -2414,6 +2415,7 @@ async function updateSuggestionStatusAsync(
     ...buildCanonicalMutationBaseArgs(doc, context),
     strictLiveDoc: true,
     guardPathologicalGrowth: true,
+    resolvedSuggestionId: markId,
   });
   if (!mutation.ok) {
     return {

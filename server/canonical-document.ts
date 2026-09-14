@@ -26,7 +26,6 @@ import {
 import {
   maybeFastQuarantineProjectionPathology,
   cloneAuthoritativeDocState,
-  deriveCanonicalMarkdownFromProseMirrorDoc,
   detectPathologicalProjectionRepeat,
   evaluateProjectionSafety,
   getCanonicalReadableDocument,
@@ -91,6 +90,7 @@ type CanonicalMutationArgs = {
   baseUpdatedAt?: string | null;
   strictLiveDoc?: boolean;
   guardPathologicalGrowth?: boolean;
+  resolvedSuggestionId?: string;
 };
 
 type CanonicalMutationFailure = {
@@ -349,8 +349,7 @@ function normalizeStoredMarkdownSnapshot(markdown: string): string {
 }
 
 function shouldPreserveRichMarkdownSnapshot(markdown: string): boolean {
-  return /<br\s*\/?>/i.test(markdown)
-    || /data-proof\s*=/.test(markdown);
+  return /<br\s*\/?>/i.test(markdown);
 }
 
 function normalizeFragmentPlainText(input: string): string {
@@ -670,6 +669,22 @@ function getFragmentTextHashFromDoc(ydoc: Y.Doc, schema: Schema): string | null 
   }
 }
 
+function fragmentContainsSuggestion(
+  root: ProseMirrorNode,
+  suggestionId: string,
+): boolean {
+  let found = false;
+  root.descendants((node) => {
+    if (found || !node.isText) return !found;
+    found = node.marks.some((mark) => (
+      mark.type.name === 'proofSuggestion'
+      && mark.attrs.id === suggestionId
+    ));
+    return !found;
+  });
+  return found;
+}
+
 function canonicalTransactionOrigin(source: string): string {
   const normalized = typeof source === 'string' && source.trim() ? source.trim() : 'unknown';
   return `canonical-${normalized}`;
@@ -747,6 +762,21 @@ export async function deriveProjectionFromCanonicalDoc(
     markdown: preferEquivalentRichMarkdown(derivedMarkdown, authoritativeMarkdown),
     marks: encodeMarksMap(ydoc.getMap('marks')),
   };
+}
+
+async function deriveMarkdownFromCanonicalFragment(
+  ydoc: Y.Doc,
+  schema: Schema,
+): Promise<string | null> {
+  try {
+    const root = yXmlFragmentToProseMirrorRootNode(
+      ydoc.getXmlFragment('prosemirror') as any,
+      schema as any,
+    ) as ProseMirrorNode;
+    return stripEphemeralCollabSpans(await serializeMarkdown(root));
+  } catch {
+    return null;
+  }
 }
 
 export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Promise<CanonicalMutationResult> {
@@ -981,20 +1011,10 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
   const nextMarksBase = hasExplicitNextMarks ? nextMarks : authoritativeMarks;
   const authoredMarks = extractAuthoredMarksFromDoc(parsedNext.doc as ProseMirrorNode, parser.schema as Schema);
   const effectiveNextMarks = synchronizeAuthoredMarks(nextMarksBase, authoredMarks);
-  // Store canonical markdown in the collab fragment's serialization (the same
-  // fixed point POST /documents uses) so the projection stays fresh after an
-  // edit. A plain parse->serialize (serializedNextMarkdown) is NOT that fixed
-  // point — it reformats GFM tables differently from the fragment round trip, so
-  // storing it re-wedges the doc (readSource=yjs_fallback) on the next read.
-  // The rich-snapshot branch keeps its raw HTML-preserving form (it intentionally
-  // holds content the fragment cannot represent). Fall back to the parse->serialize
-  // form if the fragment derivation fails.
-  const fragmentCanonicalMarkdown = shouldPreserveRichMarkdownSnapshot(sanitizedMarkdown)
-    ? null
-    : await deriveCanonicalMarkdownFromProseMirrorDoc(parsedNext.doc as ProseMirrorNode);
-  const authoritativeNextMarkdown = shouldPreserveRichMarkdownSnapshot(sanitizedMarkdown)
+  const preserveRichMarkdownSnapshot = shouldPreserveRichMarkdownSnapshot(sanitizedMarkdown);
+  let authoritativeNextMarkdown = preserveRichMarkdownSnapshot
     ? normalizeStoredMarkdownSnapshot(sanitizedMarkdown)
-    : (fragmentCanonicalMarkdown ?? serializedNextMarkdown);
+    : serializedNextMarkdown;
 
   try {
     if (liveRequired && currentMutationBase.source !== 'live_yjs') {
@@ -1032,6 +1052,49 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
         structuralBaselineMarkdown = authoritativeMarkdown;
       }
     }
+
+    let preserveLocallyFinalizedFragment = false;
+    const resolvedSuggestionId = typeof args.resolvedSuggestionId === 'string'
+      ? args.resolvedSuggestionId.trim()
+      : '';
+    if (resolvedSuggestionId) {
+      try {
+        const currentRoot = yXmlFragmentToProseMirrorRootNode(
+          ydoc.getXmlFragment('prosemirror') as any,
+          parser.schema as any,
+        ) as ProseMirrorNode;
+        preserveLocallyFinalizedFragment = (
+          !fragmentContainsSuggestion(currentRoot, resolvedSuggestionId)
+          && normalizeFragmentPlainText(currentRoot.textContent)
+            === normalizeFragmentPlainText(parsedNext.doc.textContent)
+        );
+      } catch {
+        preserveLocallyFinalizedFragment = false;
+      }
+    }
+
+    // Build the durable candidate from the loaded document, not from an isolated
+    // parse round trip. A live fragment can already contain local-first edits,
+    // and applying the server mutation onto that Yjs history can serialize
+    // differently (notably markdown escapes around accepted authored text).
+    // The row, markdown mirror, and persisted update must all use this candidate
+    // fragment's own serialization.
+    const persistedCandidateDoc = cloneYDocWithHistory(ydoc);
+    persistedCandidateDoc.transact(() => {
+      if (!preserveLocallyFinalizedFragment) {
+        replaceYXmlFragment(persistedCandidateDoc.getXmlFragment('prosemirror'), parsedNext.doc);
+      }
+      applyMarksMapDiff(persistedCandidateDoc.getMap('marks'), effectiveNextMarks);
+    }, canonicalTransactionOrigin(args.source));
+    if (!preserveRichMarkdownSnapshot) {
+      authoritativeNextMarkdown = (
+        await deriveMarkdownFromCanonicalFragment(persistedCandidateDoc, parser.schema)
+      ) ?? serializedNextMarkdown;
+    }
+    persistedCandidateDoc.transact(() => {
+      applyYTextDiff(persistedCandidateDoc.getText('markdown'), authoritativeNextMarkdown);
+      applyMarksMapDiff(persistedCandidateDoc.getMap('marks'), effectiveNextMarks);
+    }, canonicalTransactionOrigin(args.source));
 
     if (args.guardPathologicalGrowth !== false) {
       const guardBaselineMarkdown = stripAllProofSpanTagsWithReplacements(
@@ -1114,13 +1177,6 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
       }
     }
 
-    const persistedCandidateDoc = cloneYDocWithHistory(persistedState.ydoc);
-    persistedCandidateDoc.transact(() => {
-      replaceYXmlFragment(persistedCandidateDoc.getXmlFragment('prosemirror'), parsedNext.doc);
-      applyYTextDiff(persistedCandidateDoc.getText('markdown'), authoritativeNextMarkdown);
-      applyMarksMapDiff(persistedCandidateDoc.getMap('marks'), effectiveNextMarks);
-    }, canonicalTransactionOrigin(args.source));
-
     const deltaUpdate = Y.encodeStateAsUpdate(
       persistedCandidateDoc,
       Y.encodeStateVector(persistedState.ydoc),
@@ -1184,7 +1240,9 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
     let nextYStateVersion = Math.max(doc.y_state_version, persistedState.yStateVersion);
 
     ydoc.transact(() => {
-      replaceYXmlFragment(ydoc.getXmlFragment('prosemirror'), parsedNext.doc);
+      if (!preserveLocallyFinalizedFragment) {
+        replaceYXmlFragment(ydoc.getXmlFragment('prosemirror'), parsedNext.doc);
+      }
       applyYTextDiff(ydoc.getText('markdown'), authoritativeNextMarkdown);
       applyMarksMapDiff(ydoc.getMap('marks'), effectiveNextMarks);
     }, canonicalTransactionOrigin(args.source));
