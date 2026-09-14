@@ -2257,6 +2257,9 @@ async function updateSuggestionStatusAsync(
   }
 
   const actor = typeof body.by === 'string' && body.by.trim() ? body.by.trim() : 'owner';
+  // This async path is used by REST. Its persistence helpers update the same
+  // authoritative Y.Doc for accepts and rejects, so a successful reject must not
+  // bump the epoch or clear the Yjs history after that live apply.
   if (existing.status === status) {
     return {
       status: 200,
@@ -2287,12 +2290,6 @@ async function updateSuggestionStatusAsync(
       const updated = getDocumentBySlug(slug);
       const resolvedRevision = typeof updated?.revision === 'number' ? updated.revision : (doc.revision + 1);
       upsertMarkTombstone(slug, markId, status, resolvedRevision);
-      if (status === 'rejected') {
-        if ((updated?.access_epoch ?? doc.access_epoch) === doc.access_epoch) {
-          bumpDocumentAccessEpoch(slug);
-        }
-        invalidateCollabDocument(slug);
-      }
     }
     return result;
   }
@@ -2386,11 +2383,6 @@ async function updateSuggestionStatusAsync(
           status,
         },
       };
-      if ((mutation.document.access_epoch ?? doc.access_epoch) === doc.access_epoch) {
-        bumpDocumentAccessEpoch(slug);
-      }
-      invalidateCollabDocument(slug);
-
       return {
         status: 200,
         body: {
@@ -2447,13 +2439,6 @@ async function updateSuggestionStatusAsync(
       status,
     },
   };
-  if (status === 'rejected') {
-    if ((mutation.document.access_epoch ?? doc.access_epoch) === doc.access_epoch) {
-      bumpDocumentAccessEpoch(slug);
-    }
-    invalidateCollabDocument(slug);
-  }
-
   return {
     status: 200,
     body: {
