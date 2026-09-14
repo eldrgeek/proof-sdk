@@ -38,6 +38,7 @@ import {
   getPendingSuggestions,
   calculateAuthorshipStats,
   canonicalizeStoredMarks,
+  getActorName,
 } from '../../formats/marks.js';
 
 // ============================================================================
@@ -3054,7 +3055,7 @@ function normalizeComposeAnchorRange(range: MarkRange | null, doc: ProseMirrorNo
   return { from, to };
 }
 
-function createDecorations(
+export function createDecorations(
   state: EditorState,
   marks: Mark[],
   activeMarkId: string | null,
@@ -3158,6 +3159,13 @@ function createDecorations(
       const GLOW_DURATION_MS = 2000;
       const markAge = Date.now() - new Date(mark.at).getTime();
       const glowClass = markAge < GLOW_DURATION_MS ? 'proof-mark-new' : '';
+      const suggestionTitle = (
+        mark.kind === 'insert'
+        || mark.kind === 'delete'
+        || mark.kind === 'replace'
+      )
+        ? `Suggested by ${getActorName(mark.by)}`
+        : undefined;
 
       for (const { from, to } of ranges) {
         decorations.push(
@@ -3166,6 +3174,7 @@ function createDecorations(
             style,
             'data-mark-id': mark.id,
             'data-mark-kind': mark.kind,
+            ...(suggestionTitle ? { title: suggestionTitle } : {}),
           })
         );
       }
@@ -3181,6 +3190,7 @@ function createDecorations(
               span.style.cssText = STYLES.insert;
               span.setAttribute('data-mark-id', mark.id);
               span.setAttribute('data-mark-kind', 'replace');
+              if (suggestionTitle) span.title = suggestionTitle;
               span.textContent = replacementContent ?? '';
               return span;
             },
