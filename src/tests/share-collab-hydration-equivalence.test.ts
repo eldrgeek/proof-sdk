@@ -1,6 +1,7 @@
 import {
   evaluateShareEditHydrationGate,
   isShareCollabHydrationEquivalent,
+  shouldForceCollabHydrationRerender,
 } from '../editor/share-collab-hydration-equivalence.js';
 
 function assert(condition: boolean, message: string): void {
@@ -87,6 +88,22 @@ function run(): void {
     rebindMismatch.allowLocalEdits === false
       && rebindMismatch.shouldKickCollabHydration === true,
     'Expected a reconnect or rebind reset to require hydration again',
+  );
+
+  assert(
+    shouldForceCollabHydrationRerender({
+      hasCompletedInitialCollabHydration: false,
+      isCollabHydratedForEditing: false,
+    }) === true,
+    'Expected a mismatch before initial hydration to force a re-render',
+  );
+
+  assert(
+    shouldForceCollabHydrationRerender({
+      hasCompletedInitialCollabHydration: true,
+      isCollabHydratedForEditing: false,
+    }) === false,
+    'Expected a mismatch after initial hydration not to force a re-render',
   );
 }
 

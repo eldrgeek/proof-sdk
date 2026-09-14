@@ -136,7 +136,10 @@ import {
   findMark,
   resolveMarks,
 } from './plugins/marks';
-import { evaluateShareEditHydrationGate } from './share-collab-hydration-equivalence';
+import {
+  evaluateShareEditHydrationGate,
+  shouldForceCollabHydrationRerender,
+} from './share-collab-hydration-equivalence';
 import {
   executeBatch as executeBatchImpl,
   type BatchOperation,
@@ -1947,11 +1950,18 @@ class ProofEditorImpl implements ProofEditor {
         return;
       }
 
-      if (this.isCollabHydratedForEditing()) {
+      const isCollabHydratedForEditing = this.isCollabHydratedForEditing();
+      const shouldForceRerender = shouldForceCollabHydrationRerender({
+        hasCompletedInitialCollabHydration: this.hasCompletedInitialCollabHydration,
+        isCollabHydratedForEditing,
+      });
+      if (!shouldForceRerender) {
         finish();
-        this.markInitialCollabHydrationComplete();
-        this.updateShareEditGate();
-        this.scheduleContentSync();
+        if (!this.hasCompletedInitialCollabHydration && isCollabHydratedForEditing) {
+          this.markInitialCollabHydrationComplete();
+          this.updateShareEditGate();
+          this.scheduleContentSync();
+        }
         return;
       }
 
