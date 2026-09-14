@@ -28,6 +28,9 @@ function run(): void {
       && markRejectShareBlock.includes('const metadata = getMarkMetadataWithQuotes(view.state);')
       && markRejectShareBlock.includes('this.lastReceivedServerMarks = { ...metadata };')
       && markRejectShareBlock.includes("console.warn('[markReject] Suggestion not pending in share mode:'")
+      && markRejectShareBlock.includes('const transport = this.getShareSuggestionResolutionTransport();')
+      && markRejectShareBlock.includes('this.applyShareSuggestionLocally(transport, () => {')
+      && markRejectShareBlock.includes('runShareSuggestionRestFallback(transport, () => {')
       && markRejectShareBlock.includes('const actor = getCurrentActor();')
       && markRejectShareBlock.includes('void shareClient.rejectSuggestion(markId, actor).then(async (result) => {')
       && markRejectShareBlock.includes('this.applyAuthoritativeShareMarks(serverMarks);')
@@ -80,6 +83,9 @@ function run(): void {
       && markRejectAllShareBlock.includes('if (rejectMark(view, id)) rejectedIdSet.add(id);')
       && markRejectAllShareBlock.includes('const metadata = getMarkMetadataWithQuotes(view.state);')
       && markRejectAllShareBlock.includes('this.lastReceivedServerMarks = { ...metadata };')
+      && markRejectAllShareBlock.includes('const transport = this.getShareSuggestionResolutionTransport();')
+      && markRejectAllShareBlock.includes('this.applyShareSuggestionLocally(transport, () => {')
+      && markRejectAllShareBlock.includes('runShareSuggestionRestFallback(transport, () => {')
       && markRejectAllShareBlock.includes('const actor = getCurrentActor();')
       && markRejectAllShareBlock.includes("this.reconcileShareSuggestionBatch(rejectedIds, 'rejected', actor)"),
     'Expected markRejectAll share mode to reject mutually pending suggestions and reconcile every id with the server',

@@ -40,7 +40,12 @@ async function run(): Promise<void> {
         < markAcceptShareBlock.indexOf('accepted = acceptMark(view, markId, parser);'),
     'Share accept must drop stale cached server metadata before the local dispatch',
   );
-  assert.match(markAcceptShareBlock, /this\.suppressMarksSync = true;[\s\S]*accepted = acceptMark\(view, markId, parser\);[\s\S]*this\.suppressMarksSync = false;/);
+  assert(
+    markAcceptShareBlock.includes('const transport = this.getShareSuggestionResolutionTransport();')
+      && markAcceptShareBlock.includes('this.applyShareSuggestionLocally(transport, () => {')
+      && markAcceptShareBlock.includes('runShareSuggestionRestFallback(transport, () => {'),
+    'Share accept must sync through Yjs when live and enter the REST recovery path only when disconnected',
+  );
   assert(markAcceptShareBlock.includes('this.applyAuthoritativeShareMarks(serverMarks);'));
   assert(markAcceptShareBlock.includes('this.recoverAuthoritativeShareMarks('));
   assert(
@@ -73,6 +78,7 @@ async function run(): Promise<void> {
   );
   assert(markAcceptAllShareBlock.includes("this.reconcileShareSuggestionBatch(acceptedIds, 'accepted', actor)"));
   assert(markAcceptAllShareBlock.includes('this.recoverAuthoritativeShareMarks('));
+  assert(markAcceptAllShareBlock.includes('runShareSuggestionRestFallback(transport, () => {'));
 
   const originalFetch = globalThis.fetch;
   const originalWindow = (globalThis as { window?: unknown }).window;

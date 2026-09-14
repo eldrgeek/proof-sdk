@@ -39,11 +39,12 @@ async function run(): Promise<void> {
   process.env.DATABASE_PATH = dbPath;
   process.env.COLLAB_EMBEDDED_WS = '1';
 
-  const [{ apiRoutes }, { agentRoutes }, { setupWebSocket }, collab] = await Promise.all([
+  const [{ apiRoutes }, { agentRoutes }, { setupWebSocket }, collab, db] = await Promise.all([
     import('../../server/routes.js'),
     import('../../server/agent-routes.js'),
     import('../../server/ws.js'),
     import('../../server/collab.js'),
+    import('../../server/db.js'),
   ]);
 
   const app = express();
@@ -145,6 +146,11 @@ async function run(): Promise<void> {
     await waitFor(() => marksMap.size > 0, DEFAULT_TIMEOUT_MS, 'suggestion mark synced to collab client');
     const suggestionId = Array.from(marksMap.keys())[0] as string;
     assert(typeof suggestionId === 'string' && suggestionId.length > 0, 'Expected suggestion id from marks map');
+    const projectionMarksWithoutSuggestion = collab.mergePreservedActionMarks(created.slug, {});
+    assert(
+      !Object.prototype.hasOwnProperty.call(projectionMarksWithoutSuggestion, suggestionId),
+      'Projection materialization must not restore a suggestion omitted from incoming Yjs marks',
+    );
 
     // Simulate accept/reject in UI: remove the suggestion mark from collaborative metadata.
     ydoc.transact(() => {
@@ -164,7 +170,59 @@ async function run(): Promise<void> {
       return !Object.prototype.hasOwnProperty.call(marks, suggestionId);
     }, DEFAULT_TIMEOUT_MS, 'deleted suggestion removed from persisted server marks');
 
-    console.log('✓ collab projection does not resurrect deleted suggestion marks');
+    const readState = async (): Promise<{
+      marks?: Record<string, unknown>;
+      readSource?: string;
+      projectionFresh?: boolean;
+      repairPending?: boolean;
+    }> => {
+      const stateRes = await fetch(`${httpBase}/api/agent/${created.slug}/state`, {
+        headers: {
+          ...CLIENT_HEADERS,
+          'x-share-token': created.ownerSecret,
+        },
+      });
+      assert(stateRes.ok, `Expected state read ok, got HTTP ${stateRes.status}`);
+      return stateRes.json();
+    };
+
+    const resolvedState = await readState();
+    assert(!Object.prototype.hasOwnProperty.call(resolvedState.marks ?? {}, suggestionId), 'Expected no pending resolved suggestion');
+    assert(resolvedState.readSource === 'projection', `Expected projection read source, got ${resolvedState.readSource}`);
+    assert(resolvedState.projectionFresh === true, 'Expected collab-driven resolution to leave a fresh projection');
+    assert(resolvedState.repairPending === false, 'Expected no projection repair after collab-driven resolution');
+
+    const canonicalSync = await collab.syncCanonicalDocumentStateToCollab(created.slug, {
+      marks: resolvedState.marks ?? {},
+      source: 'test-canonical-sync-after-collab-resolution',
+    });
+    assert(canonicalSync.applied === true, `Expected canonical sync to apply, got ${JSON.stringify(canonicalSync)}`);
+    await waitFor(
+      () => !marksMap.has(suggestionId),
+      DEFAULT_TIMEOUT_MS,
+      'canonical sync keeps resolved suggestion absent from live marks',
+    );
+    const stateAfterCanonicalSync = await readState();
+    assert(
+      !Object.prototype.hasOwnProperty.call(stateAfterCanonicalSync.marks ?? {}, suggestionId),
+      'Canonical sync must not resurrect a collab-resolved suggestion',
+    );
+    assert(stateAfterCanonicalSync.projectionFresh === true, 'Expected projection to remain fresh after canonical sync');
+
+    const tombstoneCount = db.getDb().prepare(`
+      SELECT COUNT(*) AS count
+      FROM mark_tombstones
+      WHERE document_slug = ? AND mark_id = ?
+    `).get(created.slug, suggestionId) as { count: number };
+    assert(tombstoneCount.count === 0, 'Pure collab resolution should not require a server REST tombstone');
+    const resolutionEventCount = db.getDb().prepare(`
+      SELECT COUNT(*) AS count
+      FROM document_events
+      WHERE document_slug = ? AND event_type IN ('suggestion.accepted', 'suggestion.rejected')
+    `).get(created.slug) as { count: number };
+    assert(resolutionEventCount.count === 0, 'Pure collab resolution should not require a REST resolution event');
+
+    console.log('✓ collab projection keeps deleted suggestions final and fresh across canonical sync');
   } finally {
     try {
       provider?.disconnect();
