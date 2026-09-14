@@ -567,6 +567,86 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assert(typeof payload.agent?.bridgeApi?.comments === 'string' && payload.agent.bridgeApi.comments.includes('/documents/'), 'Expected bridge comments route');
     });
 
+    await test('D2: POST /documents in api_key mode matches /share/markdown auth behavior', async () => {
+      const previousKey = process.env.PROOF_SHARE_MARKDOWN_API_KEY;
+      const previousMode = process.env.PROOF_SHARE_MARKDOWN_AUTH_MODE;
+      process.env.PROOF_SHARE_MARKDOWN_API_KEY = 'test-direct-share-key';
+      process.env.PROOF_SHARE_MARKDOWN_AUTH_MODE = 'api_key';
+      try {
+        const shareUnauthorized = await postNoClientHeaders(baseUrl, '/share/markdown', {
+          markdown: '# Auth required for share markdown',
+        });
+        const shareUnauthorizedPayload = await shareUnauthorized.json();
+
+        const unauthorized = await postNoClientHeaders(baseUrl, '/documents', {
+          markdown: '# Auth required for canonical create',
+          marks: {},
+        });
+        assert(
+          unauthorized.status === shareUnauthorized.status,
+          `Expected canonical unauthorized status ${shareUnauthorized.status}, got ${unauthorized.status}`,
+        );
+        const unauthorizedPayload = await unauthorized.json();
+        assertEqual(
+          unauthorizedPayload.code,
+          shareUnauthorizedPayload.code,
+          `Expected canonical unauthorized code ${String(shareUnauthorizedPayload.code)}, got ${String(unauthorizedPayload.code)}`,
+        );
+
+        const bearerAuthorized = await postNoClientHeaders(baseUrl, '/documents', {
+          markdown: '# Canonical create with bearer auth',
+          marks: {},
+        }, {
+          Authorization: 'Bearer test-direct-share-key',
+        });
+        assert(
+          bearerAuthorized.status >= 200 && bearerAuthorized.status < 300,
+          `Expected 2xx with Authorization bearer key, got ${bearerAuthorized.status}`,
+        );
+        const bearerPayload = await bearerAuthorized.json();
+        assert(typeof bearerPayload.slug === 'string' && bearerPayload.slug.length > 0, 'Expected created slug with bearer auth');
+
+        const apiKeyAuthorized = await postNoClientHeaders(baseUrl, '/documents', {
+          markdown: '# Canonical create with x-api-key',
+          marks: {},
+        }, {
+          'x-api-key': 'test-direct-share-key',
+        });
+        assert(
+          apiKeyAuthorized.status >= 200 && apiKeyAuthorized.status < 300,
+          `Expected 2xx with x-api-key header, got ${apiKeyAuthorized.status}`,
+        );
+        const apiKeyPayload = await apiKeyAuthorized.json();
+        assert(typeof apiKeyPayload.slug === 'string' && apiKeyPayload.slug.length > 0, 'Expected created slug with x-api-key auth');
+      } finally {
+        if (previousKey === undefined) delete process.env.PROOF_SHARE_MARKDOWN_API_KEY;
+        else process.env.PROOF_SHARE_MARKDOWN_API_KEY = previousKey;
+        if (previousMode === undefined) delete process.env.PROOF_SHARE_MARKDOWN_AUTH_MODE;
+        else process.env.PROOF_SHARE_MARKDOWN_AUTH_MODE = previousMode;
+      }
+    });
+
+    await test('D2: POST /documents stays open when auth mode is none', async () => {
+      const previousKey = process.env.PROOF_SHARE_MARKDOWN_API_KEY;
+      const previousMode = process.env.PROOF_SHARE_MARKDOWN_AUTH_MODE;
+      process.env.PROOF_SHARE_MARKDOWN_API_KEY = 'test-direct-share-key';
+      process.env.PROOF_SHARE_MARKDOWN_AUTH_MODE = 'none';
+      try {
+        const response = await postNoClientHeaders(baseUrl, '/documents', {
+          markdown: '# Auth mode none',
+          marks: {},
+        });
+        assert(response.status === 200, `Expected status 200 when auth mode is none, got ${response.status}`);
+        const payload = await response.json();
+        assert(typeof payload.slug === 'string' && payload.slug.length > 0, 'Expected slug when auth mode is none');
+      } finally {
+        if (previousKey === undefined) delete process.env.PROOF_SHARE_MARKDOWN_API_KEY;
+        else process.env.PROOF_SHARE_MARKDOWN_API_KEY = previousKey;
+        if (previousMode === undefined) delete process.env.PROOF_SHARE_MARKDOWN_AUTH_MODE;
+        else process.env.PROOF_SHARE_MARKDOWN_AUTH_MODE = previousMode;
+      }
+    });
+
     await test('D2: POST /api/documents in warn mode returns deprecation headers + metadata', async () => {
       const previousMode = process.env.PROOF_LEGACY_CREATE_MODE;
       process.env.PROOF_LEGACY_CREATE_MODE = 'warn';

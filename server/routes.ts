@@ -790,7 +790,7 @@ function deriveShareCapabilities(role: ShareRole, shareState: string): {
 }
 
 // Create a shared document
-apiRoutes.post('/documents', (req: Request, res: Response) => {
+apiRoutes.post('/documents', async (req: Request, res: Response) => {
   const legacyPathRequest = isLegacyCreatePathRequest(req);
   const legacyCreateMode = resolveLegacyCreateMode(getPublicBaseUrl(req));
   if (legacyPathRequest) {
@@ -805,6 +805,30 @@ apiRoutes.post('/documents', (req: Request, res: Response) => {
       applyLegacyCreateHeaders(res, legacyCreateMode);
     } else {
       recordLegacyCreateRouteTelemetry(req, legacyCreateMode, 'allowed');
+    }
+  }
+
+  let directShareAuth: DirectShareAuthorizationResult = {
+    authed: false,
+    authMode: 'none',
+    actor: 'anonymous',
+  };
+  if (!legacyPathRequest) {
+    const auth = await authorizeDirectShareRequest(req, res);
+    if (!auth) return;
+    directShareAuth = auth;
+
+    const rateLimit = checkDirectShareRateLimit(req, auth.authed);
+    if (!rateLimit.allowed) {
+      res.setHeader('retry-after', String(rateLimit.retryAfterSeconds));
+      res.status(429).json({
+        error: 'Rate limit exceeded for direct share creation',
+        code: 'RATE_LIMITED',
+        retryAfterSeconds: rateLimit.retryAfterSeconds,
+        maxPerWindow: rateLimit.max,
+        windowMs: rateLimit.windowMs,
+      });
+      return;
     }
   }
 
@@ -854,8 +878,8 @@ apiRoutes.post('/documents', (req: Request, res: Response) => {
     title,
     shareState: doc.share_state,
     accessRole: defaultAccess.role,
-    authMode: 'none',
-    authenticated: false,
+    authMode: directShareAuth.authMode,
+    authenticated: directShareAuth.authed,
     contentChars: sanitizedMarkdown.length,
   });
 
