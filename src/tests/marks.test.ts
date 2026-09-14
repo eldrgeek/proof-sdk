@@ -789,21 +789,24 @@ test('applyRemoteMarks does not resurrect locally rejected mark ids', () => {
   assert(!(markId in (pluginState?.metadata ?? {})), 'Rejected mark metadata should remain removed after remote sync');
 });
 
-test('reject tombstones stale server suggestions before dispatch-time marks merges', () => {
-  const markId = 'm-reject-dispatch-race';
+function runInsertResolutionWithSynchronousStaleRemoteApply(action: 'accept' | 'reject'): {
+  state: EditorState;
+  markId: string;
+} {
+  const markId = `m-${action}-insert-dispatch-race`;
   const suggestionMark = marksSchema.marks.proofSuggestion.create({
     id: markId,
-    kind: 'replace',
+    kind: 'insert',
     by: 'ai:test',
-    content: 'planet',
+    content: ' world',
     status: 'pending',
     createdAt: new Date('2026-03-11T00:00:00.000Z').toISOString(),
   });
 
   const initialDoc = marksSchema.node('doc', null, [
     marksSchema.node('paragraph', null, [
-      marksSchema.text('Hello '),
-      marksSchema.text('world', [suggestionMark]),
+      marksSchema.text('Hello'),
+      marksSchema.text(' world', [suggestionMark]),
     ]),
   ]);
 
@@ -832,10 +835,10 @@ test('reject tombstones stale server suggestions before dispatch-time marks merg
 
   const remoteMetadata = {
     [markId]: {
-      kind: 'replace' as const,
+      kind: 'insert' as const,
       by: 'ai:test',
       createdAt: new Date('2026-03-11T00:00:00.000Z').toISOString(),
-      content: 'planet',
+      content: ' world',
       status: 'pending' as const,
       quote: 'world',
     },
@@ -843,26 +846,51 @@ test('reject tombstones stale server suggestions before dispatch-time marks merg
 
   state = state.apply(state.tr.setMeta(marksPluginKey, { type: 'SET_METADATA', metadata: remoteMetadata }));
 
+  let staleRemoteApplied = false;
   const view = {
     get state() {
       return state;
     },
     dispatch(tr: any) {
       state = state.apply(tr);
-      const merged = mergePendingServerMarks(getMarkMetadataWithQuotes(state), remoteMetadata);
-      state = state.apply(state.tr.setMeta(marksPluginKey, { type: 'SET_METADATA', metadata: merged }));
+      if (!staleRemoteApplied) {
+        staleRemoteApplied = true;
+        applyRemoteMarks(view as any, remoteMetadata);
+      }
     },
   } as any;
 
-  const rejected = rejectMark(view, markId);
-  assert(rejected, 'Reject should succeed');
+  const resolved = action === 'accept'
+    ? acceptMark(view, markId)
+    : rejectMark(view, markId);
+  assert(resolved, `${action} should succeed`);
+  return { state, markId };
+}
 
-  const marksAfter = getMarks(state);
-  assert(!marksAfter.some((mark) => mark.id === markId), 'Reject should stay removed even if stale server marks merge during dispatch');
+test('accept tombstones stale insert metadata before synchronous remote re-anchoring', () => {
+  const { state, markId } = runInsertResolutionWithSynchronousStaleRemoteApply('accept');
+  assertEqual(state.doc.textContent, 'Hello world', 'Accept should preserve inserted text');
+  assert(
+    !getMarks(state).some((mark) => mark.id === markId),
+    'Accept should stay removed when stale pending metadata is applied synchronously during dispatch',
+  );
 
   const pluginState = marksPluginKey.getState(state) as { metadata: Record<string, unknown> } | undefined;
   assert(pluginState !== undefined, 'Plugin state should exist');
-  assert(!(markId in (pluginState?.metadata ?? {})), 'Dispatch-time marks merge should not resurrect rejected metadata');
+  assert(!(markId in (pluginState?.metadata ?? {})), 'Stale remote apply should not restore accepted metadata');
+});
+
+test('reject tombstones stale insert metadata before synchronous remote re-anchoring', () => {
+  const { state, markId } = runInsertResolutionWithSynchronousStaleRemoteApply('reject');
+  assertEqual(state.doc.textContent, 'Hello', 'Reject should remove inserted text');
+  assert(
+    !getMarks(state).some((mark) => mark.id === markId),
+    'Reject should stay removed when stale pending metadata is applied synchronously during dispatch',
+  );
+
+  const pluginState = marksPluginKey.getState(state) as { metadata: Record<string, unknown> } | undefined;
+  assert(pluginState !== undefined, 'Plugin state should exist');
+  assert(!(markId in (pluginState?.metadata ?? {})), 'Stale remote apply should not restore rejected metadata');
 });
 
 test('applyRemoteMarks ignores mismatched relative anchors and falls back to quote', () => {

@@ -2964,8 +2964,8 @@ export function accept(view: EditorView, markId: string, parser?: MarkdownParser
 
   if (!applied) return false;
   const updatedMetadata = removeMetadataEntries(metadata, [markId]);
-  finalizeMarkTransaction(view, tr, updatedMetadata, { action: 'accept' });
   markResolvedMarkIds([markId], Date.now(), RESOLVED_MARK_TOMBSTONE_TTL_MS, 'deleted');
+  finalizeMarkTransaction(view, tr, updatedMetadata, { action: 'accept' });
   emitMarkEvent('suggestion.accepted', { markId, kind: mark.kind, by: mark.by });
   return true;
 }
@@ -3007,8 +3007,8 @@ export function reject(view: EditorView, markId: string): boolean {
   }
 
   const updatedMetadata = removeMetadataEntries(metadata, [markId]);
-  finalizeMarkTransaction(view, tr, updatedMetadata, { action: 'reject' });
   markResolvedMarkIds([markId], Date.now(), RESOLVED_MARK_TOMBSTONE_TTL_MS, 'deleted');
+  finalizeMarkTransaction(view, tr, updatedMetadata, { action: 'reject' });
   emitMarkEvent('suggestion.rejected', { markId, kind: mark.kind, by: mark.by });
   return true;
 }
@@ -3035,9 +3035,12 @@ export function acceptAll(view: EditorView, parser?: MarkdownParser): number {
 
     let acceptedInPass = 0;
     for (const markId of sortedIds) {
+      markResolvedMarkIds([markId], Date.now(), RESOLVED_MARK_TOMBSTONE_TTL_MS, 'deleted');
       if (accept(view, markId, effectiveParser)) {
         acceptedCount += 1;
         acceptedInPass += 1;
+      } else {
+        clearResolvedMarkTombstones([markId]);
       }
     }
 
@@ -3104,8 +3107,8 @@ export function rejectAll(view: EditorView): number {
 
   if (removedIds.length > 0) {
     const updatedMetadata = removeMetadataEntries(metadata, removedIds);
-    finalizeMarkTransaction(view, tr, updatedMetadata, { action: 'reject' });
     markResolvedMarkIds(removedIds, Date.now(), RESOLVED_MARK_TOMBSTONE_TTL_MS, 'deleted');
+    finalizeMarkTransaction(view, tr, updatedMetadata, { action: 'reject' });
   }
 
   return removedIds.length;
