@@ -9,7 +9,13 @@ import { $ctx, $prose } from '@milkdown/kit/utils';
 import { Plugin, PluginKey, TextSelection, type EditorState, type Transaction } from '@milkdown/kit/prose/state';
 import type { MarkType, Node as ProseMirrorNode } from '@milkdown/kit/prose/model';
 
-import { marksPluginKey, getMarkMetadata, buildSuggestionMetadata, getMarks } from './marks';
+import {
+  marksPluginKey,
+  getMarkMetadata,
+  buildSuggestionMetadata,
+  getMarks,
+  stampSuggestionMetadataOnDocument,
+} from './marks';
 import { generateMarkId, type InsertData, type MarkRange } from '../../formats/marks';
 import { getCurrentActor } from '../actor';
 
@@ -172,7 +178,7 @@ export function wrapTransactionForSuggestions(
   let metadataChanged = false;
 
   // Build a new transaction that converts edits to tracked changes.
-  const newTr = state.tr;
+  let newTr = state.tr;
   let writeOffset = 0;
 
   for (const step of tr.steps) {
@@ -458,6 +464,7 @@ export function wrapTransactionForSuggestions(
 
   if (metadataChanged) {
     newTr.setMeta(marksPluginKey, { type: 'SET_METADATA', metadata });
+    newTr = stampSuggestionMetadataOnDocument(state, newTr, metadata);
   }
 
   // Mark this transaction so authorship tracking skips it

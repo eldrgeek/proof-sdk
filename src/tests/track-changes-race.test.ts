@@ -94,7 +94,8 @@ function testMergePendingServerMarks(): void {
   };
 
   const merged = mergePendingServerMarks(localMetadata, serverMarks);
-  assert(merged.local?.by === 'server:test', 'Expected server metadata to take precedence for non-authored marks');
+  assert(merged.local?.by === 'server:test', 'Expected server attribution to remain authoritative for pending suggestions');
+  assert(merged.local?.content === 'local', 'Expected stale server content not to replace current local suggestion content');
   assert(Boolean(merged.comment), 'Expected comment (no status) to be preserved');
   assert(!merged.accepted, 'Expected accepted mark to be dropped');
   assert(!merged.rejected, 'Expected rejected mark to be dropped');
