@@ -6,9 +6,12 @@ import { stripAllProofSpanTags } from '../../server/proof-span-strip.js';
 import { setCurrentActor } from '../editor/actor.js';
 import { createAuthoredTrackerPlugin } from '../editor/plugins/authored-tracker.js';
 import {
+  accept,
   getMarkMetadataWithQuotes,
   getMarks,
   marksPluginKey,
+  proofMarkActionMeta,
+  reject,
   mergePendingServerMarks,
 } from '../editor/plugins/marks.js';
 import { wrapTransactionForSuggestions } from '../editor/plugins/suggestions.js';
@@ -105,6 +108,7 @@ async function typeSuggestionKeyByKey(text: string): Promise<EditorState> {
 async function run(): Promise<void> {
   const actor = `human:key-by-key-${Date.now()}`;
   setCurrentActor(actor);
+  const parser = await getHeadlessMilkdownParser();
   const state = await typeSuggestionKeyByKey(' [abc]');
   const marks = getMarks(state);
   const suggestions = marks.filter((mark) => mark.kind === 'insert');
@@ -126,6 +130,69 @@ async function run(): Promise<void> {
 
   const localMarks = getMarkMetadataWithQuotes(state);
   const [suggestionId] = Object.keys(localMarks);
+  assert(
+    localMarks[suggestionId].quote === '[abc]' && localMarks[suggestionId].content === ' [abc]',
+    'Expected the stored quote to omit the leading space while content preserves it',
+  );
+  const actionReplacement = state.tr
+    .replaceWith(localMarks[suggestionId].range!.from, localMarks[suggestionId].range!.to, state.schema.text(' [abc]'))
+    .setMeta(proofMarkActionMeta, 'accept');
+  assert(
+    wrapTransactionForSuggestions(actionReplacement, state, true) === actionReplacement,
+    'Expected an explicitly tagged mark action with replacement steps to bypass suggestion wrapping',
+  );
+
+  let locallyAcceptedState = state;
+  let dispatchedAction: unknown;
+  let acceptHadReplaceStep = false;
+  const acceptingView = {
+    get state() {
+      return locallyAcceptedState;
+    },
+    dispatch(tr: typeof state.tr) {
+      dispatchedAction = tr.getMeta(proofMarkActionMeta);
+      acceptHadReplaceStep = tr.steps.some((step) => step.toJSON().stepType === 'replace');
+      const intercepted = wrapTransactionForSuggestions(tr, locallyAcceptedState, true);
+      assert(intercepted === tr, 'Expected suggestion wrapping to pass mark accept transactions through unchanged');
+      locallyAcceptedState = locallyAcceptedState.applyTransaction(intercepted).state;
+    },
+  };
+  const textBeforeAccept = locallyAcceptedState.doc.textContent;
+  assert(accept(acceptingView as any, suggestionId, parser.parseMarkdown), 'Expected local insert accept to succeed');
+  assert(dispatchedAction === 'accept', 'Expected local insert accept transaction to carry action metadata');
+  assert(!acceptHadReplaceStep, 'Expected matching inline insert accept to avoid deleting or re-inserting text');
+  assert(locallyAcceptedState.doc.textContent === textBeforeAccept, 'Expected local insert accept to preserve covered text exactly');
+  const locallyAcceptedMarks = getMarks(locallyAcceptedState);
+  assert(
+    !locallyAcceptedMarks.some((mark) => mark.kind === 'insert'),
+    'Expected local insert accept to remove the proofSuggestion mark in the same dispatch',
+  );
+  assert(
+    locallyAcceptedMarks.some((mark) => mark.kind === 'authored' && mark.by === actor),
+    'Expected local insert accept to assign authorship to the suggester',
+  );
+
+  let locallyRejectedState = state;
+  let rejectedAction: unknown;
+  const rejectingView = {
+    get state() {
+      return locallyRejectedState;
+    },
+    dispatch(tr: typeof state.tr) {
+      rejectedAction = tr.getMeta(proofMarkActionMeta);
+      const intercepted = wrapTransactionForSuggestions(tr, locallyRejectedState, true);
+      assert(intercepted === tr, 'Expected suggestion wrapping to pass mark reject transactions through unchanged');
+      locallyRejectedState = locallyRejectedState.applyTransaction(intercepted).state;
+    },
+  };
+  assert(reject(rejectingView as any, suggestionId), 'Expected local insert reject to succeed');
+  assert(rejectedAction === 'reject', 'Expected local insert reject transaction to carry action metadata');
+  assert(locallyRejectedState.doc.textContent === 'Base', 'Expected local insert reject to remove the inserted text');
+  assert(
+    !getMarks(locallyRejectedState).some((mark) => mark.kind === 'insert'),
+    'Expected local insert reject to remove the proofSuggestion mark in the same dispatch',
+  );
+
   const staleServerMark: StoredMark = {
     ...localMarks[suggestionId],
     content: ' ',
@@ -140,18 +207,27 @@ async function run(): Promise<void> {
   assert(merged[suggestionId].range?.to === 11, 'Expected current local range to survive stale server merge');
   assert(merged[suggestionId].endRel === 'char:10', 'Expected current local relative anchor to survive stale server merge');
 
+  const serverAcceptId = `${suggestionId}-server-accept`;
+  const serverAcceptMarkdown = markdown.replaceAll(suggestionId, serverAcceptId);
   const accepted = await finalizeSuggestionThroughRehydration({
-    markdown,
-    marks: localMarks,
-    markId: suggestionId,
+    markdown: serverAcceptMarkdown,
+    marks: { [serverAcceptId]: localMarks[suggestionId] },
+    markId: serverAcceptId,
     action: 'accept',
   });
   if (!accepted.ok) {
-    throw new Error(`Expected server rehydration accept to succeed: ${accepted.code} ${accepted.error}`);
+    throw new Error(
+      `Expected server rehydration accept to succeed: ${accepted.code} ${accepted.error}\n`
+      + `marks=${JSON.stringify(localMarks)}\nmarkdown=${serverAcceptMarkdown}`,
+    );
   }
   assert(
-    stripAllProofSpanTags(accepted.markdown).trim() === 'Base [abc]',
+    stripAllProofSpanTags(accepted.markdown).trimEnd() === 'Base [abc]',
     `Expected accept to preserve inserted text, got:\n${accepted.markdown}`,
+  );
+  assert(
+    !stripAllProofSpanTags(accepted.markdown).includes('data-id='),
+    `Expected accept with a normalized quote to keep proof markup out of visible text:\n${accepted.markdown}`,
   );
   assert(!accepted.markdown.includes('data-proof="suggestion"'), 'Expected accept to remove suggestion markup');
   assert(accepted.markdown.includes('data-proof="authored"'), 'Expected existing accept behavior to assign authorship');
