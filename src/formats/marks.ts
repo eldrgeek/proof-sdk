@@ -225,6 +225,8 @@ export interface StoredMark {
   resolved?: boolean;
   content?: string;
   status?: SuggestionStatus;
+  /** How an already-applied insert is represented in the document model. */
+  insertStructure?: 'inline' | 'block' | 'table_row';
   note?: string;
   runId?: string;
   focusAreaId?: string;

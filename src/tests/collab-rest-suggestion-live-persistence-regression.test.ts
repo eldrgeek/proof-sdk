@@ -9,6 +9,7 @@ import { HocuspocusProvider } from '@hocuspocus/provider';
 import { WebSocketServer } from 'ws';
 import * as Y from 'yjs';
 import { prosemirrorToYXmlFragment, yXmlFragmentToProseMirrorRootNode } from 'y-prosemirror';
+import type { Node as ProseMirrorNode } from '@milkdown/kit/prose/model';
 
 const CLIENT_HEADERS = {
   'X-Proof-Client-Version': '0.31.2',
@@ -479,6 +480,280 @@ async function runAiInsertCase(
   }
 }
 
+async function createInsertFixture(
+  httpBase: string,
+  title: string,
+  markdown: string,
+): Promise<CreatedDocument> {
+  return mustJson<CreatedDocument>(
+    await fetch(`${httpBase}/api/documents`, {
+      method: 'POST',
+      headers: { ...CLIENT_HEADERS, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, markdown, marks: {} }),
+    }),
+    `create ${title}`,
+  );
+}
+
+function readClientRoot(
+  client: ConnectedClient,
+  schema: import('@milkdown/kit/prose/model').Schema,
+) {
+  return yXmlFragmentToProseMirrorRootNode(
+    client.doc.getXmlFragment('prosemirror') as any,
+    schema as any,
+  );
+}
+
+function findFirstNode(root: ReturnType<typeof readClientRoot>, typeName: string): ProseMirrorNode | null {
+  let found: ProseMirrorNode | null = null;
+  root.descendants((node) => {
+    if (node.type.name === typeName) {
+      found = node;
+      return false;
+    }
+    return found === null;
+  });
+  return found;
+}
+
+async function runStructuredAiInsertCases(context: {
+  httpBase: string;
+  schema: import('@milkdown/kit/prose/model').Schema;
+}): Promise<void> {
+  const play = await createInsertFixture(
+    context.httpBase,
+    'hard-break AI insert',
+    '# Proof E2E\n\nERIC\\\nI think teh play is ready.\n\nDIANA\\\nThe second act needs one more scene.\n',
+  );
+  const playClient = await connectClient(context.httpBase, play.slug, play.ownerSecret);
+  try {
+    const inserted = await mustJson<SuggestionResponse>(
+      await postAgent(
+        context.httpBase,
+        play.slug,
+        play.ownerSecret,
+        '/marks/suggest-insert',
+        { quote: 'needs one more scene', content: ' AI insert words', by: 'ai:test' },
+      ),
+      'hard-break insert suggestion',
+    );
+    const markId = inserted.markId ?? '';
+    assert(markId.length > 0, 'Expected hard-break insert mark id');
+    await waitFor(
+      () => readClientRoot(playClient, context.schema).textContent.includes('needs one more scene AI insert words')
+        && playClient.doc.getMap('marks').has(markId),
+      10_000,
+      'hard-break insert text and pending mark',
+    );
+    const state = await mustJson<{ markdown?: string; projectionFresh?: boolean; marks?: Record<string, unknown> }>(
+      await fetch(`${context.httpBase}/api/agent/${play.slug}/state`, {
+        headers: { ...CLIENT_HEADERS, 'x-share-token': play.ownerSecret },
+      }),
+      'hard-break insert state',
+    );
+    assert(state.projectionFresh === true, 'Hard-break insert must leave /state projection fresh');
+    assert(state.markdown?.includes('needs one more scene AI insert words') === true, 'Hard-break insert must persist');
+    assert(Object.prototype.hasOwnProperty.call(state.marks ?? {}, markId), 'Hard-break insert must stay pending');
+
+    const following = await postAgent(
+      context.httpBase,
+      play.slug,
+      play.ownerSecret,
+      '/marks/suggest-delete',
+      { quote: 'second act', by: 'ai:test' },
+    );
+    assert(following.status === 200, `Following suggestion.add should succeed, got ${following.status}`);
+  } finally {
+    playClient.destroy();
+  }
+
+  const formatted = await createInsertFixture(
+    context.httpBase,
+    'formatted anchor AI inserts',
+    'A **bold anchor** and a [linked anchor](https://example.com) stay formatted.',
+  );
+  const formattedClient = await connectClient(context.httpBase, formatted.slug, formatted.ownerSecret);
+  try {
+    for (const [quote, content] of [
+      ['bold anchor', ' after bold'],
+      ['linked anchor', ' after link'],
+    ] as const) {
+      const suggested = await mustJson<SuggestionResponse>(
+        await postAgent(
+          context.httpBase,
+          formatted.slug,
+          formatted.ownerSecret,
+          '/marks/suggest-insert',
+          { quote, content, by: 'ai:test' },
+        ),
+        `${quote} insert suggestion`,
+      );
+      const markId = suggested.markId ?? '';
+      await waitFor(
+        () => readClientRoot(formattedClient, context.schema).textContent.includes(`${quote}${content}`)
+          && formattedClient.doc.getMap('marks').has(markId),
+        10_000,
+        `${quote} inserted with pending mark`,
+      );
+    }
+    const state = await mustJson<{ markdown?: string; projectionFresh?: boolean }>(
+      await fetch(`${context.httpBase}/api/agent/${formatted.slug}/state`, {
+        headers: { ...CLIENT_HEADERS, 'x-share-token': formatted.ownerSecret },
+      }),
+      'formatted anchor insert state',
+    );
+    assert(state.markdown?.includes('**bold anchor** after bold') === true, 'Bold anchor formatting must survive insert');
+    assert(
+      state.markdown?.includes('[linked anchor](https://example.com) after link') === true,
+      'Link anchor formatting must survive insert',
+    );
+    assert(state.projectionFresh === true, 'Formatted anchor inserts must leave projection fresh');
+  } finally {
+    formattedClient.destroy();
+  }
+
+  for (const action of ['accept', 'reject'] as const) {
+    const fixture = await createInsertFixture(
+      context.httpBase,
+      `paragraph insert ${action}`,
+      '# Paragraph insert\n\nClosing paragraph.',
+    );
+    const client = await connectClient(context.httpBase, fixture.slug, fixture.ownerSecret);
+    try {
+      const suggested = await mustJson<SuggestionResponse>(
+        await postAgent(
+          context.httpBase,
+          fixture.slug,
+          fixture.ownerSecret,
+          '/marks/suggest-insert',
+          { quote: 'Closing paragraph.', content: '\n\nAnother AI paragraph.', by: 'ai:test' },
+        ),
+        `paragraph insert ${action} suggestion`,
+      );
+      const markId = suggested.markId ?? '';
+      await waitFor(
+        () => readClientRoot(client, context.schema).textContent.includes('Another AI paragraph.')
+          && client.doc.getMap('marks').has(markId),
+        10_000,
+        `paragraph insert ${action} pending`,
+      );
+      await mustJson<Record<string, unknown>>(
+        await postAgent(
+          context.httpBase,
+          fixture.slug,
+          fixture.ownerSecret,
+          `/marks/${action}`,
+          { markId, by: 'human:test' },
+        ),
+        `paragraph insert ${action}`,
+      );
+      await waitFor(
+        () => !client.doc.getMap('marks').has(markId),
+        10_000,
+        `paragraph insert ${action} resolution`,
+      );
+      const state = await mustJson<{ markdown?: string; projectionFresh?: boolean }>(
+        await fetch(`${context.httpBase}/api/agent/${fixture.slug}/state`, {
+          headers: { ...CLIENT_HEADERS, 'x-share-token': fixture.ownerSecret },
+        }),
+        `paragraph insert ${action} state`,
+      );
+      const count = state.markdown?.match(/Another AI paragraph\./g)?.length ?? 0;
+      assert(count === (action === 'accept' ? 1 : 0), `Paragraph ${action} should leave ${action === 'accept' ? 1 : 0} copies, got ${count}`);
+      assert(state.projectionFresh === true, `Paragraph ${action} must leave projection fresh`);
+    } finally {
+      client.destroy();
+    }
+  }
+
+  const tableMarkdown = [
+    '| Name | Role |',
+    '| --- | --- |',
+    '| Eric | Writer |',
+    '| Diana | Director |',
+  ].join('\n');
+  const invalidTable = await createInsertFixture(context.httpBase, 'invalid table row insert', tableMarkdown);
+  const invalidResponse = await postAgent(
+    context.httpBase,
+    invalidTable.slug,
+    invalidTable.ownerSecret,
+    '/marks/suggest-insert',
+    { quote: 'Director', content: '\n| Too | Many | Columns |', by: 'ai:test' },
+  );
+  assert(invalidResponse.status === 422, `Unrepresentable table insert must be refused, got ${invalidResponse.status}`);
+  const invalidState = await mustJson<{ markdown?: string; marks?: Record<string, unknown> }>(
+    await fetch(`${context.httpBase}/api/agent/${invalidTable.slug}/state`, {
+      headers: { ...CLIENT_HEADERS, 'x-share-token': invalidTable.ownerSecret },
+    }),
+    'invalid table row insert state',
+  );
+  assert(invalidState.markdown?.includes('Too | Many | Columns') !== true, 'Refused insert must not change text');
+  assert(Object.keys(invalidState.marks ?? {}).length === 0, 'Refused insert must not leave partial mark metadata');
+
+  for (const action of ['accept', 'reject'] as const) {
+    const fixture = await createInsertFixture(context.httpBase, `table row insert ${action}`, tableMarkdown);
+    const client = await connectClient(context.httpBase, fixture.slug, fixture.ownerSecret);
+    try {
+      const beforeTable = findFirstNode(readClientRoot(client, context.schema), 'table');
+      const beforeRows = beforeTable?.childCount ?? 0;
+      const suggested = await mustJson<SuggestionResponse>(
+        await postAgent(
+          context.httpBase,
+          fixture.slug,
+          fixture.ownerSecret,
+          '/marks/suggest-insert',
+          { quote: 'Director', content: '\n| Mike | Producer |', by: 'ai:test' },
+        ),
+        `table row insert ${action} suggestion`,
+      );
+      const markId = suggested.markId ?? '';
+      await waitFor(
+        () => readClientRoot(client, context.schema).textContent.includes('MikeProducer')
+          && client.doc.getMap('marks').has(markId),
+        10_000,
+        `table row insert ${action} pending`,
+      );
+      const pendingTable = findFirstNode(readClientRoot(client, context.schema), 'table');
+      const insertedRow = pendingTable?.lastChild;
+      assert(pendingTable?.childCount === beforeRows + 1, 'Pending table insert must add exactly one row');
+      assert(insertedRow?.childCount === 2, `Pending table insert must preserve two columns, got ${insertedRow?.childCount ?? 0}`);
+
+      await mustJson<Record<string, unknown>>(
+        await postAgent(
+          context.httpBase,
+          fixture.slug,
+          fixture.ownerSecret,
+          `/marks/${action}`,
+          { markId, by: 'human:test' },
+        ),
+        `table row insert ${action}`,
+      );
+      await waitFor(
+        () => !client.doc.getMap('marks').has(markId),
+        10_000,
+        `table row insert ${action} resolution`,
+      );
+      const finalTable = findFirstNode(readClientRoot(client, context.schema), 'table');
+      assert(
+        finalTable?.childCount === beforeRows + (action === 'accept' ? 1 : 0),
+        `Table ${action} left the wrong row count`,
+      );
+      const state = await mustJson<{ markdown?: string; projectionFresh?: boolean }>(
+        await fetch(`${context.httpBase}/api/agent/${fixture.slug}/state`, {
+          headers: { ...CLIENT_HEADERS, 'x-share-token': fixture.ownerSecret },
+        }),
+        `table row insert ${action} state`,
+      );
+      const rowCount = state.markdown?.match(/Mike\s*\|\s*Producer/g)?.length ?? 0;
+      assert(rowCount === (action === 'accept' ? 1 : 0), `Table ${action} should leave the inserted row exactly ${action === 'accept' ? 'once' : 'zero times'}`);
+      assert(state.projectionFresh === true, `Table ${action} must leave projection fresh`);
+    } finally {
+      client.destroy();
+    }
+  }
+}
+
 async function runDisconnectedInsertCases(httpBase: string): Promise<void> {
   const createResponse = await fetch(`${httpBase}/api/documents`, {
     method: 'POST',
@@ -694,6 +969,10 @@ async function run(): Promise<void> {
     await runAiInsertCase({
       httpBase,
       db,
+      schema: parser.schema,
+    });
+    await runStructuredAiInsertCases({
+      httpBase,
       schema: parser.schema,
     });
     await runCase('reject', {
