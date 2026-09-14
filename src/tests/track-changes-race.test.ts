@@ -7,8 +7,16 @@ import express from 'express';
 import * as Y from 'yjs';
 import { HocuspocusProvider } from '@hocuspocus/provider';
 import type { AddressInfo } from 'node:net';
+import { Schema } from '@milkdown/kit/prose/model';
+import { EditorState, Plugin } from '@milkdown/kit/prose/state';
 
-import { mergePendingServerMarks, type StoredMark } from '../editor/plugins/marks';
+import {
+  applyRemoteMarks,
+  getMarkMetadataWithQuotes,
+  marksPluginKey,
+  mergePendingServerMarks,
+  type StoredMark,
+} from '../editor/plugins/marks';
 
 const CLIENT_HEADERS = {
   'X-Proof-Client-Version': '0.31.0',
@@ -26,10 +34,10 @@ async function sleep(ms: number): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitFor(fn: () => boolean, timeoutMs: number, label: string): Promise<void> {
+async function waitFor(fn: () => boolean | Promise<boolean>, timeoutMs: number, label: string): Promise<void> {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
-    if (fn()) return;
+    if (await fn()) return;
     await sleep(10);
   }
   throw new Error(`Timed out waiting for: ${label}`);
@@ -228,7 +236,83 @@ async function run(): Promise<void> {
     assert(Boolean(afterMarks[markId]), 'Expected server mark to survive merged flush');
     assert(afterMarks[markId]?.status === 'pending', 'Expected pending status after merged flush');
 
-    console.log('✓ pending suggestion survives initial client mark sync');
+    const pageSchema = new Schema({
+      nodes: {
+        doc: { content: 'block+' },
+        paragraph: { content: 'text*', group: 'block' },
+        text: { group: 'inline' },
+      },
+      marks: {
+        proofSuggestion: {
+          attrs: {
+            id: { default: null },
+            kind: { default: 'replace' },
+            by: { default: 'unknown' },
+          },
+          inclusive: false,
+          spanning: true,
+        },
+      },
+    });
+    const pageMarksPlugin = new Plugin({
+      key: marksPluginKey,
+      state: {
+        init: () => ({ metadata: {}, activeMarkId: null, composeAnchorRange: null }),
+        apply: (tr, value) => {
+          const meta = tr.getMeta(marksPluginKey) as
+            | { type?: string; metadata?: Record<string, StoredMark> }
+            | undefined;
+          if (meta?.type === 'SET_METADATA') {
+            return { ...value, metadata: meta.metadata ?? {} };
+          }
+          return value;
+        },
+      },
+    });
+    let pageState = EditorState.create({
+      schema: pageSchema,
+      doc: pageSchema.node('doc', null, [
+        pageSchema.node('paragraph', null, pageSchema.text('A stale page without the quoted text.')),
+      ]),
+      plugins: [pageMarksPlugin],
+    });
+    const pageView = {
+      get state() {
+        return pageState;
+      },
+      dispatch(tr: any) {
+        pageState = pageState.apply(tr);
+      },
+    };
+
+    applyRemoteMarks(pageView as any, serverMarks);
+    const unplaceablePageMetadata = getMarkMetadataWithQuotes(pageState);
+    assert(
+      Boolean(unplaceablePageMetadata[markId]),
+      'Expected a page to retain pending suggestion metadata when it cannot place the anchor',
+    );
+
+    // This mirrors the direct content-sync marks write. Before the retention fix,
+    // the empty local snapshot deleted the server suggestion from the shared map.
+    applyMarksMap(marksMap, unplaceablePageMetadata);
+    await waitFor(
+      () => Boolean(readMarksMap(marksMap)[markId]),
+      DEFAULT_TIMEOUT_MS,
+      'unplaceable suggestion retained in shared marks map',
+    );
+    await waitFor(async () => {
+      const stateRes = await fetch(`${httpBase}/api/agent/${created.slug}/state`, {
+        headers: {
+          ...CLIENT_HEADERS,
+          'x-share-token': created.ownerSecret,
+        },
+      });
+      if (!stateRes.ok) return false;
+      const statePayload = await stateRes.json() as { marks?: Record<string, StoredMark> };
+      return Boolean(statePayload.marks?.[markId]);
+    }, DEFAULT_TIMEOUT_MS, 'unplaceable suggestion retained in server marks');
+
+    console.log('✓ pending and unplaceable suggestions survive client mark sync');
   } finally {
     try {
       provider?.disconnect();
@@ -243,7 +327,8 @@ async function run(): Promise<void> {
     }
     ydoc.destroy();
     try {
-      wss.close();
+      for (const client of wss.clients) client.terminate();
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
     } catch {
       // ignore
     }

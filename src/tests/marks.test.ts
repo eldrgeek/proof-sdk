@@ -2978,7 +2978,7 @@ test('applyRemoteMarks preserves unresolved remote comments in metadata snapshot
   assertEqual(Boolean(afterResolve['c-unresolved']?.resolved), true, 'Resolved flag should persist on unresolved remote comments');
 });
 
-test('applyRemoteMarks prunes detached non-comment metadata but keeps detached comments', () => {
+test('applyRemoteMarks keeps detached pending suggestions and comments for later anchor retries', () => {
   const doc = marksSchema.node('doc', null, [
     marksSchema.node('paragraph', null, [marksSchema.text('Hello world from collab')]),
   ]);
@@ -3043,11 +3043,15 @@ test('applyRemoteMarks prunes detached non-comment metadata but keeps detached c
   assert(!getMarks(state).some((mark) => mark.id === 'c-unresolved'), 'Detached comment should not surface as an anchor');
 
   const flushed = getMarkMetadataWithQuotes(state);
-  assert(!('s-detached' in flushed), 'Detached non-comment metadata should be pruned from snapshots');
+  assertEqual(
+    flushed['s-detached']?.content,
+    'orphaned suggestion',
+    'Detached pending suggestion metadata should remain in snapshots instead of deleting the shared mark',
+  );
   assertEqual(flushed['c-unresolved']?.text, 'Please resolve this orphaned comment', 'Detached comments should remain in snapshots for later retries');
 });
 
-test('metadata snapshots drop detached suggestions after anchor deletion', () => {
+test('metadata snapshots retain detached suggestions until an authoritative snapshot removes them', () => {
   const markId = 's-after-delete';
   const detachedDoc = marksSchema.node('doc', null, [
     marksSchema.node('paragraph', null, [marksSchema.text('Anchor text deleted from the document')]),
@@ -3090,10 +3094,14 @@ test('metadata snapshots drop detached suggestions after anchor deletion', () =>
   state = state.apply(state.tr.setMeta(marksPluginKey, { type: 'SET_METADATA', metadata }));
 
   const flushed = getMarkMetadataWithQuotes(state);
-  assert(!flushed[markId], 'Detached suggestion metadata should not flush after its anchor text is deleted');
+  assertEqual(
+    flushed[markId]?.content,
+    'replacement text',
+    'Detached pending suggestion metadata should flush unchanged after its anchor text is deleted',
+  );
 
   const merged = mergePendingServerMarks(flushed, metadata);
-  assertEqual(merged[markId]?.content, 'replacement text', 'Server merge may still carry the detached entry before applyRemoteMarks');
+  assertEqual(merged[markId]?.content, 'replacement text', 'Server merge should retain the detached pending entry');
 
   const view = {
     get state() {
@@ -3106,7 +3114,18 @@ test('metadata snapshots drop detached suggestions after anchor deletion', () =>
 
   applyRemoteMarks(view, merged);
   const afterRemoteApply = getMarkMetadataWithQuotes(state);
-  assert(!afterRemoteApply[markId], 'Detached suggestion metadata should stay pruned after remote apply and normalization');
+  assertEqual(
+    afterRemoteApply[markId]?.content,
+    'replacement text',
+    'Detached suggestion metadata should survive remote apply and normalization',
+  );
+
+  applyRemoteMarks(view, {}, { authoritativeSnapshot: true });
+  const afterAuthoritativeRemoval = getMarkMetadataWithQuotes(state);
+  assert(
+    !afterAuthoritativeRemoval[markId],
+    'An authoritative marks snapshot that omits the suggestion must still remove it permanently',
+  );
 });
 
 test('compose anchor range is transient UI state and is not persisted into metadata', () => {

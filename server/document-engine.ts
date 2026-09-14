@@ -867,6 +867,24 @@ function findQuoteAnchorInMarkdown(markdown: string, quote: string): QuoteAnchor
   };
 }
 
+function resolveVisibleSuggestionQuote(
+  markdown: string,
+  suppliedQuote: string,
+): { quote: string; anchor: QuoteAnchor } | null {
+  const normalizedSupplied = normalizeQuote(suppliedQuote);
+  if (!normalizedSupplied) return null;
+
+  const visibleQuote = normalizeQuote(stripMarkdownWithMapping(suppliedQuote).stripped);
+  const candidates = [normalizedSupplied, visibleQuote]
+    .filter((candidate, index, all) => candidate && all.indexOf(candidate) === index);
+
+  for (const candidate of candidates) {
+    const anchor = findQuoteAnchorInMarkdown(markdown, candidate);
+    if (anchor) return { quote: candidate, anchor };
+  }
+  return null;
+}
+
 function findRawQuoteSpanInMarkdown(markdown: string, quote: string): { start: number; end: number } | null {
   const anchor = findQuoteAnchorInMarkdown(markdown, quote);
   if (!anchor) return null;
@@ -1780,14 +1798,19 @@ function addSuggestion(
     );
     quote = selectionMetadata.quote;
   } else {
-    const normalizedMarkdown = normalizeQuote(doc.markdown);
-    const normalizedPlain = normalizeMarkdownForQuote(doc.markdown);
-    if (!normalizedMarkdown.includes(quote) && !normalizedPlain.includes(quote)) {
+    const visibleAnchor = resolveVisibleSuggestionQuote(doc.markdown, quote);
+    if (!visibleAnchor) {
       return {
         status: 409,
         body: { success: false, code: 'ANCHOR_NOT_FOUND', error: 'Suggestion anchor quote not found in document' },
       };
     }
+    quote = visibleAnchor.quote;
+    selectionMetadata = buildStoredSelectionMetadata(
+      doc.markdown,
+      { sourceStart: visibleAnchor.anchor.rawStart, sourceEnd: visibleAnchor.anchor.rawEnd },
+      quote,
+    );
   }
 
   const requestedStatus = typeof body.status === 'string' ? body.status.trim().toLowerCase() : 'pending';
@@ -2072,14 +2095,23 @@ async function addSuggestionAsync(
       );
       quote = selectionMetadata.quote;
     } else {
-      const normalizedMarkdown = normalizeQuote(doc.markdown);
-      const normalizedPlain = normalizeMarkdownForQuote(doc.markdown);
-      if (!normalizedMarkdown.includes(quote) && !normalizedPlain.includes(quote)) {
+      const visibleAnchor = resolveVisibleSuggestionQuote(doc.markdown, quote);
+      if (!visibleAnchor) {
         return {
           status: 409,
           body: { success: false, code: 'ANCHOR_NOT_FOUND', error: 'Suggestion anchor quote not found in document' },
         };
       }
+      quote = visibleAnchor.quote;
+      resolvedSelection = {
+        sourceStart: visibleAnchor.anchor.rawStart,
+        sourceEnd: visibleAnchor.anchor.rawEnd,
+      };
+      selectionMetadata = buildStoredSelectionMetadata(
+        doc.markdown,
+        resolvedSelection,
+        quote,
+      );
     }
 
     if (kind === 'insert') {
@@ -2187,7 +2219,7 @@ async function addSuggestionAsync(
       && Number(body.range.to) > Number(body.range.from)
       ? { from: Number(body.range.from), to: Number(body.range.to) }
       : null;
-    marks[id] = {
+    const suggestion: StoredMark = {
       kind,
       by,
       createdAt: now,
@@ -2203,6 +2235,29 @@ async function addSuggestionAsync(
         : (selectionMetadata?.endRel ?? (anchor ? `char:${anchor.strippedEnd}` : undefined)),
       ...(providedRange ? { range: providedRange } : {}),
     };
+    marks[id] = suggestion;
+
+    const preflight = await finalizeSuggestionThroughRehydration({
+      markdown: doc.markdown,
+      marks: { [id]: suggestion },
+      markId: id,
+      action: 'accept',
+      clearResolutionTombstone: true,
+    });
+    if (!preflight.ok) {
+      const anchorFailure = preflight.code === 'MARK_NOT_HYDRATED'
+        || preflight.code === 'REQUIRED_MARKS_MISSING';
+      return {
+        status: anchorFailure ? 409 : 422,
+        body: {
+          success: false,
+          code: anchorFailure ? 'ANCHOR_NOT_FOUND' : 'INVALID_SUGGESTION_CONTENT',
+          error: anchorFailure
+            ? 'Suggestion anchor cannot be mapped to visible document text'
+            : `Suggestion cannot be applied safely: ${preflight.error}`,
+        },
+      };
+    }
 
     return persistMarksAsync(slug, doc, marks, by, `suggestion.${kind}.added`, {
       markId: id,
@@ -2252,13 +2307,19 @@ async function addSuggestionAsync(
     );
     quote = selectionMetadata.quote;
   } else {
-    const anchorCheck = findQuoteAnchorInMarkdown(doc.markdown, quote);
-    if (!anchorCheck) {
+    const visibleAnchor = resolveVisibleSuggestionQuote(doc.markdown, quote);
+    if (!visibleAnchor) {
       return {
         status: 409,
         body: { success: false, code: 'ANCHOR_NOT_FOUND', error: 'Suggestion anchor quote not found in document' },
       };
     }
+    quote = visibleAnchor.quote;
+    selectionMetadata = buildStoredSelectionMetadata(
+      doc.markdown,
+      { sourceStart: visibleAnchor.anchor.rawStart, sourceEnd: visibleAnchor.anchor.rawEnd },
+      quote,
+    );
   }
 
   const id = randomUUID();

@@ -201,6 +201,158 @@ async function run(): Promise<void> {
       `Expected accepted suggestion markdown to apply the replacement immediately, got ${JSON.stringify(authoredAccepted.body.markdown)}`,
     );
 
+    const formattingBoundarySlug = `anchor-formatting-boundary-${Math.random().toString(36).slice(2, 10)}`;
+    db.createDocument(
+      formattingBoundarySlug,
+      'The **Format** line sets the style for the play.',
+      {},
+      'Formatting boundary quote test',
+    );
+    const formattingBoundarySuggestion = await executeDocumentOperationAsync(
+      formattingBoundarySlug,
+      'POST',
+      '/marks/suggest-replace',
+      {
+        quote: 'The Format line sets the style',
+        content: 'The **Format** line sets the house style',
+        by: 'ai:test',
+      },
+    );
+    assert(
+      formattingBoundarySuggestion.status === 200,
+      `Expected formatting-boundary suggestion.add to succeed, got ${formattingBoundarySuggestion.status}: ${JSON.stringify(formattingBoundarySuggestion.body)}`,
+    );
+    const formattingBoundaryMarkId = getSuggestionMarkId(
+      formattingBoundarySuggestion as { body: { marks?: Record<string, { kind?: string }> } },
+      'replace',
+    );
+    assert(formattingBoundaryMarkId, 'Expected formatting-boundary suggestion mark id');
+    const formattingBoundaryMark = formattingBoundarySuggestion.body.marks?.[formattingBoundaryMarkId];
+    assert(
+      formattingBoundaryMark?.quote === 'The Format line sets the style',
+      `Expected full visible quote to be stored, got ${JSON.stringify(formattingBoundaryMark?.quote)}`,
+    );
+    assert(
+      formattingBoundaryMark?.startRel === 'char:0',
+      `Expected formatting-boundary quote to start at visible offset zero, got ${JSON.stringify(formattingBoundaryMark?.startRel)}`,
+    );
+    const formattingBoundaryAccept = await executeDocumentOperationAsync(
+      formattingBoundarySlug,
+      'POST',
+      '/marks/accept',
+      { markId: formattingBoundaryMarkId, by: 'human:test' },
+    );
+    assert(
+      formattingBoundaryAccept.status === 200,
+      `Expected formatting-boundary accept to succeed, got ${formattingBoundaryAccept.status}: ${JSON.stringify(formattingBoundaryAccept.body)}`,
+    );
+    assert(
+      stripProofSpanTags(String(formattingBoundaryAccept.body.markdown ?? '')).trimEnd()
+        === 'The **Format** line sets the house style for the play.',
+      `Expected exact formatting-boundary replacement, got ${JSON.stringify(formattingBoundaryAccept.body.markdown)}`,
+    );
+
+    const partialBlockSlug = `anchor-partial-block-${Math.random().toString(36).slice(2, 10)}`;
+    db.createDocument(
+      partialBlockSlug,
+      'Each **Scene** heading starts a new scene in the play.',
+      {},
+      'Partial paragraph block replacement test',
+    );
+    const partialBlockSuggestion = await executeDocumentOperationAsync(
+      partialBlockSlug,
+      'POST',
+      '/marks/suggest-replace',
+      {
+        quote: 'a new scene in the play.',
+        content: 'a new scene in the play.\n\nA new AI paragraph.',
+        by: 'ai:test',
+      },
+    );
+    assert(
+      partialBlockSuggestion.status === 200,
+      `Expected partial-paragraph block suggestion.add to succeed, got ${partialBlockSuggestion.status}: ${JSON.stringify(partialBlockSuggestion.body)}`,
+    );
+    const partialBlockMarkId = getSuggestionMarkId(
+      partialBlockSuggestion as { body: { marks?: Record<string, { kind?: string }> } },
+      'replace',
+    );
+    assert(partialBlockMarkId, 'Expected partial-paragraph block suggestion mark id');
+    const partialBlockAccept = await executeDocumentOperationAsync(
+      partialBlockSlug,
+      'POST',
+      '/marks/accept',
+      { markId: partialBlockMarkId, by: 'human:test' },
+    );
+    assert(
+      partialBlockAccept.status === 200,
+      `Expected partial-paragraph block accept to succeed, got ${partialBlockAccept.status}: ${JSON.stringify(partialBlockAccept.body)}`,
+    );
+    assert(
+      stripProofSpanTags(String(partialBlockAccept.body.markdown ?? '')).trimEnd()
+        === 'Each **Scene** heading starts a new scene in the play.\n\nA new AI paragraph.',
+      `Expected split paragraphs with existing bold formatting intact, got ${JSON.stringify(partialBlockAccept.body.markdown)}`,
+    );
+
+    const markdownLinkQuoteSlug = `anchor-markdown-link-${Math.random().toString(36).slice(2, 10)}`;
+    db.createDocument(
+      markdownLinkQuoteSlug,
+      'Read [the guide](https://example.com/guide) before continuing.',
+      {},
+      'Markdown link quote test',
+    );
+    const markdownLinkSuggestion = await executeDocumentOperationAsync(
+      markdownLinkQuoteSlug,
+      'POST',
+      '/marks/suggest-replace',
+      {
+        quote: '[the guide](https://example.com/guide)',
+        content: 'the handbook',
+        by: 'ai:test',
+      },
+    );
+    assert(
+      markdownLinkSuggestion.status === 200,
+      `Expected markdown-form link quote to map to visible text, got ${markdownLinkSuggestion.status}: ${JSON.stringify(markdownLinkSuggestion.body)}`,
+    );
+    const markdownLinkMarkId = getSuggestionMarkId(
+      markdownLinkSuggestion as { body: { marks?: Record<string, { kind?: string }> } },
+      'replace',
+    );
+    assert(markdownLinkMarkId, 'Expected markdown-form link suggestion mark id');
+    assert(
+      markdownLinkSuggestion.body.marks?.[markdownLinkMarkId]?.quote === 'the guide',
+      `Expected markdown-form link quote to be stored as visible text, got ${JSON.stringify(markdownLinkSuggestion.body.marks?.[markdownLinkMarkId]?.quote)}`,
+    );
+
+    const unplaceableSlug = `anchor-unplaceable-${Math.random().toString(36).slice(2, 10)}`;
+    db.createDocument(
+      unplaceableSlug,
+      'Repeat once, then Repeat again.',
+      {},
+      'Unplaceable suggestion test',
+    );
+    const unplaceableSuggestion = await executeDocumentOperationAsync(
+      unplaceableSlug,
+      'POST',
+      '/marks/suggest-replace',
+      {
+        quote: 'Repeat',
+        content: 'Changed',
+        startRel: 'char:1',
+        endRel: 'char:7',
+        by: 'ai:test',
+      },
+    );
+    assert(
+      unplaceableSuggestion.status >= 400 && unplaceableSuggestion.status < 500,
+      `Expected an unplaceable suggestion to fail at add time, got ${unplaceableSuggestion.status}`,
+    );
+    assert(
+      unplaceableSuggestion.body.code === 'ANCHOR_NOT_FOUND',
+      `Expected ANCHOR_NOT_FOUND for an unplaceable suggestion, got ${JSON.stringify(unplaceableSuggestion.body)}`,
+    );
+
     const rejectCycleSlug = `reject-cycle-${Math.random().toString(36).slice(2, 10)}`;
     const rejectCycleMarkdown = '| 2<span data-proof="authored" data-by="human:willie">.</span> | Token tracking per plus1 | Med |';
     db.createDocument(rejectCycleSlug, rejectCycleMarkdown, {}, 'Reject cycle regression');
@@ -408,7 +560,10 @@ async function run(): Promise<void> {
     );
     assert(driftUpdated === true, 'Expected drift document setup update to succeed');
     const targetAccept = executeDocumentOperation(driftSlug, 'POST', '/marks/accept', { markId: targetMarkId, by: 'ai:test' });
-    assert(targetAccept.status === 200, `Expected target drift accept to succeed, got ${targetAccept.status}`);
+    assert(
+      targetAccept.status === 200,
+      `Expected target drift accept to succeed, got ${targetAccept.status}: ${JSON.stringify(targetAccept.body)}`,
+    );
     assert(
       targetAccept.body.markdown === '# Title\n\nRepeat\n\nRepeat\n\nContext target\nChanged',
       `Expected accept to mutate the original targeted duplicate, got ${JSON.stringify(targetAccept.body.markdown)}`,

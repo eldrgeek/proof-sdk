@@ -91,6 +91,7 @@ type MarkTombstone = { expiresAt: number; reason: MarkTombstoneReason };
 const resolvedMarkTombstones = new Map<string, MarkTombstone>();
 type MarkAnchorHydrationFailure = { docFingerprint: string; lastAttemptAt: number };
 const markAnchorHydrationFailures = new Map<string, MarkAnchorHydrationFailure>();
+const loggedUnplaceableSuggestionIds = new Set<string>();
 type MarkAnchorResolutionResult = 'success' | 'failure';
 type MarkAnchorResolutionCounts = { success: number; failure: number };
 const pendingMarkAnchorResolutionCounts: MarkAnchorResolutionCounts = { success: 0, failure: 0 };
@@ -249,6 +250,7 @@ export function __getMarkAnchorHydrationFailure(id: string): MarkAnchorHydration
 
 export function __resetMarkAnchorHydrationFailures(): void {
   markAnchorHydrationFailures.clear();
+  loggedUnplaceableSuggestionIds.clear();
 }
 
 export function __getMarkAnchorHydrationFailureCount(): number {
@@ -1417,6 +1419,14 @@ function getProofAnchorIds(doc: ProseMirrorNode): Map<string, { kind: MarkKind; 
   return ids;
 }
 
+function isPendingSuggestionMetadata(entry: StoredMark | undefined): entry is StoredMark {
+  return (
+    entry?.kind === 'insert'
+    || entry?.kind === 'delete'
+    || entry?.kind === 'replace'
+  ) && entry.status !== 'accepted' && entry.status !== 'rejected';
+}
+
 function normalizeMetadata(
   metadata: Record<string, StoredMark>,
   doc: ProseMirrorNode
@@ -1483,6 +1493,7 @@ function normalizeMetadata(
     if (!ids.has(id)) {
       const detached = next[id];
       if (detached?.kind === 'comment' && shouldIncludeMetadataEntry(detached, true)) continue;
+      if (isPendingSuggestionMetadata(detached)) continue;
       delete next[id];
       changed = true;
     }
@@ -1585,7 +1596,7 @@ function buildMetadataSnapshot(
   const metadata: Record<string, StoredMark> = {};
 
   for (const [id, entry] of Object.entries(pluginState.metadata ?? {})) {
-    if (!anchoredIds.has(id) && entry?.kind !== 'comment') continue;
+    if (!anchoredIds.has(id) && entry?.kind !== 'comment' && !isPendingSuggestionMetadata(entry)) continue;
     if (!shouldIncludeMetadataEntry(entry, includeAuthored)) continue;
     metadata[id] = { ...entry };
   }
@@ -1884,9 +1895,17 @@ export function applyRemoteMarks(
 
       const range = resolveStoredMarkRange(tr.doc, stored);
       if (!range) {
-        if (!isAuthored || authoredHydrationFailures < AUTHORED_ANCHOR_HYDRATION_FAILURE_BUDGET_PER_PASS) {
+        const isSuggestion = stored.kind === 'insert'
+          || stored.kind === 'delete'
+          || stored.kind === 'replace';
+        const shouldLogSuggestion = !isSuggestion || !loggedUnplaceableSuggestionIds.has(id);
+        if (
+          shouldLogSuggestion
+          && (!isAuthored || authoredHydrationFailures < AUTHORED_ANCHOR_HYDRATION_FAILURE_BUDGET_PER_PASS)
+        ) {
           console.warn(`[applyRemoteMarks] Could not resolve remote mark ${id}`);
         }
+        if (isSuggestion) loggedUnplaceableSuggestionIds.add(id);
         recordMarkAnchorHydrationFailure(id, tr.doc, now);
         if (isAuthored) {
           authoredHydrationFailures += 1;
@@ -2506,7 +2525,13 @@ function resolveStructuralReplaceRange(
       reason: 'upgraded-to-parent',
     };
   }
-  return { range, structural: true, safe: false, upgraded: false, reason: 'not-block-aligned' };
+  return {
+    range,
+    structural: true,
+    safe: true,
+    upgraded: false,
+    reason: 'split-textblock',
+  };
 }
 
 function parseHeadingMarkdown(
@@ -2614,6 +2639,7 @@ function buildTextblockSplitReplacement(
   range: MarkRange,
   analysis: ReturnType<typeof analyzeTextblockRange>,
   parsedFragment: Fragment,
+  options: { mergeCompatibleEdges?: boolean } = {},
 ): {
   replaceFrom: number;
   replaceTo: number;
@@ -2630,29 +2656,57 @@ function buildTextblockSplitReplacement(
   const beforeContent = parent.content.cut(0, $from.parentOffset);
   const afterContent = parent.content.cut($to.parentOffset, parent.content.size);
 
-  const nodes: ProseMirrorNode[] = [];
-  let insertedOffset = 0;
-
-  if (beforeContent.size > 0) {
-    const beforeNode = parent.type.create(parent.attrs, beforeContent, parent.marks);
-    nodes.push(beforeNode);
-    insertedOffset += beforeNode.nodeSize;
-  }
-
+  const parsedNodes: ProseMirrorNode[] = [];
   for (let index = 0; index < parsedFragment.childCount; index += 1) {
-    nodes.push(parsedFragment.child(index));
+    parsedNodes.push(parsedFragment.child(index));
+  }
+  if (parsedNodes.length === 0) return null;
+
+  const nodes: ProseMirrorNode[] = [];
+  let appliedFromOffset = 0;
+  if (beforeContent.size > 0) {
+    const firstParsed = parsedNodes[0];
+    const mergedContent = beforeContent.append(firstParsed.content);
+    if (
+      options.mergeCompatibleEdges
+      && firstParsed.type === parent.type
+      && parent.type.validContent(mergedContent)
+    ) {
+      parsedNodes[0] = parent.type.create(parent.attrs, mergedContent, parent.marks);
+      appliedFromOffset = 1 + beforeContent.size;
+    } else {
+      const beforeNode = parent.type.create(parent.attrs, beforeContent, parent.marks);
+      nodes.push(beforeNode);
+      appliedFromOffset = beforeNode.nodeSize;
+    }
   }
 
+  let trailingExcludedSize = 0;
   if (afterContent.size > 0) {
+    const lastIndex = parsedNodes.length - 1;
+    const lastParsed = parsedNodes[lastIndex];
+    const mergedContent = lastParsed.content.append(afterContent);
+    if (
+      options.mergeCompatibleEdges
+      && lastParsed.type === parent.type
+      && parent.type.validContent(mergedContent)
+    ) {
+      parsedNodes[lastIndex] = parent.type.create(parent.attrs, mergedContent, parent.marks);
+      trailingExcludedSize = 1 + afterContent.size;
+    }
+  }
+
+  nodes.push(...parsedNodes);
+
+  if (afterContent.size > 0 && trailingExcludedSize === 0) {
     const afterNode = parent.type.create(parent.attrs, afterContent, parent.marks);
     nodes.push(afterNode);
+    trailingExcludedSize = afterNode.nodeSize;
   }
 
-  if (nodes.length === 0) return null;
-
   const replacement = Fragment.fromArray(nodes);
-  const appliedFrom = analysis.parentStart + insertedOffset;
-  const appliedTo = appliedFrom + parsedFragment.size;
+  const appliedFrom = analysis.parentStart + appliedFromOffset;
+  const appliedTo = analysis.parentStart + replacement.size - trailingExcludedSize;
 
   return {
     replaceFrom: analysis.parentStart,
@@ -2683,6 +2737,7 @@ function applyMarkdownReplace(
   let replacement: ProseMirrorNode | Fragment = view.state.schema.text(markdown);
   let usedPreservedTextblock = false;
   let usedExplicitHeading = false;
+  let splitAppliedRange: MarkRange | null = null;
 
   // For non-structural replacements that cover a whole textblock, preserve the
   // existing block/container type (heading level, list item paragraph, etc.)
@@ -2728,6 +2783,22 @@ function applyMarkdownReplace(
         replaceFrom = analysis.parentStart;
         replaceTo = analysis.parentEnd;
         replacement = parsedFragmentForReplace;
+      } else if (analysis.sameParent && analysis.parentIsTextblock) {
+        const splitReplacement = buildTextblockSplitReplacement(
+          docBefore,
+          effectiveRange,
+          analysis,
+          parsedFragmentForReplace,
+          { mergeCompatibleEdges: true },
+        );
+        if (!splitReplacement) {
+          console.warn('[marks] Rejecting structural replace accept because the textblock could not be split safely.');
+          return { ok: false };
+        }
+        replaceFrom = splitReplacement.replaceFrom;
+        replaceTo = splitReplacement.replaceTo;
+        replacement = splitReplacement.replacement;
+        splitAppliedRange = splitReplacement.appliedRange;
       } else if (structuralSafe) {
         // Structural markdown that spans multiple aligned textblocks should
         // replace the full block nodes, not insert literal "##" text.
@@ -2761,7 +2832,7 @@ function applyMarkdownReplace(
     return { ok: false };
   }
 
-  const appliedRange: MarkRange = {
+  const appliedRange: MarkRange = splitAppliedRange ?? {
     from: replaceFrom,
     to: replaceFrom + getReplacementSize(replacement),
   };
