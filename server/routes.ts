@@ -67,6 +67,7 @@ import {
   AGENT_DOCS_PATH,
   CANONICAL_CREATE_API_PATH,
   DIRECT_SHARE_AUTH_FIX,
+  LEGACY_CREATE_API_PATH,
   buildLegacyCreateDeprecationPayload,
   buildLegacyCreateDisabledPayload,
   canonicalCreateLink,
@@ -448,6 +449,11 @@ function recordLegacyCreateRouteTelemetry(
   }));
 }
 
+function isLegacyCreatePathRequest(req: Request): boolean {
+  if (req.baseUrl === '/api') return true;
+  return req.originalUrl === LEGACY_CREATE_API_PATH || req.originalUrl.startsWith(`${LEGACY_CREATE_API_PATH}?`);
+}
+
 async function authorizeDirectShareRequest(
   req: Request,
   res: Response,
@@ -786,18 +792,45 @@ function deriveShareCapabilities(role: ShareRole, shareState: string): {
 
 // Create a shared document
 apiRoutes.post('/documents', async (req: Request, res: Response) => {
+  const legacyPathRequest = isLegacyCreatePathRequest(req);
   const legacyCreateMode = resolveLegacyCreateMode(getPublicBaseUrl(req));
-  if (legacyCreateMode === 'disabled') {
-    recordLegacyCreateRouteTelemetry(req, legacyCreateMode, 'blocked_disabled');
-    applyLegacyCreateHeaders(res, legacyCreateMode);
-    res.status(410).json(buildLegacyCreateDisabledPayload());
-    return;
+  if (legacyPathRequest) {
+    if (legacyCreateMode === 'disabled') {
+      recordLegacyCreateRouteTelemetry(req, legacyCreateMode, 'blocked_disabled');
+      applyLegacyCreateHeaders(res, legacyCreateMode);
+      res.status(410).json(buildLegacyCreateDisabledPayload());
+      return;
+    }
+    if (legacyCreateMode === 'warn') {
+      recordLegacyCreateRouteTelemetry(req, legacyCreateMode, 'allowed_warn');
+      applyLegacyCreateHeaders(res, legacyCreateMode);
+    } else {
+      recordLegacyCreateRouteTelemetry(req, legacyCreateMode, 'allowed');
+    }
   }
-  if (legacyCreateMode === 'warn') {
-    recordLegacyCreateRouteTelemetry(req, legacyCreateMode, 'allowed_warn');
-    applyLegacyCreateHeaders(res, legacyCreateMode);
-  } else {
-    recordLegacyCreateRouteTelemetry(req, legacyCreateMode, 'allowed');
+
+  let directShareAuth: DirectShareAuthorizationResult = {
+    authed: false,
+    authMode: 'none',
+    actor: 'anonymous',
+  };
+  if (!legacyPathRequest) {
+    const auth = await authorizeDirectShareRequest(req, res);
+    if (!auth) return;
+    directShareAuth = auth;
+
+    const rateLimit = checkDirectShareRateLimit(req, auth.authed);
+    if (!rateLimit.allowed) {
+      res.setHeader('retry-after', String(rateLimit.retryAfterSeconds));
+      res.status(429).json({
+        error: 'Rate limit exceeded for direct share creation',
+        code: 'RATE_LIMITED',
+        retryAfterSeconds: rateLimit.retryAfterSeconds,
+        maxPerWindow: rateLimit.max,
+        windowMs: rateLimit.windowMs,
+      });
+      return;
+    }
   }
 
   const { markdown, marks, title, ownerId } = req.body;
@@ -851,8 +884,8 @@ apiRoutes.post('/documents', async (req: Request, res: Response) => {
     title,
     shareState: doc.share_state,
     accessRole: defaultAccess.role,
-    authMode: 'none',
-    authenticated: false,
+    authMode: directShareAuth.authMode,
+    authenticated: directShareAuth.authed,
     contentChars: sanitizedMarkdown.length,
   });
 
@@ -887,7 +920,7 @@ apiRoutes.post('/documents', async (req: Request, res: Response) => {
       includeMutationRoutes: true,
       includeBridgeRoutes: true,
     }),
-    ...(legacyCreateMode === 'warn'
+    ...(legacyPathRequest && legacyCreateMode === 'warn'
       ? { deprecation: buildLegacyCreateDeprecationPayload(legacyCreateMode) }
       : {}),
   });
