@@ -126,6 +126,29 @@ export type ShareEventHandler = (message: Record<string, unknown>) => void;
 export type ShareSocketState = 'connecting' | 'connected' | 'disconnected';
 type ShareConnectionStateHandler = (state: ShareSocketState) => void;
 
+export type ShareSuggestionResolutionTransport = 'collab' | 'rest';
+
+export function getShareSuggestionResolutionTransport(state: {
+  collabEnabled: boolean;
+  connectionStatus: 'connecting' | 'connected' | 'disconnected';
+  isSynced: boolean;
+}): ShareSuggestionResolutionTransport {
+  return state.collabEnabled
+    && state.connectionStatus === 'connected'
+    && state.isSynced
+    ? 'collab'
+    : 'rest';
+}
+
+export function runShareSuggestionRestFallback(
+  transport: ShareSuggestionResolutionTransport,
+  mutate: () => void,
+): boolean {
+  if (transport === 'collab') return false;
+  mutate();
+  return true;
+}
+
 const MUTATION_BASE_STATE_RETRY_ATTEMPTS = 4;
 const MUTATION_BASE_STATE_RETRY_DELAY_MS = 100;
 
