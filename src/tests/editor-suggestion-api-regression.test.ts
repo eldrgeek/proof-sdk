@@ -43,12 +43,12 @@ function run(): void {
 
   const markAcceptAllBlock = sliceBetween(editorSource, '  markAcceptAll(): number {', '\n  /**\n   * Reject all pending suggestions\n   */');
   assert(
-    markAcceptAllBlock.includes('acceptedCount = acceptAll(view, parser);')
-      && markAcceptAllBlock.indexOf('acceptedCount = acceptAll(view, parser);')
-        < markAcceptAllBlock.indexOf('const result = await shareClient.acceptSuggestion(suggestionId, actor);')
-      && markAcceptAllBlock.includes('acceptedIds = pendingIds.filter((id) => !remainingIds.has(id));')
-      && markAcceptAllBlock.includes('this.applyAuthoritativeShareMarks(latestServerMarks);'),
-    'Expected markAcceptAll to apply locally before persisting each accepted suggestion',
+    markAcceptAllBlock.includes('if (acceptMark(view, id, parser))')
+      && markAcceptAllBlock.indexOf('if (acceptMark(view, id, parser))')
+        < markAcceptAllBlock.indexOf("this.reconcileShareSuggestionBatch(acceptedIds, 'accepted', actor)")
+      && markAcceptAllBlock.includes('this.isSuggestionPendingOnServer(id)')
+      && markAcceptAllBlock.includes('!this.shareRejectedSuggestionIdsBlockedFromAcceptAll.has(id)'),
+    'Expected markAcceptAll to apply only mutually pending, non-rejected suggestions before batch reconciliation',
   );
 
   assert(
