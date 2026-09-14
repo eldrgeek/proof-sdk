@@ -125,6 +125,7 @@ import {
   getAuthorshipStats,
   coalesceMarks,
   updateMarksAfterEdit,
+  clearResolvedMarkTombstones,
   type Mark,
   type MarkKind,
   type MarkRange,
@@ -152,6 +153,7 @@ import { fileClient } from '../bridge/file-client';
 import { shareClient, type CollabSessionInfo, type SharePendingEvent } from '../bridge/share-client';
 import { collabClient, type CollabSyncStatus } from '../bridge/collab-client';
 import { shouldDeferShareMarksRefresh } from './share-marks-refresh';
+import { recoverShareMarksAfterMutationFailure } from './share-mark-mutation';
 import {
   createShareSuggestionReviewUpdateScheduler,
   shouldUpdateShareSuggestionReviewDisplay,
@@ -2773,6 +2775,27 @@ class ProofEditorImpl implements ProofEditor {
     this.lastReceivedServerMarks = { ...serverMarks };
     this.initialMarksSynced = true;
     this.applyExternalMarks(serverMarks);
+  }
+
+  private async recoverAuthoritativeShareMarks(
+    failure: unknown,
+    fallbackMessage: string,
+    optimisticMarkIds: string[] = [],
+  ): Promise<void> {
+    await recoverShareMarksAfterMutationFailure({
+      failure,
+      fallbackMessage,
+      fetchOpenContext: () => shareClient.fetchOpenContext(),
+      showErrorBanner: (message) => this.showErrorBanner(message),
+      applyServerMarks: (marks) => {
+        const pendingIds = optimisticMarkIds.filter((id) => {
+          const mark = marks[id];
+          return Boolean(mark && mark.status !== 'accepted' && mark.status !== 'rejected');
+        });
+        clearResolvedMarkTombstones(pendingIds);
+        this.applyAuthoritativeShareMarks(marks);
+      },
+    });
   }
 
   private getViewerText(otherViewerCount: number): string {
@@ -8831,37 +8854,53 @@ class ProofEditorImpl implements ProofEditor {
     }
 
     if (this.isShareMode) {
-      let canAccept = false;
+      let accepted = false;
       this.editor.action((ctx) => {
         const view = ctx.get(editorViewCtx);
-        canAccept = getPendingSuggestions(getMarks(view.state)).some((mark) => mark.id === markId);
+        const parser = ctx.get(parserCtx);
+        this.suppressMarksSync = true;
+        try {
+          accepted = acceptMark(view, markId, parser);
+        } finally {
+          this.suppressMarksSync = false;
+        }
+        if (!accepted) return;
+        const metadata = getMarkMetadataWithQuotes(view.state);
+        this.lastReceivedServerMarks = { ...metadata };
+        this.initialMarksSynced = true;
+        const stats = getAuthorshipStats(view);
+        this.notifyHostAuthorshipStatsUpdated(stats);
       });
-      if (!canAccept) {
+
+      if (!accepted) {
         console.warn('[markAccept] Suggestion not pending in share mode:', markId);
         return false;
       }
 
       const actor = getCurrentActor();
-      void shareClient.acceptSuggestion(markId, actor).then((result) => {
-        if (!result || 'error' in result || result.success !== true) return;
+      void shareClient.acceptSuggestion(markId, actor).then(async (result) => {
+        if (!result || 'error' in result || result.success !== true) {
+          await this.recoverAuthoritativeShareMarks(
+            result,
+            'Unable to accept suggestion. The latest server state has been restored.',
+            [markId],
+          );
+          return;
+        }
         const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
           ? result.marks as Record<string, StoredMark>
           : null;
         if (!serverMarks) return;
-        this.lastReceivedServerMarks = { ...serverMarks };
-        this.initialMarksSynced = true;
-        if (this.editor) {
-          this.editor.action((innerCtx) => {
-            const innerView = innerCtx.get(editorViewCtx);
-            applyRemoteMarks(innerView, serverMarks, { hydrateAnchors: this.collabCanEdit });
-            const stats = getAuthorshipStats(innerView);
-            this.notifyHostAuthorshipStatsUpdated(stats);
-          });
-        }
-        captureEvent('suggestion_accepted', { count: 1 });
+        this.applyAuthoritativeShareMarks(serverMarks);
       }).catch((error) => {
         console.error('[markAccept] Failed to persist suggestion acceptance via share mutation:', error);
+        void this.recoverAuthoritativeShareMarks(
+          error,
+          'Unable to accept suggestion. The latest server state has been restored.',
+          [markId],
+        );
       });
+      captureEvent('suggestion_accepted', { count: 1 });
       return true;
     }
 
@@ -8871,31 +8910,6 @@ class ProofEditorImpl implements ProofEditor {
       const parser = ctx.get(parserCtx);
       success = acceptMark(view, markId, parser);
       console.log('[markAccept] Accepted:', success);
-      if (success && this.isShareMode) {
-        const metadata = getMarkMetadataWithQuotes(view.state);
-        this.lastReceivedServerMarks = { ...metadata };
-        this.initialMarksSynced = true;
-
-        const actor = getCurrentActor();
-        void shareClient.acceptSuggestion(markId, actor).then((result) => {
-          if (!result || 'error' in result || result.success !== true) return;
-          const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
-            ? result.marks as Record<string, StoredMark>
-            : null;
-          if (!serverMarks) return;
-          this.lastReceivedServerMarks = { ...serverMarks };
-          this.initialMarksSynced = true;
-          if (this.editor) {
-            this.editor.action((innerCtx) => {
-              const innerView = innerCtx.get(editorViewCtx);
-              const mergedMetadata = mergePendingServerMarks(getMarkMetadataWithQuotes(innerView.state), serverMarks);
-              setMarkMetadata(innerView, mergedMetadata);
-            });
-          }
-        }).catch((error) => {
-          console.error('[markAccept] Failed to persist suggestion acceptance via share mutation:', error);
-        });
-      }
       if (success) {
         captureEvent('suggestion_accepted', { count: 1 });
         const stats = getAuthorshipStats(view);
@@ -8974,85 +8988,69 @@ class ProofEditorImpl implements ProofEditor {
     }
 
     if (this.isShareMode) {
+      let acceptedCount = 0;
       let acceptedIds: string[] = [];
       this.editor.action((ctx) => {
         const view = ctx.get(editorViewCtx);
-        acceptedIds = getPendingSuggestions(getMarks(view.state)).map((mark) => mark.id);
+        const parser = ctx.get(parserCtx);
+        const pendingIds = getPendingSuggestions(getMarks(view.state)).map((mark) => mark.id);
+        if (pendingIds.length === 0) return;
+        this.suppressMarksSync = true;
+        try {
+          acceptedCount = acceptAll(view, parser);
+        } finally {
+          this.suppressMarksSync = false;
+        }
+        if (acceptedCount <= 0) return;
+        const remainingIds = new Set(getPendingSuggestions(getMarks(view.state)).map((mark) => mark.id));
+        acceptedIds = pendingIds.filter((id) => !remainingIds.has(id));
+        const metadata = getMarkMetadataWithQuotes(view.state);
+        this.lastReceivedServerMarks = { ...metadata };
+        this.initialMarksSynced = true;
+        const stats = getAuthorshipStats(view);
+        this.notifyHostAuthorshipStatsUpdated(stats);
       });
-      if (acceptedIds.length === 0) return 0;
+      if (acceptedCount <= 0 || acceptedIds.length === 0) return 0;
 
       const actor = getCurrentActor();
       void (async () => {
         let latestServerMarks: Record<string, StoredMark> | null = null;
-        let acceptedCount = 0;
         for (const suggestionId of acceptedIds) {
           const result = await shareClient.acceptSuggestion(suggestionId, actor);
-          if (!result || 'error' in result || result.success !== true) continue;
+          if (!result || 'error' in result || result.success !== true) {
+            await this.recoverAuthoritativeShareMarks(
+              result,
+              'Unable to accept every suggestion. The latest server state has been restored.',
+              acceptedIds,
+            );
+            continue;
+          }
           const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
             ? result.marks as Record<string, StoredMark>
             : null;
           if (!serverMarks) continue;
           latestServerMarks = serverMarks;
-          acceptedCount += 1;
         }
         if (!latestServerMarks) return;
-        this.lastReceivedServerMarks = { ...latestServerMarks };
-        this.initialMarksSynced = true;
-        if (this.editor) {
-          this.editor.action((innerCtx) => {
-            const innerView = innerCtx.get(editorViewCtx);
-            applyRemoteMarks(innerView, latestServerMarks!, { hydrateAnchors: this.collabCanEdit });
-            const stats = getAuthorshipStats(innerView);
-            this.notifyHostAuthorshipStatsUpdated(stats);
-          });
-        }
-        if (acceptedCount > 0) {
-          captureEvent('suggestion_accepted', { count: acceptedCount });
-        }
+        this.applyAuthoritativeShareMarks(latestServerMarks);
       })().catch((error) => {
         console.error('[markAcceptAll] Failed to persist suggestion acceptance via share mutation:', error);
+        void this.recoverAuthoritativeShareMarks(
+          error,
+          'Unable to accept every suggestion. The latest server state has been restored.',
+          acceptedIds,
+        );
       });
-      return acceptedIds.length;
+      captureEvent('suggestion_accepted', { count: acceptedCount });
+      return acceptedCount;
     }
 
     let count = 0;
-    let acceptedIds: string[] = [];
     this.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx);
       const parser = ctx.get(parserCtx);
-      acceptedIds = getPendingSuggestions(getMarks(view.state)).map((mark) => mark.id);
       count = acceptAll(view, parser);
       console.log('[markAcceptAll] Accepted:', count);
-      if (count > 0 && this.isShareMode && acceptedIds.length > 0) {
-        const metadata = getMarkMetadataWithQuotes(view.state);
-        this.lastReceivedServerMarks = { ...metadata };
-        this.initialMarksSynced = true;
-
-        const actor = getCurrentActor();
-        void (async () => {
-          let latestServerMarks: Record<string, StoredMark> | null = null;
-          for (const suggestionId of acceptedIds) {
-            const result = await shareClient.acceptSuggestion(suggestionId, actor);
-            if (!result || 'error' in result || result.success !== true) continue;
-            const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
-              ? result.marks as Record<string, StoredMark>
-              : null;
-            if (!serverMarks) continue;
-            latestServerMarks = serverMarks;
-          }
-          if (!latestServerMarks) return;
-          this.lastReceivedServerMarks = { ...latestServerMarks };
-          this.initialMarksSynced = true;
-          if (this.editor) {
-            this.editor.action((innerCtx) => {
-              const innerView = innerCtx.get(editorViewCtx);
-              applyRemoteMarks(innerView, latestServerMarks!, { hydrateAnchors: this.collabCanEdit });
-            });
-          }
-        })().catch((error) => {
-          console.error('[markAcceptAll] Failed to persist suggestion acceptance via share mutation:', error);
-        });
-      }
       if (count > 0) {
         captureEvent('suggestion_accepted', { count });
         const stats = getAuthorshipStats(view);

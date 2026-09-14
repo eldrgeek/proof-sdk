@@ -314,6 +314,12 @@ function markResolvedMarkIds(
   }
 }
 
+export function clearResolvedMarkTombstones(ids: string[]): void {
+  for (const id of ids) {
+    if (id) resolvedMarkTombstones.delete(id);
+  }
+}
+
 function isResolvedMarkTombstoned(
   id: string,
   now: number = Date.now(),
