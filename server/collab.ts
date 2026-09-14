@@ -23,6 +23,7 @@ import {
   getLatestYSnapshot,
   listActiveCollabConnectionSlugs,
   listRecentDocumentLiveCollabLeaseSlugs,
+  removeResurrectedMarksFromPayload,
   getYStateBlob,
   pruneObsoleteYHistory,
   updateYStateBlob,
@@ -703,6 +704,7 @@ type LoadedDocDbMeta = {
   baselineStateVector: Uint8Array;
 };
 const loadedDocDbMeta = new Map<string, LoadedDocDbMeta>();
+const loggedTombstonedMarkDrops = new Set<string>();
 // The loaded Yjs doc is the authoritative live state. Canonical markdown/marks in the
 // DB are derived from that state and must never be allowed to overwrite a newer live
 // Yjs document during active collaboration.
@@ -1960,6 +1962,7 @@ function shouldIgnoreDurablePersistOrigin(origin: unknown): boolean {
 
 function ensureDurablePersistTracking(slug: string, ydoc: Y.Doc): void {
   if (durablePersistListenerAttached.has(ydoc)) return;
+  dropTombstonedMarksFromLiveMap(slug, ydoc, 'loaded_doc');
   durablePersistListenerAttached.add(ydoc);
   ydoc.on('afterTransaction', (transaction: any) => {
     const changedParentTypes = transaction?.changedParentTypes;
@@ -1971,6 +1974,9 @@ function ensureDurablePersistTracking(slug: string, ydoc: Y.Doc): void {
       || changedParentTypes.has(markdown)
       || changedParentTypes.has(marks);
     if (!docChanged) return;
+    if (changedParentTypes.has(marks)) {
+      dropTombstonedMarksFromLiveMap(slug, ydoc, 'collab_client_write');
+    }
     if (shouldIgnoreDurablePersistOrigin(transaction?.origin)) return;
     const originContext = (
       transaction?.origin
@@ -2826,20 +2832,88 @@ function shouldPreserveMissingMark(
   return true;
 }
 
+type TombstonedMarkDropSource =
+  | 'loaded_doc'
+  | 'collab_client_write'
+  | 'projection_materialization'
+  | 'canonical_sync';
+
+function logTombstonedMarkDropOnce(
+  slug: string,
+  markId: string,
+  source: TombstonedMarkDropSource,
+): void {
+  const key = `${slug}\0${markId}`;
+  if (loggedTombstonedMarkDrops.has(key)) return;
+  loggedTombstonedMarkDrops.add(key);
+  console.warn('[collab] dropped tombstoned mark', {
+    slug,
+    markId,
+    source,
+  });
+  traceServerIncident({
+    slug,
+    subsystem: 'collab',
+    level: 'warn',
+    eventType: 'collab.tombstoned_mark_dropped',
+    message: 'Dropped a mark protected by a live resolution tombstone',
+    data: {
+      markId,
+      source,
+    },
+  });
+}
+
+function dropTombstonedMarks(
+  slug: string,
+  marks: Record<string, unknown>,
+  source: TombstonedMarkDropSource,
+): Record<string, unknown> {
+  const scrubbed = removeResurrectedMarksFromPayload(slug, marks);
+  for (const markId of scrubbed.removed) {
+    logTombstonedMarkDropOnce(slug, markId, source);
+  }
+  return scrubbed.marks;
+}
+
+function dropTombstonedMarksFromLiveMap(
+  slug: string,
+  ydoc: Y.Doc,
+  source: 'loaded_doc' | 'collab_client_write',
+): void {
+  const marksMap = ydoc.getMap('marks');
+  const current = encodeMarksMap(marksMap);
+  const scrubbed = dropTombstonedMarks(slug, current, source);
+  const removedIds = Object.keys(current).filter((markId) => scrubbed[markId] === undefined);
+  if (removedIds.length === 0) return;
+  ydoc.transact(() => {
+    for (const markId of removedIds) marksMap.delete(markId);
+  }, 'server-tombstone-filter');
+}
+
 export function mergePreservedActionMarks(
   slug: string,
   incomingMarks: Record<string, unknown>,
   options: { includeSuggestions?: boolean } = {},
 ): Record<string, unknown> {
+  const filteredIncomingMarks = dropTombstonedMarks(
+    slug,
+    incomingMarks,
+    'projection_materialization',
+  );
   const row = getDocumentBySlug(slug);
-  if (!row) return incomingMarks;
+  if (!row) return filteredIncomingMarks;
 
-  const existingMarks = parseStoredMarks(row.marks);
+  const existingMarks = dropTombstonedMarks(
+    slug,
+    parseStoredMarks(row.marks),
+    'projection_materialization',
+  );
   let preserved = 0;
   for (const [markId, value] of Object.entries(existingMarks)) {
-    if (incomingMarks[markId] !== undefined) continue;
+    if (filteredIncomingMarks[markId] !== undefined) continue;
     if (!shouldPreserveMissingMark(value, options)) continue;
-    incomingMarks[markId] = value;
+    filteredIncomingMarks[markId] = value;
     preserved += 1;
   }
 
@@ -2847,10 +2921,10 @@ export function mergePreservedActionMarks(
     console.warn('[collab] preserved non-authored marks from DB during projection materialization', {
       slug,
       preserved,
-      incomingMarkCount: Object.keys(incomingMarks).length,
+      incomingMarkCount: Object.keys(filteredIncomingMarks).length,
     });
   }
-  return incomingMarks;
+  return filteredIncomingMarks;
 }
 
 function touchDoc(slug: string): void {
@@ -9683,7 +9757,13 @@ async function syncCanonicalDocumentStateToCollabInner(
       fragmentAuthorityMarkdown = previewResolved.markdown;
     }
 
-    const marks = hasMarks ? canonicalizeStoredMarks(options.marks ?? {}) : null;
+    const marks = hasMarks
+      ? canonicalizeStoredMarks(dropTombstonedMarks(
+        slug,
+        options.marks ?? {},
+        'canonical_sync',
+      ) as Record<string, StoredMark>)
+      : null;
     ydoc.transact(() => {
       if (parsedDoc && fragmentAuthorityMarkdown !== null) {
         replaceYXmlFragment(ydoc.getXmlFragment('prosemirror'), parsedDoc);

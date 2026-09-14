@@ -2881,31 +2881,29 @@ export function removeResurrectedMarksFromPayload(
 
   const placeholders = markIds.map(() => '?').join(', ');
   const rows = getDb().prepare(`
-    SELECT mark_id
+    SELECT mark_id, status
     FROM ${MARK_TOMBSTONES_TABLE}
     WHERE document_slug = ?
       AND mark_id IN (${placeholders})
-  `).all(slug, ...markIds) as Array<{ mark_id: string }>;
+      AND expires_at > ?
+  `).all(slug, ...markIds, new Date().toISOString()) as Array<{
+    mark_id: string;
+    status: MarkTombstoneRow['status'];
+  }>;
   if (rows.length === 0) return { marks, removed: [] };
 
-  const tombstoned = new Set(rows.map((row) => row.mark_id));
   const next: Record<string, unknown> = { ...marks };
   const removed: string[] = [];
-  for (const markId of tombstoned) {
-    const raw = next[markId];
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-      delete next[markId];
-      removed.push(markId);
-      continue;
-    }
-    const value = raw as Record<string, unknown>;
-    const status = typeof value.status === 'string' ? value.status : '';
-    const resolved = value.resolved === true;
-    const isTerminal = resolved || status === 'accepted' || status === 'rejected';
-    if (!isTerminal) {
-      delete next[markId];
-      removed.push(markId);
-    }
+  for (const row of rows) {
+    const value = next[row.mark_id];
+    const isResolvedComment = row.status === 'resolved'
+      && value
+      && typeof value === 'object'
+      && !Array.isArray(value)
+      && (value as Record<string, unknown>).resolved === true;
+    if (isResolvedComment) continue;
+    delete next[row.mark_id];
+    removed.push(row.mark_id);
   }
   return { marks: next, removed };
 }

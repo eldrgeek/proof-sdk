@@ -926,6 +926,68 @@ test('applyRemoteMarks does not resurrect locally rejected mark ids', () => {
   assert(!(markId in (pluginState?.metadata ?? {})), 'Rejected mark metadata should remain removed after remote sync');
 });
 
+test('authoritative remote deletion removes a pending suggestion without changing its text', () => {
+  const markId = 'm-authoritative-remote-delete';
+  const suggestionMark = marksSchema.marks.proofSuggestion.create({
+    id: markId,
+    kind: 'insert',
+    by: 'human:test',
+  });
+  const initialDoc = marksSchema.node('doc', null, [
+    marksSchema.node('paragraph', null, [
+      marksSchema.text('Hello'),
+      marksSchema.text(' world', [suggestionMark]),
+    ]),
+  ]);
+  const remoteMetadata = {
+    [markId]: {
+      kind: 'insert' as const,
+      by: 'human:test',
+      createdAt: new Date('2026-09-14T00:00:00.000Z').toISOString(),
+      content: ' world',
+      status: 'pending' as const,
+      quote: 'world',
+    },
+  };
+  const marksStatePlugin = new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: remoteMetadata, activeMarkId: null }),
+      apply: (tr, value) => {
+        const meta = tr.getMeta(marksPluginKey);
+        return meta?.type === 'SET_METADATA'
+          ? { ...value, metadata: meta.metadata }
+          : value;
+      },
+    },
+  });
+  let state = EditorState.create({
+    schema: marksSchema,
+    doc: initialDoc,
+    plugins: [marksStatePlugin],
+  });
+  const view = {
+    get state() {
+      return state;
+    },
+    dispatch(tr: any) {
+      state = state.apply(tr);
+    },
+  } as any;
+
+  applyRemoteMarks(view, {}, { authoritativeSnapshot: true });
+
+  assertEqual(state.doc.textContent, 'Hello world', 'Remote marks deletion must leave Yjs-synced text unchanged');
+  assert(!getMarks(state).some((mark) => mark.id === markId), 'Remote deletion should remove the local suggestion anchor');
+  assert(!(markId in getMarkMetadata(state)), 'Remote deletion should remove local suggestion metadata');
+
+  const nextMarksChangePayload = mergePendingServerMarks(getMarkMetadataWithQuotes(state), remoteMetadata);
+  assert(
+    !(markId in nextMarksChangePayload),
+    'A later marks-change merge must not re-add the remotely deleted suggestion',
+  );
+});
+
 function runInsertResolutionWithSynchronousStaleRemoteApply(action: 'accept' | 'reject'): {
   state: EditorState;
   markId: string;
