@@ -1006,6 +1006,8 @@ class ProofEditorImpl implements ProofEditor {
   heatMapMode: 'hidden' | 'subtle' | 'background' | 'full' = 'background';
   private isCliMode: boolean = false;
   private isShareMode: boolean = false;
+  private shareBannerSuggestBtnEl: HTMLButtonElement | null = null;
+  private suggestDefaultApplied = false;
   private shareViewerName: string | null = null;
   private isReadOnly: boolean = false;
   private shareAllowLocalEdits: boolean = true;
@@ -2508,6 +2510,11 @@ class ProofEditorImpl implements ProofEditor {
     }
     const allowLocalEdits = baseAllowLocalEdits && hydrated;
     this.shareAllowLocalEdits = allowLocalEdits;
+    if (allowLocalEdits && !this.suggestDefaultApplied) {
+      this.suggestDefaultApplied = true;
+      if (this.resolveInitialSuggestMode() === 'suggest') this.enableSuggestions();
+    }
+    this.updateSuggestToggleDisplay();
     // Only block content mutations for true view-only sessions.
     // Avoid using filterTransaction as a temporary "sync lock", since it can deadlock hydration.
     this.setShareContentFilterEnabled(this.collabEnabled && !this.collabCanEdit);
@@ -3398,6 +3405,7 @@ class ProofEditorImpl implements ProofEditor {
       this.updateShareBannerPresenceDisplay();
       this.updateShareBannerAgentControlDisplay();
       this.updateShareBannerSyncDisplay();
+      this.updateSuggestToggleDisplay();
       this.scheduleBannerLayoutUpdate();
       return;
     }
@@ -3449,8 +3457,66 @@ class ProofEditorImpl implements ProofEditor {
 
     const shareBtn = this.createShareMenuButton();
 
-    banner.replaceChildren(wordmark, separator, title, syncStatusSep, syncStatusInline, avatars, agentSlot, shareBtn);
+    const suggestToggle = this.createSuggestToggleButton();
+    banner.replaceChildren(wordmark, separator, title, syncStatusSep, syncStatusInline, avatars, suggestToggle, agentSlot, shareBtn);
+    this.updateSuggestToggleDisplay();
     this.scheduleBannerLayoutUpdate();
+  }
+
+
+  private suggestModeStorageKey(): string {
+    const slug = (window.location.pathname.match(/\/d\/([^/?#]+)/) || [])[1] || 'doc';
+    return `proof:suggest-mode:${slug}`;
+  }
+
+  private resolveInitialSuggestMode(): 'suggest' | 'edit' {
+    try {
+      const fromUrl = new URLSearchParams(window.location.search).get('mode');
+      if (fromUrl === 'suggest' || fromUrl === 'edit') return fromUrl;
+      const saved = window.localStorage.getItem(this.suggestModeStorageKey());
+      if (saved === 'suggest' || saved === 'edit') return saved;
+    } catch {
+      // storage can be unavailable (private windows); fall through to the default
+    }
+    return 'suggest';
+  }
+
+  private createSuggestToggleButton(): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'share-pill-suggest-toggle';
+    btn.style.cssText = `
+      display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:44px;min-width:44px;padding:0 12px;
+      background:rgba(255,255,255,0.7);border:1px solid rgba(17,24,39,0.10);border-radius:22px;color:#111827;
+      font-size:12px;font-weight:600;cursor:pointer;transition:background 0.15s,border-color 0.15s;flex-shrink:0;font-family:inherit;
+    `;
+    btn.onmouseenter = () => { btn.style.background = '#fff'; btn.style.borderColor = 'rgba(17,24,39,0.20)'; };
+    btn.onmouseleave = () => { btn.style.background = 'rgba(255,255,255,0.7)'; btn.style.borderColor = 'rgba(17,24,39,0.10)'; };
+    btn.onclick = () => {
+      const enabled = this.toggleSuggestions();
+      try { window.localStorage.setItem(this.suggestModeStorageKey(), enabled ? 'suggest' : 'edit'); } catch { /* ignore */ }
+      this.updateSuggestToggleDisplay();
+    };
+    this.shareBannerSuggestBtnEl = btn;
+    return btn;
+  }
+
+  private updateSuggestToggleDisplay(): void {
+    const btn = this.shareBannerSuggestBtnEl;
+    if (!btn) return;
+    const visible = this.isShareMode && this.collabCanEdit;
+    btn.style.display = visible ? 'inline-flex' : 'none';
+    if (!visible) return;
+    const on = this.isSuggestionsEnabled();
+    btn.replaceChildren();
+    const dot = document.createElement('span');
+    dot.style.cssText = `width:7px;height:7px;border-radius:50%;display:inline-block;flex-shrink:0;background:${on ? '#16a34a' : '#9ca3af'};`;
+    const label = document.createElement('span');
+    label.textContent = on ? 'Suggesting' : 'Editing';
+    btn.append(dot, label);
+    btn.setAttribute('aria-pressed', String(on));
+    btn.setAttribute('aria-label', on ? 'Suggesting: your edits are tracked. Click to edit directly.' : 'Editing directly. Click to suggest changes instead.');
+    btn.title = on ? 'Suggesting: your edits appear as tracked changes others can accept or reject' : 'Editing: your edits change the text directly';
   }
 
   private uninstallShareAgentPresenceObservers(): void {
