@@ -32,21 +32,29 @@ function run(): void {
 
   const markAcceptBlock = sliceBetween(editorSource, '  markAccept(markId: string): boolean {', '\n  /**\n   * Reject a suggestion without changing the document\n   */');
   assert(
-    markAcceptBlock.includes('void shareClient.acceptSuggestion(markId, actor).then((result) => {')
+    markAcceptBlock.includes('accepted = acceptMark(view, markId, parser);')
+      && markAcceptBlock.indexOf('accepted = acceptMark(view, markId, parser);')
+        < markAcceptBlock.indexOf('void shareClient.acceptSuggestion(markId, actor)')
+      && markAcceptBlock.includes('this.applyAuthoritativeShareMarks(serverMarks);')
+      && markAcceptBlock.includes('this.recoverAuthoritativeShareMarks(')
       && markAcceptBlock.includes("console.error('[markAccept] Failed to persist suggestion acceptance via share mutation:', error);"),
-    'Expected markAccept to persist accepted suggestions through the share mutation route',
+    'Expected markAccept to apply locally before persisting and reconcile with authoritative share marks',
   );
 
   const markAcceptAllBlock = sliceBetween(editorSource, '  markAcceptAll(): number {', '\n  /**\n   * Reject all pending suggestions\n   */');
   assert(
-    markAcceptAllBlock.includes('acceptedIds = getPendingSuggestions(getMarks(view.state)).map((mark) => mark.id);')
-      && markAcceptAllBlock.includes('const result = await shareClient.acceptSuggestion(suggestionId, actor);'),
-    'Expected markAcceptAll to persist each accepted suggestion through share mutations',
+    markAcceptAllBlock.includes('acceptedCount = acceptAll(view, parser);')
+      && markAcceptAllBlock.indexOf('acceptedCount = acceptAll(view, parser);')
+        < markAcceptAllBlock.indexOf('const result = await shareClient.acceptSuggestion(suggestionId, actor);')
+      && markAcceptAllBlock.includes('acceptedIds = pendingIds.filter((id) => !remainingIds.has(id));')
+      && markAcceptAllBlock.includes('this.applyAuthoritativeShareMarks(latestServerMarks);'),
+    'Expected markAcceptAll to apply locally before persisting each accepted suggestion',
   );
 
   assert(
     shareClientSource.includes('async acceptSuggestion(')
-      && shareClientSource.includes("/agent/${encodeURIComponent(this.slug)}/marks/accept"),
+      && shareClientSource.includes("path: 'accept',")
+      && shareClientSource.includes("/agent/${encodeURIComponent(this.slug as string)}/marks/${args.path}"),
     'Expected ShareClient to expose a dedicated acceptSuggestion mutation',
   );
 
