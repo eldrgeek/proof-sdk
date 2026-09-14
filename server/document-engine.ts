@@ -1,4 +1,6 @@
 import { randomUUID } from 'crypto';
+import { EditorState } from '@milkdown/kit/prose/state';
+import { Fragment, type Node as ProseMirrorNode, type ResolvedPos } from '@milkdown/kit/prose/model';
 import {
   addDocumentEvent,
   bumpDocumentAccessEpoch,
@@ -27,7 +29,18 @@ import {
   type CanonicalReadableDocument,
 } from './collab.js';
 import { mutateCanonicalDocument, recoverCanonicalDocumentIfNeeded } from './canonical-document.js';
+import {
+  getHeadlessMilkdownParser,
+  parseMarkdownWithHtmlFallback,
+  serializeMarkdown,
+} from './milkdown-headless.js';
 import { canonicalizeStoredMarks } from '../src/formats/marks.js';
+import {
+  buildTextIndex,
+  mapTextOffsetsToRange,
+  resolveQuoteRange,
+  type TextRange,
+} from '../src/editor/utils/text-range.js';
 import {
   canonicalizeAnchorTargetText,
   stripMarkdownVisibleText,
@@ -71,6 +84,7 @@ type StoredMark = {
   resolved?: boolean;
   content?: string;
   status?: 'pending' | 'accepted' | 'rejected';
+  insertStructure?: 'inline' | 'block' | 'table_row';
   target?: AnchorTarget;
   startRel?: string;
   endRel?: string;
@@ -930,6 +944,11 @@ function buildAcceptedSuggestionMarkdown(markdown: string, suggestion: StoredMar
 
   if (suggestion.kind === 'insert') {
     const content = typeof suggestion.content === 'string' ? suggestion.content : '';
+    if (suggestion.insertStructure === 'inline'
+      || suggestion.insertStructure === 'block'
+      || suggestion.insertStructure === 'table_row') {
+      return markdown;
+    }
     if (normalizeQuote(content) === normalizeQuote(quote)) return markdown;
     const span = findQuoteSpanInMarkdown(markdown, quote);
     if (span) {
@@ -1098,6 +1117,11 @@ function buildAcceptedSuggestionMarkdownFromSelection(
 
   if (suggestion.kind === 'insert') {
     const content = typeof suggestion.content === 'string' ? suggestion.content : '';
+    if (suggestion.insertStructure === 'inline'
+      || suggestion.insertStructure === 'block'
+      || suggestion.insertStructure === 'table_row') {
+      return markdown;
+    }
     if (normalizeQuote(content) === normalizeQuote(suggestion.quote)) return markdown;
     return `${markdown.slice(0, span.end)}${content}${markdown.slice(span.end)}`;
   }
@@ -2025,6 +2049,238 @@ function updateSuggestionStatus(
   };
 }
 
+type InsertStructure = 'inline' | 'block' | 'table_row';
+
+type PreparedInsert = {
+  markdown: string;
+  quote: string;
+  range: TextRange;
+  startRel: string;
+  endRel: string;
+  structure: InsertStructure;
+};
+
+type PrepareInsertFailure = {
+  status: number;
+  code: string;
+  error: string;
+};
+
+function findAncestorDepth($pos: ResolvedPos, nodeNames: Set<string>): number | null {
+  for (let depth = $pos.depth; depth > 0; depth -= 1) {
+    if (nodeNames.has($pos.node(depth).type.name)) return depth;
+  }
+  return null;
+}
+
+function collectVisibleRange(doc: ProseMirrorNode, from: number, to: number): TextRange | null {
+  let visibleFrom = Number.POSITIVE_INFINITY;
+  let visibleTo = -1;
+  doc.nodesBetween(from, to, (node, pos) => {
+    if (!node.isText) return true;
+    const nodeFrom = Math.max(from, pos);
+    const nodeTo = Math.min(to, pos + node.nodeSize);
+    if (nodeTo > nodeFrom) {
+      visibleFrom = Math.min(visibleFrom, nodeFrom);
+      visibleTo = Math.max(visibleTo, nodeTo);
+    }
+    return true;
+  });
+  return Number.isFinite(visibleFrom) && visibleTo > visibleFrom
+    ? { from: visibleFrom, to: visibleTo }
+    : null;
+}
+
+function buildRelativeTextAnchors(doc: ProseMirrorNode, range: TextRange): {
+  startRel: string;
+  endRel: string;
+} | null {
+  const index = buildTextIndex(doc);
+  if (!index) return null;
+  let startOffset = -1;
+  let endOffset = -1;
+  for (let offset = 0; offset < index.positions.length; offset += 1) {
+    const pos = index.positions[offset];
+    if (typeof pos !== 'number') continue;
+    if (startOffset < 0 && pos >= range.from) startOffset = offset;
+    if (pos < range.to) endOffset = offset + 1;
+  }
+  return startOffset >= 0 && endOffset > startOffset
+    ? { startRel: `char:${startOffset}`, endRel: `char:${endOffset}` }
+    : null;
+}
+
+function findTableNode(doc: ProseMirrorNode): ProseMirrorNode | null {
+  let table: ProseMirrorNode | null = null;
+  doc.descendants((node) => {
+    if (node.type.name === 'table') {
+      table = node;
+      return false;
+    }
+    return table === null;
+  });
+  return table;
+}
+
+function parseSuggestedTableRow(
+  parser: Awaited<ReturnType<typeof getHeadlessMilkdownParser>>,
+  content: string,
+  columnCount: number,
+): ProseMirrorNode | null {
+  const rowSource = content.trim();
+  if (!rowSource || rowSource.includes('\n') || !rowSource.startsWith('|')) return null;
+  const header = `| ${Array.from({ length: columnCount }, (_, index) => `c${index + 1}`).join(' | ')} |`;
+  const divider = `| ${Array.from({ length: columnCount }, () => '---').join(' | ')} |`;
+  const parsed = parseMarkdownWithHtmlFallback(parser, `${header}\n${divider}\n${rowSource}`);
+  const table = parsed.doc ? findTableNode(parsed.doc) : null;
+  const row = table?.lastChild ?? null;
+  if (!row || row.type.name !== 'table_row' || row.childCount !== columnCount) return null;
+  return row;
+}
+
+function findBlockInsertion(
+  $anchor: ResolvedPos,
+  fragment: Fragment,
+): { position: number } | null {
+  for (let depth = $anchor.depth; depth > 0; depth -= 1) {
+    const node = $anchor.node(depth);
+    if (!node.isBlock) continue;
+    const parent = $anchor.node(depth - 1);
+    const index = $anchor.indexAfter(depth - 1);
+    if (parent.canReplace(index, index, fragment)) {
+      return { position: $anchor.after(depth) };
+    }
+  }
+  return null;
+}
+
+async function prepareInsertSuggestion(
+  markdown: string,
+  anchorQuote: string,
+  content: string,
+  anchorMetadata?: { startRel?: string; endRel?: string } | null,
+): Promise<PreparedInsert | PrepareInsertFailure> {
+  const parser = await getHeadlessMilkdownParser();
+  const parsed = parseMarkdownWithHtmlFallback(parser, markdown);
+  if (!parsed.doc) {
+    return { status: 422, code: 'INVALID_MARKDOWN', error: 'Failed to parse document for insert suggestion' };
+  }
+  const requestedStart = parseRelativeCharOffset(anchorMetadata?.startRel);
+  const requestedEnd = parseRelativeCharOffset(anchorMetadata?.endRel);
+  const textIndex = requestedStart !== null && requestedEnd !== null
+    ? buildTextIndex(parsed.doc)
+    : null;
+  const requestedRange = textIndex
+    ? mapTextOffsetsToRange(textIndex, requestedStart!, requestedEnd!)
+    : null;
+  const anchorRange = requestedRange
+    && normalizeQuote(parsed.doc.textBetween(requestedRange.from, requestedRange.to, '\n', '\n')) === normalizeQuote(anchorQuote)
+    ? requestedRange
+    : resolveQuoteRange(parsed.doc, anchorQuote);
+  if (!anchorRange) {
+    return {
+      status: 409,
+      code: 'ANCHOR_NOT_FOUND',
+      error: 'Suggestion anchor quote could not be placed in the document model',
+    };
+  }
+
+  const state = EditorState.create({ schema: parser.schema, doc: parsed.doc });
+  let tr = state.tr;
+  const $anchor = tr.doc.resolve(anchorRange.to);
+  const tableCellDepth = findAncestorDepth($anchor, new Set(['table_cell', 'table_header']));
+  const hasParagraphBreak = /\r?\n[ \t]*\r?\n/.test(content);
+  const looksLikeTableRow = content.trim().startsWith('|');
+  let structure: InsertStructure = 'inline';
+  let insertedFrom = anchorRange.to;
+  let insertedTo = anchorRange.to;
+
+  if (tableCellDepth !== null && (hasParagraphBreak || looksLikeTableRow)) {
+    const rowDepth = findAncestorDepth($anchor, new Set(['table_row']));
+    if (rowDepth === null) {
+      return { status: 422, code: 'UNREPRESENTABLE_INSERT', error: 'Table insert is not inside a table row' };
+    }
+    const currentRow = $anchor.node(rowDepth);
+    const suggestedRow = parseSuggestedTableRow(parser, content, currentRow.childCount);
+    if (!suggestedRow) {
+      return {
+        status: 422,
+        code: 'INVALID_TABLE_ROW',
+        error: `Inserted table row must contain exactly ${currentRow.childCount} columns`,
+      };
+    }
+    insertedFrom = $anchor.after(rowDepth);
+    tr = tr.insert(insertedFrom, suggestedRow);
+    insertedTo = insertedFrom + suggestedRow.nodeSize;
+    structure = 'table_row';
+  } else if (looksLikeTableRow) {
+    return {
+      status: 422,
+      code: 'INVALID_TABLE_ROW',
+      error: 'A table row insert must be anchored in a table cell',
+    };
+  } else if (hasParagraphBreak) {
+    const blockSource = content.trim();
+    const blockDoc = parseMarkdownWithHtmlFallback(parser, blockSource).doc;
+    if (!blockDoc || blockDoc.childCount === 0) {
+      return {
+        status: 422,
+        code: 'UNREPRESENTABLE_INSERT',
+        error: 'Inserted block content must contain visible text',
+      };
+    }
+    const insertion = findBlockInsertion($anchor, blockDoc.content);
+    if (!insertion) {
+      return {
+        status: 422,
+        code: 'UNREPRESENTABLE_INSERT',
+        error: 'Inserted block content cannot be placed after the anchor block',
+      };
+    }
+    insertedFrom = insertion.position;
+    tr = tr.insert(insertedFrom, blockDoc.content);
+    insertedTo = insertedFrom + blockDoc.content.size;
+    structure = 'block';
+  } else {
+    try {
+      tr = tr.insert(anchorRange.to, parser.schema.text(content));
+    } catch {
+      return {
+        status: 422,
+        code: 'UNREPRESENTABLE_INSERT',
+        error: 'Inserted content cannot be represented at the anchor position',
+      };
+    }
+    insertedTo = insertedFrom + content.length;
+  }
+
+  const range = collectVisibleRange(tr.doc, insertedFrom, insertedTo);
+  if (!range) {
+    return {
+      status: 422,
+      code: 'INVALID_INSERT_CONTENT',
+      error: 'Inserted suggestion content must contain visible text',
+    };
+  }
+  const quote = normalizeQuote(tr.doc.textBetween(range.from, range.to, '\n', '\n'));
+  const relative = buildRelativeTextAnchors(tr.doc, range);
+  if (!quote || !relative) {
+    return {
+      status: 422,
+      code: 'INVALID_INSERT_CONTENT',
+      error: 'Inserted suggestion content could not be anchored',
+    };
+  }
+
+  return {
+    markdown: await serializeMarkdown(tr.doc),
+    quote,
+    range,
+    ...relative,
+    structure,
+  };
+}
+
 async function addSuggestionAsync(
   slug: string,
   body: JsonRecord,
@@ -2059,12 +2315,10 @@ async function addSuggestionAsync(
 
     let resolvedTarget: AnchorTarget | undefined;
     let selectionMetadata: { quote: string; startRel?: string; endRel?: string } | null = null;
-    let resolvedSelection: { sourceStart: number; sourceEnd: number } | null = null;
     if (isRecord(body.target)) {
       const resolved = resolveMutationAnchor(route, doc.markdown, target, 'Suggestion anchor quote not found in document');
       if (!resolved.ok) return resolved.result;
       resolvedTarget = stabilizeAnchorTarget(resolved.logicalSource, resolved.normalizedTarget, resolved.resolved);
-      resolvedSelection = resolved.resolved.selection;
       selectionMetadata = buildStoredSelectionMetadata(
         doc.markdown,
         resolved.resolved.selection,
@@ -2087,35 +2341,15 @@ async function addSuggestionAsync(
       if (content.length === 0) {
         return { status: 400, body: { success: false, error: 'Missing content' } };
       }
-      const anchorSpan = resolvedSelection
-        ? expandMarkdownSpan(
-            doc.markdown,
-            Math.min(resolvedSelection.sourceStart, resolvedSelection.sourceEnd),
-            Math.max(resolvedSelection.sourceStart, resolvedSelection.sourceEnd),
-          )
-        : findQuoteSpanInMarkdown(doc.markdown, quote);
-      if (!anchorSpan) {
+      const prepared = await prepareInsertSuggestion(doc.markdown, quote, content, selectionMetadata);
+      if ('error' in prepared) {
         return {
-          status: 409,
-          body: { success: false, code: 'ANCHOR_NOT_FOUND', error: 'Suggestion anchor quote not found in document' },
-        };
-      }
-
-      const insertionStart = anchorSpan.end;
-      const nextMarkdown = `${doc.markdown.slice(0, insertionStart)}${content}${doc.markdown.slice(insertionStart)}`;
-      const insertedSelection = buildStoredSelectionMetadata(
-        nextMarkdown,
-        { sourceStart: insertionStart, sourceEnd: insertionStart + content.length },
-        content,
-      );
-      if (!insertedSelection.quote || !insertedSelection.startRel || !insertedSelection.endRel) {
-        return {
-          status: 422,
           body: {
             success: false,
-            code: 'INVALID_INSERT_CONTENT',
-            error: 'Inserted suggestion content must contain visible text',
+            code: prepared.code,
+            error: prepared.error,
           },
+          status: prepared.status,
         };
       }
 
@@ -2126,21 +2360,24 @@ async function addSuggestionAsync(
         kind,
         by,
         createdAt: now,
-        quote: insertedSelection.quote,
+        quote: prepared.quote,
         content,
         status: 'pending',
-        startRel: insertedSelection.startRel,
-        endRel: insertedSelection.endRel,
+        startRel: prepared.startRel,
+        endRel: prepared.endRel,
+        range: prepared.range,
+        insertStructure: prepared.structure,
       };
 
       const mutation = await mutateCanonicalDocument({
         slug,
-        nextMarkdown,
+        nextMarkdown: prepared.markdown,
         nextMarks: marks as unknown as Record<string, unknown>,
         source: `engine:suggestion.insert.added:${by}`,
         ...buildCanonicalMutationBaseArgs(doc, context),
         strictLiveDoc: true,
         guardPathologicalGrowth: true,
+        incrementalFragmentUpdate: true,
       });
       if (!mutation.ok) {
         return {
@@ -2157,7 +2394,7 @@ async function addSuggestionAsync(
       const eventId = addDocumentEvent(
         slug,
         'suggestion.insert.added',
-        { markId: id, by, quote: insertedSelection.quote, content },
+        { markId: id, by, quote: prepared.quote, content },
         by,
         mutationContextIdempotencyKey(context),
         mutationContextIdempotencyRoute(context),

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import * as Y from 'yjs';
-import { prosemirrorToYXmlFragment, yXmlFragmentToProseMirrorRootNode } from 'y-prosemirror';
+import { prosemirrorToYXmlFragment, updateYFragment, yXmlFragmentToProseMirrorRootNode } from 'y-prosemirror';
 import type { Node as ProseMirrorNode, Schema } from '@milkdown/prose/model';
 import {
   addDocumentEvent,
@@ -93,6 +93,7 @@ type CanonicalMutationArgs = {
   strictLiveDoc?: boolean;
   guardPathologicalGrowth?: boolean;
   resolvedSuggestionId?: string;
+  incrementalFragmentUpdate?: boolean;
 };
 
 type CanonicalMutationFailure = {
@@ -499,6 +500,15 @@ function replaceYXmlFragment(fragment: Y.XmlFragment, pmDoc: unknown): void {
     fragment.delete(0, fragment.length);
   }
   prosemirrorToYXmlFragment(pmDoc as any, fragment as any);
+}
+
+function updateYXmlFragment(fragment: Y.XmlFragment, pmDoc: unknown): void {
+  updateYFragment(
+    fragment.doc as Y.Doc,
+    fragment as any,
+    pmDoc as any,
+    { mapping: new Map(), isOMark: new Map() } as any,
+  );
 }
 
 function seedFragmentFromLegacyMarkdownFallback(ydoc: Y.Doc, markdown: string): void {
@@ -1104,7 +1114,12 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
     const persistedCandidateDoc = cloneYDocWithHistory(ydoc);
     persistedCandidateDoc.transact(() => {
       if (!preserveLocallyFinalizedFragment) {
-        replaceYXmlFragment(persistedCandidateDoc.getXmlFragment('prosemirror'), parsedNext.doc);
+        const fragment = persistedCandidateDoc.getXmlFragment('prosemirror');
+        if (args.incrementalFragmentUpdate) {
+          updateYXmlFragment(fragment, parsedNext.doc);
+        } else {
+          replaceYXmlFragment(fragment, parsedNext.doc);
+        }
       }
       applyMarksMapDiff(persistedCandidateDoc.getMap('marks'), effectiveNextMarks);
     }, canonicalTransactionOrigin(args.source));
@@ -1275,7 +1290,12 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
 
     ydoc.transact(() => {
       if (!preserveLocallyFinalizedFragment) {
-        replaceYXmlFragment(ydoc.getXmlFragment('prosemirror'), parsedNext.doc);
+        const fragment = ydoc.getXmlFragment('prosemirror');
+        if (args.incrementalFragmentUpdate) {
+          updateYXmlFragment(fragment, parsedNext.doc);
+        } else {
+          replaceYXmlFragment(fragment, parsedNext.doc);
+        }
       }
       applyYTextDiff(ydoc.getText('markdown'), authoritativeNextMarkdown);
       applyMarksMapDiff(ydoc.getMap('marks'), effectiveNextMarks);

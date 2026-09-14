@@ -1383,6 +1383,34 @@ function resolveActionRangesDescending(doc: ProseMirrorNode, mark: Mark): MarkRa
   return resolveActionRanges(doc, mark).sort((a, b) => b.from - a.from);
 }
 
+function enclosingNodeRange(
+  doc: ProseMirrorNode,
+  position: number,
+  structure: 'block' | 'table_row'
+): MarkRange | null {
+  const $pos = doc.resolve(position);
+  for (let depth = $pos.depth; depth > 0; depth -= 1) {
+    const node = $pos.node(depth);
+    if (structure === 'table_row' ? node.type.name === 'table_row' : node.isTextblock) {
+      return { from: $pos.before(depth), to: $pos.after(depth) };
+    }
+  }
+  return null;
+}
+
+function resolveInsertedStructureRangesDescending(
+  doc: ProseMirrorNode,
+  mark: Mark,
+  structure: 'block' | 'table_row'
+): MarkRange[] {
+  const unique = new Map<string, MarkRange>();
+  for (const anchor of collectAnchorRanges(doc, mark)) {
+    const range = enclosingNodeRange(doc, anchor.from, structure);
+    if (range) unique.set(`${range.from}:${range.to}`, range);
+  }
+  return [...unique.values()].sort((a, b) => b.from - a.from);
+}
+
 function getProofAnchorIds(doc: ProseMirrorNode): Map<string, { kind: MarkKind; by: string }> {
   const ids = new Map<string, { kind: MarkKind; by: string }>();
 
@@ -2996,8 +3024,15 @@ export function accept(view: EditorView, markId: string, parser?: MarkdownParser
       for (const range of ranges) {
         tr = tr.removeMark(range.from, range.to, markType);
         const data = mark.data as InsertData | undefined;
+        const stored = metadata[markId];
         const content = data?.content ?? getTextForRange(view.state.doc, range);
         const coveredText = getTextForRange(view.state.doc, range);
+        const normalizedCoveredText = normalizeQuote(coveredText);
+        const coveredContentMatches = normalizedCoveredText === normalizeQuote(content);
+        const coveredQuoteMatches = normalizedCoveredText === normalizeQuote(mark.quote);
+        const isAppliedInsert = stored?.insertStructure === 'inline'
+          || stored?.insertStructure === 'block'
+          || stored?.insertStructure === 'table_row';
         const needsReparse = insertMarkdownNeedsReparse(
           view.state.doc,
           range,
@@ -3005,9 +3040,9 @@ export function accept(view: EditorView, markId: string, parser?: MarkdownParser
           effectiveParser,
           (text) => view.state.schema.text(text),
         );
-        if (coveredText === content && !needsReparse) {
+        if ((coveredContentMatches && !needsReparse) || (isAppliedInsert && coveredQuoteMatches)) {
           tr = addAuthoredMarkToTransaction(view.state, tr, range, mark.by);
-        } else if (coveredText !== content) {
+        } else if (!coveredContentMatches) {
           const result = applyMarkdownInsertAfterRange(view, tr, range, content, mark.by, effectiveParser);
           if (!result.ok) return false;
           tr = result.tr;
@@ -3105,11 +3140,24 @@ export function reject(view: EditorView, markId: string): boolean {
     case 'insert': {
       const markType = getMarkTypeForKind(view.state, 'insert');
       if (!markType) return false;
+      const structure = metadata[markId]?.insertStructure;
+      if (structure === 'block' || structure === 'table_row') {
+        const structuralRanges = resolveInsertedStructureRangesDescending(view.state.doc, mark, structure);
+        if (structuralRanges.length === 0) return false;
+        for (const range of structuralRanges) {
+          tr = tr.delete(range.from, range.to);
+        }
+        break;
+      }
       for (const range of ranges) {
         const data = mark.data as InsertData | undefined;
         const content = data?.content ?? getTextForRange(view.state.doc, range);
         const coveredText = getTextForRange(view.state.doc, range);
-        if (coveredText === content) {
+        if (normalizeQuote(coveredText) === normalizeQuote(content)
+          || (
+            metadata[markId]?.insertStructure === 'inline'
+            && normalizeQuote(coveredText) === normalizeQuote(mark.quote)
+          )) {
           tr = tr.delete(range.from, range.to);
         } else {
           tr = tr.removeMark(range.from, range.to, markType);
