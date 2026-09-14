@@ -2357,13 +2357,15 @@ async function addSuggestionAsync(
         };
       }
       quote = visibleAnchor.quote;
-      resolvedSelection = {
+      // B8c removed the function-level resolvedSelection (its insert path uses selectionMetadata),
+      // so C5's visible-quote span is kept local to this branch.
+      const visibleSelection = {
         sourceStart: visibleAnchor.anchor.rawStart,
         sourceEnd: visibleAnchor.anchor.rawEnd,
       };
       selectionMetadata = buildStoredSelectionMetadata(
         doc.markdown,
-        resolvedSelection,
+        visibleSelection,
         quote,
       );
     }
