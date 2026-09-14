@@ -9,12 +9,12 @@ function run(): void {
   const editorPath = path.resolve(process.cwd(), 'src', 'editor', 'index.ts');
   const editorSource = readFileSync(editorPath, 'utf8');
   assert(
-    editorSource.includes('stabilizeCursorAfterRemoteYjsTransaction'),
-    'Expected editor cursor stabilizer to exist',
+    !editorSource.includes('stabilizeCursorAfterRemoteYjsTransaction'),
+    'Expected remote Yjs transactions to retain y-prosemirror relative-selection restoration',
   );
   assert(
-    editorSource.includes("key.startsWith('y-sync')"),
-    'Expected cursor stabilizer to skip y-sync meta transactions',
+    !editorSource.includes('mapping.map(beforeSelectionFrom, 1)'),
+    'Expected no absolute-position remapping across y-prosemirror whole-document replace steps',
   );
 
   const collabPath = path.resolve(process.cwd(), 'server', 'collab.ts');

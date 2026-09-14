@@ -32,7 +32,6 @@ import {
   yCursorPluginKey,
   ySyncPluginKey,
   absolutePositionToRelativePosition,
-  yXmlFragmentToProseMirrorRootNode,
 } from 'y-prosemirror';
 import { applyAwarenessUpdate, removeAwarenessStates } from 'y-protocols/awareness';
 import * as encoding from 'lib0/encoding';
@@ -139,10 +138,7 @@ import {
   findMark,
   resolveMarks,
 } from './plugins/marks';
-import {
-  evaluateShareEditHydrationGate,
-  shouldForceCollabHydrationRerender,
-} from './share-collab-hydration-equivalence';
+import { evaluateShareEditHydrationGate } from './share-collab-hydration-equivalence';
 import {
   executeBatch as executeBatchImpl,
   type BatchOperation,
@@ -1080,7 +1076,6 @@ class ProofEditorImpl implements ProofEditor {
   // During session refresh we defer rebinding Milkdown collab until the new provider is synced.
   // This prevents transient empty-doc renders while reconnecting to a fresh Yjs room.
   private pendingCollabRebindOnSync: boolean = false;
-  private pendingCollabRebindResetDoc: boolean = false;
   private collabHydrationAttemptSeq: number = 0;
   private collabHydrationRunning: boolean = false;
   private hasCompletedInitialCollabHydration: boolean = false;
@@ -1169,7 +1164,6 @@ class ProofEditorImpl implements ProofEditor {
   private readonly shareDocumentUpdatedDebounceMs: number = 600;
   private readonly commentPopoverDraftRestoreDelayMs: number = 120;
   private readonly commentPopoverDraftRestoreMaxAttempts: number = 10;
-  private readonly remoteCursorStabilityWindowMs: number = 500;
   // Content/reporting state (used by agent integration + telemetry)
   private initState: 'idle' | 'initializing' | 'ready' = 'idle';
   private revision: number = 0;
@@ -1549,14 +1543,8 @@ class ProofEditorImpl implements ProofEditor {
           }
           if (status.connectionStatus === 'connected' && status.isSynced) {
             if (this.pendingCollabRebindOnSync) {
-              const shouldResetDoc = this.pendingCollabRebindResetDoc;
               this.pendingCollabRebindOnSync = false;
-              this.pendingCollabRebindResetDoc = false;
-              if (shouldResetDoc) {
-                this.connectCollabService(true);
-              } else {
-                this.connectCollabService();
-              }
+              this.connectCollabService();
             }
             this.ensureCollabCursorsInstalled();
             this.applyPendingCollabTemplate();
@@ -1586,7 +1574,6 @@ class ProofEditorImpl implements ProofEditor {
         // initial room sync. Binding against a reset local editor before sync can
         // generate self-inflicted local updates that keep the client stuck syncing.
         this.pendingCollabRebindOnSync = true;
-        this.pendingCollabRebindResetDoc = true;
         this.updateShareEditGate();
         collabClient.connect(collabSession.session);
         this.startCollabRefreshLoop();
@@ -1903,42 +1890,6 @@ class ProofEditorImpl implements ProofEditor {
     return false;
   }
 
-  private normalizeCollabHydrationText(text: string): string {
-    return text.replace(/\s+/g, ' ').trim();
-  }
-
-  private getEditorHydrationText(): string | null {
-    if (!this.editor) return null;
-    let text: string | null = null;
-    this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
-      text = this.normalizeCollabHydrationText(
-        view.state.doc.textBetween(0, view.state.doc.content.size, '\n', '\n'),
-      );
-    });
-    return text;
-  }
-
-  private getYjsFragmentHydrationText(fragment: unknown): string | null {
-    if (!this.editor || !fragment) return null;
-    let text: string | null = null;
-    this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
-      try {
-        const root = yXmlFragmentToProseMirrorRootNode(
-          fragment as any,
-          view.state.schema as any,
-        ) as ProseMirrorNode;
-        text = this.normalizeCollabHydrationText(
-          root.textBetween(0, root.content.size, '\n', '\n'),
-        );
-      } catch {
-        text = null;
-      }
-    });
-    return text;
-  }
-
   private isCollabHydratedForEditing(): boolean {
     if (!this.editor) return false;
     const ydoc = collabClient.getYDoc() as any;
@@ -1949,14 +1900,22 @@ class ProofEditorImpl implements ProofEditor {
     } catch {
       return true;
     }
-    if (this.isYjsFragmentStructurallyEmpty(fragment)) return true;
-    const fragmentText = this.getYjsFragmentHydrationText(fragment);
-    if (fragmentText === null) {
-      return !this.isEditorDocStructurallyEmpty();
-    }
-    const editorText = this.getEditorHydrationText();
-    if (editorText === null) return false;
-    return editorText === fragmentText;
+    let bindingReady = false;
+    this.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      try {
+        const ystate = (ySyncPluginKey.getState(view.state) as any) ?? null;
+        const binding = ystate?.binding;
+        const mapping = binding?.mapping;
+        bindingReady = ystate?.type === fragment
+          && binding?.prosemirrorView === view
+          && mapping instanceof Map
+          && (this.isYjsFragmentStructurallyEmpty(fragment) || mapping.size > 0);
+      } catch {
+        bindingReady = false;
+      }
+    });
+    return bindingReady;
   }
 
   private kickCollabHydration(): void {
@@ -1966,7 +1925,7 @@ class ProofEditorImpl implements ProofEditor {
 
     this.collabHydrationRunning = true;
     const attemptSeq = ++this.collabHydrationAttemptSeq;
-    const maxAttempts = 60;
+    const maxAttempts = 120;
 
     const finish = () => {
       if (attemptSeq === this.collabHydrationAttemptSeq) {
@@ -1982,11 +1941,7 @@ class ProofEditorImpl implements ProofEditor {
       }
 
       const isCollabHydratedForEditing = this.isCollabHydratedForEditing();
-      const shouldForceRerender = shouldForceCollabHydrationRerender({
-        hasCompletedInitialCollabHydration: this.hasCompletedInitialCollabHydration,
-        isCollabHydratedForEditing,
-      });
-      if (!shouldForceRerender) {
+      if (this.hasCompletedInitialCollabHydration || isCollabHydratedForEditing) {
         finish();
         if (!this.hasCompletedInitialCollabHydration && isCollabHydratedForEditing) {
           this.markInitialCollabHydrationComplete();
@@ -1996,23 +1951,8 @@ class ProofEditorImpl implements ProofEditor {
         return;
       }
 
-      this.editor.action((ctx) => {
-        const view = ctx.get(editorViewCtx);
-        try {
-          const ystate = (ySyncPluginKey.getState(view.state) as any) ?? null;
-          const binding = ystate?.binding;
-          if (binding && typeof binding._forceRerender === 'function') {
-            binding._forceRerender();
-          }
-        } catch {
-          // ignore; hydration is best-effort
-        }
-      });
-
       if (count >= maxAttempts) {
         finish();
-        this.markInitialCollabHydrationComplete();
-        this.updateShareEditGate();
         return;
       }
       requestAnimationFrame(() => attempt(count + 1));
@@ -2054,7 +1994,7 @@ class ProofEditorImpl implements ProofEditor {
     return markdown;
   }
 
-  private connectCollabService(resetEditorDoc = false): void {
+  private connectCollabService(): void {
     if (!this.editor) return;
     this.editor.action((ctx) => {
       const collabService = ctx.get(collabServiceCtx);
@@ -2078,20 +2018,6 @@ class ProofEditorImpl implements ProofEditor {
         (collabService as any).setAwareness(null);
       } catch {
         // ignore
-      }
-      if (resetEditorDoc) {
-        try {
-          const parser = ctx.get(parserCtx);
-          const emptyDoc = parser('');
-          const resetTr = view.state.tr
-            .replaceWith(0, view.state.doc.content.size, emptyDoc.content)
-            .setMeta('document-load', true)
-            .setMeta(SHARE_CONTENT_FILTER_ALLOW_META, true);
-          view.dispatch(resetTr);
-        } catch (error) {
-          const details = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-          console.warn('[share] failed to reset editor before collab connect', details);
-        }
       }
       collabService.bindDoc(ydoc);
       collabService.connect();
@@ -2276,7 +2202,6 @@ class ProofEditorImpl implements ProofEditor {
   private disconnectCollabService(): void {
     if (!this.editor) return;
     this.pendingCollabRebindOnSync = false;
-    this.pendingCollabRebindResetDoc = false;
     this.editor.action((ctx) => {
       const collabService = ctx.get(collabServiceCtx);
       collabService.disconnect();
@@ -2484,7 +2409,6 @@ class ProofEditorImpl implements ProofEditor {
         reconnectTemplate = null;
       }
       this.pendingCollabRebindOnSync = true;
-      this.pendingCollabRebindResetDoc = !shouldPreserveLocalState || !this.collabCanEdit;
       this.resetProjectionPublishState();
       collabClient.reconnectWithSession(refreshed.session, { preserveLocalState: shouldPreserveLocalState });
       this.resetPendingCollabTemplateState(false);
@@ -2497,7 +2421,6 @@ class ProofEditorImpl implements ProofEditor {
       }
     } catch (error) {
       this.pendingCollabRebindOnSync = false;
-      this.pendingCollabRebindResetDoc = false;
       console.warn('[share] failed to refresh collab session', error);
     } finally {
       this.collabSessionRefreshInFlight = false;
@@ -5559,50 +5482,6 @@ class ProofEditorImpl implements ProofEditor {
     return false;
   }
 
-  private stabilizeCursorAfterRemoteYjsTransaction(
-    view: EditorView,
-    sourceTransaction: any,
-    beforeSelectionFrom: number,
-    beforeSelectionEmpty: boolean,
-    dispatchBase: (transaction: any) => void,
-  ): void {
-    if (!this.isShareMode || !this.collabEnabled) return;
-    if (!beforeSelectionEmpty || !view.state.selection.empty) return;
-    if (!view.hasFocus()) return;
-
-    if (!this.isYjsChangeOriginTransaction(sourceTransaction)) return;
-
-    if ((Date.now() - this.lastLocalTypingAt) > this.remoteCursorStabilityWindowMs) return;
-
-    let mappedCursor = beforeSelectionFrom;
-    const mapping = sourceTransaction?.mapping;
-    if (mapping && typeof mapping.map === 'function') {
-      try {
-        mappedCursor = mapping.map(beforeSelectionFrom, 1);
-      } catch {
-        mappedCursor = beforeSelectionFrom;
-      }
-    }
-
-    const docSize = view.state.doc.content.size;
-    const targetPos = Math.max(0, Math.min(mappedCursor, docSize));
-    const currentPos = view.state.selection.from;
-    if (targetPos <= currentPos) return;
-
-    try {
-      // @ts-expect-error - TextSelection is available at runtime
-      const TextSelection = view.state.selection.constructor;
-      const $target = view.state.doc.resolve(targetPos);
-      const stabilizedSelection = TextSelection.near($target, 1);
-      const stabilizeTr = view.state.tr
-        .setSelection(stabilizedSelection)
-        .setMeta('addToHistory', false);
-      dispatchBase(stabilizeTr);
-    } catch {
-      // Ignore selection stabilization failures; never break the primary transaction.
-    }
-  }
-
   /**
    * Set up the suggestions interceptor to convert edits to tracked changes
    * when suggestion mode is enabled.
@@ -5624,8 +5503,6 @@ class ProofEditorImpl implements ProofEditor {
             this.revision += 1;
           }
         };
-        const beforeSelectionFrom = view.state.selection.from;
-        const beforeSelectionEmpty = view.state.selection.empty;
         const isRemoteContentChange = Boolean(tr?.docChanged) && this.isYjsChangeOriginTransaction(tr);
         const marksMeta = tr?.getMeta?.(marksPluginKey);
         const markActionMeta = tr?.getMeta?.(proofMarkActionMeta);
@@ -5676,13 +5553,6 @@ class ProofEditorImpl implements ProofEditor {
           dispatchWithRevision(tr);
         }
 
-        this.stabilizeCursorAfterRemoteYjsTransaction(
-          view,
-          tr,
-          beforeSelectionFrom,
-          beforeSelectionEmpty,
-          originalDispatch,
-        );
         if (shouldUpdateShareSuggestionReviewDisplay({
           docChanged: Boolean(tr?.docChanged),
           marksMeta,

@@ -13,11 +13,6 @@ type ShareEditHydrationGateArgs = {
   isCollabHydratedForEditing: boolean;
 };
 
-type CollabHydrationRerenderArgs = {
-  hasCompletedInitialCollabHydration: boolean;
-  isCollabHydratedForEditing: boolean;
-};
-
 export type ShareEditHydrationGate = {
   allowLocalEdits: boolean;
   shouldKickCollabHydration: boolean;
@@ -59,11 +54,4 @@ export function evaluateShareEditHydrationGate(
     allowLocalEdits: args.isCollabHydratedForEditing,
     shouldKickCollabHydration: !args.isCollabHydratedForEditing,
   };
-}
-
-export function shouldForceCollabHydrationRerender(
-  args: CollabHydrationRerenderArgs,
-): boolean {
-  return !args.hasCompletedInitialCollabHydration
-    && !args.isCollabHydratedForEditing;
 }

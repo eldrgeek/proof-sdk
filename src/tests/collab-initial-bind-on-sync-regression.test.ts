@@ -19,25 +19,26 @@ function run(): void {
     'Expected share init to defer Milkdown binding until the first live collab sync',
   );
   assert(
-    snippet.includes('this.pendingCollabRebindResetDoc = true;'),
-    'Expected share init to request a reset editor bind after the first live collab sync',
+    !source.includes('pendingCollabRebindResetDoc'),
+    'Expected the synced Yjs fragment to hydrate the editor without a manual document reset',
   );
   assert(
-    source.includes('const shouldResetDoc = this.shouldResetEditorBeforeCollabBind(')
-      && source.includes('this.pendingCollabRebindAllowEquivalentSkip')
-      && source.includes('this.pendingCollabRebindAllowEquivalentSkip = true;'),
-    'Expected share init to allow reset-skip only for equivalent initial live fragments',
+    source.includes('private connectCollabService(): void {')
+      && source.includes('collabService.bindDoc(ydoc);')
+      && source.includes('collabService.connect();'),
+    'Expected the editor to bind directly to the already-synced Yjs document',
   );
   assert(
-    source.includes('editorHydrationMarkdown: this.getEditorHydrationMarkdown()')
-      && source.includes('liveYjsHydrationMarkdown: this.getYjsHydrationMarkdown()'),
-    'Expected equivalent share hydration checks to require markdown-structure parity, not just plain-text parity',
+    !source.includes('binding._forceRerender()'),
+    'Expected application hydration code not to invoke y-prosemirror private re-render hooks',
+  );
+  const connectMethod = source.slice(
+    source.indexOf('private connectCollabService(): void {'),
+    source.indexOf('private ensureCollabCursorsInstalled(): void {'),
   );
   assert(
-    source.includes('const shouldResetEditorDoc = !shouldPreserveLocalState || !this.collabCanEdit;')
-      && source.includes('this.pendingCollabRebindResetDoc = shouldResetEditorDoc;')
-      && source.includes('this.pendingCollabRebindAllowEquivalentSkip = false;'),
-    'Expected reconnect/read-only recovery binds to preserve explicit reset requests instead of inheriting the initial-load skip optimization',
+    !connectMethod.includes('.replaceWith('),
+    'Expected collab binding not to dispatch a whole-document replacement before y-prosemirror restores its relative selection',
   );
   assert(
     !snippet.includes('this.connectCollabService(true);'),
