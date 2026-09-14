@@ -70,6 +70,11 @@ returned 200 `success: true`; the person then accepted each with `window.proof.m
   combine with C4b's tombstone changes (`removeResurrectedMarksFromPayload` in server/db.ts now removes every unexpired
   tombstoned id except resolved comments; `dropTombstonedMarks` in server/collab.ts).
 - Find the cause, report the 409's `code`, and fix it without undoing either B8's or C4b's behaviour.
+- **Correction, added after this brief was dispatched (2026-09-14):** the claim above that the test passes on upstream
+  fb25787, on B8 alone and on C4b alone was wrong. The COS printed each exit code after a command substitution
+  (`echo "$(git log …): rc=$?"`), so every run showed 0. Rerun with the exit code saved at once, the test fails the same
+  way on upstream fb25787, on B8 alone (73555f2) and on C4b alone (60cfb91). It is a pre-existing upstream failure, not
+  an interaction. C5's closest-context fallback in server/anchor-resolver.ts (commit 9559eac) fixes it.
 
 ## Task
 1. Make a quote that spans formatting boundaries anchor on exactly the quoted visible text, wherever it starts and ends.
