@@ -91,6 +91,7 @@ import { TextSelection } from '@milkdown/kit/prose/state';
 import {
   marksPlugins,
   marksPluginKey,
+  proofMarkActionMeta,
   getMarks,
   getActiveMarkId,
   getMarkMetadata,
@@ -5627,11 +5628,13 @@ class ProofEditorImpl implements ProofEditor {
         const beforeSelectionEmpty = view.state.selection.empty;
         const isRemoteContentChange = Boolean(tr?.docChanged) && this.isYjsChangeOriginTransaction(tr);
         const marksMeta = tr?.getMeta?.(marksPluginKey);
+        const markActionMeta = tr?.getMeta?.(proofMarkActionMeta);
         const isMarksOnlyChange = marksMeta !== undefined;
         const isDocumentLoad = tr?.getMeta?.('document-load') !== undefined;
         const isLocalContentChange = Boolean(tr?.docChanged)
           && !isRemoteContentChange
           && !isMarksOnlyChange
+          && markActionMeta === undefined
           && !isDocumentLoad;
 
         // Check if suggestions are enabled
@@ -5651,7 +5654,7 @@ class ProofEditorImpl implements ProofEditor {
           // Don't intercept meta transactions (like enabling/disabling suggestions)
           if (tr.getMeta(suggestionsPluginKey) !== undefined) {
             dispatchWithRevision(tr);
-          } else if (marksMeta !== undefined) {
+          } else if (marksMeta !== undefined || markActionMeta !== undefined) {
             // Don't intercept marks operations (accept/reject suggestions)
             // These are internal operations that should not be converted to suggestions
             dispatchWithRevision(tr);

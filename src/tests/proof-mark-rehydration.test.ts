@@ -57,11 +57,40 @@ async function run(): Promise<void> {
   const db = await import('../../server/db.ts');
   const { executeDocumentOperationAsync } = await import('../../server/document-engine.ts');
   const { MUTATION_BASE_SCHEMA_VERSION } = await import('../../server/collab.ts');
+  const { mutateCanonicalDocument } = await import('../../server/canonical-document.ts');
   const { rehydrateProofMarksMarkdown } = await import('../../server/proof-mark-rehydration.ts');
   const { repairProofMarksForSlug } = await import('../../server/proof-mark-repair.ts');
 
   try {
     const createdAt = new Date('2026-03-10T18:00:00.000Z').toISOString();
+
+    const guardSlug = `proof-markup-guard-${Math.random().toString(36).slice(2, 10)}`;
+    const guardBase = 'The second act needs one more scene.';
+    const guardDoc = db.createDocument(guardSlug, guardBase, {}, 'Proof markup guard');
+    const corruptMarkId = 'corrupt-insert';
+    const corruptCandidate = [
+      `${guardBase} `,
+      `<span data-proof="suggestion" data-id="${corruptMarkId}" data-by="human:test" data-kind="insert">`,
+      `probe wordssuggestion" data-id="${corruptMarkId}" data-by="human:test" data-kind="insert">probe words`,
+      '</span>',
+    ].join('');
+    const guardedMutation = await mutateCanonicalDocument({
+      slug: guardSlug,
+      nextMarkdown: corruptCandidate,
+      nextMarks: {},
+      source: 'test:proof-markup-guard',
+      baseRevision: guardDoc.revision,
+      strictLiveDoc: false,
+    });
+    assert(!guardedMutation.ok, 'Expected canonical mutation to refuse proof span markup in visible text');
+    if (!guardedMutation.ok) {
+      assertEqual(guardedMutation.code, 'PROOF_MARKUP_TEXT_BLOCKED');
+    }
+    assertEqual(
+      db.getDocumentBySlug(guardSlug)?.markdown,
+      guardBase,
+      'Expected refused proof markup mutation to leave canonical markdown unchanged',
+    );
 
     const acceptSlug = `rehydrate-accept-${Math.random().toString(36).slice(2, 10)}`;
     const fullQuote = 'You can try it yourself right now. A copy of this post is available on Proof. Use the share link there to have Claude, ChatGPT, your claw, or any other agent add their comments.';

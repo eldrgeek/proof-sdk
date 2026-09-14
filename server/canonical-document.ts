@@ -52,6 +52,7 @@ import {
 import { getHeadlessMilkdownParser, parseMarkdownWithHtmlFallback, serializeMarkdown } from './milkdown-headless.js';
 import {
   buildProofSpanReplacementMap,
+  stripAllProofSpanTags,
   stripProofSpanTags,
   stripAllProofSpanTagsWithReplacements,
 } from './proof-span-strip.js';
@@ -72,6 +73,7 @@ import { pauseDocumentAndPropagate } from './share-state.js';
 import { getActiveCollabClientBreakdown, getActiveCollabClientCount } from './ws.js';
 import { extractMarks } from '../src/formats/marks.js';
 import { restoreStandaloneBlankParagraphLines } from '../src/editor/explicit-blank-paragraphs.js';
+import { stripMarkdownVisibleText } from '../src/shared/anchor-target-text.js';
 
 type PersistedCanonicalState = {
   ydoc: Y.Doc;
@@ -132,6 +134,26 @@ const HOSTED_LIVE_DOC_GRACE_MS = parsePositiveInt(process.env.HOSTED_LIVE_DOC_GR
 const HOSTED_LIVE_DOC_GRACE_POLL_MS = parsePositiveInt(process.env.HOSTED_LIVE_DOC_GRACE_POLL_MS, 100);
 const DEFAULT_CANONICAL_COMPACTION_MAX_BYTES = 500_000;
 const onDemandProjectionRecoveryInFlight = new Map<string, Promise<CanonicalReadableDocument | DocumentRow | undefined>>();
+const literalProofMarkupPatterns = [
+  /\bdata-proof\s*=/gi,
+  /\bdata-id\s*=/gi,
+  /\bdata-by\s*=/gi,
+  /\bdata-kind\s*=/gi,
+] as const;
+
+function countLiteralProofMarkupSignals(markdown: string): number[] {
+  const plainText = stripMarkdownVisibleText(stripAllProofSpanTags(markdown));
+  return literalProofMarkupPatterns.map((pattern) => plainText.match(pattern)?.length ?? 0);
+}
+
+export function hasNewLiteralProofSpanMarkup(
+  baselineMarkdown: string,
+  candidateMarkdown: string,
+): boolean {
+  const baselineCounts = countLiteralProofMarkupSignals(baselineMarkdown);
+  const candidateCounts = countLiteralProofMarkupSignals(candidateMarkdown);
+  return candidateCounts.some((count, index) => count > (baselineCounts[index] ?? 0));
+}
 
 type RunawayCanonicalWriteGuardResult = {
   blocked: true;
@@ -1090,6 +1112,18 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
       authoritativeNextMarkdown = (
         await deriveMarkdownFromCanonicalFragment(persistedCandidateDoc, parser.schema)
       ) ?? serializedNextMarkdown;
+    }
+    if (hasNewLiteralProofSpanMarkup(structuralBaselineMarkdown, authoritativeNextMarkdown)) {
+      console.error('[canonical] blocked proof span markup from entering visible text', {
+        slug: args.slug,
+        source: args.source,
+      });
+      return {
+        ok: false,
+        status: 422,
+        code: 'PROOF_MARKUP_TEXT_BLOCKED',
+        error: 'Mutation blocked because Proof span markup would become visible document text',
+      };
     }
     persistedCandidateDoc.transact(() => {
       applyYTextDiff(persistedCandidateDoc.getText('markdown'), authoritativeNextMarkdown);

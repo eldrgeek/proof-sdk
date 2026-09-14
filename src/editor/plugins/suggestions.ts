@@ -11,6 +11,7 @@ import type { MarkType, Node as ProseMirrorNode } from '@milkdown/kit/prose/mode
 
 import {
   marksPluginKey,
+  proofMarkActionMeta,
   getMarkMetadata,
   buildSuggestionMetadata,
   getMarks,
@@ -152,6 +153,9 @@ export function wrapTransactionForSuggestions(
     return tr;
   }
   if (tr.getMeta('y-sync$')) {
+    return tr;
+  }
+  if (tr.getMeta(marksPluginKey) !== undefined || tr.getMeta(proofMarkActionMeta) !== undefined) {
     return tr;
   }
 

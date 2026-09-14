@@ -52,6 +52,7 @@ export interface MarksPluginState {
 }
 
 export const marksPluginKey = new PluginKey<MarksPluginState>('marks');
+export const proofMarkActionMeta = 'proof-mark-action';
 
 export const marksCtx = $ctx<MarksPluginState, 'marks'>(
   { metadata: {}, activeMarkId: null, composeAnchorRange: null },
@@ -1007,13 +1008,16 @@ function finalizeMarkTransaction(
   view: EditorView,
   tr: Transaction,
   metadata: Record<string, StoredMark>,
-  options?: { isRemote?: boolean; skipDocStamp?: boolean }
+  options?: { isRemote?: boolean; skipDocStamp?: boolean; action?: 'accept' | 'reject' }
 ): void {
   const normalized = normalizeMetadata(metadata, tr.doc);
   if (!options?.skipDocStamp) {
     tr = stampSuggestionMetadataOnDocument(view.state, tr, normalized);
   }
   tr = tr.setMeta(marksPluginKey, { type: 'SET_METADATA', metadata: normalized });
+  if (options?.action) {
+    tr = tr.setMeta(proofMarkActionMeta, options.action);
+  }
   if (options?.isRemote) {
     tr = tr.setMeta(ySyncPluginKey, { isChangeOrigin: true });
     tr = tr.setMeta('addToHistory', false);
@@ -2830,6 +2834,33 @@ function applyMarkdownInsert(
   return { ok: true, tr, appliedRange };
 }
 
+function insertMarkdownNeedsReparse(
+  doc: ProseMirrorNode,
+  range: MarkRange,
+  markdown: string,
+  parser: MarkdownParser | undefined,
+  schemaText: (text: string) => ProseMirrorNode,
+): boolean {
+  if (isStructuralMarkdown(markdown, parser)) return true;
+  const replacement = buildReplacementContent(doc, range, markdown, parser, schemaText);
+  if (!replacement.usedParsed) return false;
+
+  const inline = isProseMirrorNode(replacement.content)
+    ? replacement.content.content
+    : replacement.content;
+  if (inline.textBetween(0, inline.size, '\n', '\n') !== markdown) return true;
+
+  let hasInlineFormatting = false;
+  inline.descendants((node) => {
+    if (node.marks.length > 0) {
+      hasInlineFormatting = true;
+      return false;
+    }
+    return !hasInlineFormatting;
+  });
+  return hasInlineFormatting;
+}
+
 export function accept(view: EditorView, markId: string, parser?: MarkdownParser): boolean {
   const effectiveParser = resolveMarkdownParser(parser);
   const marks = getMarks(view.state);
@@ -2850,9 +2881,21 @@ export function accept(view: EditorView, markId: string, parser?: MarkdownParser
         tr = tr.removeMark(range.from, range.to, markType);
         const data = mark.data as InsertData | undefined;
         const content = data?.content ?? getTextForRange(view.state.doc, range);
-        const result = applyMarkdownInsert(view, tr, range, content, mark.by, effectiveParser);
-        if (!result.ok) return false;
-        tr = result.tr;
+        const coveredText = getTextForRange(view.state.doc, range);
+        const needsReparse = insertMarkdownNeedsReparse(
+          view.state.doc,
+          range,
+          content,
+          effectiveParser,
+          (text) => view.state.schema.text(text),
+        );
+        if (coveredText === content && !needsReparse) {
+          tr = addAuthoredMarkToTransaction(view.state, tr, range, mark.by);
+        } else {
+          const result = applyMarkdownInsert(view, tr, range, content, mark.by, effectiveParser);
+          if (!result.ok) return false;
+          tr = result.tr;
+        }
       }
       applied = true;
       break;
@@ -2921,7 +2964,7 @@ export function accept(view: EditorView, markId: string, parser?: MarkdownParser
 
   if (!applied) return false;
   const updatedMetadata = removeMetadataEntries(metadata, [markId]);
-  finalizeMarkTransaction(view, tr, updatedMetadata);
+  finalizeMarkTransaction(view, tr, updatedMetadata, { action: 'accept' });
   markResolvedMarkIds([markId], Date.now(), RESOLVED_MARK_TOMBSTONE_TTL_MS, 'deleted');
   emitMarkEvent('suggestion.accepted', { markId, kind: mark.kind, by: mark.by });
   return true;
@@ -2964,7 +3007,7 @@ export function reject(view: EditorView, markId: string): boolean {
   }
 
   const updatedMetadata = removeMetadataEntries(metadata, [markId]);
-  finalizeMarkTransaction(view, tr, updatedMetadata);
+  finalizeMarkTransaction(view, tr, updatedMetadata, { action: 'reject' });
   markResolvedMarkIds([markId], Date.now(), RESOLVED_MARK_TOMBSTONE_TTL_MS, 'deleted');
   emitMarkEvent('suggestion.rejected', { markId, kind: mark.kind, by: mark.by });
   return true;
@@ -3061,7 +3104,7 @@ export function rejectAll(view: EditorView): number {
 
   if (removedIds.length > 0) {
     const updatedMetadata = removeMetadataEntries(metadata, removedIds);
-    finalizeMarkTransaction(view, tr, updatedMetadata);
+    finalizeMarkTransaction(view, tr, updatedMetadata, { action: 'reject' });
     markResolvedMarkIds(removedIds, Date.now(), RESOLVED_MARK_TOMBSTONE_TTL_MS, 'deleted');
   }
 

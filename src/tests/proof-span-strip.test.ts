@@ -1,4 +1,5 @@
 import {
+  buildProofSpanReplacementMap,
   buildStrippedIndexMap,
   stripAllProofSpanTags,
   stripAllProofSpanTagsWithReplacements,
@@ -65,6 +66,21 @@ function run(): void {
     repairedBase,
     'Before restored quote text after.',
     'Expected replacement-aware stripping to rebuild the proof-span-free base text',
+  );
+
+  const leadingSpaceInsert = [
+    'Before',
+    '<span data-proof="suggestion" data-id="s-insert" data-by="human:test" data-kind="insert"> inserted</span>',
+    ' after.',
+  ].join('');
+  const insertReplacementMap = buildProofSpanReplacementMap({
+    's-insert': { kind: 'insert', quote: 'inserted' },
+  });
+  assert(!('s-insert' in insertReplacementMap), 'Expected insert spans to retain their covered text instead of normalized quotes');
+  assertEqual(
+    stripAllProofSpanTagsWithReplacements(leadingSpaceInsert, insertReplacementMap),
+    'Before inserted after.',
+    'Expected replacement-aware stripping to preserve an insert span leading space',
   );
 
   const splitSuggestionMarkdown = [
