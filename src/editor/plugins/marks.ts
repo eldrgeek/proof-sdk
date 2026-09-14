@@ -1798,7 +1798,7 @@ export function setMarkMetadata(view: EditorView, metadata: Record<string, Store
 export function applyRemoteMarks(
   view: EditorView,
   metadata: Record<string, StoredMark>,
-  options?: { hydrateAnchors?: boolean }
+  options?: { hydrateAnchors?: boolean; authoritativeSnapshot?: boolean }
 ): void {
   const canonicalMetadata = canonicalizeStoredMarks(metadata);
   const hydrateAnchors = options?.hydrateAnchors !== false;
@@ -1849,6 +1849,26 @@ export function applyRemoteMarks(
     filteredEntries.push([id, stored]);
   }
 
+  if (options?.authoritativeSnapshot) {
+    for (const [id, stored] of Object.entries(merged)) {
+      if (canonicalMetadata[id] !== undefined) continue;
+      if (
+        stored.kind !== 'insert'
+        && stored.kind !== 'delete'
+        && stored.kind !== 'replace'
+      ) {
+        continue;
+      }
+      if (stored.status === 'accepted' || stored.status === 'rejected') continue;
+      finalizedSuggestionIds.add(id);
+      delete merged[id];
+    }
+  }
+
+  // A missing authoritative entry only resolves the local annotation. The Yjs
+  // document transaction owns any text deletion/replacement, while an accepted
+  // insert keeps the text already present in the shared document.
+  markResolvedMarkIds(Array.from(finalizedSuggestionIds), now);
   tr = removeSuggestionAnchors(tr, finalizedSuggestionIds);
 
   if (hydrateAnchors) {

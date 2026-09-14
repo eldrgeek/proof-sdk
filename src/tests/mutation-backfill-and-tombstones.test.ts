@@ -85,24 +85,33 @@ async function run(): Promise<void> {
     assert(outboxBackfillSecond.inserted === 0, 'Expected outbox backfill to be resumable/idempotent');
 
     const tombstone = db.upsertMarkTombstone(slug, 'm-1', 'rejected', 5);
+    db.upsertMarkTombstone(slug, 'm-terminal', 'accepted', 6);
+    db.upsertMarkTombstone(slug, 'm-comment', 'resolved', 7);
     assert(tombstone.mark_id === 'm-1', 'Expected tombstone insert');
     assert(db.shouldRejectMarkMutationByResolvedRevision(slug, 'm-1', 4) === true, 'Expected replay fence to reject old revision');
     assert(db.shouldRejectMarkMutationByResolvedRevision(slug, 'm-1', 6) === false, 'Expected replay fence to allow newer revision');
-
-    const scrubbed = db.removeResurrectedMarksFromPayload(slug, {
-      'm-1': { status: 'pending', quote: 'stale' },
-      'm-2': { status: 'pending', quote: 'fresh' },
-      'm-3': { status: 'rejected', quote: 'terminal' },
-    });
-    assert(scrubbed.removed.includes('m-1'), 'Expected tombstoned pending mark to be removed');
-    assert(!scrubbed.removed.includes('m-3'), 'Expected terminal mark to be retained');
-    assert(scrubbed.marks['m-2'] !== undefined, 'Expected non-tombstoned mark to remain');
-
     sqlite.prepare(`
       INSERT OR REPLACE INTO mark_tombstones
         (document_slug, mark_id, status, resolved_revision, created_at, expires_at)
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(slug, 'm-expired', 'resolved', 1, now, '2000-01-01T00:00:00.000Z');
+
+    const scrubbed = db.removeResurrectedMarksFromPayload(slug, {
+      'm-1': { status: 'pending', quote: 'stale' },
+      'm-2': { status: 'pending', quote: 'fresh' },
+      'm-terminal': { status: 'accepted', quote: 'terminal' },
+      'm-expired': { status: 'pending', quote: 'expired' },
+      'm-comment': { kind: 'comment', resolved: true, text: 'retained thread' },
+    });
+    assert(scrubbed.removed.includes('m-1'), 'Expected tombstoned pending mark to be removed');
+    assert(scrubbed.removed.includes('m-terminal'), 'Expected tombstoned terminal mark to be removed');
+    assert(!scrubbed.removed.includes('m-expired'), 'Expected an expired tombstone not to block a mark');
+    assert(scrubbed.marks['m-2'] !== undefined, 'Expected non-tombstoned mark to remain');
+    assert(scrubbed.marks['m-comment'] !== undefined, 'Expected terminal resolved comment state to remain');
+    const staleComment = db.removeResurrectedMarksFromPayload(slug, {
+      'm-comment': { kind: 'comment', resolved: false, text: 'stale thread' },
+    });
+    assert(staleComment.removed.includes('m-comment'), 'Expected stale unresolved comment state to be removed');
     const cleaned = db.cleanupExpiredMarkTombstones('2001-01-01T00:00:00.000Z');
     assert(cleaned >= 1, 'Expected cleanupExpiredMarkTombstones to remove expired rows');
 

@@ -182,6 +182,7 @@ async function runCase(
     db: typeof import('../../server/db.ts');
     collab: typeof import('../../server/collab.ts');
     parseMarkdown: (markdown: string) => unknown;
+    warnings: unknown[][];
   },
 ): Promise<void> {
   const initialMarkdown = `# Live ${action}\n\nKeep this sentence and resolve TARGET.`;
@@ -196,42 +197,70 @@ async function runCase(
   });
   const created = await mustJson<CreatedDocument>(createResponse, `create ${action} document`);
 
-  let firstClient: ConnectedClient | null = await connectClient(
+  const firstClient = await connectClient(
     context.httpBase,
     created.slug,
     created.ownerSecret,
   );
-  let reconnectedClient: ConnectedClient | null = null;
   try {
     const suggestResponse = await postAgent(
       context.httpBase,
       created.slug,
       created.ownerSecret,
       '/marks/suggest-delete',
-      { quote: 'TARGET', by: 'ai:test' },
+      { quote: 'TARGET', by: action === 'accept' ? 'human:test' : 'ai:test' },
     );
     const suggested = await mustJson<SuggestionResponse>(suggestResponse, `create ${action} suggestion`);
     const markId = Object.entries(suggested.marks ?? {})
       .find(([, mark]) => mark.kind === 'delete' && mark.status === 'pending')?.[0] ?? '';
     assert(markId.length > 0, `Expected ${action} suggestion id`);
     await waitFor(
-      () => firstClient?.doc.getMap('marks').has(markId) === true,
+      () => firstClient.doc.getMap('marks').has(markId) === true,
       5_000,
       `${action} suggestion in live marks`,
     );
+    const staleMark = firstClient.doc.getMap('marks').get(markId);
+    assert(staleMark !== undefined, `Expected stale ${action} suggestion payload`);
 
     const resolutionResponse = await postAgent(
       context.httpBase,
       created.slug,
       created.ownerSecret,
       `/marks/${action}`,
-      { markId, by: 'human:test' },
+      { markId, by: 'ai:test' },
     );
     await mustJson<Record<string, unknown>>(resolutionResponse, `REST ${action}`);
-    firstClient.destroy();
-    firstClient = null;
-    reconnectedClient = await connectClient(context.httpBase, created.slug, created.ownerSecret);
-    await sleep(300);
+    await waitFor(
+      () => firstClient.doc.getMap('marks').has(markId) === false,
+      5_000,
+      `${action} resolution removed from live marks`,
+    );
+
+    firstClient.doc.transact(() => {
+      firstClient.doc.getMap('marks').set(markId, staleMark);
+    }, 'browser-stale-marks-write');
+    await waitFor(
+      () => firstClient.doc.getMap('marks').has(markId) === false,
+      5_000,
+      `tombstone removed stale ${action} suggestion write`,
+    );
+    const projectionMarks = context.collab.mergePreservedActionMarks(created.slug, {
+      [markId]: staleMark,
+    });
+    assert(
+      !Object.prototype.hasOwnProperty.call(projectionMarks, markId),
+      `Projection refresh must drop tombstoned ${action} suggestion`,
+    );
+    const canonicalSync = await context.collab.syncCanonicalDocumentStateToCollab(created.slug, {
+      marks: { [markId]: staleMark },
+      source: `test-stale-${action}-canonical-sync`,
+    });
+    assert(canonicalSync.applied === true, `Expected stale ${action} canonical sync to complete`);
+    assert(
+      !firstClient.doc.getMap('marks').has(markId),
+      `Canonical sync must not restore tombstoned ${action} suggestion`,
+    );
+
     const updateSeqBeforeEdit = getPersistedUpdateRows(context.db, created.slug).at(-1)?.seq ?? 0;
 
     const marker = `persisted-after-${action}-${randomUUID().slice(0, 8)}`;
@@ -239,7 +268,7 @@ async function runCase(
       ? initialMarkdown.replace('TARGET', '')
       : initialMarkdown;
     const editedMarkdown = `${resolvedMarkdown}\n\n${marker}`;
-    await replaceFragmentMarkdown(reconnectedClient.doc, editedMarkdown, context.parseMarkdown);
+    await replaceFragmentMarkdown(firstClient.doc, editedMarkdown, context.parseMarkdown);
 
     await waitFor(
       async () => (await context.collab.getLoadedCollabMarkdownFromFragment(created.slug))?.includes(marker) === true,
@@ -264,6 +293,7 @@ async function runCase(
     const state = await mustJson<{
       markdown?: string;
       content?: string;
+      marks?: Record<string, unknown>;
       projectionFresh?: boolean;
       repairPending?: boolean;
     }>(stateResponse, `${action} state`);
@@ -271,9 +301,23 @@ async function runCase(
     assert(state.projectionFresh === true, `Expected fresh projection after REST ${action}`);
     assert(state.repairPending !== true, `Expected no pending repair after REST ${action}`);
     assert(stateMarkdown.includes(marker), `Expected /state edit after REST ${action}`);
+    assert(
+      !Object.prototype.hasOwnProperty.call(state.marks ?? {}, markId),
+      `Expected /state to keep REST ${action} suggestion absent after stale client write`,
+    );
+    const canonicalMarks = JSON.parse(context.db.getDocumentBySlug(created.slug)?.marks ?? '{}') as Record<string, unknown>;
+    assert(
+      !Object.prototype.hasOwnProperty.call(canonicalMarks, markId),
+      `Expected canonical marks to keep REST ${action} suggestion absent`,
+    );
+    const dropWarnings = context.warnings.filter((args) => {
+      if (args[0] !== '[collab] dropped tombstoned mark') return false;
+      const details = args[1] as Record<string, unknown> | undefined;
+      return details?.slug === created.slug && details?.markId === markId;
+    });
+    assert(dropWarnings.length === 1, `Expected one tombstone-drop warning for REST ${action}`);
   } finally {
-    firstClient?.destroy();
-    reconnectedClient?.destroy();
+    firstClient.destroy();
   }
 }
 
@@ -386,8 +430,20 @@ async function run(): Promise<void> {
   const parser = await milkdown.getHeadlessMilkdownParser();
 
   try {
-    await runCase('reject', { httpBase, db, collab, parseMarkdown: parser.parseMarkdown });
-    await runCase('accept', { httpBase, db, collab, parseMarkdown: parser.parseMarkdown });
+    await runCase('reject', {
+      httpBase,
+      db,
+      collab,
+      parseMarkdown: parser.parseMarkdown,
+      warnings,
+    });
+    await runCase('accept', {
+      httpBase,
+      db,
+      collab,
+      parseMarkdown: parser.parseMarkdown,
+      warnings,
+    });
     await assertReconnectDuringClearingInvalidatePersists({
       httpBase,
       db,

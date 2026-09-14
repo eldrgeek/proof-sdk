@@ -130,6 +130,20 @@ async function run(): Promise<void> {
       ),
       'Resolving the last live suggestion must publish the empty marks snapshot',
     );
+    const collabMarksBlock = sliceBetween(
+      editorSource,
+      '        collabClient.onMarks((marks) => {',
+      '\n        collabClient.onPresence((count) => {',
+    );
+    assert(collabMarksBlock.includes('this.lastReceivedServerMarks = { ...incomingMarks };'));
+    assert(!collabMarksBlock.includes('mergePendingServerMarks('));
+    assert(!collabMarksBlock.includes('this.collabUnsyncedChanges > 0'));
+    assert(
+      editorSource.includes(
+        'this.applyExternalMarks(this.lastReceivedServerMarks, { authoritativeSnapshot: true });',
+      ),
+      'A synced marks-map deletion must be applied as an authoritative snapshot',
+    );
 
     console.log('✓ live suggestion resolutions use Yjs; disconnected resolutions use REST');
   } finally {

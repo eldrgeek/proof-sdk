@@ -1515,34 +1515,19 @@ class ProofEditorImpl implements ProofEditor {
             ? (marks as Record<string, StoredMark>)
             : {};
           // Hocuspocus can emit a transient empty marks payload before initial sync
-          // and occasionally while local updates are still in flight. If we already
-          // have server marks, avoid clobbering them with that empty map.
+          // or during reconnect. Once synced, an empty map is authoritative even
+          // while content updates are still in flight: it can be a remote resolution.
           if (
             Object.keys(incomingMarks).length === 0
             && Object.keys(this.lastReceivedServerMarks).length > 0
-            && (
-              !this.collabIsSynced
-              || this.collabUnsyncedChanges > 0
-            )
+            && !this.collabIsSynced
           ) {
             return;
           }
 
-          let mergedIncomingMarks = mergePendingServerMarks(this.lastReceivedServerMarks, incomingMarks);
-          if (this.editor) {
-            try {
-              this.editor.action((ctx) => {
-                const view = ctx.get(editorViewCtx);
-                mergedIncomingMarks = mergePendingServerMarks(getMarkMetadata(view.state), incomingMarks);
-              });
-            } catch (error) {
-              console.warn('[collab.onMarks] Failed to merge incoming marks with local state:', error);
-            }
-          }
-
-          this.lastReceivedServerMarks = { ...mergedIncomingMarks };
+          this.lastReceivedServerMarks = { ...incomingMarks };
           this.initialMarksSynced = true;
-          if (Object.keys(mergedIncomingMarks).length > 0 && !this.isEditorDocStructurallyEmpty()) {
+          if (!this.isEditorDocStructurallyEmpty()) {
             this.applyLatestCollabMarksToEditor();
           }
         });
@@ -5093,27 +5078,32 @@ class ProofEditorImpl implements ProofEditor {
     this.scheduleBannerLayoutUpdate();
   }
 
-  applyExternalMarks(marks: Record<string, StoredMark>): void {
+  applyExternalMarks(
+    marks: Record<string, StoredMark>,
+    options?: { authoritativeSnapshot?: boolean },
+  ): void {
     if (!this.editor) return;
 
     this.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx);
       // Use applyRemoteMarks to create ProseMirror anchors for new marks
       // (using the `quote` field) and merge metadata for existing marks.
-      applyRemoteMarks(view, marks, { hydrateAnchors: this.collabCanEdit });
+      applyRemoteMarks(view, marks, {
+        hydrateAnchors: this.collabCanEdit,
+        authoritativeSnapshot: options?.authoritativeSnapshot,
+      });
       this.scheduleShareSuggestionReviewDisplay(view);
     });
   }
 
   private applyLatestCollabMarksToEditor(): void {
     if (!this.isShareMode || !this.collabEnabled || !this.editor) return;
-    if (Object.keys(this.lastReceivedServerMarks).length === 0) return;
     if (this.isEditorDocStructurallyEmpty()) return;
 
     this.applyingCollabRemote = true;
     this.suppressMarksSync = true;
     try {
-      this.applyExternalMarks(this.lastReceivedServerMarks);
+      this.applyExternalMarks(this.lastReceivedServerMarks, { authoritativeSnapshot: true });
     } finally {
       this.suppressMarksSync = false;
       this.applyingCollabRemote = false;
