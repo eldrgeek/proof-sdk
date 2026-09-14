@@ -56,7 +56,11 @@ async function run(): Promise<void> {
 
   const db = await import('../../server/db.ts');
   const { executeDocumentOperationAsync } = await import('../../server/document-engine.ts');
-  const { MUTATION_BASE_SCHEMA_VERSION } = await import('../../server/collab.ts');
+  const {
+    __unsafePrimeLoadedDocForTests,
+    loadCanonicalYDoc,
+    MUTATION_BASE_SCHEMA_VERSION,
+  } = await import('../../server/collab.ts');
   const { mutateCanonicalDocument } = await import('../../server/canonical-document.ts');
   const { rehydrateProofMarksMarkdown } = await import('../../server/proof-mark-rehydration.ts');
   const { repairProofMarksForSlug } = await import('../../server/proof-mark-repair.ts');
@@ -460,6 +464,10 @@ async function run(): Promise<void> {
     const splitRejectSlug = `rehydrate-split-reject-${Math.random().toString(36).slice(2, 10)}`;
     db.createDocument(splitRejectSlug, splitRejectFixture.markdown, splitRejectFixture.marks, 'Split suggestion reject');
     const splitRejectBefore = db.getDocumentBySlug(splitRejectSlug);
+    const splitRejectLiveHandle = await loadCanonicalYDoc(splitRejectSlug);
+    assert(splitRejectLiveHandle, 'Expected split suggestion reject fixture to load into a live Y.Doc');
+    const splitRejectLiveDoc = splitRejectLiveHandle.ydoc;
+    __unsafePrimeLoadedDocForTests(splitRejectSlug, splitRejectLiveDoc);
     const splitRejectResult = await executeDocumentOperationAsync(splitRejectSlug, 'POST', '/marks/reject', {
       markId: splitRejectFixture.suggestionId,
       by: 'human:test',
@@ -485,11 +493,22 @@ async function run(): Promise<void> {
       splitRejectedDoc?.markdown.includes(`data-id="${splitRejectFixture.commentId}"`),
       'Expected split suggestion reject to preserve nested comment markup',
     );
-    assert(
-      (splitRejectedDoc?.access_epoch ?? 0) > (splitRejectBefore?.access_epoch ?? 0),
-      'Expected split suggestion reject to bump access_epoch so stale collab rooms must reload',
+    // C4 applies REST suggestion rejects to the resident Y.Doc; it must not bump
+    // access_epoch and force connected pages to discard that live document.
+    assertEqual(
+      splitRejectedDoc?.access_epoch,
+      splitRejectBefore?.access_epoch,
+      'Expected split suggestion reject to leave access_epoch unchanged',
     );
     const splitRejectedMarks = parseStoredMarks(splitRejectedDoc?.marks);
+    assert(
+      !(splitRejectFixture.suggestionId in splitRejectedMarks),
+      'Expected split suggestion reject to remove suggestion metadata from stored marks',
+    );
+    assert(
+      !splitRejectLiveDoc.getMap('marks').has(splitRejectFixture.suggestionId),
+      'Expected split suggestion reject to remove suggestion metadata from the live Y.Doc',
+    );
     assert(splitRejectFixture.commentId in splitRejectedMarks, 'Expected split suggestion reject to preserve nested comment metadata');
 
     const splitRepairFixture = buildSplitFixture('repair');
