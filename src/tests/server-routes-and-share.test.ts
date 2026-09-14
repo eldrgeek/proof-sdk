@@ -591,6 +591,15 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       const previousMode = process.env.PROOF_LEGACY_CREATE_MODE;
       process.env.PROOF_LEGACY_CREATE_MODE = 'disabled';
       try {
+        const canonicalResponse = await postNoClientHeaders(baseUrl, '/documents', {
+          markdown: '# Canonical create remains available',
+          marks: {},
+        });
+        assert(canonicalResponse.status === 200, `Expected canonical /documents create status 200, got ${canonicalResponse.status}`);
+        const canonicalPayload = await canonicalResponse.json();
+        assert(typeof canonicalPayload.slug === 'string' && canonicalPayload.slug.length > 0, 'Expected canonical create slug');
+        assert((canonicalResponse.headers.get('x-proof-legacy-create') || '') === '', 'Expected no legacy-disabled header on canonical /documents');
+
         const response = await post(baseUrl, '/api/documents', {
           markdown: '# Legacy disabled mode',
           marks: {},

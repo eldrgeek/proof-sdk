@@ -66,6 +66,7 @@ import {
   AGENT_DOCS_PATH,
   CANONICAL_CREATE_API_PATH,
   DIRECT_SHARE_AUTH_FIX,
+  LEGACY_CREATE_API_PATH,
   buildLegacyCreateDeprecationPayload,
   buildLegacyCreateDisabledPayload,
   canonicalCreateLink,
@@ -447,6 +448,11 @@ function recordLegacyCreateRouteTelemetry(
   }));
 }
 
+function isLegacyCreatePathRequest(req: Request): boolean {
+  if (req.baseUrl === '/api') return true;
+  return req.originalUrl === LEGACY_CREATE_API_PATH || req.originalUrl.startsWith(`${LEGACY_CREATE_API_PATH}?`);
+}
+
 async function authorizeDirectShareRequest(
   req: Request,
   res: Response,
@@ -785,18 +791,21 @@ function deriveShareCapabilities(role: ShareRole, shareState: string): {
 
 // Create a shared document
 apiRoutes.post('/documents', (req: Request, res: Response) => {
+  const legacyPathRequest = isLegacyCreatePathRequest(req);
   const legacyCreateMode = resolveLegacyCreateMode(getPublicBaseUrl(req));
-  if (legacyCreateMode === 'disabled') {
-    recordLegacyCreateRouteTelemetry(req, legacyCreateMode, 'blocked_disabled');
-    applyLegacyCreateHeaders(res, legacyCreateMode);
-    res.status(410).json(buildLegacyCreateDisabledPayload());
-    return;
-  }
-  if (legacyCreateMode === 'warn') {
-    recordLegacyCreateRouteTelemetry(req, legacyCreateMode, 'allowed_warn');
-    applyLegacyCreateHeaders(res, legacyCreateMode);
-  } else {
-    recordLegacyCreateRouteTelemetry(req, legacyCreateMode, 'allowed');
+  if (legacyPathRequest) {
+    if (legacyCreateMode === 'disabled') {
+      recordLegacyCreateRouteTelemetry(req, legacyCreateMode, 'blocked_disabled');
+      applyLegacyCreateHeaders(res, legacyCreateMode);
+      res.status(410).json(buildLegacyCreateDisabledPayload());
+      return;
+    }
+    if (legacyCreateMode === 'warn') {
+      recordLegacyCreateRouteTelemetry(req, legacyCreateMode, 'allowed_warn');
+      applyLegacyCreateHeaders(res, legacyCreateMode);
+    } else {
+      recordLegacyCreateRouteTelemetry(req, legacyCreateMode, 'allowed');
+    }
   }
 
   const { markdown, marks, title, ownerId } = req.body;
@@ -881,7 +890,7 @@ apiRoutes.post('/documents', (req: Request, res: Response) => {
       includeMutationRoutes: true,
       includeBridgeRoutes: true,
     }),
-    ...(legacyCreateMode === 'warn'
+    ...(legacyPathRequest && legacyCreateMode === 'warn'
       ? { deprecation: buildLegacyCreateDeprecationPayload(legacyCreateMode) }
       : {}),
   });
