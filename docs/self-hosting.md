@@ -99,12 +99,12 @@ Check `/health` after start; `collab.enabled` should be `true` and `collab.wsUrl
 
 | Variable | Default | What it does | When required | Wrong / missing symptom |
 |----------|---------|--------------|---------------|-------------------------|
-| `PROOF_SHARE_MARKDOWN_AUTH_MODE` | `none` (`resolveShareMarkdownAuthMode` in `server/hosted-auth.ts`). | Auth mode for `POST /share/markdown` and related direct-share routes (`authorizeDirectShareRequest` in `server/routes.ts`). Values used: `none`, `api_key`, `oauth`, `oauth_or_api_key` (OAuth paths always fail in OSS — `hosted-auth.ts`). | Set `api_key` on any internet-exposed instance. | `none`: anonymous document creation allowed. |
+| `PROOF_SHARE_MARKDOWN_AUTH_MODE` | `none` (`resolveShareMarkdownAuthMode` in `server/hosted-auth.ts`). | Auth mode for `POST /share/markdown` only (`authorizeDirectShareRequest` in `handleShareMarkdown` in `server/routes.ts`). Values used: `none`, `api_key`, `oauth`, `oauth_or_api_key` (OAuth paths always fail in OSS — `hosted-auth.ts`). Does not protect `POST /documents` or `POST /api/documents` (`apiRoutes.post('/documents', ...)` in `server/routes.ts` does not call `authorizeDirectShareRequest`). | Set `api_key` on any internet-exposed instance. | `none`: anonymous creation via `POST /share/markdown` allowed. |
 | `PROOF_SHARE_MARKDOWN_API_KEY` | unset | Shared secret for `api_key` mode; accepted via `Authorization: Bearer` or `x-api-key` (`getDirectShareApiKey`, `authorizeDirectShareRequest` in `server/routes.ts`). | Required when `PROOF_SHARE_MARKDOWN_AUTH_MODE=api_key`. | `503` `DIRECT_SHARE_MISCONFIGURED` when mode is `api_key` and key is missing (`authorizeDirectShareRequest` in `server/routes.ts`). |
 | `PROOF_SHARE_MARKDOWN_RATE_LIMIT_MAX_AUTH_PER_MIN` | `120` (`checkDirectShareRateLimit` in `server/routes.ts`). | Per-IP rate limit for authenticated direct-share requests. | Optional tuning. | `429`-style rate limit responses when exceeded (not determined: exact status code). |
 | `PROOF_SHARE_MARKDOWN_RATE_LIMIT_MAX_UNAUTH_PER_MIN` | `20` (`checkDirectShareRateLimit` in `server/routes.ts`). | Per-IP rate limit for unauthenticated direct-share requests. | Optional tuning. | Same as above. |
 | `PROOF_SHARE_MARKDOWN_RATE_LIMIT_WINDOW_MS` | `60000` (`checkDirectShareRateLimit` in `server/routes.ts`). | Rate limit window length in milliseconds. | Optional tuning. | Same as above. |
-| `PROOF_LEGACY_CREATE_MODE` | `auto` → `allow` on loopback public base, else `warn` (`resolveLegacyCreateMode` in `server/agent-guidance.ts`). | Controls legacy `POST /api/documents` (`allow`, `warn`, `disabled`, or `auto`). | Set `disabled` to block the legacy create path on public deployments. | `disabled`: `403` with `LEGACY_CREATE_DISABLED` (`buildLegacyCreateDisabledPayload` in `server/agent-guidance.ts`). `warn`: deprecation headers on success. |
+| `PROOF_LEGACY_CREATE_MODE` | `auto` → `allow` on loopback public base, else `warn` (`resolveLegacyCreateMode` in `server/agent-guidance.ts`). | Controls `POST /documents` and `POST /api/documents` (`allow`, `warn`, `disabled`, or `auto`). One handler serves both paths (`apiRoutes.post('/documents', ...)` in `server/routes.ts`; mounted at `/api` and root in `server/index.ts`) and checks the mode without inspecting the request path. | Set `disabled` on internet-exposed instances to block unauthenticated creation on those paths (`PROOF_SHARE_MARKDOWN_AUTH_MODE` does not apply to them). | `disabled`: `410` with `LEGACY_CREATE_DISABLED` and body `fix: "Use POST /documents"` (`res.status(410).json(buildLegacyCreateDisabledPayload())` in `server/routes.ts`). `warn`: deprecation headers on success. |
 | `PROOF_COMMENT_UI_DEFAULT_MODE` | unset | Injects `window.__PROOF_CONFIG__.commentUiDefaultMode` into share HTML (`buildShareRuntimeConfigScript` in `server/share-web-routes.ts`). Values: `legacy`, `v2`, `auto`. | Optional. | Invalid values ignored; config line omitted. |
 | `PROOF_OPS_RATE_LIMIT_MAX` | `120` (`server/routes.ts` module init). | Rate limit for ops routes. | Optional tuning. | Requests throttled when exceeded. |
 | `PROOF_OPS_RATE_LIMIT_WINDOW_MS` | `60000` (`server/routes.ts` module init). | Ops rate limit window. | Optional tuning. | Same as above. |
@@ -112,6 +112,8 @@ Check `/health` after start; `collab.enabled` should be `true` and `collab.wsUrl
 | `BRIDGE_RATE_LIMIT_MAX_UNAUTH_PER_MIN` | `60` (`getRateLimitConfig` in `server/bridge.ts`). | Bridge route rate limit without token. | Optional tuning. | Same as above. |
 | `BRIDGE_RATE_LIMIT_WINDOW_MS` | `60000` (`getRateLimitConfig` in `server/bridge.ts`). | Bridge rate limit window. | Optional tuning. | Same as above. |
 | `BRIDGE_REQUEST_TIMEOUT_MS` | `10000` (`getBridgeTimeoutMs` in `server/ws.ts`). | Max wait for a browser bridge viewer to answer a bridge request (`sendBridgeRequestToClient` in `server/ws.ts`). | Optional tuning. | `504` bridge timeout (`TIMEOUT` in `server/ws.ts`). |
+
+On an internet-exposed instance, `PROOF_LEGACY_CREATE_MODE=disabled` is currently what stops unauthenticated document creation on `POST /documents` and `POST /api/documents`. `POST /share/markdown` is then the working create route; protect it with `PROOF_SHARE_MARKDOWN_AUTH_MODE=api_key` and `PROOF_SHARE_MARKDOWN_API_KEY`.
 
 ### Collaboration runtime — signing, URLs, and modes
 
@@ -284,6 +286,10 @@ Upstream [PR #55](https://github.com/EveryInc/proof-sdk/pull/55) and [PR #30](ht
 ### Share page returns 500 "Editor not built" ([#52](https://github.com/EveryInc/proof-sdk/issues/52))
 
 If `dist/index.html` is missing, share routes respond with `500` and the text `Editor not built. Run: npm run build` (`shareWebRoutes` in `server/share-web-routes.ts`). Run `npm run build` before serving.
+
+### `POST /documents` and `POST /api/documents` are not protected by `PROOF_SHARE_MARKDOWN_AUTH_MODE`
+
+The document-create handler does not call `authorizeDirectShareRequest` (`apiRoutes.post('/documents', ...)` in `server/routes.ts`). Only `POST /share/markdown` enforces `PROOF_SHARE_MARKDOWN_AUTH_MODE` (`handleShareMarkdown` in `server/routes.ts`). On an internet-exposed instance, set `PROOF_LEGACY_CREATE_MODE=disabled` to block unauthenticated creation on `POST /documents` and `POST /api/documents` (both return `410` `LEGACY_CREATE_DISABLED`). Use `POST /share/markdown` with `PROOF_SHARE_MARKDOWN_AUTH_MODE=api_key` as the authenticated create route.
 
 ### Other tracked issues
 
