@@ -85,14 +85,19 @@ function getLocalStorage(): Storage | null {
   }
 }
 
-function encodeBase64(bytes: Uint8Array): string {
+export function encodeBase64(bytes: Uint8Array): string {
   if (typeof window === 'undefined') {
     return Buffer.from(bytes).toString('base64');
   }
   let binary = '';
-  const chunk = 0x8000;
+  const chunk = 0x2000;
   for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    const end = Math.min(bytes.length, i + chunk);
+    let encodedChunk = '';
+    for (let j = i; j < end; j += 1) {
+      encodedChunk += String.fromCharCode(bytes[j]);
+    }
+    binary += encodedChunk;
   }
   return btoa(binary);
 }
