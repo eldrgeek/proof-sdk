@@ -382,22 +382,24 @@ function resolveRangeFromRelativeAnchors(
 }
 
 function resolveStoredMarkRange(doc: ProseMirrorNode, stored: StoredMark): MarkRange | null {
-  const normalizedStoredQuote = typeof stored.quote === 'string'
-    ? normalizeQuote(stored.quote)
-    : '';
+  const storedQuote = typeof stored.quote === 'string' ? stored.quote : '';
+  const normalizedStoredQuote = normalizeQuote(storedQuote);
   const allowsQuoteLessAnchorFallback = stored.kind === 'authored';
+  const rangeMatchesStoredQuote = (range: MarkRange): boolean => {
+    const actual = getTextForRange(doc, range);
+    return normalizedStoredQuote
+      ? normalizeQuote(actual) === normalizedStoredQuote
+      : storedQuote.length > 0 && actual === storedQuote;
+  };
 
   const relativeRange = resolveRangeFromRelativeAnchors(doc, stored.startRel, stored.endRel);
   if (relativeRange) {
-    if (!normalizedStoredQuote) {
+    if (!storedQuote) {
       if (allowsQuoteLessAnchorFallback) {
         return relativeRange;
       }
-    } else {
-      const actualRelativeQuote = normalizeQuote(getTextForRange(doc, relativeRange));
-      if (actualRelativeQuote === normalizedStoredQuote) {
-        return relativeRange;
-      }
+    } else if (rangeMatchesStoredQuote(relativeRange)) {
+      return relativeRange;
     }
   }
 
@@ -413,15 +415,12 @@ function resolveStoredMarkRange(doc: ProseMirrorNode, stored: StoredMark): MarkR
     && storedRange.to <= doc.content.size
   ) {
     const candidateRange = { from: storedRange.from, to: storedRange.to };
-    if (!normalizedStoredQuote) {
+    if (!storedQuote) {
       if (allowsQuoteLessAnchorFallback) {
         return candidateRange;
       }
-    } else {
-      const actualQuote = normalizeQuote(getTextForRange(doc, candidateRange));
-      if (actualQuote === normalizedStoredQuote) {
-        return candidateRange;
-      }
+    } else if (rangeMatchesStoredQuote(candidateRange)) {
+      return candidateRange;
     }
   }
 
@@ -952,7 +951,7 @@ function suggestionAttrsEqual(a: Record<string, unknown>, b: Record<string, unkn
   return true;
 }
 
-function stampSuggestionMetadataOnDocument(
+export function stampSuggestionMetadataOnDocument(
   state: EditorState,
   tr: Transaction,
   metadata: Record<string, StoredMark>
@@ -1585,7 +1584,17 @@ function buildMetadataSnapshot(
   for (const mark of marks) {
     if (!includeAuthored && mark.kind === 'authored') continue;
     const stored = buildMetadataFromMark(mark);
-    if (options?.includeQuotes && mark.quote) stored.quote = mark.quote;
+    if (options?.includeQuotes) {
+      if (
+        mark.range
+        && (mark.kind === 'insert' || mark.kind === 'delete' || mark.kind === 'replace')
+      ) {
+        const exactQuote = getTextForRange(state.doc, mark.range);
+        stored.quote = normalizeQuote(exactQuote) || exactQuote;
+      } else if (mark.quote) {
+        stored.quote = mark.quote;
+      }
+    }
     addRelativeAnchorsToMetadata(state.doc, mark, stored);
     metadata[mark.id] = mergeStoredMarkWithFallback(metadata[mark.id], stored);
   }
@@ -1709,7 +1718,6 @@ export function mergePendingServerMarks(
     }
     const kind = serverMark?.kind;
     if (kind !== 'authored') {
-      // Server is authoritative for non-authored marks (comments, suggestions, AI marks)
       const isDeletedTombstone = isResolvedMarkTombstoned(id, now, 'deleted');
       const isResolvedTombstone = isResolvedMarkTombstoned(id, now, 'resolved');
       if (isDeletedTombstone && !merged[id]) {
@@ -1718,6 +1726,22 @@ export function mergePendingServerMarks(
       }
       if (kind === 'comment' && isResolvedTombstone && merged[id]?.resolved === true) {
         merged[id] = mergeStoredMarkWithFallback(merged[id], { ...serverMark, resolved: true });
+      } else if (
+        (kind === 'insert' || kind === 'delete' || kind === 'replace')
+        && merged[id]?.kind === kind
+        && merged[id]?.status !== 'accepted'
+        && merged[id]?.status !== 'rejected'
+      ) {
+        const localMark = merged[id];
+        const next = mergeStoredMarkWithFallback(localMark, serverMark);
+        // These fields are derived from the current document anchor and can advance
+        // on every keystroke before the server echoes the previous snapshot.
+        if (localMark.content !== undefined) next.content = localMark.content;
+        if (localMark.quote !== undefined) next.quote = localMark.quote;
+        if (localMark.range !== undefined) next.range = localMark.range;
+        if (localMark.startRel !== undefined) next.startRel = localMark.startRel;
+        if (localMark.endRel !== undefined) next.endRel = localMark.endRel;
+        merged[id] = next;
       } else if (!isDeletedTombstone) {
         merged[id] = mergeStoredMarkWithFallback(merged[id], serverMark);
       }
