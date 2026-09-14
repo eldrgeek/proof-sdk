@@ -904,12 +904,33 @@ function replaceFirstOccurrence(source: string, find: string, replace: string): 
   return `${source.slice(0, idx)}${replace}${source.slice(idx + find.length)}`;
 }
 
+function deleteMarkdownRangeWithWhitespaceCleanup(
+  markdown: string,
+  start: number,
+  end: number,
+): string {
+  let deleteStart = start;
+  let deleteEnd = end;
+  const before = markdown[start - 1] ?? '';
+  const after = markdown[end] ?? '';
+  const startsTextBlock = start === 0 || markdown[start - 1] === '\n';
+  const endsTextBlock = end === markdown.length || markdown[end] === '\n';
+
+  if (after === ' ' && (before === ' ' || startsTextBlock)) {
+    deleteEnd += 1;
+  } else if (before === ' ' && endsTextBlock) {
+    deleteStart -= 1;
+  }
+  return `${markdown.slice(0, deleteStart)}${markdown.slice(deleteEnd)}`;
+}
+
 function buildAcceptedSuggestionMarkdown(markdown: string, suggestion: StoredMark): string | null {
   const quote = typeof suggestion.quote === 'string' ? suggestion.quote : '';
   if (!quote) return null;
 
   if (suggestion.kind === 'insert') {
     const content = typeof suggestion.content === 'string' ? suggestion.content : '';
+    if (normalizeQuote(content) === normalizeQuote(quote)) return markdown;
     const span = findQuoteSpanInMarkdown(markdown, quote);
     if (span) {
       return `${markdown.slice(0, span.end)}${content}${markdown.slice(span.end)}`;
@@ -922,9 +943,12 @@ function buildAcceptedSuggestionMarkdown(markdown: string, suggestion: StoredMar
   if (suggestion.kind === 'delete') {
     const span = findQuoteSpanInMarkdown(markdown, quote);
     if (span) {
-      return `${markdown.slice(0, span.start)}${markdown.slice(span.end)}`;
+      return deleteMarkdownRangeWithWhitespaceCleanup(markdown, span.start, span.end);
     }
-    return replaceFirstOccurrence(markdown, quote, '');
+    const idx = markdown.indexOf(quote);
+    return idx < 0
+      ? null
+      : deleteMarkdownRangeWithWhitespaceCleanup(markdown, idx, idx + quote.length);
   }
 
   if (suggestion.kind === 'replace') {
@@ -1074,11 +1098,12 @@ function buildAcceptedSuggestionMarkdownFromSelection(
 
   if (suggestion.kind === 'insert') {
     const content = typeof suggestion.content === 'string' ? suggestion.content : '';
+    if (normalizeQuote(content) === normalizeQuote(suggestion.quote)) return markdown;
     return `${markdown.slice(0, span.end)}${content}${markdown.slice(span.end)}`;
   }
 
   if (suggestion.kind === 'delete') {
-    return `${markdown.slice(0, span.start)}${markdown.slice(span.end)}`;
+    return deleteMarkdownRangeWithWhitespaceCleanup(markdown, span.start, span.end);
   }
 
   if (suggestion.kind === 'replace') {
@@ -2034,10 +2059,12 @@ async function addSuggestionAsync(
 
     let resolvedTarget: AnchorTarget | undefined;
     let selectionMetadata: { quote: string; startRel?: string; endRel?: string } | null = null;
+    let resolvedSelection: { sourceStart: number; sourceEnd: number } | null = null;
     if (isRecord(body.target)) {
       const resolved = resolveMutationAnchor(route, doc.markdown, target, 'Suggestion anchor quote not found in document');
       if (!resolved.ok) return resolved.result;
       resolvedTarget = stabilizeAnchorTarget(resolved.logicalSource, resolved.normalizedTarget, resolved.resolved);
+      resolvedSelection = resolved.resolved.selection;
       selectionMetadata = buildStoredSelectionMetadata(
         doc.markdown,
         resolved.resolved.selection,
@@ -2053,6 +2080,101 @@ async function addSuggestionAsync(
           body: { success: false, code: 'ANCHOR_NOT_FOUND', error: 'Suggestion anchor quote not found in document' },
         };
       }
+    }
+
+    if (kind === 'insert') {
+      const content = body.content as string;
+      if (content.length === 0) {
+        return { status: 400, body: { success: false, error: 'Missing content' } };
+      }
+      const anchorSpan = resolvedSelection
+        ? expandMarkdownSpan(
+            doc.markdown,
+            Math.min(resolvedSelection.sourceStart, resolvedSelection.sourceEnd),
+            Math.max(resolvedSelection.sourceStart, resolvedSelection.sourceEnd),
+          )
+        : findQuoteSpanInMarkdown(doc.markdown, quote);
+      if (!anchorSpan) {
+        return {
+          status: 409,
+          body: { success: false, code: 'ANCHOR_NOT_FOUND', error: 'Suggestion anchor quote not found in document' },
+        };
+      }
+
+      const insertionStart = anchorSpan.end;
+      const nextMarkdown = `${doc.markdown.slice(0, insertionStart)}${content}${doc.markdown.slice(insertionStart)}`;
+      const insertedSelection = buildStoredSelectionMetadata(
+        nextMarkdown,
+        { sourceStart: insertionStart, sourceEnd: insertionStart + content.length },
+        content,
+      );
+      if (!insertedSelection.quote || !insertedSelection.startRel || !insertedSelection.endRel) {
+        return {
+          status: 422,
+          body: {
+            success: false,
+            code: 'INVALID_INSERT_CONTENT',
+            error: 'Inserted suggestion content must contain visible text',
+          },
+        };
+      }
+
+      const id = randomUUID();
+      const now = new Date().toISOString();
+      const marks = parseMarks(doc.marks);
+      marks[id] = {
+        kind,
+        by,
+        createdAt: now,
+        quote: insertedSelection.quote,
+        content,
+        status: 'pending',
+        startRel: insertedSelection.startRel,
+        endRel: insertedSelection.endRel,
+      };
+
+      const mutation = await mutateCanonicalDocument({
+        slug,
+        nextMarkdown,
+        nextMarks: marks as unknown as Record<string, unknown>,
+        source: `engine:suggestion.insert.added:${by}`,
+        ...buildCanonicalMutationBaseArgs(doc, context),
+        strictLiveDoc: true,
+        guardPathologicalGrowth: true,
+      });
+      if (!mutation.ok) {
+        return {
+          status: mutation.status,
+          body: {
+            success: false,
+            code: mutation.code,
+            error: mutation.error,
+            ...(mutation.retryWithState ? { retryWithState: mutation.retryWithState } : {}),
+          },
+        };
+      }
+
+      const eventId = addDocumentEvent(
+        slug,
+        'suggestion.insert.added',
+        { markId: id, by, quote: insertedSelection.quote, content },
+        by,
+        mutationContextIdempotencyKey(context),
+        mutationContextIdempotencyRoute(context),
+      );
+      return {
+        status: 200,
+        body: {
+          success: true,
+          eventId,
+          markId: id,
+          shareState: mutation.document.share_state,
+          updatedAt: mutation.document.updated_at,
+          content: mutation.document.markdown,
+          markdown: mutation.document.markdown,
+          marks: parseMarks(mutation.document.marks),
+        },
+      };
     }
 
     const id = randomUUID();

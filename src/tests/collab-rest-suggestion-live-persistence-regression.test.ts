@@ -8,7 +8,7 @@ import express from 'express';
 import { HocuspocusProvider } from '@hocuspocus/provider';
 import { WebSocketServer } from 'ws';
 import * as Y from 'yjs';
-import { prosemirrorToYXmlFragment } from 'y-prosemirror';
+import { prosemirrorToYXmlFragment, yXmlFragmentToProseMirrorRootNode } from 'y-prosemirror';
 
 const CLIENT_HEADERS = {
   'X-Proof-Client-Version': '0.31.2',
@@ -32,6 +32,7 @@ type CollabSession = {
 };
 
 type SuggestionResponse = {
+  markId?: string;
   marks?: Record<string, { kind?: string; status?: string }>;
 };
 
@@ -277,6 +278,265 @@ async function runCase(
   }
 }
 
+async function runAiInsertCase(
+  context: {
+    httpBase: string;
+    db: typeof import('../../server/db.ts');
+    schema: import('@milkdown/kit/prose/model').Schema;
+  },
+): Promise<void> {
+  const initialMarkdown = '# Live insert\n\nKeep anchor here.';
+  const createResponse = await fetch(`${context.httpBase}/api/documents`, {
+    method: 'POST',
+    headers: { ...CLIENT_HEADERS, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: 'AI insert live persistence',
+      markdown: initialMarkdown,
+      marks: {},
+    }),
+  });
+  const created = await mustJson<CreatedDocument>(createResponse, 'create AI insert document');
+  const client = await connectClient(context.httpBase, created.slug, created.ownerSecret);
+  const initialEpoch = context.db.getDocumentBySlug(created.slug)?.access_epoch;
+  const clientText = () => yXmlFragmentToProseMirrorRootNode(
+    client.doc.getXmlFragment('prosemirror') as any,
+    context.schema as any,
+  ).textContent;
+
+  try {
+    const acceptedContent = ' accepted words';
+    const suggestAcceptResponse = await postAgent(
+      context.httpBase,
+      created.slug,
+      created.ownerSecret,
+      '/marks/suggest-insert',
+      { quote: 'anchor', content: acceptedContent, by: 'ai:test' },
+    );
+    const suggestedAccept = await mustJson<SuggestionResponse>(
+      suggestAcceptResponse,
+      'create accepted AI insert suggestion',
+    );
+    const acceptedMarkId = suggestedAccept.markId ?? '';
+    assert(acceptedMarkId.length > 0, 'Expected pending AI insert response to return its mark id');
+    await waitFor(
+      () => clientText().includes(`anchor${acceptedContent}`),
+      10_000,
+      'AI insert text in connected client',
+    );
+    await waitFor(
+      () => client.doc.getMap('marks').has(acceptedMarkId),
+      5_000,
+      'AI insert pending mark in connected client',
+    );
+    const pendingAccept = client.doc.getMap('marks').get(acceptedMarkId) as Record<string, unknown>;
+    assert(pendingAccept.kind === 'insert' && pendingAccept.status === 'pending', 'Expected pending insert mark metadata');
+    assert(pendingAccept.content === acceptedContent, 'Expected pending insert mark to preserve proposed content');
+    assert(pendingAccept.quote === 'accepted words', 'Expected pending insert mark quote to anchor inserted text');
+    assert(
+      typeof pendingAccept.startRel === 'string' && typeof pendingAccept.endRel === 'string',
+      'Expected pending insert mark to carry relative anchors for inserted text',
+    );
+
+    const pendingStateResponse = await fetch(`${context.httpBase}/api/agent/${created.slug}/state`, {
+      headers: { ...CLIENT_HEADERS, 'x-share-token': created.ownerSecret },
+    });
+    const pendingState = await mustJson<{
+      markdown?: string;
+      projectionFresh?: boolean;
+      repairPending?: boolean;
+    }>(pendingStateResponse, 'pending AI insert state');
+    assert(pendingState.projectionFresh === true, 'Expected fresh /state projection after AI insert add');
+    assert(pendingState.repairPending !== true, 'Expected no projection repair after AI insert add');
+    assert(pendingState.markdown?.includes(`anchor${acceptedContent}`) === true, 'Expected /state to include pending insert text');
+
+    const acceptedPayload = await mustJson<{
+      marks?: Record<string, { kind?: string; by?: string }>;
+    }>(
+      await postAgent(
+        context.httpBase,
+        created.slug,
+        created.ownerSecret,
+        '/marks/accept',
+        { markId: acceptedMarkId, by: 'human:test' },
+      ),
+      'accept AI insert suggestion',
+    );
+    assert(
+      Object.values(acceptedPayload.marks ?? {}).some(
+        (mark) => mark.kind === 'authored' && mark.by === 'ai:test',
+      ),
+      'Accept should credit retained insert text to the suggester',
+    );
+    await waitFor(
+      () => !client.doc.getMap('marks').has(acceptedMarkId),
+      5_000,
+      'accepted AI insert removed from marks map',
+    );
+    assert(clientText().includes(`anchor${acceptedContent}`), 'Accept should keep AI-inserted text');
+    assert(
+      context.db.getDocumentBySlug(created.slug)?.access_epoch === initialEpoch,
+      'Accept should not reseed the connected live document',
+    );
+
+    const rejectedContent = ' rejected words';
+    const suggestReject = await mustJson<SuggestionResponse>(
+      await postAgent(
+        context.httpBase,
+        created.slug,
+        created.ownerSecret,
+        '/marks/suggest-insert',
+        { quote: 'here', content: rejectedContent, by: 'ai:test' },
+      ),
+      'create rejected AI insert suggestion',
+    );
+    const rejectedMarkId = suggestReject.markId ?? '';
+    assert(rejectedMarkId.length > 0, 'Expected second pending AI insert response to return its mark id');
+    await waitFor(
+      () => clientText().includes(`here${rejectedContent}`)
+        && client.doc.getMap('marks').has(rejectedMarkId),
+      10_000,
+      'second AI insert text and pending mark',
+    );
+    await mustJson<Record<string, unknown>>(
+      await postAgent(
+        context.httpBase,
+        created.slug,
+        created.ownerSecret,
+        '/marks/reject',
+        { markId: rejectedMarkId, by: 'human:test' },
+      ),
+      'reject AI insert suggestion',
+    );
+    await waitFor(
+      () => !clientText().includes(rejectedContent)
+        && !client.doc.getMap('marks').has(rejectedMarkId),
+      10_000,
+      'rejected AI insert removed without reseed',
+    );
+    assert(
+      context.db.getDocumentBySlug(created.slug)?.access_epoch === initialEpoch,
+      'REST reject should not reseed the connected live document',
+    );
+
+    const finalStateResponse = await fetch(`${context.httpBase}/api/agent/${created.slug}/state`, {
+      headers: { ...CLIENT_HEADERS, 'x-share-token': created.ownerSecret },
+    });
+    const finalState = await mustJson<{
+      markdown?: string;
+      projectionFresh?: boolean;
+      repairPending?: boolean;
+    }>(finalStateResponse, 'resolved AI insert state');
+    assert(finalState.projectionFresh === true, 'Expected fresh /state projection after AI insert resolutions');
+    assert(finalState.repairPending !== true, 'Expected no projection repair after AI insert resolutions');
+    assert(finalState.markdown?.includes(acceptedContent) === true, 'Expected accepted AI insert in final state');
+    assert(finalState.markdown?.includes(rejectedContent) !== true, 'Expected rejected AI insert absent from final state');
+  } finally {
+    client.destroy();
+  }
+}
+
+async function runDisconnectedInsertCases(httpBase: string): Promise<void> {
+  const createResponse = await fetch(`${httpBase}/api/documents`, {
+    method: 'POST',
+    headers: { ...CLIENT_HEADERS, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: 'Disconnected AI insert',
+      markdown: 'Keep anchor here.',
+      marks: {},
+    }),
+  });
+  const created = await mustJson<CreatedDocument>(createResponse, 'create disconnected AI insert document');
+  const insertedContent = ' pending words';
+  const suggested = await mustJson<SuggestionResponse>(
+    await postAgent(
+      httpBase,
+      created.slug,
+      created.ownerSecret,
+      '/marks/suggest-insert',
+      { quote: 'anchor', content: insertedContent, by: 'ai:test' },
+    ),
+    'create disconnected AI insert suggestion',
+  );
+  const markId = suggested.markId ?? '';
+  assert(markId.length > 0, 'Expected disconnected insert response to return its mark id');
+
+  const pendingState = await mustJson<{
+    markdown?: string;
+    marks?: Record<string, { kind?: string; status?: string }>;
+    projectionFresh?: boolean;
+  }>(
+    await fetch(`${httpBase}/api/agent/${created.slug}/state`, {
+      headers: { ...CLIENT_HEADERS, 'x-share-token': created.ownerSecret },
+    }),
+    'disconnected pending insert state',
+  );
+  assert(pendingState.markdown?.includes(`anchor${insertedContent}`) === true, 'Disconnected add should insert text');
+  assert(pendingState.marks?.[markId]?.status === 'pending', 'Disconnected add should store a pending mark');
+  assert(pendingState.projectionFresh === true, 'Disconnected add should leave /state projection fresh');
+
+  await mustJson<Record<string, unknown>>(
+    await postAgent(
+      httpBase,
+      created.slug,
+      created.ownerSecret,
+      '/marks/reject',
+      { markId, by: 'human:test' },
+    ),
+    'reject disconnected AI insert',
+  );
+  const rejectedState = await mustJson<{ markdown?: string; projectionFresh?: boolean }>(
+    await fetch(`${httpBase}/api/agent/${created.slug}/state`, {
+      headers: { ...CLIENT_HEADERS, 'x-share-token': created.ownerSecret },
+    }),
+    'disconnected rejected insert state',
+  );
+  assert(rejectedState.markdown === 'Keep anchor here.\n', 'Disconnected reject should remove inserted text');
+  assert(rejectedState.projectionFresh === true, 'Disconnected reject should leave /state projection fresh');
+
+  const legacyId = 'legacy-quote-anchored-insert';
+  const legacyCreateResponse = await fetch(`${httpBase}/api/documents`, {
+    method: 'POST',
+    headers: { ...CLIENT_HEADERS, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: 'Legacy quote-anchored insert',
+      markdown: 'Keep anchor here.',
+      marks: {
+        [legacyId]: {
+          kind: 'insert',
+          by: 'ai:test',
+          createdAt: new Date('2026-09-14T00:00:00.000Z').toISOString(),
+          quote: 'anchor',
+          content: ' proposed',
+          status: 'pending',
+          startRel: 'char:5',
+          endRel: 'char:11',
+        },
+      },
+    }),
+  });
+  const legacy = await mustJson<CreatedDocument>(legacyCreateResponse, 'create legacy insert document');
+  await mustJson<Record<string, unknown>>(
+    await postAgent(
+      httpBase,
+      legacy.slug,
+      legacy.ownerSecret,
+      '/marks/accept',
+      { markId: legacyId, by: 'human:test' },
+    ),
+    'accept legacy quote-anchored insert',
+  );
+  const legacyState = await mustJson<{ markdown?: string }>(
+    await fetch(`${httpBase}/api/agent/${legacy.slug}/state`, {
+      headers: { ...CLIENT_HEADERS, 'x-share-token': legacy.ownerSecret },
+    }),
+    'accepted legacy insert state',
+  );
+  assert(
+    legacyState.markdown?.includes('Keep anchor proposed here.') === true,
+    `Legacy insert accept should keep its anchor and append content, got ${JSON.stringify(legacyState.markdown)}`,
+  );
+}
+
 async function assertDroppedUpdateWarns(
   collab: typeof import('../../server/collab.ts'),
   db: typeof import('../../server/db.ts'),
@@ -386,6 +646,12 @@ async function run(): Promise<void> {
   const parser = await milkdown.getHeadlessMilkdownParser();
 
   try {
+    await runDisconnectedInsertCases(httpBase);
+    await runAiInsertCase({
+      httpBase,
+      db,
+      schema: parser.schema,
+    });
     await runCase('reject', { httpBase, db, collab, parseMarkdown: parser.parseMarkdown });
     await runCase('accept', { httpBase, db, collab, parseMarkdown: parser.parseMarkdown });
     await assertReconnectDuringClearingInvalidatePersists({

@@ -251,15 +251,15 @@ async function run(): Promise<void> {
     };
 
     const acceptCases: AcceptCase[] = [
-      { name: 'delete bold formatting',          markdown: 'Some **bold** text',                       kind: 'delete',  quote: 'bold',         expected: 'Some  text' },
+      { name: 'delete bold formatting',          markdown: 'Some **bold** text',                       kind: 'delete',  quote: 'bold',         expected: 'Some text' },
       { name: 'replace italic formatting',        markdown: 'Some *italic* words',                     kind: 'replace', quote: 'italic',       content: 'plain',   expected: 'Some *plain* words' },
       { name: 'insert after bold formatting',     markdown: 'Some **text** here',                      kind: 'insert',  quote: 'text',         content: ' added',  expected: 'Some **text** added here' },
       { name: 'exact match replace (plain text)', markdown: 'Hello world',                             kind: 'replace', quote: 'Hello',        content: 'Hi',      expected: 'Hi world' },
-      { name: 'delete nested formatting',         markdown: 'Some **_bold italic_** text',             kind: 'delete',  quote: 'bold italic',  expected: 'Some  text' },
-      { name: 'delete HTML tag formatting',       markdown: 'Some <strong>bold</strong> text',         kind: 'delete',  quote: 'bold',         expected: 'Some  text' },
+      { name: 'delete nested formatting',         markdown: 'Some **_bold italic_** text',             kind: 'delete',  quote: 'bold italic',  expected: 'Some text' },
+      { name: 'delete HTML tag formatting',       markdown: 'Some <strong>bold</strong> text',         kind: 'delete',  quote: 'bold',         expected: 'Some text' },
       { name: 'replace with whitespace normalization', markdown: 'Hello\n\nworld',                     kind: 'replace', quote: 'Hello world',  content: 'Hi there', expected: 'Hi there' },
-      { name: 'delete link text',                 markdown: 'Click [here](https://example.com) now',   kind: 'delete',  quote: 'here',         expected: 'Click  now' },
-      { name: 'delete image alt text',            markdown: 'See ![photo](https://img.com/a.jpg) below', kind: 'delete', quote: 'photo',       expected: 'See  below' },
+      { name: 'delete link text',                 markdown: 'Click [here](https://example.com) now',   kind: 'delete',  quote: 'here',         expected: 'Click now' },
+      { name: 'delete image alt text',            markdown: 'See ![photo](https://img.com/a.jpg) below', kind: 'delete', quote: 'photo',       expected: 'See below' },
     ];
 
     function suggestAndAccept(c: AcceptCase): void {
@@ -308,7 +308,7 @@ async function run(): Promise<void> {
         kind: 'delete',
         target: { anchor: '**bold**', mode: 'normalized' },
         expectedTargetAnchor: 'bold',
-        expected: 'Some  text',
+        expected: 'Some text',
       },
       {
         name: 'explicit target replace preserves wrapper formatting',

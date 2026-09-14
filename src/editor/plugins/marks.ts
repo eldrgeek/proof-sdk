@@ -2834,6 +2834,102 @@ function applyMarkdownInsert(
   return { ok: true, tr, appliedRange };
 }
 
+function applyMarkdownInsertAfterRange(
+  view: EditorView,
+  tr: Transaction,
+  range: MarkRange,
+  markdown: string,
+  by: string,
+  parser: MarkdownParser | undefined
+): MarkdownApplyResult {
+  const insertionRange: MarkRange = { from: range.to, to: range.to };
+  const parsedFragment = parseMarkdownFragment(parser, markdown);
+
+  if (!parsedFragment || parsedFragment.childCount === 0) {
+    if (isStructuralMarkdown(markdown, parser)) {
+      console.warn('[marks] Rejecting structural insert accept because markdown could not be parsed.');
+      return { ok: false };
+    }
+    tr = tr.insertText(markdown, range.to);
+    const appliedRange = { from: range.to, to: range.to + markdown.length };
+    tr = addAuthoredMarkToTransaction(view.state, tr, appliedRange, by);
+    return { ok: true, tr, appliedRange };
+  }
+
+  const structural = isStructuralMarkdown(markdown, parser);
+  const inlineCandidate = !structural ? unwrapSingleParagraph(parsedFragment) : null;
+  const parsedFragmentForInsert = inlineCandidate ?? parsedFragment;
+  const hasBlockNodes = fragmentHasBlockNodes(parsedFragmentForInsert);
+
+  if (hasBlockNodes) {
+    const analysis = analyzeTextblockRange(tr.doc, insertionRange);
+    const splitReplacement = buildTextblockSplitReplacement(
+      tr.doc,
+      insertionRange,
+      analysis,
+      parsedFragmentForInsert,
+    );
+    if (!splitReplacement) {
+      console.warn('[marks] Rejecting structural insert accept because insertion point is not block-safe.');
+      return { ok: false };
+    }
+    try {
+      tr = tr.replaceWith(
+        splitReplacement.replaceFrom,
+        splitReplacement.replaceTo,
+        splitReplacement.replacement,
+      );
+      tr = addAuthoredMarkToTransaction(view.state, tr, splitReplacement.appliedRange, by);
+      return { ok: true, tr, appliedRange: splitReplacement.appliedRange };
+    } catch (error) {
+      console.warn('[marks] Structural insert-after replacement failed.', error);
+      return { ok: false };
+    }
+  }
+
+  const replacement = buildReplacementContent(
+    tr.doc,
+    insertionRange,
+    markdown,
+    parser,
+    (text) => view.state.schema.text(text),
+  );
+  try {
+    tr = tr.replaceWith(range.to, range.to, replacement.content);
+  } catch (error) {
+    console.warn('[marks] Inline insert-after replacement failed.', error);
+    return { ok: false };
+  }
+  const appliedRange = { from: range.to, to: range.to + replacement.size };
+  tr = addAuthoredMarkToTransaction(view.state, tr, appliedRange, by);
+  return { ok: true, tr, appliedRange };
+}
+
+function expandDeleteRangeForWhitespace(doc: ProseMirrorNode, range: MarkRange): MarkRange {
+  const $from = doc.resolve(range.from);
+  const $to = doc.resolve(range.to);
+  if ($from.parent !== $to.parent || !$from.parent.isTextblock) return range;
+
+  const parent = $from.parent;
+  const before = $from.parentOffset > 0
+    ? parent.textBetween($from.parentOffset - 1, $from.parentOffset, '\n', '\n')
+    : '';
+  const after = $to.parentOffset < parent.content.size
+    ? parent.textBetween($to.parentOffset, $to.parentOffset + 1, '\n', '\n')
+    : '';
+
+  if (
+    after === ' '
+    && (before === ' ' || $from.parentOffset === 0)
+  ) {
+    return { from: range.from, to: range.to + 1 };
+  }
+  if (before === ' ' && $to.parentOffset === parent.content.size) {
+    return { from: range.from - 1, to: range.to };
+  }
+  return range;
+}
+
 function insertMarkdownNeedsReparse(
   doc: ProseMirrorNode,
   range: MarkRange,
@@ -2891,6 +2987,10 @@ export function accept(view: EditorView, markId: string, parser?: MarkdownParser
         );
         if (coveredText === content && !needsReparse) {
           tr = addAuthoredMarkToTransaction(view.state, tr, range, mark.by);
+        } else if (coveredText !== content) {
+          const result = applyMarkdownInsertAfterRange(view, tr, range, content, mark.by, effectiveParser);
+          if (!result.ok) return false;
+          tr = result.tr;
         } else {
           const result = applyMarkdownInsert(view, tr, range, content, mark.by, effectiveParser);
           if (!result.ok) return false;
@@ -2902,7 +3002,8 @@ export function accept(view: EditorView, markId: string, parser?: MarkdownParser
     }
     case 'delete': {
       for (const range of ranges) {
-        tr = tr.delete(range.from, range.to);
+        const deleteRange = expandDeleteRangeForWhitespace(tr.doc, range);
+        tr = tr.delete(deleteRange.from, deleteRange.to);
       }
       applied = true;
       break;
@@ -2981,11 +3082,21 @@ export function reject(view: EditorView, markId: string): boolean {
   if (ranges.length === 0) return false;
 
   switch (mark.kind) {
-    case 'insert':
+    case 'insert': {
+      const markType = getMarkTypeForKind(view.state, 'insert');
+      if (!markType) return false;
       for (const range of ranges) {
-        tr = tr.delete(range.from, range.to);
+        const data = mark.data as InsertData | undefined;
+        const content = data?.content ?? getTextForRange(view.state.doc, range);
+        const coveredText = getTextForRange(view.state.doc, range);
+        if (coveredText === content) {
+          tr = tr.delete(range.from, range.to);
+        } else {
+          tr = tr.removeMark(range.from, range.to, markType);
+        }
       }
       break;
+    }
     case 'delete': {
       const markType = getMarkTypeForKind(view.state, 'delete');
       if (!markType) return false;
@@ -3071,13 +3182,22 @@ export function rejectAll(view: EditorView): number {
     if (ranges.length === 0) continue;
 
     switch (mark.kind) {
-      case 'insert':
+      case 'insert': {
+        const markType = getMarkTypeForKind(view.state, 'insert');
         for (const range of ranges) {
           const from = tr.mapping.map(range.from);
           const to = tr.mapping.map(range.to);
-          tr = tr.delete(from, to);
+          const data = mark.data as InsertData | undefined;
+          const content = data?.content ?? getTextForRange(view.state.doc, range);
+          const coveredText = getTextForRange(view.state.doc, range);
+          if (coveredText === content) {
+            tr = tr.delete(from, to);
+          } else if (markType) {
+            tr = tr.removeMark(from, to, markType);
+          }
         }
         break;
+      }
       case 'delete': {
         const markType = getMarkTypeForKind(view.state, 'delete');
         for (const range of ranges) {
@@ -3280,7 +3400,7 @@ export function createDecorations(
     let style = '';
     let cssClass = '';
 
-    let replacementContent: string | null = null;
+    let suggestedInsertContent: string | null = null;
 
     switch (mark.kind) {
       case 'authored':
@@ -3301,6 +3421,11 @@ export function createDecorations(
         if (data?.status === 'pending') {
           style = STYLES.insert;
           cssClass = 'mark-insert';
+          const content = data.content ?? '';
+          const coversOwnContent = ranges.every(
+            range => getTextForRange(state.doc, range) === content,
+          );
+          if (!coversOwnContent) suggestedInsertContent = content;
         }
         break;
       }
@@ -3322,7 +3447,7 @@ export function createDecorations(
           }
           style = STYLES.delete;
           cssClass = 'mark-replace mark-delete';
-          replacementContent = data.content ?? '';
+          suggestedInsertContent = data.content ?? '';
         }
         break;
       }
@@ -3353,7 +3478,7 @@ export function createDecorations(
         );
       }
 
-      if (mark.kind === 'replace' && replacementContent !== null) {
+      if ((mark.kind === 'insert' || mark.kind === 'replace') && suggestedInsertContent !== null) {
         const widgetPos = ranges.reduce((maxPos, range) => Math.max(maxPos, range.to), 0);
         decorations.push(
           Decoration.widget(
@@ -3363,12 +3488,12 @@ export function createDecorations(
               span.className = ['mark-replace-insert', 'mark-insert', glowClass].filter(Boolean).join(' ');
               span.style.cssText = STYLES.insert;
               span.setAttribute('data-mark-id', mark.id);
-              span.setAttribute('data-mark-kind', 'replace');
+              span.setAttribute('data-mark-kind', mark.kind);
               if (suggestionTitle) span.title = suggestionTitle;
-              span.textContent = replacementContent ?? '';
+              span.textContent = suggestedInsertContent ?? '';
               return span;
             },
-            { side: 1, key: `replace-insert-${mark.id}` }
+            { side: 1, key: `${mark.kind}-insert-${mark.id}` }
           )
         );
       }
