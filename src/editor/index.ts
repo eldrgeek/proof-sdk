@@ -8771,6 +8771,10 @@ class ProofEditorImpl implements ProofEditor {
     return success;
   }
 
+  private notifyHostAuthorshipStatsUpdated(stats: ReturnType<typeof getAuthorshipStats>): void {
+    (this as any).bridge?.authorshipStatsUpdated?.(stats);
+  }
+
   /**
    * Accept a suggestion and apply the change
    */
@@ -8805,7 +8809,7 @@ class ProofEditorImpl implements ProofEditor {
             const innerView = innerCtx.get(editorViewCtx);
             applyRemoteMarks(innerView, serverMarks, { hydrateAnchors: this.collabCanEdit });
             const stats = getAuthorshipStats(innerView);
-            this.bridge.authorshipStatsUpdated(stats);
+            this.notifyHostAuthorshipStatsUpdated(stats);
           });
         }
         captureEvent('suggestion_accepted', { count: 1 });
@@ -8849,7 +8853,7 @@ class ProofEditorImpl implements ProofEditor {
       if (success) {
         captureEvent('suggestion_accepted', { count: 1 });
         const stats = getAuthorshipStats(view);
-        this.bridge.authorshipStatsUpdated(stats);
+        this.notifyHostAuthorshipStatsUpdated(stats);
       }
     });
 
@@ -8953,7 +8957,7 @@ class ProofEditorImpl implements ProofEditor {
             const innerView = innerCtx.get(editorViewCtx);
             applyRemoteMarks(innerView, latestServerMarks!, { hydrateAnchors: this.collabCanEdit });
             const stats = getAuthorshipStats(innerView);
-            this.bridge.authorshipStatsUpdated(stats);
+            this.notifyHostAuthorshipStatsUpdated(stats);
           });
         }
         if (acceptedCount > 0) {
@@ -9006,7 +9010,7 @@ class ProofEditorImpl implements ProofEditor {
       if (count > 0) {
         captureEvent('suggestion_accepted', { count });
         const stats = getAuthorshipStats(view);
-        this.bridge.authorshipStatsUpdated(stats);
+        this.notifyHostAuthorshipStatsUpdated(stats);
       }
     });
 
@@ -9073,7 +9077,7 @@ class ProofEditorImpl implements ProofEditor {
       if (count > 0) {
         captureEvent('suggestion_rejected', { count });
         const stats = getAuthorshipStats(view);
-        this.bridge.authorshipStatsUpdated(stats);
+        this.notifyHostAuthorshipStatsUpdated(stats);
       }
     });
     return count;
