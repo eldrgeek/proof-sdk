@@ -4541,6 +4541,124 @@ export async function deriveCanonicalMarkdownFromProseMirrorDoc(
   }
 }
 
+type CollabFragmentCanonicalHealPlan =
+  | { shouldHeal: false; reason: string }
+  | {
+    shouldHeal: true;
+    reason: 'normalized_seed_only' | 'normalized_persisted_equivalent';
+    normalized: string;
+    marks: Record<string, unknown>;
+    yStateVersion: number;
+    clearPersistedState: boolean;
+    syncMarkdownMirrorToCanonical: boolean;
+    before: number;
+    after: number;
+  };
+
+async function syncPersistedMarkdownMirrorToCanonical(
+  slug: string,
+  normalizedCanonicalMarkdown: string,
+): Promise<{ ok: true; yStateVersion: number } | { ok: false; reason: string }> {
+  const persisted = await readPersistedDocStateAsync(slug, { allowFragmentRecovery: false });
+  try {
+    if (persisted.degradedReason === 'corrupt_persisted_yjs_state') {
+      return { ok: false, reason: 'persisted_yjs_corrupt' };
+    }
+    const text = persisted.ydoc.getText('markdown');
+    const current = stripEphemeralCollabSpans(text.toString());
+    if (sameAuthoritativeContent(current, {}, normalizedCanonicalMarkdown, {})) {
+      return { ok: true, yStateVersion: getLatestYStateVersion(slug) };
+    }
+
+    const beforeStateVector = Y.encodeStateVector(persisted.ydoc);
+    persisted.ydoc.transact(() => {
+      applyYTextDiff(text, normalizedCanonicalMarkdown);
+    }, 'heal-canonical-markdown-mirror');
+    const mirrorUpdate = Y.encodeStateAsUpdate(persisted.ydoc, beforeStateVector);
+    if (mirrorUpdate.byteLength > 0) {
+      appendYUpdate(slug, mirrorUpdate, 'heal-canonical-markdown-mirror');
+    }
+    return { ok: true, yStateVersion: getLatestYStateVersion(slug) };
+  } finally {
+    persisted.ydoc.destroy();
+  }
+}
+
+async function planCanonicalMarkdownHealForCollabFragment(
+  slug: string,
+): Promise<CollabFragmentCanonicalHealPlan> {
+  const row = getDocumentBySlug(slug);
+  if (!row) return { shouldHeal: false, reason: 'missing_doc' };
+  if (row.share_state === 'DELETED') return { shouldHeal: false, reason: 'deleted' };
+  const current = stripEphemeralCollabSpans(row.markdown ?? '');
+  if (current.trim().length === 0) return { shouldHeal: false, reason: 'empty' };
+
+  const normalized = await deriveCanonicalMarkdownForStorage(current);
+  if (normalized === current) return { shouldHeal: false, reason: 'already_canonical' };
+  // Only structural divergence wedges a projection — the read/snapshot path
+  // tolerates trailing-whitespace differences (a bare trailing newline never
+  // wedges). Skip cosmetic-only diffs so the heal doesn't churn healthy docs.
+  if (normalized.trimEnd() === current.trimEnd()) return { shouldHeal: false, reason: 'cosmetic_only' };
+
+  const marks = parseStoredMarks(row.marks);
+  const yStateVersion = getLatestYStateVersion(slug);
+  const persistedUpdates = getYUpdatesAfter(slug, 0);
+  if (persistedUpdates.length === 0) {
+    return {
+      shouldHeal: true,
+      reason: 'normalized_seed_only',
+      normalized,
+      marks,
+      yStateVersion,
+      clearPersistedState: true,
+      syncMarkdownMirrorToCanonical: false,
+      before: current.length,
+      after: normalized.length,
+    };
+  }
+
+  // Lossless persisted-update path: only heal when the currently persisted
+  // collab fragment already serializes to the same canonical fixed point.
+  const persisted = await readPersistedDocStateAsync(slug, { allowFragmentRecovery: false });
+  try {
+    if (persisted.degradedReason === 'corrupt_persisted_yjs_state') {
+      return { shouldHeal: false, reason: 'persisted_yjs_corrupt' };
+    }
+    const fragmentMarkdown = await deriveMarkdownProjectionFromFragment(persisted.ydoc);
+    if (fragmentMarkdown === null) return { shouldHeal: false, reason: 'fragment_unavailable' };
+    if (!sameAuthoritativeContent(fragmentMarkdown, {}, normalized, {})) {
+      return { shouldHeal: false, reason: 'fragment_differs' };
+    }
+    const markdownMirror = stripEphemeralCollabSpans(persisted.ydoc.getText('markdown').toString());
+    return {
+      shouldHeal: true,
+      reason: 'normalized_persisted_equivalent',
+      normalized,
+      marks,
+      yStateVersion,
+      clearPersistedState: false,
+      syncMarkdownMirrorToCanonical: !sameAuthoritativeContent(markdownMirror, {}, normalized, {}),
+      before: current.length,
+      after: normalized.length,
+    };
+  } finally {
+    persisted.ydoc.destroy();
+  }
+}
+
+export async function previewCanonicalMarkdownHealForCollabFragment(
+  slug: string,
+): Promise<{ wouldHeal: boolean; reason: string; before?: number; after?: number }> {
+  const plan = await planCanonicalMarkdownHealForCollabFragment(slug);
+  if (!plan.shouldHeal) return { wouldHeal: false, reason: plan.reason };
+  return {
+    wouldHeal: true,
+    reason: plan.reason,
+    before: plan.before,
+    after: plan.after,
+  };
+}
+
 // Heal an EXISTING document whose stored canonical markdown predates the
 // write-time normalization above (e.g. a doc created with a raw GFM table before
 // this fix). Rewrites `documents.markdown` to the collab fragment's serialization
@@ -4549,47 +4667,42 @@ export async function deriveCanonicalMarkdownFromProseMirrorDoc(
 export async function healCanonicalMarkdownForCollabFragment(
   slug: string,
 ): Promise<{ healed: boolean; reason: string; before?: number; after?: number }> {
-  const row = getDocumentBySlug(slug);
-  if (!row) return { healed: false, reason: 'missing_doc' };
-  if (row.share_state === 'DELETED') return { healed: false, reason: 'deleted' };
-  const current = stripEphemeralCollabSpans(row.markdown ?? '');
-  if (current.trim().length === 0) return { healed: false, reason: 'empty' };
-
-  // Only heal seed-only wedged documents. A doc with persisted incremental Yjs
-  // updates may hold live edits not yet compacted into the canonical row; healing
-  // re-seeds the collab room from the canonical row and clears persisted Yjs
-  // state, which would drop those edits. Docs that receive edits are kept
-  // consistent by write-path normalization instead, so skip them here.
-  if (getYUpdatesAfter(slug, 0).length > 0) {
-    return { healed: false, reason: 'has_persisted_edits' };
+  const plan = await planCanonicalMarkdownHealForCollabFragment(slug);
+  if (!plan.shouldHeal) return { healed: false, reason: plan.reason };
+  let projectionYStateVersion = plan.yStateVersion;
+  if (plan.syncMarkdownMirrorToCanonical) {
+    const mirrorSync = await syncPersistedMarkdownMirrorToCanonical(slug, plan.normalized);
+    if (!mirrorSync.ok) return { healed: false, reason: mirrorSync.reason };
+    projectionYStateVersion = mirrorSync.yStateVersion;
   }
 
-  const normalized = await deriveCanonicalMarkdownForStorage(current);
-  if (normalized === current) return { healed: false, reason: 'already_canonical' };
-  // Only structural divergence wedges a projection — the read/snapshot path
-  // tolerates trailing-whitespace differences (a bare trailing newline never
-  // wedges). Skip cosmetic-only diffs so the heal doesn't churn healthy docs.
-  if (normalized.trimEnd() === current.trimEnd()) return { healed: false, reason: 'cosmetic_only' };
-
-  const marks = parseStoredMarks(row.marks);
-  const yStateVersion = getLatestYStateVersion(slug);
   const now = new Date().toISOString();
   const db = getDb();
   const tx = db.transaction(() => {
     db.prepare(
       "UPDATE documents SET markdown = ?, updated_at = ? WHERE slug = ? AND share_state IN ('ACTIVE', 'PAUSED')",
-    ).run(normalized, now, slug);
-    replaceDocumentProjection(slug, normalized, marks, yStateVersion, {
+    ).run(plan.normalized, now, slug);
+    replaceDocumentProjection(slug, plan.normalized, plan.marks, projectionYStateVersion, {
       health: 'healthy',
       healthReason: null,
     });
   });
   tx();
-  // Safe because the guard above ensures there are no persisted incremental
-  // updates: clearing lets the next load re-seed the room from the healed
-  // canonical row so the fragment, markdown mirror, and projection all agree.
-  invalidateCollabDocument(slug);
-  return { healed: true, reason: 'normalized', before: current.length, after: normalized.length };
+  if (plan.clearPersistedState) {
+    // Seed-only docs can safely clear stale persisted state and re-seed from the
+    // healed canonical row on the next load.
+    invalidateCollabDocument(slug);
+  } else {
+    // Persisted Yjs state already matches the normalized canonical form.
+    // Keep it intact and only evict loaded/live copies.
+    invalidateLoadedCollabDocument(slug);
+  }
+  return {
+    healed: true,
+    reason: plan.reason,
+    before: plan.before,
+    after: plan.after,
+  };
 }
 
 let canonicalSyncPostApplyFailureForTests: string | null = null;
