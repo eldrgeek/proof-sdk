@@ -509,6 +509,110 @@ test('accept keeps inserted text and clears insert suggestion metadata', () => {
   assert(!getMarkMetadata(state)[markId], 'Accepted insert metadata should be removed');
 });
 
+test('quote-anchored insert accept appends proposed content and keeps the anchor', () => {
+  const markId = 's-accept-quote-anchored-insert';
+  const insertMark = marksSchema.marks.proofSuggestion.create({ id: markId, kind: 'insert', by: 'ai:test' });
+  const doc = marksSchema.node('doc', null, [
+    marksSchema.node('paragraph', null, [
+      marksSchema.text('Keep '),
+      marksSchema.text('anchor', [insertMark]),
+      marksSchema.text(' here'),
+    ]),
+  ]);
+  const marksStatePlugin = createMarksStatePlugin({
+    [markId]: {
+      kind: 'insert',
+      by: 'ai:test',
+      createdAt: new Date('2026-09-14T00:00:00.000Z').toISOString(),
+      quote: 'anchor',
+      content: ' proposed',
+      status: 'pending',
+    },
+  });
+  let state = EditorState.create({ schema: marksSchema, doc, plugins: [marksStatePlugin] });
+  const view = {
+    get state() {
+      return state;
+    },
+    dispatch(tr: any) {
+      state = state.apply(tr);
+    },
+  } as any;
+
+  const accepted = acceptMark(view, markId);
+  assert(accepted, 'Expected quote-anchored insert accept to succeed');
+  assertEqual(state.doc.textContent, 'Keep anchor proposed here');
+  assert(!getMarks(state).some((mark) => mark.id === markId), 'Accepted insert mark should be removed');
+});
+
+test('quote-anchored insert reject keeps anchor text and only removes the mark', () => {
+  const markId = 's-reject-quote-anchored-insert';
+  const insertMark = marksSchema.marks.proofSuggestion.create({ id: markId, kind: 'insert', by: 'ai:test' });
+  const doc = marksSchema.node('doc', null, [
+    marksSchema.node('paragraph', null, [
+      marksSchema.text('Keep '),
+      marksSchema.text('anchor', [insertMark]),
+      marksSchema.text(' here'),
+    ]),
+  ]);
+  const marksStatePlugin = createMarksStatePlugin({
+    [markId]: {
+      kind: 'insert',
+      by: 'ai:test',
+      createdAt: new Date('2026-09-14T00:00:00.000Z').toISOString(),
+      quote: 'anchor',
+      content: ' proposed',
+      status: 'pending',
+    },
+  });
+  let state = EditorState.create({ schema: marksSchema, doc, plugins: [marksStatePlugin] });
+  const view = {
+    get state() {
+      return state;
+    },
+    dispatch(tr: any) {
+      state = state.apply(tr);
+    },
+  } as any;
+
+  assert(rejectMark(view, markId), 'Expected quote-anchored insert reject to succeed');
+  assertEqual(state.doc.textContent, 'Keep anchor here');
+  assert(!getMarks(state).some((mark) => mark.id === markId), 'Rejected insert mark should be removed');
+});
+
+test('quote-anchored insert draws proposed content in an insert widget', () => {
+  const markId = 's-widget-quote-anchored-insert';
+  const insertMark = marksSchema.marks.proofSuggestion.create({ id: markId, kind: 'insert', by: 'ai:test' });
+  const doc = marksSchema.node('doc', null, [
+    marksSchema.node('paragraph', null, [
+      marksSchema.text('Keep '),
+      marksSchema.text('anchor', [insertMark]),
+      marksSchema.text(' here'),
+    ]),
+  ]);
+  const state = EditorState.create({
+    schema: marksSchema,
+    doc,
+    plugins: [createMarksStatePlugin({
+      [markId]: {
+        kind: 'insert',
+        by: 'ai:test',
+        createdAt: new Date('2026-09-14T00:00:00.000Z').toISOString(),
+        quote: 'anchor',
+        content: ' proposed',
+        status: 'pending',
+      },
+    })],
+  });
+
+  const decorations = createDecorations(state, getMarks(state), null, null).find();
+  const widget = decorations.find(
+    decoration => (decoration.type as any).spec?.key === `insert-insert-${markId}`,
+  );
+  assert(widget !== undefined, 'Expected a proposed-content widget after the insert anchor');
+  assertEqual(widget?.from, widget?.to, 'Expected proposed content to use a widget decoration');
+});
+
 test('reject removes inserted text for insert suggestions', () => {
   const markId = 's-reject-insert';
   const insertMark = marksSchema.marks.proofSuggestion.create({ id: markId, kind: 'insert', by: 'ai:test' });
@@ -569,6 +673,39 @@ test('accept removes deleted text for delete suggestions', () => {
   assert(accepted, 'Expected accept to succeed for delete suggestion');
   assertEqual(state.doc.textBetween(0, state.doc.content.size, '\n', '\n'), 'A[]B');
   assert(!getMarks(state).some((mark) => mark.id === markId), 'Accepted delete should no longer be pending');
+});
+
+test('accept delete removes one normalized-away adjacent space', () => {
+  const runCase = (before: string, deleted: string, after: string, expected: string) => {
+    const markId = `s-delete-space-${before.length}-${after.length}`;
+    const deleteMark = marksSchema.marks.proofSuggestion.create({ id: markId, kind: 'delete', by: 'ai:test' });
+    const doc = marksSchema.node('doc', null, [
+      marksSchema.node('paragraph', null, [
+        ...(before ? [marksSchema.text(before)] : []),
+        marksSchema.text(deleted, [deleteMark]),
+        ...(after ? [marksSchema.text(after)] : []),
+      ]),
+    ]);
+    let state = EditorState.create({
+      schema: marksSchema,
+      doc,
+      plugins: [createMarksStatePlugin()],
+    });
+    const view = {
+      get state() {
+        return state;
+      },
+      dispatch(tr: any) {
+        state = state.apply(tr);
+      },
+    } as any;
+    assert(acceptMark(view, markId), `Expected delete accept for ${JSON.stringify(before + deleted + after)}`);
+    assertEqual(state.doc.textContent, expected);
+  };
+
+  runCase('', 'Drop', ' next', 'next');
+  runCase('Keep ', 'drop', ' next', 'Keep next');
+  runCase('Keep ', 'drop', '', 'Keep');
 });
 
 test('reject keeps deleted text for delete suggestions while removing mark', () => {
