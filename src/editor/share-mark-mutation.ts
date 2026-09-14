@@ -137,7 +137,7 @@ export async function recoverShareMarksAfterMutationFailure(args: {
     }
 
     const restoreMessage = unresolvedIds.length > 0
-      ? `${message} The server still reports ${unresolvedIds.length} suggestion${unresolvedIds.length === 1 ? '' : 's'} as pending; its latest document has been restored.`
+      ? `${message} The server still reports ${unresolvedIds.length} suggestion${unresolvedIds.length === 1 ? '' : 's'} as pending; its authoritative state has been reconciled.`
       : message;
     args.showErrorBanner(restoreMessage);
     if (args.applyServerDocument) {

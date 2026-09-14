@@ -164,6 +164,7 @@ import {
   recoverShareMarksAfterMutationFailure,
   type ShareSuggestionFinalStatus,
 } from './share-mark-mutation';
+import { reconcileAuthoritativeShareDocument } from './share-document-recovery';
 import {
   createShareSuggestionReviewUpdateScheduler,
   shouldUpdateShareSuggestionReviewDisplay,
@@ -2796,8 +2797,13 @@ class ProofEditorImpl implements ProofEditor {
       : {};
     this.lastReceivedServerMarks = { ...serverMarks };
     this.initialMarksSynced = true;
-    this.loadDocument(embedMarks(doc.markdown, serverMarks), { allowShareContentMutation: true });
-    this.applyExternalMarks(serverMarks);
+    reconcileAuthoritativeShareDocument({
+      collabConnected: this.collabEnabled && this.collabConnectionStatus === 'connected',
+      markdown: doc.markdown,
+      serverMarks,
+      loadDocument: (markdown) => this.loadDocument(markdown, { allowShareContentMutation: true }),
+      applyServerMarks: (marks) => this.applyExternalMarks(marks),
+    });
   }
 
   private async recoverAuthoritativeShareMarks(
@@ -8894,6 +8900,23 @@ class ProofEditorImpl implements ProofEditor {
     return mark.status !== 'accepted' && mark.status !== 'rejected';
   }
 
+  private dropSuggestionIdsFromServerMarkCache(markIds: string[]): Record<string, StoredMark> {
+    const removed: Record<string, StoredMark> = {};
+    const next = { ...this.lastReceivedServerMarks };
+    for (const id of markIds) {
+      if (!id || !next[id]) continue;
+      removed[id] = next[id];
+      delete next[id];
+    }
+    this.lastReceivedServerMarks = next;
+    return removed;
+  }
+
+  private restoreServerMarkCache(marks: Record<string, StoredMark>): void {
+    if (Object.keys(marks).length === 0) return;
+    this.lastReceivedServerMarks = { ...this.lastReceivedServerMarks, ...marks };
+  }
+
   private async reconcileShareSuggestionBatch(
     markIds: string[],
     finalStatus: ShareSuggestionFinalStatus,
@@ -8948,11 +8971,13 @@ class ProofEditorImpl implements ProofEditor {
       this.editor.action((ctx) => {
         const view = ctx.get(editorViewCtx);
         const parser = ctx.get(parserCtx);
+        const removedServerMarks = this.dropSuggestionIdsFromServerMarkCache([markId]);
         this.suppressMarksSync = true;
         try {
           accepted = acceptMark(view, markId, parser);
         } finally {
           this.suppressMarksSync = false;
+          if (!accepted) this.restoreServerMarkCache(removedServerMarks);
         }
         if (!accepted) return;
         const metadata = getMarkMetadataWithQuotes(view.state);
@@ -9026,11 +9051,13 @@ class ProofEditorImpl implements ProofEditor {
       let rejected = false;
       this.editor.action((ctx) => {
         const view = ctx.get(editorViewCtx);
+        const removedServerMarks = this.dropSuggestionIdsFromServerMarkCache([markId]);
         this.suppressMarksSync = true;
         try {
           rejected = rejectMark(view, markId);
         } finally {
           this.suppressMarksSync = false;
+          if (!rejected) this.restoreServerMarkCache(removedServerMarks);
         }
         if (!rejected) return;
         const metadata = getMarkMetadataWithQuotes(view.state);
@@ -9110,9 +9137,10 @@ class ProofEditorImpl implements ProofEditor {
           ));
         if (pendingIds.length === 0) return;
         const pendingIdSet = new Set(pendingIds);
+        const removedServerMarks = this.dropSuggestionIdsFromServerMarkCache(pendingIds);
+        const acceptedIdSet = new Set<string>();
         this.suppressMarksSync = true;
         try {
-          const acceptedIdSet = new Set<string>();
           for (let pass = 0; pass < 4; pass += 1) {
             const remaining = getPendingSuggestions(getMarks(view.state))
               .filter((mark) => pendingIdSet.has(mark.id))
@@ -9128,11 +9156,15 @@ class ProofEditorImpl implements ProofEditor {
             }
             if (acceptedInPass === 0) break;
           }
-          acceptedIds = [...acceptedIdSet];
-          acceptedCount = acceptedIds.length;
         } finally {
           this.suppressMarksSync = false;
+          const unresolvedServerMarks = Object.fromEntries(
+            Object.entries(removedServerMarks).filter(([id]) => !acceptedIdSet.has(id)),
+          );
+          this.restoreServerMarkCache(unresolvedServerMarks);
         }
+        acceptedIds = [...acceptedIdSet];
+        acceptedCount = acceptedIds.length;
         if (acceptedCount <= 0) return;
         const metadata = getMarkMetadataWithQuotes(view.state);
         this.lastReceivedServerMarks = { ...metadata };
@@ -9190,17 +9222,22 @@ class ProofEditorImpl implements ProofEditor {
           .map((mark) => mark.id)
           .filter((id) => this.isSuggestionPendingOnServer(id));
         if (rejectedIds.length === 0) return;
+        const removedServerMarks = this.dropSuggestionIdsFromServerMarkCache(rejectedIds);
+        const rejectedIdSet = new Set<string>();
         this.suppressMarksSync = true;
         try {
-          const rejectedIdSet = new Set<string>();
           for (const id of [...rejectedIds].reverse()) {
             if (rejectMark(view, id)) rejectedIdSet.add(id);
           }
-          rejectedIds = rejectedIds.filter((id) => rejectedIdSet.has(id));
-          rejectedCount = rejectedIds.length;
         } finally {
           this.suppressMarksSync = false;
+          const unresolvedServerMarks = Object.fromEntries(
+            Object.entries(removedServerMarks).filter(([id]) => !rejectedIdSet.has(id)),
+          );
+          this.restoreServerMarkCache(unresolvedServerMarks);
         }
+        rejectedIds = rejectedIds.filter((id) => rejectedIdSet.has(id));
+        rejectedCount = rejectedIds.length;
         if (rejectedCount <= 0) return;
         const metadata = getMarkMetadataWithQuotes(view.state);
         this.lastReceivedServerMarks = { ...metadata };

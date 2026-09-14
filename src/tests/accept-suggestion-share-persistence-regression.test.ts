@@ -34,12 +34,18 @@ async function run(): Promise<void> {
       < markAcceptShareBlock.indexOf('shareClient.acceptSuggestion(markId, actor)'),
     'Share accept must apply the suggestion to the local editor before persisting it',
   );
+  assert(
+    markAcceptShareBlock.includes('this.dropSuggestionIdsFromServerMarkCache([markId])')
+      && markAcceptShareBlock.indexOf('this.dropSuggestionIdsFromServerMarkCache([markId])')
+        < markAcceptShareBlock.indexOf('accepted = acceptMark(view, markId, parser);'),
+    'Share accept must drop stale cached server metadata before the local dispatch',
+  );
   assert.match(markAcceptShareBlock, /this\.suppressMarksSync = true;[\s\S]*accepted = acceptMark\(view, markId, parser\);[\s\S]*this\.suppressMarksSync = false;/);
   assert(markAcceptShareBlock.includes('this.applyAuthoritativeShareMarks(serverMarks);'));
   assert(markAcceptShareBlock.includes('this.recoverAuthoritativeShareMarks('));
   assert(
-    editorSource.includes('this.applyAuthoritativeShareDocument(doc);'),
-    'Failed optimistic accepts must restore authoritative server markdown and marks together',
+    editorSource.includes("collabConnected: this.collabEnabled && this.collabConnectionStatus === 'connected'"),
+    'Failed optimistic accepts must preserve Yjs-authoritative text while live collaboration is connected',
   );
 
   const markAcceptAllBlock = sliceBetween(
@@ -59,6 +65,12 @@ async function run(): Promise<void> {
   );
   assert(markAcceptAllShareBlock.includes('this.isSuggestionPendingOnServer(id)'));
   assert(markAcceptAllShareBlock.includes('!this.shareRejectedSuggestionIdsBlockedFromAcceptAll.has(id)'));
+  assert(
+    markAcceptAllShareBlock.includes('this.dropSuggestionIdsFromServerMarkCache(pendingIds)')
+      && markAcceptAllShareBlock.indexOf('this.dropSuggestionIdsFromServerMarkCache(pendingIds)')
+        < markAcceptAllShareBlock.indexOf('if (acceptMark(view, id, parser))'),
+    'Share accept-all must drop cached server metadata before local dispatches',
+  );
   assert(markAcceptAllShareBlock.includes("this.reconcileShareSuggestionBatch(acceptedIds, 'accepted', actor)"));
   assert(markAcceptAllShareBlock.includes('this.recoverAuthoritativeShareMarks('));
 

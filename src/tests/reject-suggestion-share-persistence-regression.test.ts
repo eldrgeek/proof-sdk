@@ -35,6 +35,12 @@ function run(): void {
     'Expected markReject share mode to optimistically tombstone the local suggestion, persist it, and recover from failed mutations',
   );
   assert(
+    markRejectShareBlock.includes('this.dropSuggestionIdsFromServerMarkCache([markId])')
+      && markRejectShareBlock.indexOf('this.dropSuggestionIdsFromServerMarkCache([markId])')
+        < markRejectShareBlock.indexOf('rejected = rejectMark(view, markId);'),
+    'Expected markReject to drop stale cached server metadata before the local dispatch',
+  );
+  assert(
     !markRejectShareBlock.includes('shareClient.pushUpdate(')
       && !markRejectShareBlock.includes('shareClient.pushMarks('),
     'Expected markReject share mode not to fall back to broad content or marks writes for suggestion rejection',
@@ -77,6 +83,12 @@ function run(): void {
       && markRejectAllShareBlock.includes('const actor = getCurrentActor();')
       && markRejectAllShareBlock.includes("this.reconcileShareSuggestionBatch(rejectedIds, 'rejected', actor)"),
     'Expected markRejectAll share mode to reject mutually pending suggestions and reconcile every id with the server',
+  );
+  assert(
+    markRejectAllShareBlock.includes('this.dropSuggestionIdsFromServerMarkCache(rejectedIds)')
+      && markRejectAllShareBlock.indexOf('this.dropSuggestionIdsFromServerMarkCache(rejectedIds)')
+        < markRejectAllShareBlock.indexOf('if (rejectMark(view, id)) rejectedIdSet.add(id);'),
+    'Expected markRejectAll to drop cached server metadata before local dispatches',
   );
   assert(
     !markRejectAllShareBlock.includes('shareClient.pushUpdate(')
