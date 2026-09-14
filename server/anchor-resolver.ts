@@ -230,7 +230,7 @@ function filterContextualCandidates(
   windowChars: number,
 ): LogicalRange[] {
   if (!contextBefore && !contextAfter) return candidates;
-  return candidates.filter((candidate) => {
+  const exactMatches = candidates.filter((candidate) => {
     if (contextBefore) {
       const beforeStart = Math.max(0, candidate.logicalStart - (contextBefore.length + windowChars));
       if (!logical.slice(beforeStart, candidate.logicalStart).includes(contextBefore)) return false;
@@ -241,6 +241,49 @@ function filterContextualCandidates(
     }
     return true;
   });
+  if (exactMatches.length > 0 || candidates.length === 0) return exactMatches;
+
+  // Stabilized targets intentionally omit occurrence indexes and use nearby context
+  // as their durable identity. If text is inserted inside that context, requiring the
+  // complete old snippet makes the original target impossible to resolve. Fall back
+  // to the longest adjacent suffix/prefix, but only when it identifies a unique best
+  // candidate with a meaningful amount of matching context.
+  const commonSuffixLength = (left: string, right: string): number => {
+    const max = Math.min(left.length, right.length);
+    let length = 0;
+    while (length < max && left[left.length - length - 1] === right[right.length - length - 1]) {
+      length += 1;
+    }
+    return length;
+  };
+  const commonPrefixLength = (left: string, right: string): number => {
+    const max = Math.min(left.length, right.length);
+    let length = 0;
+    while (length < max && left[length] === right[length]) {
+      length += 1;
+    }
+    return length;
+  };
+  const scored = candidates.map((candidate) => {
+    const beforeStart = Math.max(0, candidate.logicalStart - (contextBefore.length + windowChars));
+    const afterEnd = Math.min(logical.length, candidate.logicalEnd + contextAfter.length + windowChars);
+    const beforeScore = contextBefore
+      ? commonSuffixLength(logical.slice(beforeStart, candidate.logicalStart).trimEnd(), contextBefore)
+      : 0;
+    const afterScore = contextAfter
+      ? commonPrefixLength(logical.slice(candidate.logicalEnd, afterEnd).trimStart(), contextAfter)
+      : 0;
+    return { candidate, score: beforeScore + afterScore };
+  });
+  const bestScore = Math.max(...scored.map((entry) => entry.score));
+  const minimumMeaningfulScore = Math.min(
+    8,
+    Math.max(contextBefore.length, contextAfter.length),
+  );
+  if (bestScore < minimumMeaningfulScore) return [];
+  return scored
+    .filter((entry) => entry.score === bestScore)
+    .map((entry) => entry.candidate);
 }
 
 function pickCandidateIndex(

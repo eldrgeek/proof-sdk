@@ -4,6 +4,7 @@ import { canonicalizeStoredMarks, normalizeQuote, type StoredMark } from '../src
 import {
   applyRemoteMarks,
   accept as acceptMark,
+  clearResolvedMarkTombstones,
   getMarkMetadataWithQuotes,
   getMarks,
   marksPluginKey,
@@ -357,6 +358,7 @@ export async function finalizeSuggestionThroughRehydration(args: {
   marks: Record<string, StoredMark>;
   markId: string;
   action: Exclude<RehydrationMode, 'repair'>;
+  clearResolutionTombstone?: boolean;
 }): Promise<ProofMarkRehydrationResult> {
   const canonicalMarks = canonicalizeStoredMarks(args.marks);
   const rehydrated = await buildRehydratedState(args.markdown, canonicalMarks);
@@ -393,6 +395,9 @@ export async function finalizeSuggestionThroughRehydration(args: {
       rehydrated.hydratedIds,
       rehydrated.missingRequiredIds,
     );
+  }
+  if (args.clearResolutionTombstone) {
+    clearResolvedMarkTombstones([args.markId]);
   }
 
   return finalizeRehydratedState(rehydrated.strippedMarkdown, rehydrated.view.state);
