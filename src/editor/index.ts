@@ -3574,6 +3574,17 @@ class ProofEditorImpl implements ProofEditor {
   private createReviewStyleControl(): HTMLElement {
     if (!this.playmakerReview) {
       this.playmakerReview = new PlayMakerReview({
+        ask: (messages, mark) => shareClient.askVerso(messages, mark),
+        propose: proposal => {
+          if (!this.collabCanEdit || !this.editor) throw new Error('Connect with editing access before adding this mark.');
+          const view = this.editor.ctx.get(editorViewCtx);
+          const range = resolveQuoteRange(view.state.doc, proposal.quote);
+          if (!range) throw new Error('This text has changed. Ask Verso for a fresh proposal.');
+          const result = proposal.kind === 'suggestion'
+            ? this.markSuggestReplace(proposal.quote, 'ai:verso', proposal.replacement, range)
+            : this.markComment(proposal.quote, 'ai:verso', proposal.text);
+          if (!result?.range) throw new Error('This text has changed. Ask Verso for a fresh proposal.');
+        },
         marks: () => {
           let marks: Mark[] = [];
           this.editor?.action(ctx => { marks = getMarks(ctx.get(editorViewCtx).state); });

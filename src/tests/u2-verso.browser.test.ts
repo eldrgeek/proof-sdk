@@ -1,0 +1,31 @@
+import assert from 'node:assert/strict';
+import { withBrowser, openEditor } from './u2-browser-harness';
+await withBrowser(async ({ browser, base, create, post }) => {
+  const doc = await create('An example for the reader.');
+  const mark = await post(doc, '/marks/comment', { quote: 'An example', text: 'Can this be clearer?', by: 'human:Reader' });
+  const page = await openEditor(browser, `${base}/d/${doc.slug}`, 'Reader');
+  let sent: any;
+  await page.route('**/verso', (route: any) => {
+    sent = route.request().postDataJSON();
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ reply: 'Here are two proposals.', proposals: [{ kind: 'suggestion', quote: 'An example', replacement: 'An illustration' }, { kind: 'comment', quote: 'the reader', text: 'Who is reading?' }] }) });
+  });
+  await page.locator('.pm-review-row').first().click();
+  const before = await page.evaluate(() => (window as any).proof.getAllMarks().length);
+  const chat = page.getByRole('complementary', { name: 'Verso chat' });
+  await chat.getByRole('textbox', { name: 'Message Verso' }).fill('Suggest a change and a comment.'); await page.keyboard.press('Enter');
+  await chat.getByText('Here are two proposals.', { exact: true }).waitFor();
+  assert.equal(sent.mark.kind, 'comment'); assert.equal(sent.mark.quote, 'An example');
+  assert.equal(sent.messages.at(-1).content, 'Suggest a change and a comment.');
+  assert.equal(await page.evaluate(() => (window as any).proof.getAllMarks().length), before, 'A reply cannot mutate the document');
+  await chat.getByRole('button', { name: 'Suggest this change', exact: true }).click();
+  await page.waitForFunction(() => (window as any).proof.getAllMarks().some((m: any) => m.by === 'ai:verso' && m.kind === 'replace'));
+  await page.keyboard.press('Control+z');
+  assert.equal(await page.evaluate(() => (window as any).proof.getAllMarks().filter((m: any) => m.by === 'ai:verso').length), 0);
+  await chat.getByRole('button', { name: 'Add this comment', exact: true }).click();
+  await page.waitForFunction(() => (window as any).proof.getAllMarks().some((m: any) => m.by === 'ai:verso' && m.kind === 'comment'));
+  await page.keyboard.press('Control+z');
+  assert.equal(await page.evaluate(() => (window as any).proof.getAllMarks().filter((m: any) => m.by === 'ai:verso').length), 0);
+  await page.context().close();
+  console.log('✓ mark context travels with chat; only human clicks add attributed, undoable proposals');
+});
+process.exit(0);

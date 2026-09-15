@@ -3,7 +3,10 @@ import { getReviewStyle, setReviewStyle, getReviewWalk, setReviewWalk, REVIEW_ST
 import './playmaker-review.css';
 
 export type ReviewAction = 'accept' | 'reject' | 'resolve' | 'reply';
+export type VersoProposal = { kind: 'suggestion'; quote: string; replacement: string } | { kind: 'comment'; quote: string; text: string };
 export interface ReviewBridge {
+  ask?(messages: { role: 'user' | 'assistant'; content: string }[], mark: Mark | null): Promise<{ reply: string; proposals: VersoProposal[] }>;
+  propose?(proposal: VersoProposal): void;
   marks(): Mark[];
   decide(ids: string[], action: ReviewAction, text?: string): void;
   history(redo: boolean): boolean;
@@ -33,6 +36,8 @@ export class PlayMakerReview {
   private programmaticUntil = 0;
   private transient = false;
   private deciding = false;
+  private sending = false;
+  private readonly messages: { role: 'user' | 'assistant'; content: string }[] = [];
   private desktop = innerWidth >= 1024;
   private dialog: HTMLDivElement | null = null;
   private activeId: string | null = null;
@@ -246,11 +251,34 @@ export class PlayMakerReview {
     if (action) { const note = document.createElement('p'); note.textContent = action; saved.append(note); }
     this.conversation.append(saved); this.transient = false;
   }
-  private sendMessage(): void {
-    const text = this.message.value.trim(); if (!text) return;
-    this.seal();
+  private async sendMessage(): Promise<void> {
+    const text = this.message.value.trim(); if (!text || this.sending) return;
+    const mark = this.activeId ? this.bridge.marks().find(m => m.id === this.activeId) ?? null : null;
+    this.seal(); this.close(false);
     const entry = document.createElement('p'); entry.textContent = text; this.conversation.append(entry); this.message.value = '';
-    const reply = document.createElement('p'); reply.textContent = 'Verso is not available right now.'; this.conversation.append(reply);
+    this.messages.push({ role: 'user', content: text });
+    const reply = document.createElement('p'); reply.textContent = 'Verso is thinking…'; this.conversation.append(reply);
+    this.sending = true; this.message.disabled = true;
+    try {
+      if (!this.bridge.ask) throw new Error('Verso is not available right now.');
+      const response = await this.bridge.ask(this.messages.slice(-20), mark);
+      reply.textContent = response.reply; this.messages.push({ role: 'assistant', content: response.reply });
+      for (const proposal of response.proposals) {
+        const card = document.createElement('section'); card.className = 'pm-verso-proposal pm-chat-card';
+        const author = document.createElement('strong'); author.textContent = 'VERSO';
+        const quote = document.createElement(proposal.kind === 'suggestion' ? 'del' : 'blockquote'); quote.textContent = proposal.quote;
+        const after = document.createElement(proposal.kind === 'suggestion' ? 'ins' : 'p'); after.textContent = proposal.kind === 'suggestion' ? proposal.replacement : proposal.text;
+        const status = document.createElement('p'); status.setAttribute('role', 'status');
+        const apply = this.button(proposal.kind === 'suggestion' ? 'Suggest this change' : 'Add this comment', () => {
+          try {
+            if (!this.bridge.propose) throw new Error('The editor is not ready.');
+            this.bridge.propose(proposal); apply.disabled = true; status.textContent = 'Added to the marks for review.';
+          } catch (error) { status.textContent = error instanceof Error ? error.message : 'Unable to add this mark.'; }
+        });
+        card.append(author, quote, after, apply, status); this.conversation.append(card);
+      }
+    } catch (error) { reply.textContent = error instanceof Error ? error.message : 'Verso is not available right now.'; }
+    finally { this.sending = false; this.message.disabled = false; this.message.focus({ preventScroll: true }); }
   }
   private button(label: string, action: () => void, disabled = false): HTMLButtonElement {
     const button = document.createElement('button'); button.type = 'button'; button.textContent = label;
