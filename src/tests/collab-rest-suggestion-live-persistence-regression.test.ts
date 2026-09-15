@@ -6,10 +6,24 @@ import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
 import { HocuspocusProvider } from '@hocuspocus/provider';
+import { EditorState, Plugin } from '@milkdown/kit/prose/state';
 import { WebSocketServer } from 'ws';
 import * as Y from 'yjs';
-import { prosemirrorToYXmlFragment, yXmlFragmentToProseMirrorRootNode } from 'y-prosemirror';
+import {
+  initProseMirrorDoc,
+  prosemirrorToYXmlFragment,
+  updateYFragment,
+  yXmlFragmentToProseMirrorRootNode,
+} from 'y-prosemirror';
 import type { Node as ProseMirrorNode } from '@milkdown/kit/prose/model';
+import type { StoredMark } from '../formats/marks.js';
+import {
+  accept as acceptMark,
+  applyRemoteMarks,
+  getMarkMetadataWithQuotes,
+  marksPluginKey,
+  reject as rejectMark,
+} from '../editor/plugins/marks.js';
 
 const CLIENT_HEADERS = {
   'X-Proof-Client-Version': '0.31.2',
@@ -517,6 +531,83 @@ function findFirstNode(root: ReturnType<typeof readClientRoot>, typeName: string
   return found;
 }
 
+function createMarksStatePlugin(): Plugin {
+  return new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: {}, activeMarkId: null, composeAnchorRange: null }),
+      apply: (tr, value) => {
+        const meta = tr.getMeta(marksPluginKey);
+        return meta?.type === 'SET_METADATA'
+          ? { ...value, metadata: meta.metadata ?? {} }
+          : value;
+      },
+    },
+  });
+}
+
+function readClientMarks(client: ConnectedClient): Record<string, StoredMark> {
+  return Object.fromEntries(client.doc.getMap('marks').entries()) as Record<string, StoredMark>;
+}
+
+function resolveSuggestionInConnectedClient(
+  client: ConnectedClient,
+  schema: import('@milkdown/kit/prose/model').Schema,
+  markId: string,
+  action: 'accept' | 'reject',
+): boolean {
+  let state = EditorState.create({
+    schema,
+    doc: readClientRoot(client, schema),
+    plugins: [createMarksStatePlugin()],
+  });
+  const view = {
+    get state() {
+      return state;
+    },
+    dispatch(tr: import('@milkdown/kit/prose/state').Transaction) {
+      state = state.apply(tr);
+    },
+  };
+  applyRemoteMarks(view as any, readClientMarks(client), { hydrateAnchors: true });
+  const applied = action === 'accept'
+    ? acceptMark(view as any, markId)
+    : rejectMark(view as any, markId);
+  if (!applied) return false;
+
+  const nextMarks = getMarkMetadataWithQuotes(state);
+  client.doc.transact(() => {
+    const fragment = client.doc.getXmlFragment('prosemirror');
+    const { meta } = initProseMirrorDoc(fragment as any, schema as any);
+    updateYFragment(client.doc, fragment as any, state.doc as any, meta as any);
+  }, `browser-${action}-fragment`);
+  client.doc.transact(() => {
+    const marks = client.doc.getMap('marks');
+    const nextIds = new Set(Object.keys(nextMarks));
+    for (const id of Array.from(marks.keys())) {
+      if (!nextIds.has(id)) marks.delete(id);
+    }
+    for (const [id, value] of Object.entries(nextMarks)) {
+      marks.set(id, value);
+    }
+  }, `browser-${action}-marks`);
+  return true;
+}
+
+const STRUCTURED_INSERT_MARKDOWN = [
+  '# Block test',
+  '',
+  'Intro paragraph one.',
+  '',
+  '| Name | Role |',
+  '| --- | --- |',
+  '| Eric | Writer |',
+  '| Diana | Director |',
+  '',
+  'Closing paragraph.',
+  '',
+].join('\n');
+
 async function runStructuredAiInsertCases(context: {
   httpBase: string;
   schema: import('@milkdown/kit/prose/model').Schema;
@@ -617,7 +708,7 @@ async function runStructuredAiInsertCases(context: {
     const fixture = await createInsertFixture(
       context.httpBase,
       `paragraph insert ${action}`,
-      '# Paragraph insert\n\nClosing paragraph.',
+      STRUCTURED_INSERT_MARKDOWN,
     );
     const client = await connectClient(context.httpBase, fixture.slug, fixture.ownerSecret);
     try {
@@ -638,6 +729,20 @@ async function runStructuredAiInsertCases(context: {
         10_000,
         `paragraph insert ${action} pending`,
       );
+      const pendingState = await mustJson<{
+        markdown?: string;
+        marks?: Record<string, { status?: string; insertStructure?: string }>;
+        projectionFresh?: boolean;
+      }>(
+        await fetch(`${context.httpBase}/api/agent/${fixture.slug}/state`, {
+          headers: { ...CLIENT_HEADERS, 'x-share-token': fixture.ownerSecret },
+        }),
+        `paragraph insert ${action} pending state`,
+      );
+      assert(pendingState.markdown?.includes('Another AI paragraph.') === true, 'Pending final paragraph must exist on the server');
+      assert(pendingState.marks?.[markId]?.status === 'pending', 'Pending final paragraph mark must exist on the server');
+      assert(pendingState.marks?.[markId]?.insertStructure === 'block', 'Pending final paragraph mark must record block structure');
+      assert(pendingState.projectionFresh === true, 'Pending final paragraph projection must be fresh');
       await mustJson<Record<string, unknown>>(
         await postAgent(
           context.httpBase,
@@ -662,6 +767,7 @@ async function runStructuredAiInsertCases(context: {
       const count = state.markdown?.match(/Another AI paragraph\./g)?.length ?? 0;
       assert(count === (action === 'accept' ? 1 : 0), `Paragraph ${action} should leave ${action === 'accept' ? 1 : 0} copies, got ${count}`);
       assert(state.projectionFresh === true, `Paragraph ${action} must leave projection fresh`);
+      assert(!Object.prototype.hasOwnProperty.call(readClientMarks(client), markId), 'Resolved paragraph insert must be absent from the connected marks map');
     } finally {
       client.destroy();
     }
@@ -751,6 +857,147 @@ async function runStructuredAiInsertCases(context: {
     } finally {
       client.destroy();
     }
+  }
+}
+
+async function runCombinedConnectedInsertResolutionCase(
+  action: 'accept' | 'reject',
+  context: {
+    httpBase: string;
+    db: typeof import('../../server/db.ts');
+    collab: typeof import('../../server/collab.ts');
+    schema: import('@milkdown/kit/prose/model').Schema;
+    warnings: unknown[][];
+  },
+): Promise<void> {
+  const fixture = await createInsertFixture(
+    context.httpBase,
+    `combined connected insert ${action}`,
+    STRUCTURED_INSERT_MARKDOWN,
+  );
+  let client: ConnectedClient | null = await connectClient(context.httpBase, fixture.slug, fixture.ownerSecret);
+  try {
+    const initialState = await mustJson<{ markdown?: string }>(
+      await fetch(`${context.httpBase}/api/agent/${fixture.slug}/state`, {
+        headers: { ...CLIENT_HEADERS, 'x-share-token': fixture.ownerSecret },
+      }),
+      `combined ${action} initial state`,
+    );
+    const initialCanonicalMarkdown = initialState.markdown ?? '';
+    const suggestions = [
+      { quote: 'Intro paragraph one.', content: ' AI inline words.', structure: 'inline' },
+      { quote: 'Closing paragraph.', content: '\n\nAnother AI paragraph.', structure: 'block' },
+      { quote: 'Director', content: '\n| Mike | Producer |', structure: 'table_row' },
+    ] as const;
+    const markIds: string[] = [];
+    for (const suggestion of suggestions) {
+      const response = await mustJson<SuggestionResponse>(
+        await postAgent(
+          context.httpBase,
+          fixture.slug,
+          fixture.ownerSecret,
+          '/marks/suggest-insert',
+          { quote: suggestion.quote, content: suggestion.content, by: 'ai:test' },
+        ),
+        `combined ${action} ${suggestion.structure} insert`,
+      );
+      const markId = response.markId ?? '';
+      assert(markId.length > 0, `Expected ${suggestion.structure} mark id`);
+      markIds.push(markId);
+      await waitFor(
+        () => client !== null
+          && client.doc.getMap('marks').has(markId)
+          && (client.doc.getMap('marks').get(markId) as { insertStructure?: string } | undefined)?.insertStructure === suggestion.structure,
+        10_000,
+        `${suggestion.structure} pending mark in connected client`,
+      );
+    }
+
+    const pendingText = readClientRoot(client, context.schema).textContent;
+    assert(pendingText.includes('Intro paragraph one. AI inline words.'), 'Pending inline text must land');
+    assert(pendingText.includes('Another AI paragraph.'), 'Pending final paragraph must land');
+    assert(pendingText.includes('MikeProducer'), 'Pending table row must land');
+
+    for (const markId of markIds) {
+      assert(
+        resolveSuggestionInConnectedClient(client, context.schema, markId, action),
+        `Connected client ${action} must succeed for ${markId}`,
+      );
+    }
+
+    await waitFor(
+      () => markIds.every((markId) => !client?.doc.getMap('marks').has(markId)),
+      10_000,
+      `combined ${action} marks removed from connected client`,
+    );
+    await waitFor(
+      () => {
+        const row = context.db.getDocumentBySlug(fixture.slug);
+        if (!row) return false;
+        const marks = JSON.parse(row.marks ?? '{}') as Record<string, unknown>;
+        return markIds.every((markId) => !Object.prototype.hasOwnProperty.call(marks, markId));
+      },
+      10_000,
+      `combined ${action} marks removed from canonical row`,
+    );
+
+    const state = await mustJson<{
+      markdown?: string;
+      marks?: Record<string, unknown>;
+      readSource?: string;
+      projectionFresh?: boolean;
+      mutationReady?: boolean;
+      repairPending?: boolean;
+    }>(
+      await fetch(`${context.httpBase}/api/agent/${fixture.slug}/state`, {
+        headers: { ...CLIENT_HEADERS, 'x-share-token': fixture.ownerSecret },
+      }),
+      `combined ${action} state`,
+    );
+    const markdown = state.markdown ?? '';
+    assert(state.readSource === 'projection', `Combined ${action} must read from projection, got ${String(state.readSource)}`);
+    assert(state.projectionFresh === true, `Combined ${action} projection must be fresh`);
+    assert(state.mutationReady === true, `Combined ${action} must remain mutation-ready`);
+    assert(state.repairPending !== true, `Combined ${action} must not queue repair`);
+    for (const markId of markIds) {
+      assert(!Object.prototype.hasOwnProperty.call(state.marks ?? {}, markId), `Resolved mark ${markId} must not remain pending`);
+    }
+
+    const expectedCounts = action === 'accept' ? 1 : 0;
+    assert((markdown.match(/AI inline words\./g) ?? []).length === expectedCounts, `Combined ${action} inline count mismatch`);
+    assert((markdown.match(/Another AI paragraph\./g) ?? []).length === expectedCounts, `Combined ${action} paragraph count mismatch`);
+    assert((markdown.match(/Mike\s*\|\s*Producer/g) ?? []).length === expectedCounts, `Combined ${action} table-row count mismatch`);
+
+    const milkdown = await import('../../server/milkdown-headless.js');
+    const parser = await milkdown.getHeadlessMilkdownParser();
+    const parsed = milkdown.parseMarkdownWithHtmlFallback(parser, markdown).doc;
+    assert(parsed !== null, `Combined ${action} markdown must parse`);
+    const table = findFirstNode(parsed, 'table');
+    assert(table?.childCount === 3 + expectedCounts, `Combined ${action} table row count mismatch`);
+    for (let index = 0; index < (table?.childCount ?? 0); index += 1) {
+      assert(table?.child(index).childCount === 2, `Combined ${action} table row ${index} must keep two columns`);
+    }
+    if (action === 'reject') {
+      assert(markdown === initialCanonicalMarkdown, 'Reject must restore the original canonical markdown');
+      assert(!markdown.includes('AI inline words.'), 'Reject must remove inline insert');
+      assert(!markdown.includes('Another AI paragraph.'), 'Reject must remove paragraph insert');
+      assert(!markdown.includes('Mike'), 'Reject must remove table row insert');
+    }
+
+    const quarantineWarnings = context.warnings.filter((args) => {
+      if (args[0] !== '[collab] auto quarantined slug') return false;
+      const details = args[1] as { slug?: string } | undefined;
+      return details?.slug === fixture.slug;
+    });
+    assert(quarantineWarnings.length === 0, `Combined ${action} must never auto-quarantine`);
+    assert(context.collab.getLiveCollabBlockStatus(fixture.slug).active === false, `Combined ${action} live collab must remain available`);
+
+    client.destroy();
+    client = null;
+    client = await connectClient(context.httpBase, fixture.slug, fixture.ownerSecret);
+    assert(readClientRoot(client, context.schema).textContent === parsed.textContent, `Combined ${action} must reopen with identical text`);
+  } finally {
+    client?.destroy();
   }
 }
 
@@ -974,6 +1221,20 @@ async function run(): Promise<void> {
     await runStructuredAiInsertCases({
       httpBase,
       schema: parser.schema,
+    });
+    await runCombinedConnectedInsertResolutionCase('accept', {
+      httpBase,
+      db,
+      collab,
+      schema: parser.schema,
+      warnings,
+    });
+    await runCombinedConnectedInsertResolutionCase('reject', {
+      httpBase,
+      db,
+      collab,
+      schema: parser.schema,
+      warnings,
     });
     await runCase('reject', {
       httpBase,
