@@ -11433,6 +11433,11 @@ export async function startCollabRuntime(mainHttpPort: number): Promise<CollabRu
       async onLoadDocument(data: { documentName: string }) {
         return loadCollabDocumentForConnection(data.documentName);
       },
+      async afterLoadDocument(data: { document: Y.Doc }) {
+        // Hocuspocus copies the onLoadDocument result into its own Document.
+        // Track that live instance before its first client update reaches onChange.
+        ensureFragmentEditTracking(data.document);
+      },
       async onStoreDocument(data: { documentName: string; document: Y.Doc; context?: unknown; transactionOrigin?: unknown }) {
         if (getContextAccessEpoch(data.context) === null) {
           // Server-origin transactions (e.g. projection refresh / canonical apply) persist explicitly.
@@ -11606,6 +11611,11 @@ export async function startCollabRuntimeEmbedded(mainHttpPort: number): Promise<
       },
       async onLoadDocument(data: { documentName: string }) {
         return loadCollabDocumentForConnection(data.documentName);
+      },
+      async afterLoadDocument(data: { document: Y.Doc }) {
+        // Hocuspocus copies the onLoadDocument result into its own Document.
+        // Track that live instance before its first client update reaches onChange.
+        ensureFragmentEditTracking(data.document);
       },
       async onStoreDocument(data: { documentName: string; document: Y.Doc; context?: unknown; transactionOrigin?: unknown }) {
         if (getContextAccessEpoch(data.context) === null) {
@@ -11794,6 +11804,11 @@ export async function startCollabRuntimeAttached(mainHttpServer: HttpServer, mai
       },
       async onLoadDocument(data: { documentName: string }) {
         return loadCollabDocumentForConnection(data.documentName);
+      },
+      async afterLoadDocument(data: { document: Y.Doc }) {
+        // Hocuspocus copies the onLoadDocument result into its own Document.
+        // Track that live instance before its first client update reaches onChange.
+        ensureFragmentEditTracking(data.document);
       },
       async onStoreDocument(data: { documentName: string; document: Y.Doc; context?: unknown; transactionOrigin?: unknown }) {
         if (getContextAccessEpoch(data.context) === null) {
