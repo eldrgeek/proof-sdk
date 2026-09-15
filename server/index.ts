@@ -1,3 +1,4 @@
+import { requireAgentKeyOrigin } from './agent-key-routes.js';
 import { clientErrorRoutes } from './client-errors.js';
 import { somaFeedbackRoutes } from './soma-feedback.js';
 import express from 'express';
@@ -50,7 +51,10 @@ async function main(): Promise<void> {
   });
   const allowedCorsOrigins = parseAllowedCorsOrigins();
 
+  app.use(requireAgentKeyOrigin);
   app.use(express.json({ limit: '10mb' }));
+  // Share HTML comes from dist; serve its matching bundle without requiring nginx.
+  app.use('/assets', express.static(path.join(__dirname, '..', 'dist', 'assets'), { maxAge: 0 }));
   app.use(express.static(path.join(__dirname, '..', 'public')));
   app.use(libraryRoutes);
   app.use(somaFeedbackRoutes);

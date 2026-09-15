@@ -96,7 +96,7 @@ try {
   assert.equal(calls.filter(call => call.url.includes('/rpc/')).length, roleCalls + 1);
   assert.equal((await request('GET', '/library/api/me', undefined, adminCookie)).json.isOwner, false);
   assert.equal((await request('POST', '/library/api/people', { name: 'No', email: 'another@test.dev' }, adminCookie)).status, 403, 'removed admin loses privilege');
-  const forwarded = { header: () => '198.51.100.1, 127.0.0.1', ip: '127.0.0.1', socket: {} };
+  const forwarded = { header: (name: string) => name === 'x-forwarded-for' ? 'spoofed, 198.51.100.1' : undefined, ip: '127.0.0.1', socket: {} };
   assert.equal(getClientIp(forwarded), '198.51.100.1');
   process.env.PROOF_TRUST_PROXY_HEADERS = '0'; assert.equal(getClientIp(forwarded), '127.0.0.1');
   process.env.PROOF_TRUST_PROXY_HEADERS = '1';

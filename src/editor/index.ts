@@ -202,6 +202,8 @@ import {
 import { keybindingsPlugin, setShowAgentInputCallback, type AgentInputContext } from './plugins/keybindings';
 import { tableKeyboardPlugin } from './plugins/table-keyboard';
 import { showAgentInputDialog } from '../ui/agent-input-dialog';
+import { showAgentKeyDialog } from '../ui/agent-key-dialog';
+import { ShareEventPoller } from '../bridge/share-event-poller';
 import { initContextMenu } from '../ui/context-menu';
 import {
   initAgentNavigation,
@@ -1120,8 +1122,7 @@ class ProofEditorImpl implements ProofEditor {
   private shareStatusTextVisibleUntilMs: number = 0;
   private shareStatusHideTimer: ReturnType<typeof setTimeout> | null = null;
   private shareWsUnsubscribe: (() => void) | null = null;
-  private shareEventPollTimer: ReturnType<typeof setTimeout> | null = null;
-  private shareEventPollInFlight: boolean = false;
+  private shareEventPoller: ShareEventPoller | null = null;
   private shareEventCursor: number = 0;
   private shareLastForcedCollabEventId: number = 0;
   private shareDocumentUpdatedTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2604,44 +2605,26 @@ class ProofEditorImpl implements ProofEditor {
   }
 
   private startShareEventPoll(): void {
-    if (!this.isShareMode) return;
-    if (this.shareEventPollTimer) return;
-    const tick = async (): Promise<void> => {
-      this.shareEventPollTimer = null;
-      if (!this.isShareMode) return;
-      if (this.shareEventPollInFlight) {
-        this.shareEventPollTimer = setTimeout(() => { void tick(); }, this.shareEventPollMs);
-        return;
-      }
-      this.shareEventPollInFlight = true;
-      try {
+    if (!this.isShareMode || !shareClient.hasShareCredential()) return;
+    this.shareEventPoller ??= new ShareEventPoller(
+      () => this.isShareMode && shareClient.hasShareCredential(),
+      async () => {
         const payload = await shareClient.fetchPendingEvents(this.shareEventCursor, { limit: 100 });
-        if (!this.isShareRequestError(payload) && payload) {
-          for (const event of payload.events) {
-            this.handlePendingShareEvent(event);
-          }
-          if (typeof payload.cursor === 'number' && Number.isFinite(payload.cursor)) {
-            this.shareEventCursor = Math.max(this.shareEventCursor, Math.trunc(payload.cursor));
-          }
-        }
-      } catch {
-        // best-effort fallback for cross-instance refresh signals
-      } finally {
-        this.shareEventPollInFlight = false;
-        if (this.isShareMode) {
-          this.shareEventPollTimer = setTimeout(() => { void tick(); }, this.shareEventPollMs);
-        }
-      }
-    };
-    this.shareEventPollTimer = setTimeout(() => { void tick(); }, this.shareEventPollMs);
+        if (this.isShareRequestError(payload)) return payload.error.status;
+        if (!payload) return 0;
+        if (!this.isShareMode) return 200;
+        for (const event of payload.events) this.handlePendingShareEvent(event);
+        this.shareEventCursor = Math.max(this.shareEventCursor, Math.trunc(payload.cursor));
+        return 200;
+      },
+      this.shareEventPollMs,
+    );
+    this.shareEventPoller.start();
   }
 
   private stopShareEventPoll(): void {
-    if (this.shareEventPollTimer) {
-      clearTimeout(this.shareEventPollTimer);
-      this.shareEventPollTimer = null;
-    }
-    this.shareEventPollInFlight = false;
+    this.shareEventPoller?.stop();
+    this.shareEventPoller = null;
     this.shareEventCursor = 0;
     this.shareLastForcedCollabEventId = 0;
   }
@@ -4272,28 +4255,12 @@ class ProofEditorImpl implements ProofEditor {
     }
   }
 
-  private extractShareTokenFromUrl(shareUrl: string): string | null {
-    try {
-      const url = new URL(shareUrl);
-      const token = url.searchParams.get('token');
-      if (!token || !token.trim()) return null;
-      return token.trim();
-    } catch {
-      return null;
-    }
-  }
-
-  private getAgentInviteMessage(): string {
-    const shareUrl = this.getCanonicalShareUrl();
-    const slug = shareClient.getSlug() || this.extractShareSlugFromUrl(shareUrl);
-    const token = this.extractShareTokenFromUrl(shareUrl);
-    const origin = (() => {
-      try {
-        return new URL(shareUrl).origin;
-      } catch {
-        return window.location.origin;
-      }
-    })();
+  private getAgentInviteMessage(token: string): string {
+    const shareUrl = new URL(this.getCanonicalShareUrl());
+    shareUrl.search = '';
+    shareUrl.hash = '';
+    const slug = shareClient.getSlug() || this.extractShareSlugFromUrl(shareUrl.toString());
+    const origin = shareUrl.origin;
 
     if (!slug) {
       return [
@@ -4315,9 +4282,9 @@ class ProofEditorImpl implements ProofEditor {
       `Doc: ${shareUrl}`,
       '',
       'Auth for each API request:',
-      `- x-share-token: ${token || '<token-from-doc-url>'}`,
+      `- x-share-token: ${token}`,
       '- X-Agent-Id: <your-agent-id>',
-      '- (Use the token from the Doc URL query param: ?token=...)',
+      '- Keep this key private; send it only in the request header, never in a URL.',
       '',
       'Start here:',
       '1) Read current document state with your identity header:',
@@ -4333,16 +4300,17 @@ class ProofEditorImpl implements ProofEditor {
     ].join('\n');
   }
 
-  private async copyAgentInviteWithFallback(): Promise<boolean> {
-    const message = this.getAgentInviteMessage();
-    const copied = await this.copyTextToClipboard(message);
-    if (copied) {
-      this.triggerHaptic('success');
-      return true;
-    }
-    const prompted = this.copyWithPromptFallback(message, 'Copy agent invite:');
-    if (prompted) this.triggerHaptic('medium');
-    return prompted;
+  private openAgentKeyDialog(): boolean {
+    showAgentKeyDialog({
+      // A2 will add team-only documents; today this notice depends on member sign-in.
+      isSignedInMember: Boolean(window.__PROOF_LIBRARY_MEMBER__),
+      create: label => shareClient.createAgentKey(label),
+      list: () => shareClient.listAgentKeys(),
+      revoke: id => shareClient.revokeAgentKey(id),
+      invite: token => this.getAgentInviteMessage(token),
+      copy: text => this.copyTextToClipboard(text),
+    });
+    return true;
   }
 
   private showShareWelcomeToastOnce(capabilities?: { canComment: boolean; canEdit: boolean } | null): void {
@@ -4780,6 +4748,12 @@ class ProofEditorImpl implements ProofEditor {
     }
 
     const openMenu = () => {
+      if (this.getConnectedAgentEntries().length === 0) {
+        this.closeShareMenu();
+        this.closeAgentMenu();
+        this.openAgentKeyDialog();
+        return;
+      }
       this.closeShareMenu();
       this.closePresenceMenu();
       this.closeSuggestionReviewMenu();
@@ -4861,8 +4835,8 @@ class ProofEditorImpl implements ProofEditor {
         body.textContent = 'Invite an agent collaborator to edit, suggest, and review this doc.';
         body.style.cssText = 'padding:0 12px 8px;color:rgba(255,255,255,0.78);font-size:12px;line-height:1.35;';
         menu.append(header, body);
-        addMenuButton('Copy agent invite link', async () => this.copyAgentInviteWithFallback(), {
-          successText: 'Copied',
+        addMenuButton('Add agent / manage keys', () => this.openAgentKeyDialog(), {
+          successText: 'Opened',
         });
         addDivider();
         addMenuButton('How agent access works', async () => {
@@ -4938,8 +4912,8 @@ class ProofEditorImpl implements ProofEditor {
           menu.appendChild(row);
         }
         addDivider();
-        addMenuButton('Copy agent invite link', async () => this.copyAgentInviteWithFallback(), {
-          successText: 'Copied',
+        addMenuButton('Add agent / manage keys', () => this.openAgentKeyDialog(), {
+          successText: 'Opened',
         });
       }
 

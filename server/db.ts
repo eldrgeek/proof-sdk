@@ -1,3 +1,4 @@
+import { documentAccessEvents } from './document-access-events.js';
 import { createHash, randomUUID, timingSafeEqual } from 'crypto';
 import Database from 'better-sqlite3';
 import path from 'path';
@@ -1074,6 +1075,10 @@ function initDatabase(): void {
       FOREIGN KEY (document_slug) REFERENCES documents(slug)
     )
   `);
+  const accessColumns = new Set((d.prepare('PRAGMA table_info(document_access)').all() as Array<{ name: string }>).map(column => column.name));
+  for (const column of ['label', 'requested_by', 'requested_from', 'last_used_at']) {
+    if (!accessColumns.has(column)) d.exec(`ALTER TABLE document_access ADD COLUMN ${column} TEXT`);
+  }
   d.exec('CREATE INDEX IF NOT EXISTS idx_document_access_slug ON document_access(document_slug)');
   d.exec('CREATE INDEX IF NOT EXISTS idx_document_access_secret ON document_access(secret_hash)');
 
@@ -2353,16 +2358,44 @@ export function createDocumentAccessToken(
   slug: string,
   role: ShareRole,
   providedSecret?: string,
+  agent?: { label: string; requestedBy: string; requestedFrom: string },
 ): { tokenId: string; role: ShareRole; secret: string; createdAt: string } {
   assertWritesAllowed('createDocumentAccessToken');
   const now = new Date().toISOString();
   const secret = providedSecret ?? randomUUID();
   const tokenId = randomUUID();
   getDb().prepare(`
-    INSERT INTO document_access (token_id, document_slug, role, secret_hash, created_at, revoked_at)
-    VALUES (?, ?, ?, ?, ?, NULL)
-  `).run(tokenId, slug, role, hashSecret(secret), now);
+    INSERT INTO document_access (token_id, document_slug, role, secret_hash, created_at, revoked_at, label, requested_by, requested_from)
+    VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)
+  `).run(tokenId, slug, role, hashSecret(secret), now, agent?.label ?? null, agent?.requestedBy ?? null, agent?.requestedFrom ?? null);
   return { tokenId, role, secret, createdAt: now };
+}
+
+export function listDocumentAgentKeys(slug: string): Array<{
+  tokenId: string; label: string; createdAt: string; lastUsedAt: string | null; revokedAt: string | null;
+}> {
+  return getDb().prepare(`
+    SELECT token_id AS tokenId, label, created_at AS createdAt,
+      last_used_at AS lastUsedAt, revoked_at AS revokedAt
+    FROM document_access WHERE document_slug = ? AND label IS NOT NULL
+    ORDER BY created_at DESC, token_id
+  `).all(slug) as ReturnType<typeof listDocumentAgentKeys>;
+}
+
+export function revokeDocumentAgentKey(slug: string, tokenId: string): boolean {
+  assertWritesAllowed('revokeDocumentAgentKey');
+  const revoked = getDb().prepare(`
+    UPDATE document_access SET revoked_at = COALESCE(revoked_at, ?)
+    WHERE document_slug = ? AND token_id = ? AND label IS NOT NULL
+  `).run(new Date().toISOString(), slug, tokenId).changes > 0;
+  if (revoked) documentAccessEvents.emit('revoked', slug, tokenId);
+  return revoked;
+}
+
+export function isDocumentAccessTokenActive(slug: string, tokenId: string): boolean {
+  return Boolean(getDb().prepare(`
+    SELECT 1 FROM document_access WHERE document_slug = ? AND token_id = ? AND revoked_at IS NULL
+  `).get(slug, tokenId));
 }
 
 export function revokeDocumentAccessTokens(
@@ -2416,12 +2449,16 @@ export function resolveDocumentAccess(slug: string, presentedSecret: string): Do
     return { role: 'owner_bot', tokenId: null, source: 'owner_secret_legacy' };
   }
   const row = getDb().prepare(`
-    SELECT token_id, role
+    SELECT token_id, role, label
     FROM document_access
     WHERE document_slug = ? AND secret_hash = ? AND revoked_at IS NULL
     LIMIT 1
-  `).get(slug, hashed) as { token_id?: string; role?: ShareRole } | undefined;
+  `).get(slug, hashed) as { token_id?: string; role?: ShareRole; label?: string | null } | undefined;
   if (!row?.role) return null;
+  if (row.label != null) {
+    getDb().prepare('UPDATE document_access SET last_used_at = ? WHERE token_id = ?')
+      .run(new Date().toISOString(), row.token_id);
+  }
   return {
     role: row.role,
     tokenId: row.token_id ?? null,

@@ -1,3 +1,4 @@
+import { agentKeyRoutes } from './agent-key-routes.js';
 import { getClientIp, trustProxyHeaders } from './client-address.js';
 import { createHash, randomUUID } from 'crypto';
 import { Router, text, type Request, type Response } from 'express';
@@ -107,6 +108,7 @@ import {
 } from './proof-sdk-routes.js';
 
 export const apiRoutes = Router();
+apiRoutes.use(agentKeyRoutes);
 runLegacyMarkRangeBackfillOnce();
 
 const DIRECT_SHARE_RATE_LIMIT_BUCKETS = new Map<string, { count: number; resetAt: number }>();
@@ -724,34 +726,39 @@ async function resolveOpenContextAccess(
   slug: string,
   doc: { owner_id: string | null; owner_secret: string | null; owner_secret_hash: string | null },
 ): Promise<OpenContextAccess | null> {
-  const explicitSecret = getExplicitShareSecret(req);
+  // Ticket issuance must validate every presented credential, including empty
+  // values and credentials shadowed by a higher-priority source. Page navigation
+  // deliberately retains its separate query/cookie fallback policy.
   const bearerToken = getPresentedBearerToken(req);
-  const explicitResolved = explicitSecret ? resolveDocumentAccess(slug, explicitSecret) : null;
-  const bearerResolved = !explicitResolved && bearerToken ? resolveDocumentAccess(slug, bearerToken) : null;
-  const resolved = explicitResolved ?? bearerResolved;
-  const ownerBySecret = canMutateByOwnerIdentity(doc, explicitSecret);
   const ownerByOAuth = await ownerAuthorizedViaOAuth(req, doc.owner_id);
-  const ownerAuthorized = ownerBySecret || ownerByOAuth;
-
+  const credentials = [
+    req.body?.ownerSecret,
+    req.header('x-share-token'),
+    req.header('x-bridge-token'),
+    req.query.token,
+    getCookie(req, shareTokenCookieName(slug)),
+    req.header('authorization') === undefined ? undefined : bearerToken ?? '',
+  ];
+  let resolved: ReturnType<typeof resolveDocumentAccess> = null;
+  for (const credential of credentials) {
+    if (credential === undefined || credential === null) continue;
+    const secret = typeof credential === 'string' ? credential.trim() : '';
+    const access = secret ? resolveDocumentAccess(slug, secret) : null;
+    if (!access && !(ownerByOAuth && secret === bearerToken)) {
+      res.status(401).json({ error: 'Invalid share token', code: 'UNAUTHORIZED' });
+      return null;
+    }
+    resolved ??= access;
+  }
+  const ownerAuthorized = ownerByOAuth || resolved?.role === 'owner_bot';
   if (ownerAuthorized) {
-    return { role: 'owner_bot', tokenId: null, ownerAuthorized: true };
+    return { role: 'owner_bot', tokenId: resolved?.tokenId ?? null, ownerAuthorized: true };
   }
   if (resolved) {
-    return {
-      role: resolved.role,
-      tokenId: resolved.tokenId,
-      ownerAuthorized: resolved.role === 'owner_bot',
-    };
-  }
-  if (explicitSecret) {
-    res.status(401).json({
-      error: 'Invalid share token',
-      code: 'UNAUTHORIZED',
-    });
-    return null;
+    return { role: resolved.role, tokenId: resolved.tokenId, ownerAuthorized: false };
   }
 
-  // Tokenless links default to read-only access.
+  // Omitting credentials still yields editor rights until A2 requires sign-in.
   return { role: 'editor', tokenId: null, ownerAuthorized: false };
 }
 
@@ -2131,7 +2138,7 @@ apiRoutes.post('/documents/:slug/collab-refresh', async (req: Request, res: Resp
   });
 });
 
-apiRoutes.get('/documents/:slug/collab-session', (req: Request, res: Response) => {
+apiRoutes.get('/documents/:slug/collab-session', async (req: Request, res: Response) => {
   const slug = getSlugParam(req);
   if (!slug) {
     res.status(400).json({ error: 'Invalid slug' });
@@ -2146,12 +2153,11 @@ apiRoutes.get('/documents/:slug/collab-session', (req: Request, res: Response) =
     res.status(410).json({ error: 'Document deleted' });
     return;
   }
-  if (doc.share_state === 'PAUSED' || doc.share_state === 'REVOKED') {
-    const role = getAccessRole(req, slug);
-    if (role !== 'owner_bot' && !canOwnerMutate(req, doc)) {
-      res.status(403).json({ error: 'Document is not currently accessible' });
-      return;
-    }
+  const access = await resolveOpenContextAccess(req, res, slug, doc);
+  if (!access) return;
+  if ((doc.share_state === 'PAUSED' || doc.share_state === 'REVOKED') && !access.ownerAuthorized) {
+    res.status(403).json({ error: 'Document is not currently accessible' });
+    return;
   }
 
   const collabRuntime = getCollabRuntime();
@@ -2163,23 +2169,7 @@ apiRoutes.get('/documents/:slug/collab-session', (req: Request, res: Response) =
     return;
   }
 
-  const ownerAuthorized = canOwnerMutate(req, doc);
-  const presentedSecret = getPresentedSecret(req);
-  const access = presentedSecret ? resolveDocumentAccess(slug, presentedSecret) : null;
-  const requestedRole = access?.role ?? getAccessRole(req, slug);
-  let role: ShareRole = requestedRole ?? 'editor';
-
-  if (ownerAuthorized) {
-    role = 'owner_bot';
-  }
-  if (doc.share_state === 'REVOKED' && role !== 'owner_bot') {
-    res.status(403).json({ error: 'Document access has been revoked' });
-    return;
-  }
-  if (doc.share_state === 'PAUSED' && role !== 'owner_bot') {
-    res.status(403).json({ error: 'Document is not currently accessible' });
-    return;
-  }
+  const role = access.role;
 
   const canRead = true;
   const canEdit = role === 'owner_bot'
@@ -2189,7 +2179,7 @@ apiRoutes.get('/documents/:slug/collab-session', (req: Request, res: Response) =
     && (role === 'commenter' || role === 'editor' || role === 'owner_bot');
 
   const session = buildCollabSession(slug, role, {
-    tokenId: access?.tokenId ?? null,
+    tokenId: access.tokenId,
     wsUrlBase: resolveRequestScopedCollabWsBase(req),
   });
   if (!session) {

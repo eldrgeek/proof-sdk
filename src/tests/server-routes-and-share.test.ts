@@ -1435,13 +1435,13 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assertEqual(payload.title, 'Paused owner title update', 'Expected updated paused title');
     });
 
-    await test('D2: open-context does not reject bare links when bearer token is an OAuth-style session token', async () => {
+    await test('X1c: open-context rejects an unresolved OAuth-style bearer token', async () => {
       const response = await get(baseUrl, `/api/documents/${slug}/open-context`, {
         Authorization: 'Bearer epsess_mock_session_token',
       });
-      assert(response.status === 200, `Expected status 200, got ${response.status}`);
+      assert(response.status === 401, `Expected status 401, got ${response.status}`);
       const payload = await response.json();
-      assert(payload?.doc?.slug === slug, 'Expected open-context payload for requested slug');
+      assert(payload?.session === undefined, 'Invalid bearer must not receive a session');
     });
 
     await test('D2: tokenless open-context defaults to editor permissions', async () => {

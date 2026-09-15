@@ -1,3 +1,5 @@
+import { documentAccessEvents } from './document-access-events.js';
+import type { Connection } from '@hocuspocus/server';
 import { DEFAULT_AGENT_PRESENCE_TTL_MS } from '../src/shared/agent-presence.js';
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import type { Server as HttpServer } from 'http';
@@ -13,6 +15,7 @@ import {
   countActiveCollabConnectionsForInstance,
   OversizedYjsUpdateError,
   getDocumentAuthStateBySlug,
+  isDocumentAccessTokenActive,
   getDocumentBySlug,
   getDocumentProjectionBySlug,
   getAccumulatedYUpdateBytesAfter,
@@ -1139,6 +1142,7 @@ export function extractCollabTokenFromHeaders(headers: unknown): string {
 }
 
 type CollabAuthContext = {
+  tokenId: string | null;
   slug: string;
   role: ShareRole;
   shareState: ShareState;
@@ -1211,6 +1215,7 @@ async function authenticateCollabSession(documentName: string, token: string): P
     throw new Error('permission-denied');
   }
 
+  assertCollabKeyActive(documentName, claims.tokenId);
   const authDoc = getDocumentAuthStateBySlug(documentName);
   if (!authDoc || authDoc.share_state === 'DELETED') {
     throw new Error('document-not-found');
@@ -1243,6 +1248,7 @@ async function authenticateCollabSession(documentName: string, token: string): P
     const { recoverCanonicalDocumentIfNeeded } = await import('./canonical-document.js');
     readableDoc = await recoverCanonicalDocumentIfNeeded(documentName, 'share') ?? readableDoc;
   }
+  assertCollabKeyActive(documentName, claims.tokenId);
   const refreshedAuthDoc = getDocumentAuthStateBySlug(documentName);
   if (!refreshedAuthDoc || refreshedAuthDoc.share_state === 'DELETED') {
     throw new Error('document-not-found');
@@ -1297,6 +1303,7 @@ async function authenticateCollabSession(documentName: string, token: string): P
     slug: claims.slug,
     role: claims.role,
     shareState: refreshedAuthDoc.share_state,
+    tokenId: claims.tokenId,
     canWrite,
     accessEpoch: refreshedAccessEpoch,
   };
@@ -1692,6 +1699,28 @@ function logLiveClientWriteDropped(
   });
 }
 
+function assertCollabKeyActive(slug: string, tokenId: string | null | undefined): void {
+  if (tokenId && !isDocumentAccessTokenActive(slug, tokenId)) throw new Error('session-key-revoked');
+}
+
+// Close this process's sockets immediately. The DB check before every message also
+// fences connections on other processes, before Yjs can apply or broadcast a write.
+documentAccessEvents.on('revoked', (slug: string, tokenId: string) => {
+  const instance = hocuspocusInstance as unknown as {
+    documents?: Map<string, { getConnections(): Connection[] }>;
+  } | null;
+  for (const connection of instance?.documents?.get(slug)?.getConnections() ?? []) {
+    if (connection.context?.tokenId === tokenId) {
+      connection.readOnly = true;
+      connection.close({ code: 4403, reason: 'session-key-revoked' });
+    }
+  }
+});
+
+async function requireActiveCollabKey(data: { documentName: string; context?: CollabAuthContext }): Promise<void> {
+  assertCollabKeyActive(data.documentName, data.context?.tokenId);
+}
+
 function getContextAccessEpoch(context: unknown): number | null {
   if (!context || typeof context !== 'object' || Array.isArray(context)) return null;
   const raw = (context as { accessEpoch?: unknown }).accessEpoch;
@@ -1704,6 +1733,8 @@ function shouldDropStaleContextWrite(
   context: unknown,
   source: 'onChange' | 'onStoreDocument' | 'durablePersistTracking',
 ): boolean {
+  const tokenId = (context as Partial<CollabAuthContext> | null)?.tokenId;
+  if (tokenId && !isDocumentAccessTokenActive(slug, tokenId)) return true;
   const sessionAccessEpoch = getContextAccessEpoch(context);
   if (sessionAccessEpoch === null) return false;
   const auth = getDocumentAuthStateBySlug(slug);
@@ -11480,6 +11511,7 @@ export async function startCollabRuntime(mainHttpPort: number): Promise<CollabRu
 
     hocuspocusInstance = factory.configure({
       name: 'proof-collab',
+      beforeHandleMessage: requireActiveCollabKey,
       port: collabPort,
       address: collabHost,
       async onAuthenticate(data: {
@@ -11661,6 +11693,7 @@ export async function startCollabRuntimeEmbedded(mainHttpPort: number): Promise<
     // Configure the collab runtime without binding a port. Connections are multiplexed onto /ws.
     hocuspocusInstance = factory.configure({
       name: 'proof-collab',
+      beforeHandleMessage: requireActiveCollabKey,
       async onAuthenticate(data: {
         documentName: string;
         socketId: string;
@@ -11831,6 +11864,7 @@ export async function startCollabRuntimeAttached(mainHttpServer: HttpServer, mai
 
     hocuspocusInstance = factory.configure({
       name: 'proof-collab',
+      beforeHandleMessage: requireActiveCollabKey,
       async onConnect(data: {
         documentName: string;
         socketId: string;

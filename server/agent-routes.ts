@@ -3170,6 +3170,10 @@ agentRoutes.post('/:slug/ops', async (req: Request, res: Response) => {
 
   const secret = getPresentedSecret(req, slug);
   const role = secret ? resolveDocumentAccessRole(slug, secret) : null;
+  if (!role) {
+    sendMutationResponse(res, 401, { success: false, error: 'Missing or invalid share token', code: 'UNAUTHORIZED' }, { route: mutationRoute, slug });
+    return;
+  }
   const effectiveShareState = getEffectiveShareStateForRole(doc, role, Boolean(secret && role));
   const denied = authorizeDocumentOp(op, role, role === 'owner_bot', effectiveShareState);
   if (denied) {
