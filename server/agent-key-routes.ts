@@ -15,7 +15,11 @@ const addressLimit = createRateLimiter({ windowMs: 60_000, maxRequests: 30,
 const authorize: RequestHandler = (req, res, next) => {
   res.setHeader('Cache-Control', 'no-store');
   const slug = String(req.params.slug);
-  const access = resolveSharePageAccess(req, res, slug, getDocumentBySlug(slug) ?? null);
+  const access = resolveSharePageAccess(req, res, slug, getDocumentBySlug(slug) ?? null, 'key-management');
+  if (access.invalidCredential) {
+    res.status(401).json({ error: 'Invalid document credential' });
+    return;
+  }
   if (!access.capabilities.canEdit) {
     res.status(403).json({ error: 'Document editing access required' });
     return;

@@ -64,6 +64,21 @@ try {
   assert.equal((await call('/api/agent/x1-editor/state', 'GET', undefined, auth)).status, 401);
   assert.equal((await call('/api/agent/x1-editor/ops', 'POST', operation, auth)).status, 401);
   assert.equal((await call('/api/agent/x1-editor/state', 'GET', undefined, { 'x-share-token': other.secret })).status, 200);
+  // Presented invalid credentials must never regain the anonymous editor fallback.
+  for (const headers of [
+    { 'x-share-token': token }, { 'x-bridge-token': token }, { authorization: `Bearer ${token}` },
+    { 'x-share-token': 'unknown-key' }, { 'x-share-token': '' },
+    { 'x-share-token': other.secret, 'x-bridge-token': token },
+    { cookie: `proof_share_token_x1-editor=${token}` },
+  ] as Record<string, string>[]) {
+    for (const method of ['GET', 'POST', 'DELETE']) {
+      const suffix = method === 'DELETE' ? `/${other.tokenId}` : '';
+      const result = await call(`/api/documents/x1-editor/agent-keys${suffix}`, method,
+        method === 'POST' ? { label: 'Must not mint' } : undefined, headers);
+      assert.equal(result.status, 401, `Invalid credential must deny ${method}`);
+    }
+  }
+  assert.equal((await call(`/api/documents/x1-editor/agent-keys?token=${token}`)).status, 401);
   for (const role of ['viewer', 'commenter'] as const) {
     const access = db.createDocumentAccessToken('x1-editor', role);
     const headers = { 'x-share-token': access.secret };

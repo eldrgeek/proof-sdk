@@ -19,12 +19,21 @@ export function deriveShareCapabilities(role: ShareRole, shareState: string) {
  * SOMA currently identifies visitors; it does not gate page access. Keep any future
  * sign-in requirement here so key management follows the page's editing rights.
  */
-export function resolveSharePageAccess(req: Request, res: Response, slug: string, doc: DocumentRow | null) {
+export function resolveSharePageAccess(req: Request, res: Response, slug: string, doc: DocumentRow | null, mode: 'page' | 'key-management' = 'page') {
   const librarySession = isLibraryEnabled() ? getLibrarySession(req, res) : null;
   const query = typeof req.query.token === 'string' ? req.query.token.trim() : '';
   const cookie = getCookie(req, shareTokenCookieName(slug)) ?? '';
   const header = (req.header('x-share-token') || req.header('x-bridge-token')
     || req.header('authorization')?.replace(/^Bearer\s+/i, '') || '').trim();
+  const presentedCredentials = [
+    req.header('x-share-token'), req.header('x-bridge-token'),
+    req.header('authorization')?.replace(/^Bearer\s+/i, ''),
+    req.query.token === undefined ? undefined : query,
+    getCookie(req, shareTokenCookieName(slug)),
+  ];
+  const invalidCredential = mode === 'key-management' && presentedCredentials.some(
+    secret => secret !== undefined && secret !== null && !resolveDocumentAccess(slug, secret.trim()),
+  );
   let token: string | null = null;
   let tokenSource: 'query:token' | 'cookie' | 'header' | 'none' = 'none';
   let resolved: ReturnType<typeof resolveDocumentAccess> = null;
@@ -39,9 +48,9 @@ export function resolveSharePageAccess(req: Request, res: Response, slug: string
       break;
     }
   }
-  // Product decision: tokenless shares are editable; the slug is the secret.
+  // Omitting a credential still yields editor rights until A2 requires sign-in.
   const role = resolved?.role ?? 'editor';
   const capabilities = deriveShareCapabilities(role, doc?.share_state ?? 'MISSING');
-  return { librarySession, token, tokenSource, role, roleFromToken: resolved?.role ?? null,
+  return { librarySession, token, tokenSource, invalidCredential, role, roleFromToken: resolved?.role ?? null,
     tokenId: resolved?.tokenId ?? null, capabilities };
 }
