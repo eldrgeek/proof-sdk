@@ -1058,6 +1058,60 @@ apiRoutes.post(
   handleShareMarkdown,
 );
 
+export async function createProofDocument(input: {
+  markdown: string;
+  marks?: Record<string, unknown>;
+  title?: string;
+  ownerId?: string;
+  accessRole?: ShareRole;
+  source: string;
+  actor: string;
+  authMode?: string;
+  authenticated?: boolean;
+}): Promise<{
+  doc: ReturnType<typeof createDocument>;
+  access: ReturnType<typeof createDocumentAccessToken>;
+  ownerSecret: string;
+  sanitizedMarkdown: string;
+}> {
+  const sanitizedMarkdown = stripEphemeralCollabSpans(input.markdown);
+  const canonicalMarkdown = await deriveCanonicalMarkdownForStorage(sanitizedMarkdown);
+  const marks = canonicalizeStoredMarks(input.marks ?? {});
+  const slug = generateSlug();
+  const ownerSecret = randomUUID();
+  const doc = createDocument(
+    slug,
+    canonicalMarkdown,
+    marks,
+    input.title,
+    input.ownerId,
+    ownerSecret,
+  );
+  const access = createDocumentAccessToken(slug, input.accessRole ?? 'editor');
+  refreshSnapshotForSlug(slug);
+  addEvent(slug, 'document.created', {
+    title: input.title,
+    ownerId: input.ownerId,
+    shareState: doc.share_state,
+    source: input.source,
+    accessRole: access.role,
+    authMode: input.authMode ?? 'library_session',
+    authenticated: input.authenticated ?? true,
+  }, input.actor);
+  captureDocumentCreatedTelemetry({
+    slug: doc.slug,
+    source: input.source,
+    ownerId: input.ownerId,
+    title: input.title,
+    shareState: doc.share_state,
+    accessRole: access.role,
+    authMode: input.authMode ?? 'library_session',
+    authenticated: input.authenticated ?? true,
+    contentChars: sanitizedMarkdown.length,
+  });
+  return { doc, access, ownerSecret, sanitizedMarkdown };
+}
+
 export async function handleShareMarkdown(req: Request, res: Response): Promise<void> {
   const auth = await authorizeDirectShareRequest(req, res);
   if (!auth) return;
@@ -1115,40 +1169,22 @@ export async function handleShareMarkdown(req: Request, res: Response): Promise<
     return;
   }
 
-  const slug = generateSlug();
-  const ownerSecret = randomUUID();
-  // Normalize to the collab fragment's serialization so structural markdown
-  // (GFM tables, list-then-heading) doesn't wedge the projection. Same rationale
-  // as POST /documents.
-  const canonicalMarkdown = await deriveCanonicalMarkdownForStorage(sanitizedMarkdown);
-  const doc = createDocument(slug, canonicalMarkdown, marks, title, ownerId, ownerSecret);
-  const access = createDocumentAccessToken(slug, requestedRole);
+  const source = req.path === '/share/markdown' ? 'share.markdown' : 'api.share.markdown';
+  const { doc, access, ownerSecret } = await createProofDocument({
+    markdown: sanitizedMarkdown,
+    marks,
+    title,
+    ownerId,
+    accessRole: requestedRole,
+    source,
+    actor: ownerId || auth.actor,
+    authMode: auth.authMode,
+    authenticated: auth.authed,
+  });
   const links = buildShareLink(req, doc.slug);
   const shareUrlWithToken = withShareToken(links.shareUrl, access.secret);
   const urlWithToken = withShareToken(links.url, access.secret);
   const proofSdkPaths = buildProofSdkDocumentPaths(doc.slug);
-  refreshSnapshotForSlug(slug);
-
-  addEvent(slug, 'document.created', {
-    title,
-    ownerId,
-    shareState: doc.share_state,
-    source: req.path === '/share/markdown' ? 'share.markdown' : 'api.share.markdown',
-    accessRole: access.role,
-    authMode: auth.authMode,
-    authenticated: auth.authed,
-  }, ownerId || auth.actor);
-  captureDocumentCreatedTelemetry({
-    slug: doc.slug,
-    source: req.path === '/share/markdown' ? 'share.markdown' : 'api.share.markdown',
-    ownerId,
-    title,
-    shareState: doc.share_state,
-    accessRole: access.role,
-    authMode: auth.authMode,
-    authenticated: auth.authed,
-    contentChars: sanitizedMarkdown.length,
-  });
 
   res.json({
     success: true,

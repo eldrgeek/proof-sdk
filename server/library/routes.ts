@@ -3,13 +3,29 @@ import {
   allowLibrarySigninAttempt,
   clearLibrarySessionCookie,
   consumeLibrarySigninToken,
+  createLibraryMember,
+  createLibrarySigninLink,
+  getLibraryMemberByEmail,
   getLibrarySession,
   isLibraryEnabled,
+  listLibraryPeople,
+  publicLibraryOrigin,
   requireLibraryJsonOrigin,
   requireLibrarySession,
+  removeLibraryMember,
   revokeLibrarySession,
   setLibrarySessionCookie,
 } from './auth.js';
+import {
+  allowLibraryDocumentCreation,
+  archiveLibraryDocument,
+  createLibraryDocument,
+  listLibraryDocuments,
+  recordLibraryVisit,
+  renameLibraryDocument,
+  type LibraryDocumentFilter,
+  type LibraryDocumentSort,
+} from './documents.js';
 
 export const libraryRoutes = Router();
 
@@ -18,7 +34,7 @@ const SIGNIN_FAILURE = {
   message: 'This sign-in link has already been used or has expired. Ask a teammate for a new one.',
 };
 
-libraryRoutes.use((_req, res, next) => {
+libraryRoutes.use('/library', (_req, res, next) => {
   if (!isLibraryEnabled()) {
     res.status(404).end();
     return;
@@ -108,11 +124,212 @@ libraryRoutes.get('/library/api/me', requireLibrarySession, (_req: Request, res:
 
 libraryRoutes.post(
   '/library/api/signout',
-  requireLibraryJsonOrigin,
   requireLibrarySession,
+  requireLibraryJsonOrigin,
   (req: Request, res: Response) => {
     revokeLibrarySession(req);
     clearLibrarySessionCookie(req, res);
     res.json({ ok: true });
+  },
+);
+
+function librarySessionFromResponse(res: Response): NonNullable<ReturnType<typeof getLibrarySession>> {
+  return res.locals.librarySession as NonNullable<ReturnType<typeof getLibrarySession>>;
+}
+
+function stringParam(value: string | string[] | undefined): string {
+  return Array.isArray(value) ? value[0] || '' : value || '';
+}
+
+libraryRoutes.get(
+  '/library/api/documents',
+  requireLibrarySession,
+  (_req: Request, res: Response) => {
+    const req = _req;
+    const filterValue = typeof req.query.filter === 'string' ? req.query.filter : 'all';
+    const sortValue = typeof req.query.sort === 'string' ? req.query.sort : 'edited';
+    const filter: LibraryDocumentFilter = ['all', 'review', 'mine', 'archived'].includes(filterValue)
+      ? filterValue as LibraryDocumentFilter
+      : 'all';
+    const sort: LibraryDocumentSort = ['edited', 'title', 'created'].includes(sortValue)
+      ? sortValue as LibraryDocumentSort
+      : 'edited';
+    const result = listLibraryDocuments({
+      memberId: librarySessionFromResponse(res).member.id,
+      query: typeof req.query.q === 'string' ? req.query.q : '',
+      filter,
+      sort,
+    });
+    res.json(result);
+  },
+);
+
+libraryRoutes.post(
+  '/library/api/documents',
+  requireLibrarySession,
+  requireLibraryJsonOrigin,
+  async (req: Request, res: Response) => {
+    const session = librarySessionFromResponse(res);
+    if (!allowLibraryDocumentCreation(session.member.id)) {
+      res.status(429).json({
+        code: 'RATE_LIMITED',
+        message: 'You have created 30 documents in the last hour. Try again later.',
+      });
+      return;
+    }
+    const title = typeof req.body?.title === 'string' ? req.body.title : '';
+    const markdown = req.body?.markdown;
+    if (markdown !== undefined && typeof markdown !== 'string') {
+      res.status(400).json({ code: 'INVALID_MARKDOWN', message: 'Markdown must be text.' });
+      return;
+    }
+    try {
+      const created = await createLibraryDocument({ member: session.member, title, markdown });
+      res.status(201).json(created);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not create the document.';
+      res.status(message.includes('too large') ? 413 : 400).json({ code: 'CREATE_FAILED', message });
+    }
+  },
+);
+
+libraryRoutes.patch(
+  '/library/api/documents/:slug',
+  requireLibrarySession,
+  requireLibraryJsonOrigin,
+  (req: Request, res: Response) => {
+    const slug = stringParam(req.params.slug);
+    let changed = false;
+    try {
+      if (req.body?.title !== undefined) {
+        if (typeof req.body.title !== 'string') {
+          res.status(400).json({ code: 'INVALID_TITLE', message: 'Title must be text.' });
+          return;
+        }
+        changed = renameLibraryDocument(slug, req.body.title) || changed;
+      }
+      if (req.body?.archived !== undefined) {
+        if (typeof req.body.archived !== 'boolean') {
+          res.status(400).json({ code: 'INVALID_ARCHIVED', message: 'Archived must be true or false.' });
+          return;
+        }
+        changed = archiveLibraryDocument(
+          slug,
+          req.body.archived,
+          librarySessionFromResponse(res).member.id,
+        ) || changed;
+      }
+    } catch (error) {
+      res.status(400).json({
+        code: 'UPDATE_FAILED',
+        message: error instanceof Error ? error.message : 'Could not update the document.',
+      });
+      return;
+    }
+    if (!changed) {
+      res.status(404).json({ code: 'NOT_FOUND', message: 'Document not found.' });
+      return;
+    }
+    res.json({ ok: true });
+  },
+);
+
+libraryRoutes.post(
+  '/library/api/visits/:slug',
+  requireLibrarySession,
+  requireLibraryJsonOrigin,
+  (req: Request, res: Response) => {
+    const event = req.body?.event;
+    if (event !== 'open' && event !== 'leave') {
+      res.status(400).json({ code: 'INVALID_EVENT', message: 'Event must be open or leave.' });
+      return;
+    }
+    const recorded = recordLibraryVisit(
+      librarySessionFromResponse(res).member.id,
+      stringParam(req.params.slug),
+      event,
+    );
+    if (!recorded) {
+      res.status(404).json({ code: 'NOT_FOUND', message: 'Document not found.' });
+      return;
+    }
+    res.json({ ok: true });
+  },
+);
+
+libraryRoutes.get(
+  '/library/api/people',
+  requireLibrarySession,
+  (_req: Request, res: Response) => {
+    res.json({ people: listLibraryPeople() });
+  },
+);
+
+libraryRoutes.post(
+  '/library/api/people',
+  requireLibrarySession,
+  requireLibraryJsonOrigin,
+  (req: Request, res: Response) => {
+    const name = typeof req.body?.name === 'string' ? req.body.name : '';
+    const email = typeof req.body?.email === 'string' ? req.body.email : '';
+    if (getLibraryMemberByEmail(email)) {
+      res.status(409).json({ code: 'EMAIL_EXISTS', message: 'A member already uses that email.' });
+      return;
+    }
+    try {
+      const session = librarySessionFromResponse(res);
+      const member = createLibraryMember({ name, email, invitedBy: session.member.id });
+      const { link } = createLibrarySigninLink({
+        memberId: member.id,
+        purpose: 'invite',
+        createdBy: session.member.id,
+        origin: publicLibraryOrigin(req),
+      });
+      res.status(201).json({ member, link });
+    } catch (error) {
+      res.status(400).json({
+        code: 'INVITE_FAILED',
+        message: error instanceof Error ? error.message : 'Could not invite this person.',
+      });
+    }
+  },
+);
+
+libraryRoutes.post(
+  '/library/api/people/:id/remove',
+  requireLibrarySession,
+  requireLibraryJsonOrigin,
+  (req: Request, res: Response) => {
+    const session = librarySessionFromResponse(res);
+    const memberId = stringParam(req.params.id);
+    if (!session.member.isOwner) {
+      res.status(403).json({ code: 'OWNER_REQUIRED', message: 'Only an owner can remove a member.' });
+      return;
+    }
+    if (memberId === session.member.id) {
+      res.status(400).json({ code: 'CANNOT_REMOVE_SELF', message: 'You cannot remove yourself.' });
+      return;
+    }
+    if (!removeLibraryMember(memberId)) {
+      res.status(404).json({ code: 'NOT_FOUND', message: 'Member not found.' });
+      return;
+    }
+    res.json({ ok: true });
+  },
+);
+
+libraryRoutes.post(
+  '/library/api/device-link',
+  requireLibrarySession,
+  requireLibraryJsonOrigin,
+  (req: Request, res: Response) => {
+    const session = librarySessionFromResponse(res);
+    const { link } = createLibrarySigninLink({
+      memberId: session.member.id,
+      purpose: 'device',
+      createdBy: session.member.id,
+      origin: publicLibraryOrigin(req),
+    });
+    res.json({ link });
   },
 );

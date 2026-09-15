@@ -111,6 +111,33 @@ export function listLibraryMembers(): LibraryMember[] {
   return rows.map(mapMember);
 }
 
+export function listLibraryPeople(): Array<LibraryMember & {
+  invitedByName: string | null;
+  lastActiveAt: string | null;
+}> {
+  const rows = getDb().prepare(`
+    SELECT
+      member.*,
+      inviter.name AS invited_by_name,
+      MAX(sessions.last_seen_at) AS last_active_at
+    FROM library_members member
+    LEFT JOIN library_members inviter ON inviter.id = member.invited_by
+    LEFT JOIN library_sessions sessions
+      ON sessions.member_id = member.id AND sessions.revoked_at IS NULL
+    WHERE member.removed_at IS NULL
+    GROUP BY member.id
+    ORDER BY member.name COLLATE NOCASE, member.created_at
+  `).all() as Array<LibraryMemberRow & {
+    invited_by_name: string | null;
+    last_active_at: string | null;
+  }>;
+  return rows.map((row) => ({
+    ...mapMember(row),
+    invitedByName: row.invited_by_name,
+    lastActiveAt: row.last_active_at,
+  }));
+}
+
 export function removeLibraryMember(memberId: string): boolean {
   const now = new Date().toISOString();
   const db = getDb();
