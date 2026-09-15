@@ -1053,6 +1053,11 @@
       errorDiv.textContent = 'JS Error: ' + msg + ' at ' + url + ':' + line + ' (click to dismiss)';
       errorDiv.onclick = function() { errorDiv.remove(); };
       document.body.appendChild(errorDiv);
+      if (window.proofReportClientError) {
+        window.proofReportClientError(String(msg), error && error.stack).then(function(accepted) {
+          if (accepted) errorDiv.append(' Reported to the builder.');
+        });
+      }
       return false;
     };
     window.addEventListener('unhandledrejection', function(e) {
@@ -1063,6 +1068,12 @@
       errorDiv.textContent = 'Promise rejection: ' + (e.reason ? e.reason.message || e.reason : 'unknown') + ' (click to dismiss)';
       errorDiv.onclick = function() { errorDiv.remove(); };
       document.body.appendChild(errorDiv);
+      if (window.proofReportClientError) {
+        var reason = e.reason;
+        window.proofReportClientError(reason && typeof reason.message === 'string' ? reason.message : typeof reason === 'string' ? reason : 'Unhandled promise rejection', reason && reason.stack).then(function(accepted) {
+          if (accepted) errorDiv.append(' Reported to the builder.');
+        });
+      }
     });
     console.log('[HTML] Error handlers installed');
   </script>

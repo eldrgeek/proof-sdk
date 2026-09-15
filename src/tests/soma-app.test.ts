@@ -52,6 +52,7 @@ try {
   assert.equal(stranger.json.message, "You're signed in as stranger@example.test, but this Proof+ isn't shared with that address. Ask Mike or Eric to add you.");
   const signedIn = await request('POST', '/library/api/session', { accessToken: 'admin-token' });
   assert.equal(signedIn.status, 200);
+  assert.equal(signedIn.json.refreshAfterMs, 24 * 60 * 60 * 1000);
   const adminCookie = signedIn.cookie.split(';')[0];
   for (const flag of ['HttpOnly', 'SameSite=Lax', 'Path=/', 'Max-Age=15552000']) assert(signedIn.cookie.includes(flag));
   assert.equal((await request('GET', '/library/api/me', undefined, adminCookie)).json.isOwner, true);
@@ -66,6 +67,8 @@ try {
   assert.equal(added.status, 201); assert(!('link' in added.json));
   assert.equal((await request('GET', '/library/api/people', undefined, memberCookie)).status, 200);
   assert.equal((await request('GET', '/library/signin')).status, 404);
+  assert.equal((await request('GET', '/LIBRARY/SiGnIn/')).status, 404);
+  assert.equal((await request('POST', '/library/API/DEVICE-LINK/', {}, adminCookie)).status, 404);
   assert.equal((await request('POST', '/library/api/device-link', {}, adminCookie)).status, 404);
   assert.equal((await request('POST', '/library/api/signin', {}, adminCookie)).status, 404);
   assert(!readFileSync(new URL('../../server/library/cli.ts', import.meta.url), 'utf8').includes('signin-link'));
@@ -76,7 +79,8 @@ try {
     for (const secret of ['admin-token', 'member-token', adminCookie.split('=')[1]]) assert(!data.includes(secret), 'database contains no tokens or raw sessions');
   }
   const roleCalls = calls.filter(call => call.url.includes('/rpc/')).length;
-  await request('POST', '/library/api/session', { accessToken: 'admin-token' }, adminCookie);
+  const cachedSession = await request('POST', '/library/api/session', { accessToken: 'admin-token' }, adminCookie);
+  assert(cachedSession.json.refreshAfterMs > 0 && cachedSession.json.refreshAfterMs <= 24 * 60 * 60 * 1000);
   assert.equal(calls.filter(call => call.url.includes('/rpc/')).length, roleCalls, 'checks role at most daily when sliding');
   getDb().prepare("UPDATE library_sessions SET soma_verified_at='2000-01-01T00:00:00.000Z'").run();
   assert.equal((await request('GET', '/library/api/me', undefined, adminCookie)).json.isOwner, false, 'stale admin lease fails closed');

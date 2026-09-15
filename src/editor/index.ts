@@ -1605,6 +1605,7 @@ class ProofEditorImpl implements ProofEditor {
           this.lastReceivedServerMarks = initialMarks;
           this.initialMarksSynced = true;
         }
+        window.dispatchEvent(new Event('proof:editor-ready'));
         this.showErrorBanner('Live collaboration is currently unavailable for this shared document.');
         return;
       }

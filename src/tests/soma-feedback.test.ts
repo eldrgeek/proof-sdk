@@ -82,7 +82,7 @@ try {
   checkChip(injectSomaFeedback('<html><head></head><body></body></html>', 'editor', admin.member), 'editor');
   createDocument('chip-test', '# Chip', {}, 'Chip');
   const editor = await request('GET', '/d/chip-test');
-  if (editor.status === 200) checkChip(editor.text, 'editor'); // full route asserted after npm run build
+  assert.equal(editor.status, 200); checkChip(editor.text, 'editor');
   process.env.PROOF_SOMA_AUTH_ENABLED = '1';
   checkChip((await request('GET', '/')).text, 'sign-in');
   process.env.PROOF_FEEDBACK_ENABLED = '0';

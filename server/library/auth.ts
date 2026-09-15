@@ -356,7 +356,7 @@ export function isSomaAuthEnabled(): boolean {
 
 // Verify identity remotely. Neither email nor privilege ever comes from req.body.
 export async function exchangeSomaSession(req: Request): Promise<{
-  sessionId?: string; email?: string; isAdmin?: boolean; status: number; message?: string;
+  sessionId?: string; email?: string; isAdmin?: boolean; refreshAfterMs?: number; status: number; message?: string;
 }> {
   const token = req.body?.accessToken;
   if (typeof token !== 'string' || !token || token.length > 16384) {
@@ -379,7 +379,7 @@ export async function exchangeSomaSession(req: Request): Promise<{
       : null;
     const now = new Date();
     if (previous && Date.parse(previous.soma_verified_at || '') + SESSION_TOUCH_AFTER_MS > now.getTime()) {
-      return { status: 200, isAdmin: previous.soma_admin === 1, sessionId: getCookie(req, LIBRARY_SESSION_COOKIE) || undefined };
+      return { status: 200, isAdmin: previous.soma_admin === 1, refreshAfterMs: Date.parse(previous.soma_verified_at!) + SESSION_TOUCH_AFTER_MS - now.getTime(), sessionId: getCookie(req, LIBRARY_SESSION_COOKIE) || undefined };
     }
     const role = await fetch(`${base}/rest/v1/rpc/is_app_admin`, {
       method: 'POST', headers, body: JSON.stringify({ target_app: 'proof-plus' }), signal: AbortSignal.timeout(10000),
@@ -404,7 +404,7 @@ export async function exchangeSomaSession(req: Request): Promise<{
       ON CONFLICT(session_hash) DO UPDATE SET expires_at=excluded.expires_at,
         last_seen_at=excluded.last_seen_at, soma_verified_at=excluded.soma_verified_at, soma_admin=excluded.soma_admin
     `).run(hashOpaqueValue(sessionId), member.id, nowIso, expiresAt, nowIso, req.header('user-agent')?.slice(0, 500) || null, nowIso, isAdmin ? 1 : 0);
-    return { status: 200, sessionId, isAdmin };
+    return { status: 200, sessionId, isAdmin, refreshAfterMs: SESSION_TOUCH_AFTER_MS };
   } catch {
     return { status: 503, message: 'Sign-in is unavailable. Please try again later.' };
   }

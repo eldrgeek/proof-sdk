@@ -1407,6 +1407,15 @@ function initDatabase(): void {
     )
   `);
   d.exec('CREATE INDEX IF NOT EXISTS idx_library_visits_slug ON library_visits(slug)');
+  d.exec(`CREATE TABLE IF NOT EXISTS client_errors (
+    signature TEXT PRIMARY KEY,
+    count INTEGER NOT NULL,
+    first_seen INTEGER NOT NULL,
+    last_seen INTEGER NOT NULL,
+    sample TEXT NOT NULL,
+    forwarded INTEGER NOT NULL DEFAULT 0
+  )`);
+
 }
 
 export function createDocument(

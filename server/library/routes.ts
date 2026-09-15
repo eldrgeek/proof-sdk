@@ -46,7 +46,7 @@ libraryRoutes.use('/library', (_req, res, next) => {
     res.status(404).end();
     return;
   }
-  if (isSomaAuthEnabled() && ['/signin', '/api/signin', '/api/device-link'].includes(_req.path.replace(/\/$/, ''))) {
+  if (isSomaAuthEnabled() && ['/signin', '/api/signin', '/api/device-link'].includes(_req.path.replace(/\/$/, '').toLowerCase())) {
     res.status(404).end();
     return;
   }
@@ -111,10 +111,10 @@ libraryRoutes.post('/library/api/session', (req, res, next) => {
   }
   const result = await exchangeSomaSession(req);
   if (result.sessionId) setLibrarySessionCookie(req, res, result.sessionId);
-  res.status(result.status).json({ ok: result.status === 200, message: result.message, email: result.email, isAdmin: result.isAdmin });
+  res.status(result.status).json({ ok: result.status === 200, message: result.message, email: result.email, isAdmin: result.isAdmin, refreshAfterMs: result.refreshAfterMs });
 });
 
-libraryRoutes.get('/library/client.js' , (_req: Request, res: Response) => {
+libraryRoutes.get('/library/client.js', (_req: Request, res: Response) => {
   res.setHeader('Cache-Control', 'no-cache');
   res.type('application/javascript').send(libraryClientScript);
 });

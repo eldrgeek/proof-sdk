@@ -1,3 +1,4 @@
+import { clientErrorRoutes } from './client-errors.js';
 import { somaFeedbackRoutes } from './soma-feedback.js';
 import express from 'express';
 import { createServer } from 'http';
@@ -53,6 +54,7 @@ async function main(): Promise<void> {
   app.use(express.static(path.join(__dirname, '..', 'public')));
   app.use(libraryRoutes);
   app.use(somaFeedbackRoutes);
+  app.use(clientErrorRoutes);
 
   app.use((req, res, next) => {
     const originHeader = req.header('origin');
