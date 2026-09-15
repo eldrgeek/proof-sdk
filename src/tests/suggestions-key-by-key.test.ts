@@ -7,6 +7,7 @@ import { setCurrentActor } from '../editor/actor.js';
 import { createAuthoredTrackerPlugin } from '../editor/plugins/authored-tracker.js';
 import {
   accept,
+  buildSuggestionMetadata,
   getMarkMetadataWithQuotes,
   getMarks,
   marksPluginKey,
@@ -67,8 +68,8 @@ function assertSuggestionSnapshot(state: EditorState, expectedText: string): voi
   assert(segments.length === 1, `Expected one suggestion text node after "${expectedText}", got ${segments.length}`);
   assert(segments[0].text === expectedText, `Expected one marked run containing "${expectedText}"`);
   assert(
-    segments[0].attrs.content === expectedText,
-    `Expected document mark attrs to carry current content "${expectedText}"`,
+    segments[0].attrs.content === null,
+    'Expected volatile insert content to remain in metadata rather than the collaborative mark attrs',
   );
 }
 
@@ -191,6 +192,49 @@ async function run(): Promise<void> {
   assert(
     !getMarks(locallyRejectedState).some((mark) => mark.kind === 'insert'),
     'Expected local insert reject to remove the proofSuggestion mark in the same dispatch',
+  );
+
+  const mismatchedId = `${suggestionId}-mismatched`;
+  const mismatchedFrom = state.doc.content.size - 1;
+  const suggestionType = state.schema.marks.proofSuggestion;
+  let mismatchedState = state.apply(
+    state.tr
+      .insertText('x', mismatchedFrom)
+      .addMark(
+        mismatchedFrom,
+        mismatchedFrom + 1,
+        suggestionType.create({ id: mismatchedId, kind: 'insert', by: 'human:test' }),
+      )
+      .setMeta(marksPluginKey, {
+        type: 'SET_METADATA',
+        metadata: {
+          ...localMarks,
+          [mismatchedId]: buildSuggestionMetadata('insert', 'human:test', 'xy'),
+        },
+      }),
+  );
+  let mismatchedDispatches = 0;
+  const mismatchedView = {
+    get state() {
+      return mismatchedState;
+    },
+    dispatch(tr: typeof state.tr) {
+      mismatchedDispatches += 1;
+      mismatchedState = mismatchedState.apply(tr);
+    },
+  };
+  assert(
+    reject(mismatchedView as any, mismatchedId),
+    'Expected human insert rejection to use the anchored text instead of stale metadata content',
+  );
+  assert(mismatchedDispatches === 1, 'Expected successful human insert reject to dispatch exactly once');
+  assert(
+    mismatchedState.doc.textContent === state.doc.textContent,
+    'Expected successful human insert reject to remove its anchored text',
+  );
+  assert(
+    !getMarks(mismatchedState).some((mark) => mark.id === mismatchedId),
+    'Expected successful human insert reject to clear the suggestion',
   );
 
   const staleServerMark: StoredMark = {
