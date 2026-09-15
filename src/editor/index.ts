@@ -1,3 +1,5 @@
+import { bracketCommentsPlugin } from './plugins/bracket-comments';
+import { literalBracketsSchema, remarkLiteralBracketsPlugin, literalBracketsHandler } from './schema/literal-brackets';
 /**
  * Proof Editor
  *
@@ -1267,6 +1269,9 @@ class ProofEditorImpl implements ProofEditor {
       .use(markPopoverPlugin)
       .use(markSelectionBarPlugin)
       .use(arrowCommentPlugin)
+      .use(literalBracketsSchema)
+      .use(remarkLiteralBracketsPlugin)
+      .use(bracketCommentsPlugin)
       .use(findHighlightsPlugin)
       .use(shareContentFilterPlugin)
       .use(taskCheckboxesPlugin)
@@ -1293,6 +1298,7 @@ class ProofEditorImpl implements ProofEditor {
           handlers: {
             ...(prev.handlers ?? {}),
             proofMark: proofMarkHandler,
+            literalBrackets: literalBracketsHandler,
           },
         }));
 

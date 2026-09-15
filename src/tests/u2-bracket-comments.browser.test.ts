@@ -1,0 +1,37 @@
+import assert from 'node:assert/strict';
+import { withBrowser, openEditor } from './u2-browser-harness';
+await withBrowser(async ({ browser, base, create }) => {
+  const doc = await create('First sentence. Second sentence. Last sentence.');
+  const page = await openEditor(browser, `${base}/d/${doc.slug}`, 'Reader');
+  await page.getByRole('button', { name: /^Suggesting:/ }).click();
+  await page.locator('.ProseMirror p').click();
+  await page.keyboard.press('Home');
+  for (let i = 0; i < 22; i++) await page.keyboard.press('ArrowRight');
+  await page.keyboard.type('[[Please explain.]]');
+  await page.waitForFunction(() => (window as any).proof.getAllMarks().some((m: any) => m.kind === 'comment' && m.data.text === 'Please explain.'));
+  assert(!(await page.locator('.ProseMirror').innerText()).includes('[['));
+  assert((await page.getByRole('complementary', { name: 'Marks', exact: true }).innerText()).includes('◆'));
+  const comment = await page.evaluate(() => (window as any).proof.getAllMarks().find((m: any) => m.kind === 'comment'));
+  assert.equal(comment.quote, 'Second sentence.'); assert.equal(comment.by, 'human:Reader');
+  await page.keyboard.press('Control+z');
+  assert((await page.locator('.ProseMirror').innerText()).includes('[[Please explain.]]'));
+  assert.equal(await page.evaluate(() => (window as any).proof.getAllMarks().filter((m: any) => m.kind === 'comment').length), 0);
+  await page.waitForTimeout(200); assert((await page.locator('.ProseMirror').innerText()).includes('[[Please explain.]]'), 'Undo must not immediately reconvert');
+  // A fresh page tests literal escapes through real typing and reload.
+  const literal = await create('Literal examples: ');
+  const other = await openEditor(browser, `${base}/d/${literal.slug}`, 'Reader');
+  await other.getByRole('button', { name: /^Suggesting:/ }).click();
+  await other.locator('.ProseMirror p').click(); await other.keyboard.press('End');
+  await other.keyboard.type(String.raw` \[[literal\]]`);
+  await other.waitForTimeout(800);
+  assert((await other.locator('.ProseMirror').innerText()).includes('[[literal]]'));
+  assert(!(await other.locator('.ProseMirror').innerText()).includes('\\'));
+  const markdown = await other.evaluate(() => (window as any).proof.getMarkdownSnapshot().content);
+  assert(markdown.includes(String.raw`\[[`)); assert(markdown.includes(String.raw`\]]`));
+  await other.reload(); await other.waitForFunction(() => (window as any).proof?.getAllMarks);
+  assert.equal(await other.evaluate(() => (window as any).proof.getAllMarks().filter((m: any) => m.kind === 'comment').length), 0);
+  assert((await other.locator('.ProseMirror').innerText()).includes('[[literal]]'));
+  await other.context().close(); await page.context().close();
+  console.log('✓ typed comments, mark panel, one-step undo, and literal escapes through reload');
+});
+process.exit(0);
