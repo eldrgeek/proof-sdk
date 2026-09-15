@@ -1,0 +1,8 @@
+1 both open in Editing mode, separate browser processes
+   carets: different paragraphs
+2 Mike sees: {"mikeWords":true,"ericWords":true,"text":"Proof E2EERIC\nI think  play is ready. mike typed wordsDIANA\nThe  act needs one more scene. eric typed words","pending":[]}
+2 Eric sees: {"mikeWords":true,"ericWords":true,"text":"Proof E2EERIC\nI think  play is ready. mike typed wordsDIANA\nThe  act needs one more scene. eric typed words","pending":[]}
+2 server: {"readSource":"projection","projectionFresh":true,"revision":2,"mikeWords":true,"ericWords":true,"markupInText":false,"pending":[],"dianaLine":"\"The  act needs one more scene. eric typed words\""}
+3 after reload, Mike sees: {"mikeWords":true,"ericWords":true,"text":"Proof E2EERIC\nI think  play is ready. mike typed wordsDIANA\nThe  act needs one more scene. eric typed words","pending":[]}
+3 after reload, Eric sees: {"mikeWords":true,"ericWords":true,"text":"Proof E2EERIC\nI think  play is ready. mike typed wordsDIANA\nThe  act needs one more scene. eric typed words","pending":[]}
+VERDICT PASS: every check held

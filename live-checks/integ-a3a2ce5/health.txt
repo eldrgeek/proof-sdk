@@ -1,0 +1,16 @@
+HOW-TO jdx1z5e0 {'readSource': 'projection', 'projectionFresh': True, 'mutationReady': True, 'revision': 1} chars 38653 markup-in-text: False pending: 0
+agent-concurrent-integ4 ld34mrxu rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+agent-live-integ4 395ipmyb rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+ai-block-accept-integ4 9ibza2lv rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+ai-block-reject-integ4 zrt2zcfs rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+ai-format-1-integ4 fdng6jrl rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+ai-format-2-integ4 3oxl2bii rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+ai-format-3-integ4 p8y2686m rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+closetab-integ4 ruhxds77 rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+e2e-brackets-integ4 0x50m1vv rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+e2e-plain-integ4 trro14jd rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+rest-reject-integ4 n3payap1 rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+two-rev-edit-integ4 44sfrcvu rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+two-rev-same-edit-integ4 a7q77n9t rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+two-rev-same-suggest-integ4 ap7bbted rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+two-rev-suggest-integ4 cukc1eey rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0

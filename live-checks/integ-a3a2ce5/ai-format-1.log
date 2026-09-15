@@ -1,0 +1,13 @@
+set 1 | paragraphs at start: ["The **Format** line sets the style for the play.","Read [the guide](https://example.com/guide) before you start.","Plain closing line."]
+AI A plain quote across bold -> 200 {"success":true}
+AI B markdown link quote -> 200 {"success":true}
+AI C plain quote next to link -> 200 {"success":true}
+mark in page: {"id":"f1d18e71-1960-42bf-a312-9be9704d9cb6","kind":"replace","covered":"The Format line sets the style","content":"The **Format** line sets the house style"}
+mark in page: {"id":"6d44022a-2d20-4c07-b3ea-f22a0a5b8aa1","kind":"replace","covered":"the guide","content":"[the full guide](https://example.com/guide)"}
+mark in page: {"id":"0380edec-b982-41f3-baf4-f52bdaf5d83c","kind":"replace","covered":"before you start","content":"before you begin"}
+server pending before accepting: ["The Format line sets the style","the guide","before you start"]
+accept A plain quote across bold: returned true; paragraphs: ["The **Format** line sets the house style for the play.","Read [the guide](https://example.com/guide) before you start.","Plain closing line."]
+accept B markdown link quote: returned true; paragraphs: ["The **Format** line sets the house style for the play.","Read [the full guide](https://example.com/guide) before you start.","Plain closing line."]
+accept C plain quote next to link: returned true; paragraphs: ["The **Format** line sets the house style for the play.","Read [the full guide](https://example.com/guide) before you begin.","Plain closing line."]
+paragraphs after reload: ["The **Format** line sets the house style for the play.","Read [the full guide](https://example.com/guide) before you begin.","Plain closing line."]
+server: {"readSource":"projection","projectionFresh":true,"revision":7,"pending":[],"markdown":"# Format test\n\nThe **Format** line sets the house style for the play.\n\nRead [the full guide](https://example.com/guide) before you begin.\n\nPlain closing line.\n"}

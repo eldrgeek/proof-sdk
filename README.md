@@ -1,13 +1,13 @@
 # Proof suggesting mode: evidence, 14–15 September 2026
 
 _Authored 2026-09-14 by Claude Opus 5 (CCc, acting as chief of staff) for Mike Wolf; updated 2026-09-15 with the
-live-check runs on builds 5b5c779 and 00c0e15._
+live-check runs on builds 5b5c779, 00c0e15 and a3a2ce5._
 
 This branch holds the browser evidence that suggesting mode works on our self-hosted Proof, at
 https://proof.vpsmikewolf.duckdns.org. That server runs the fork `eldrgeek/proof-sdk`, branch `deploy/vps`.
 
-The server now runs build `00c0e15`, deployed on 15 September 2026 at 01:46 UTC. The sections below go in time
-order: `dab0365` first, then `0b3f8dd`, then `5b5c779` and `00c0e15`. Every test used a fresh test document and
+The server now runs build `a3a2ce5`, deployed on 15 September 2026 at 02:44 UTC. The sections below go in time
+order: `dab0365` first, then `0b3f8dd`, then `5b5c779`, `00c0e15` and `a3a2ce5`. Every test used a fresh test document and
 headless Chromium, driven by Playwright.
 
 ## Result
@@ -127,31 +127,38 @@ and the AI does not retry, both AI calls get 409 PROJECTION_STALE.
 Local tests on `00c0e15`: the build passes, every targeted test passes, and `npm test` passes 76 of 76. The one
 failure, `collab-onstore-drift-quarantine`, fails the same way on untouched upstream `fb25787`.
 
-## Known gaps, with fixes in progress (as of 00c0e15)
+## Build a3a2ce5: the three remaining gaps fixed (15 September)
 
-- **Accepting several AI block inserts in the page quarantines the document when one of them is a table row.**
-  After inline, paragraph and table-row inserts are accepted one after another, the server lays out the table with
-  columns about 131 and 135 characters wide. That trips its growth guard (201 to 1708 characters), and it quarantines
-  the document. The document will not reopen, and the server still lists all three inserts as pending. The widths
-  differ by 4, which is len("Producer") − len("Mike"), the new row's two cells. So the widths are probably measured
-  while suggestion markup is still in those cells. Rejecting the same inserts works. Fix B8e is with a worker
-  (`tools/briefs/brief-b8e-ai-block-accept-live.md`).
-- **Two people typing in the same paragraph in Suggesting mode split one person's suggestion.** One person's typed
-  run became six insert suggestions. Each holds three characters of content, but its range covers only two, so every
-  third character (here "i", " ", "p", " " and "r") carries no suggestion mark and would skip review. Rejecting all six
-  fragments, with every call returning true, left "The second act mi typ wor needs one more scene" on the page and
-  in the server's copy. Three of the six rejects removed nothing, and the unmarked characters stayed. In one of the
-  two runs the server also stopped being fresh (`live-checks/coverage-00c0e15`). With the two people in different
-  paragraphs, every character is covered and reject-all is clean. Fix C8 is with a worker
-  (`tools/briefs/brief-c8-same-paragraph-suggestions.md`).
-- **Could an AI write erase a person's newest typing?** Reading the code found two places where it might: the
-  save-conflict reconcile, and a keystroke that arrives while an AI mutation is being prepared. The live check has not
-  reproduced a loss. Worker C7 is writing deterministic tests (`tools/briefs/brief-c7-live-typing-overwrite.md`).
-- **A stray space.** After an accept in the same-paragraph case, the paragraph gains a trailing space, stored as
-  `&#x20;`. This is cosmetic.
+`a3a2ce5` is `00c0e15` plus three fixes and one review fix, each its own commit. All 15 live checks pass on it
+(`live-checks/integ-a3a2ce5`). Every check document shows 0 rebuilds and 0 dropped live writes, and the How-To
+document stayed fresh with nothing pending.
 
-Fixed since the 14 September list: an AI's suggested insertion now keeps its text when accepted (B8, B8c), and an
-AI's REST accept or reject now sticks while someone has the page open (C4b).
+- **B8e** (`deb784c`): accepting inline, paragraph and table-row AI inserts one after another no longer quarantines
+  the document. The table serializer had counted suggestion span markup when it aligned the columns. That padded
+  them to about 130 characters and tripped the growth guard. Live, each insertion was stored once, the table kept
+  two columns with normal padding, the server stayed fresh, and the document reopened.
+- **C7** (`b64924e`): a code review found two moments when an AI's write could erase a person's newest typing, and
+  both are closed. A keystroke that lands while an AI mutation is being prepared now makes the mutation return
+  409 `STALE_BASE`, which callers retry. The save-conflict reconcile now applies marks only, instead of replacing the
+  live text with the stored copy. Live, the AI's writes were accepted while a person was typing, and nothing was lost.
+- **C8** (`47b4b8b`): when two people type in one paragraph in Suggesting mode, each person's typing is one
+  suggestion that covers every character, and Reject removes exactly that text. The cause: a pending insert's content
+  lived in the mark's attributes, so every keystroke rewrote the mark, and a remote update could drop it from the
+  newest character. Live, each person had one suggestion with full coverage on both pages and after a reload.
+  Rejecting all of one person's typing left the paragraph exactly as before, with no stray space.
+- **Review fix** (`08b5b4a`): the projection's absolute size cap measures the stored text again, so it still stops a
+  runaway loop of nested span wrappers. The growth and repeat checks keep measuring visible text only.
+
+Local tests on `a3a2ce5`: the build passes, every targeted test passes, `marks.test` fails only its 3 known cases,
+and `npm test` passes 76 of 76. Tests that also fail on untouched upstream `fb25787` are listed in each brief under
+"Known baseline failures". Four of them were confirmed on `fb25787` on 15 September: `collab-onstore-drift-quarantine`,
+`collab-pathological-repeat-guard`, `collab-oversized-live-doc-noise-regression` and `canonical-repair-endpoints`.
+
+## Known gaps (as of a3a2ce5)
+
+- None of the gaps listed for `00c0e15` remain. B8e, C7 and C8 closed them.
+- The upstream test failures above stay failing. The fork did not cause them.
+- No pull request to the upstream repository is open. Each one needs Mike's explicit yes before it is opened.
 
 ## Branches in the fork
 
@@ -180,5 +187,11 @@ AI's REST accept or reject now sticks while someone has the page open (C4b).
 - `cursor/same-paragraph-race-010042` (B2d) and `cursor/fragment-dirty-012325` (B2e): when two people type in the
   same paragraph, both texts are saved.
 - `cursor/ai-block-accept-011611` (B8d): an AI paragraph inserted after the last block lands.
-- `integ/2026-09-15-00c0e15`: the build as verified, before `deploy/vps` moved to it.
-- `deploy/vps`: all of the above, merged (`00c0e15`). It is what the server runs.
+- `cursor/ai-block-accept-live-020930` (B8e): accepting AI block inserts from a live page never quarantines the
+  document.
+- `cursor/live-typing-overwrite-020926` (C7): an AI write never removes text a person is typing.
+- `cursor/same-paragraph-suggestions-020934` (C8): typing in a paragraph someone else is editing keeps each
+  person's suggestion whole.
+- `integ/2026-09-15-00c0e15`, `integ/2026-09-15-08b5b4a` and `integ/2026-09-15-a3a2ce5`: builds as verified,
+  before `deploy/vps` moved to them.
+- `deploy/vps`: all of the above, merged (`a3a2ce5`). It is what the server runs.

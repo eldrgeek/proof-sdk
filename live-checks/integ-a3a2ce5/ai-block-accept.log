@@ -1,0 +1,17 @@
+action: accept | blocks at start: ["heading: Block test","paragraph: Intro paragraph one.","row: Name | Role","row: Eric | Writer","row: Diana | Director","paragraph: Closing paragraph."]
+AI inline text via insert -> 200 {"success":true}
+AI paragraph via insert after a paragraph end -> 200 {"success":true}
+AI table row via insert anchored on a cell -> 200 {"success":true}
+mark in page: {"id":"67c99142-31ee-4b31-8a6e-c3e9e8b6aa61","kind":"insert","covered":" AI inline words.","content":" AI inline words."}
+mark in page: {"id":"4543b5ff-34f8-4c54-ac02-6c863952c8ac","kind":"insert","covered":"Mike / Producer","content":"\n| Mike | Producer |"}
+mark in page: {"id":"ff2f80cd-63ee-486c-bfaf-5c140e24874a","kind":"insert","covered":"Another AI paragraph.","content":"\n\nAnother AI paragraph."}
+blocks with suggestions pending: ["heading: Block test","paragraph: Intro paragraph one. AI inline words.","row: Name | Role","row: Eric | Writer","row: Diana | Director","row: Mike | Producer","paragraph: Closing paragraph.","paragraph: Another AI paragraph."]
+accept inline text via insert: returned true
+   blocks after: ["heading: Block test","paragraph: Intro paragraph one. AI inline words.","row: Name | Role","row: Eric | Writer","row: Diana | Director","row: Mike | Producer","paragraph: Closing paragraph.","paragraph: Another AI paragraph."]
+accept paragraph via insert after a paragraph end: returned true
+   blocks after: ["heading: Block test","paragraph: Intro paragraph one. AI inline words.","row: Name | Role","row: Eric | Writer","row: Diana | Director","row: Mike | Producer","paragraph: Closing paragraph.","paragraph: Another AI paragraph."]
+accept table row via insert anchored on a cell: returned true
+   blocks after: ["heading: Block test","paragraph: Intro paragraph one. AI inline words.","row: Name | Role","row: Eric | Writer","row: Diana | Director","row: Mike | Producer","paragraph: Closing paragraph.","paragraph: Another AI paragraph."]
+blocks after reload: ["heading: Block test","paragraph: Intro paragraph one. AI inline words.","row: Name | Role","row: Eric | Writer","row: Diana | Director","row: Mike | Producer","paragraph: Closing paragraph.","paragraph: Another AI paragraph."]
+server: {"readSource":"projection","projectionFresh":true,"revision":8,"pending":[],"inlineWordsTimes":1,"anotherParagraphTimes":1,"mikeRowTimes":1,"tableColumnsPerRow":[2,2,2,2,2],"markupInText":false}
+server markdown: "# Block test\n\nIntro paragraph one. AI inline words.\n\n| Name  | Role     |\n| :---- | :------- |\n| Eric  | Writer   |\n| Diana | Director |\n| Mike  | Producer |\n\nClosing paragraph.\n\nAnother AI paragraph.\n"

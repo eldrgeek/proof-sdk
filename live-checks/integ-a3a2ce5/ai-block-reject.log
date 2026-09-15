@@ -1,0 +1,17 @@
+action: reject | blocks at start: ["heading: Block test","paragraph: Intro paragraph one.","row: Name | Role","row: Eric | Writer","row: Diana | Director","paragraph: Closing paragraph."]
+AI inline text via insert -> 200 {"success":true}
+AI paragraph via insert after a paragraph end -> 200 {"success":true}
+AI table row via insert anchored on a cell -> 200 {"success":true}
+mark in page: {"id":"16d560c5-ccd6-461f-bf2b-e06527975558","kind":"insert","covered":" AI inline words.","content":" AI inline words."}
+mark in page: {"id":"524f0f1e-061a-4628-8766-805bb769c791","kind":"insert","covered":"Mike / Producer","content":"\n| Mike | Producer |"}
+mark in page: {"id":"1caefa72-cdc1-4f73-b06b-405820327b0e","kind":"insert","covered":"Another AI paragraph.","content":"\n\nAnother AI paragraph."}
+blocks with suggestions pending: ["heading: Block test","paragraph: Intro paragraph one. AI inline words.","row: Name | Role","row: Eric | Writer","row: Diana | Director","row: Mike | Producer","paragraph: Closing paragraph.","paragraph: Another AI paragraph."]
+reject inline text via insert: returned true
+   blocks after: ["heading: Block test","paragraph: Intro paragraph one.","row: Name | Role","row: Eric | Writer","row: Diana | Director","row: Mike | Producer","paragraph: Closing paragraph.","paragraph: Another AI paragraph."]
+reject paragraph via insert after a paragraph end: returned true
+   blocks after: ["heading: Block test","paragraph: Intro paragraph one.","row: Name | Role","row: Eric | Writer","row: Diana | Director","row: Mike | Producer","paragraph: Closing paragraph."]
+reject table row via insert anchored on a cell: returned true
+   blocks after: ["heading: Block test","paragraph: Intro paragraph one.","row: Name | Role","row: Eric | Writer","row: Diana | Director","paragraph: Closing paragraph."]
+blocks after reload: ["heading: Block test","paragraph: Intro paragraph one.","row: Name | Role","row: Eric | Writer","row: Diana | Director","paragraph: Closing paragraph."]
+server: {"readSource":"projection","projectionFresh":true,"revision":8,"pending":[],"inlineWordsTimes":0,"anotherParagraphTimes":0,"mikeRowTimes":0,"tableColumnsPerRow":[2,2,2,2],"markupInText":false}
+server markdown: "# Block test\n\nIntro paragraph one.\n\n| Name  | Role     |\n| :---- | :------- |\n| Eric  | Writer   |\n| Diana | Director |\n\nClosing paragraph.\n"

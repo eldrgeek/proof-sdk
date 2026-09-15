@@ -1,0 +1,19 @@
+1 both open in Suggesting mode, separate browser processes
+   carets: same paragraph
+2 Mike sees: {"mikeWords":true,"ericWords":true,"text":"Proof E2EERIC\nI think teh play is ready.DIANA\nThe second act mike typed words needs one more scene. eric typed words","pending":["delete:Eric Probe:second","delete:Mike Probe:teh","insert:Eric Probe: eric typed words","insert:Mike Probe: mike typed words"]}
+2 Eric sees: {"mikeWords":true,"ericWords":true,"text":"Proof E2EERIC\nI think teh play is ready.DIANA\nThe second act mike typed words needs one more scene. eric typed words","pending":["delete:Eric Probe:second","delete:Mike Probe:teh","insert:Eric Probe: eric typed words","insert:Mike Probe: mike typed words"]}
+2 server: {"readSource":"projection","projectionFresh":true,"revision":2,"mikeWords":true,"ericWords":true,"markupInText":false,"pending":["delete:Eric Probe","delete:Mike Probe","insert:Eric Probe","insert:Mike Probe"],"dianaLine":"\"The second act mike typed words needs one more scene. eric typed words\""}
+2 Mike page suggestion coverage: {"mike":{"found":true,"marks":1,"notInline":"\"\"","notInRange":"\"\""},"eric":{"found":true,"marks":1,"notInline":"\"\"","notInRange":"\"\""}}
+2 Eric page suggestion coverage: {"mike":{"found":true,"marks":1,"notInline":"\"\"","notInRange":"\"\""},"eric":{"found":true,"marks":1,"notInline":"\"\"","notInRange":"\"\""}}
+3 after reload, Mike sees: {"mikeWords":true,"ericWords":true,"text":"Proof E2EERIC\nI think teh play is ready.DIANA\nThe second act mike typed words needs one more scene. eric typed words","pending":["delete:Eric Probe:second","delete:Mike Probe:teh","insert:Eric Probe: eric typed words","insert:Mike Probe: mike typed words"]}
+3 after reload, Eric sees: {"mikeWords":true,"ericWords":true,"text":"Proof E2EERIC\nI think teh play is ready.DIANA\nThe second act mike typed words needs one more scene. eric typed words","pending":["delete:Eric Probe:second","delete:Mike Probe:teh","insert:Eric Probe: eric typed words","insert:Mike Probe: mike typed words"]}
+3 Mike page suggestion coverage: {"mike":{"found":true,"marks":1,"notInline":"\"\"","notInRange":"\"\""},"eric":{"found":true,"marks":1,"notInline":"\"\"","notInRange":"\"\""}}
+4 Mike accepted Eric insert: true | Eric rejected Mike delete: true
+5 Mike sees: {"mikeWords":true,"ericWords":true,"text":"Proof E2EERIC\nI think teh play is ready.DIANA\nThe second act mike typed words needs one more scene. eric typed words","pending":["delete:Eric Probe:second","insert:Mike Probe: mike typed words"]}
+5 Eric sees: {"mikeWords":true,"ericWords":true,"text":"Proof E2EERIC\nI think teh play is ready.DIANA\nThe second act mike typed words needs one more scene. eric typed words","pending":["delete:Eric Probe:second","insert:Mike Probe: mike typed words"]}
+6 after reload, Mike sees: {"mikeWords":true,"ericWords":true,"text":"Proof E2EERIC\nI think teh play is ready.DIANA\nThe second act mike typed words needs one more scene. eric typed words","pending":["delete:Eric Probe:second","insert:Mike Probe: mike typed words"]}
+6 server: {"readSource":"projection","projectionFresh":true,"revision":3,"mikeWords":true,"ericWords":true,"markupInText":false,"pending":["delete:Eric Probe","insert:Mike Probe"],"dianaLine":"\"The second act mike typed words needs one more scene. eric typed words\""}
+7 Eric rejected Mike's inserts: {"count":1,"results":[true]}
+8 after reload, Eric sees: {"phraseGone":true,"leftBehind":"\"\"","paragraph":"\"DIANA\\nThe second act needs one more scene. eric typed words\""}
+8 server: {"readSource":"projection","projectionFresh":true,"revision":4,"mikeWords":false,"ericWords":true,"markupInText":false,"pending":["delete:Eric Probe"],"dianaLine":"\"The second act needs one more scene. eric typed words\""}
+VERDICT PASS: every check held

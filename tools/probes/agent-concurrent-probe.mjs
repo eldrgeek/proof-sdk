@@ -44,7 +44,9 @@ async function opOnce(body) {
   return { status: res.status, success: json.success, code: json.code, markId: json.markId };
 }
 
-// Retry on 409 PROJECTION_STALE every 250 ms until accepted, or until 3 s after the typing ends.
+// Retry every 250 ms until accepted, or until 3 s after the typing ends, on the two refusals that are safe to
+// retry: 409 PROJECTION_STALE (the person's newest typing is not saved yet) and 409 STALE_BASE (a keystroke
+// landed while the AI's write was being prepared; returned since fix C7).
 async function op(body) {
   let attempts = 0;
   let last;
@@ -52,7 +54,7 @@ async function op(body) {
   for (;;) {
     attempts += 1;
     last = await opOnce(body);
-    if (!(last.status === 409 && last.code === 'PROJECTION_STALE')) break;
+    if (!(last.status === 409 && (last.code === 'PROJECTION_STALE' || last.code === 'STALE_BASE'))) break;
     if (typingDone && !doneAt) doneAt = Date.now();
     if (doneAt && Date.now() - doneAt > 3000) break;
     await new Promise((r) => setTimeout(r, 250));
