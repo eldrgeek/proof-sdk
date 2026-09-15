@@ -1,3 +1,4 @@
+import { agentKeyRoutes } from './agent-key-routes.js';
 import { getClientIp, trustProxyHeaders } from './client-address.js';
 import { createHash, randomUUID } from 'crypto';
 import { Router, text, type Request, type Response } from 'express';
@@ -107,6 +108,7 @@ import {
 } from './proof-sdk-routes.js';
 
 export const apiRoutes = Router();
+apiRoutes.use(agentKeyRoutes);
 runLegacyMarkRangeBackfillOnce();
 
 const DIRECT_SHARE_RATE_LIMIT_BUCKETS = new Map<string, { count: number; resetAt: number }>();

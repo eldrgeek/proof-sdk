@@ -661,11 +661,40 @@ export class ShareClient {
     return payload;
   }
 
+  hasShareCredential(): boolean {
+    return Boolean(this.shareToken?.trim());
+  }
+
+  async listAgentKeys(): Promise<import('../ui/agent-key-dialog').AgentKey[]> {
+    const response = await fetch(`${this.getApiBase()}/documents/${this.slug}/agent-keys`, {
+      headers: this.getShareAuthHeaders(),
+    });
+    if (!response.ok) throw new Error('Could not load agent keys');
+    return (await response.json()).keys;
+  }
+
+  async createAgentKey(label: string): Promise<import('../ui/agent-key-dialog').AgentKey & { token: string }> {
+    const response = await fetch(`${this.getApiBase()}/documents/${this.slug}/agent-keys`, {
+      method: 'POST', headers: { ...this.getShareAuthHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label }),
+    });
+    if (!response.ok) throw new Error(response.status === 429
+      ? 'Too many keys requested; try again in a minute.' : 'Could not create an agent key. Check your editing access.');
+    return response.json();
+  }
+
+  async revokeAgentKey(tokenId: string): Promise<void> {
+    const response = await fetch(`${this.getApiBase()}/documents/${this.slug}/agent-keys/${encodeURIComponent(tokenId)}`, {
+      method: 'DELETE', headers: this.getShareAuthHeaders(),
+    });
+    if (!response.ok) throw new Error('Could not revoke the agent key');
+  }
+
   async fetchPendingEvents(
     after: number,
     options?: { token?: string; limit?: number },
   ): Promise<SharePendingEventsResponse | ShareRequestError | null> {
-    if (!this.slug) return null;
+    if (!this.slug || !(options?.token?.trim() || this.hasShareCredential())) return null;
     const params = new URLSearchParams();
     params.set('after', String(Math.max(0, Math.trunc(after))));
     params.set('limit', String(Math.max(1, Math.min(200, Math.trunc(options?.limit ?? 100)))));

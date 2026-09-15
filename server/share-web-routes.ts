@@ -6,13 +6,11 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import {
   noteDocumentLiveCollabLease,
-  canMutateByOwnerIdentity,
-  resolveDocumentAccessRole,
   upsertActiveCollabConnection,
 } from './db.js';
 import type { ShareRole } from './share-types.js';
 import { recordShareLinkOpen } from './metrics.js';
-import { getCookie, shareTokenCookieName } from './cookies.js';
+import { shareTokenCookieName } from './cookies.js';
 import { handleShareMarkdown, shareMarkdownBodyParser } from './routes.js';
 import { getSnapshotHtml, getSnapshotPublicUrl } from './snapshot.js';
 import { stripProofSpanTags } from './proof-span-strip.js';
@@ -40,7 +38,7 @@ import {
   buildProofSdkLinks,
 } from './proof-sdk-routes.js';
 import { getPublicOrigin, isSecureRequest } from './public-origin.js';
-import { getLibrarySession, isLibraryEnabled } from './library/auth.js';
+import { resolveSharePageAccess } from './share-page-access.js';
 
 export { getPublicOrigin, isSecureRequest } from './public-origin.js';
 
@@ -97,17 +95,6 @@ function wantsMarkdown(req: Request): boolean {
   if (format === 'markdown' || format === 'md') return true;
   const accept = (req.header('accept') || '').toLowerCase();
   return accept.includes('text/markdown') || accept.includes('text/x-markdown');
-}
-
-function deriveShareCapabilities(role: ShareRole, shareState: string): { canRead: boolean; canComment: boolean; canEdit: boolean } {
-  const isOwner = role === 'owner_bot';
-  // Product decision: non-owners cannot access paused/revoked shares at all.
-  const canRead = shareState === 'ACTIVE' || (isOwner && shareState !== 'DELETED');
-  const canEdit = isOwner
-    ? (shareState === 'ACTIVE' || shareState === 'PAUSED')
-    : (role === 'editor' && shareState === 'ACTIVE');
-  const canComment = shareState === 'ACTIVE' && (role === 'commenter' || role === 'editor' || isOwner);
-  return { canRead, canComment, canEdit };
 }
 
 // SPA fallback: serve index.html for /d/:slug routes
@@ -405,37 +392,13 @@ shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
   const origin = getPublicOrigin(req);
 
   const doc = slug ? (getCanonicalReadableDocumentSync(slug, 'share') ?? null) : null;
-  const librarySession = isLibraryEnabled() ? getLibrarySession(req, res) : null;
-  const tokenFromCookie = slug ? getCookie(req, shareTokenCookieName(slug)) : null;
-  const roleFromQuery = slug && tokenFromQuery ? resolveDocumentAccessRole(slug, tokenFromQuery) : null;
-  const queryOwner = Boolean(doc && tokenFromQuery && canMutateByOwnerIdentity(doc, tokenFromQuery));
-  const roleFromCookie = slug && tokenFromCookie ? resolveDocumentAccessRole(slug, tokenFromCookie) : null;
-  const cookieOwner = Boolean(doc && tokenFromCookie && canMutateByOwnerIdentity(doc, tokenFromCookie));
+  const pageAccess = resolveSharePageAccess(req, res, slug, doc);
+  const { librarySession, token, tokenSource, roleFromToken } = pageAccess;
 
-  // Prefer URL token over cookie when it is valid, but allow a valid cookie to win if the query token is stale.
-  let token: string | null = null;
-  let roleFromToken: ShareRole | null = null;
-  let tokenSource: 'query:token' | 'cookie' | 'none' = 'none';
-  if (tokenFromQuery && (roleFromQuery || queryOwner)) {
-    token = tokenFromQuery;
-    roleFromToken = roleFromQuery;
-    tokenSource = 'query:token';
-  } else if (tokenFromCookie && (roleFromCookie || cookieOwner)) {
-    token = tokenFromCookie;
-    roleFromToken = roleFromCookie;
-    tokenSource = 'cookie';
-  }
-
-  // If the share is PAUSED/REVOKED, only the owner can access the live web UI.
-  // Everyone else should see a generic unavailable page (no snapshot content).
-  const ownerOverride = Boolean(doc
-    && doc.share_state !== 'DELETED'
-    && (roleFromToken === 'owner_bot' || canMutateByOwnerIdentity(doc, token ?? '')));
-
-  if (doc && doc.share_state !== 'ACTIVE' && !ownerOverride) {
+  if (doc && !pageAccess.capabilities.canRead) {
     recordShareLinkOpen('failure', doc.share_state);
     const role = roleFromToken ?? 'editor';
-    const capabilities = deriveShareCapabilities(role, doc.share_state);
+    const capabilities = pageAccess.capabilities;
     const status = doc.share_state === 'DELETED' ? 410 : 404;
     const preview = buildSharePreviewModel({
       slug,
@@ -521,7 +484,7 @@ shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
     // Product decision: tokenless shares default to editable access (slug is the secret).
     const role = roleFromToken ?? 'editor';
     const shareState = doc?.share_state ?? (slug ? 'MISSING' : 'UNKNOWN');
-    const capabilities = deriveShareCapabilities(role, shareState);
+    const capabilities = pageAccess.capabilities;
     const origin = getPublicOrigin(req);
     const editV2Enabled = isFeatureEnabled(process.env.AGENT_EDIT_V2_ENABLED);
     const mutationReady = doc ? isCanonicalReadMutationReady(doc) : false;
