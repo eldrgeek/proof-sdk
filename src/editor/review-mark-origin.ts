@@ -35,6 +35,9 @@ export function isOwnHumanMarkChange(
     || !actor.startsWith('human:')) return false;
   for (const [id, record] of Object.entries(after)) {
     if (!record || typeof record !== 'object') continue;
+    // Authored marks record who wrote the text. Accepting someone's suggestion credits
+    // the accepted text to them, and that is still the accepter's own decision.
+    if (record.kind === 'authored') continue;
     const previous = before[id];
     if ((!previous || previous.by !== record.by) && record.by && record.by !== actor) return false;
     for (const field of ['replies', 'thread']) {
