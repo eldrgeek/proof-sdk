@@ -1,3 +1,4 @@
+import { getReviewStyle, REVIEW_STYLE_EVENT } from '../review-style';
 import { $prose } from '@milkdown/kit/utils';
 import { Plugin, PluginKey } from '@milkdown/kit/prose/state';
 import type { EditorView } from '@milkdown/kit/prose/view';
@@ -437,6 +438,7 @@ class MarkPopoverController {
   };
 
   constructor(view: EditorView) {
+    window.addEventListener(REVIEW_STYLE_EVENT, this.reviewStyleChanged);
     this.view = view;
 
     this.popover = document.createElement('div');
@@ -651,6 +653,7 @@ class MarkPopoverController {
   }
 
   destroy(): void {
+    window.removeEventListener(REVIEW_STYLE_EVENT, this.reviewStyleChanged);
     this.close();
     this.clearUndoToast();
     this.resetStripGestureVisual();
@@ -690,6 +693,11 @@ class MarkPopoverController {
     this.undoToast.remove();
     this.clearMobileStripPadding();
   }
+
+  private reviewStyleChanged = (): void => {
+    this.close();
+    this.scheduleMobileStripRender();
+  };
 
   update(view: EditorView): void {
     this.view = view;
@@ -756,6 +764,7 @@ class MarkPopoverController {
     pos?: number | null,
     options?: { threadFocusMode?: ThreadFocusMode },
   ): void {
+    if (getReviewStyle() === 'playmaker') return;
     const marks = getMarks(this.view.state);
     const mark = marks.find(item => item.id === markId);
     if (!mark) return;
@@ -1418,7 +1427,7 @@ class MarkPopoverController {
   }
 
   private renderMobileStrip(): void {
-    if (!shouldUseCommentUiV2()) {
+    if (getReviewStyle() === 'playmaker' || !shouldUseCommentUiV2()) {
       this.strip.style.display = 'none';
       this.mobileStripSignature = '';
       this.mobileStripExpanded = false;

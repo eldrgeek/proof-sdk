@@ -39,6 +39,7 @@ import {
   calculateAuthorshipStats,
   canonicalizeStoredMarks,
   getActorName,
+  getMarkColor,
 } from '../../formats/marks.js';
 
 // ============================================================================
@@ -3628,7 +3629,7 @@ export function createDecorations(
         decorations.push(
           Decoration.inline(from, to, {
             class: [cssClass, glowClass].filter(Boolean).join(' '),
-            style,
+            style: `${style} --review-author: ${getMarkColor(mark.by)};`,
             'data-mark-id': mark.id,
             'data-mark-kind': mark.kind,
             ...(suggestionTitle ? { title: suggestionTitle } : {}),
@@ -3644,7 +3645,7 @@ export function createDecorations(
             () => {
               const span = document.createElement('span');
               span.className = ['mark-replace-insert', 'mark-insert', glowClass].filter(Boolean).join(' ');
-              span.style.cssText = STYLES.insert;
+              span.style.cssText = `${STYLES.insert} --review-author: ${getMarkColor(mark.by)};`;
               span.setAttribute('data-mark-id', mark.id);
               span.setAttribute('data-mark-kind', mark.kind);
               if (suggestionTitle) span.title = suggestionTitle;

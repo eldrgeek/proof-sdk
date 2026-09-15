@@ -9,6 +9,10 @@
  * - Inline spans are derived from marks when saving/displaying
  */
 
+import { PlayMakerReview, type ReviewAction } from '../ui/playmaker-review';
+import { getReviewStyle } from './review-style';
+import { ReviewDecisionHistory } from './review-decision-history';
+
 import { getAgentPresenceDisplay } from '../shared/agent-presence';
 
 import {
@@ -1105,6 +1109,10 @@ class ProofEditorImpl implements ProofEditor {
   private shareMenuCleanup: (() => void) | null = null;
   private presenceMenuCleanup: (() => void) | null = null;
   private agentMenuCleanup: (() => void) | null = null;
+  private playmakerReview: PlayMakerReview | null = null;
+  private reviewDecisionHistory: ReviewDecisionHistory | null = null;
+  private reviewDecisionIds = new Set<string>();
+  private restoringReviewDecision = false;
   private suggestionReviewMenuCleanup: (() => void) | null = null;
   private shareWelcomeToast: HTMLElement | null = null;
   private shareDocTitle: string = 'Untitled';
@@ -3559,6 +3567,7 @@ class ProofEditorImpl implements ProofEditor {
       syncStatusInline,
       avatars,
       suggestToggle,
+      this.createReviewStyleControl(),
       suggestionReview,
       agentSlot,
       shareBtn,
@@ -3568,6 +3577,98 @@ class ProofEditorImpl implements ProofEditor {
     this.scheduleBannerLayoutUpdate();
   }
 
+
+  private createReviewStyleControl(): HTMLElement {
+    if (!this.playmakerReview) {
+      this.playmakerReview = new PlayMakerReview({
+        marks: () => {
+          let marks: Mark[] = [];
+          this.editor?.action(ctx => { marks = getMarks(ctx.get(editorViewCtx).state); });
+          return marks;
+        },
+        decide: (ids, action, text) => this.performReviewDecision(ids, action, text),
+        history: redo => this.restoreReviewDecision(redo),
+        jump: id => {
+          const element = document.querySelector<HTMLElement>(`.ProseMirror [data-mark-id="${CSS.escape(id)}"]`);
+          element?.scrollIntoView({ block: 'center', behavior: 'instant' });
+        },
+        changed: () => {
+          this.closeSuggestionReviewMenu();
+          this.shareSuggestionReviewSignature = '';
+          this.updateShareSuggestionReviewDisplay();
+        },
+      });
+    }
+    return this.playmakerReview.control;
+  }
+
+  private getReviewDecisionHistory(): ReviewDecisionHistory {
+    const doc = collabClient.getYDoc();
+    if (!doc || !this.collabCanEdit || this.getShareSuggestionResolutionTransport() !== 'collab') {
+      throw new Error('Connect to the document before deciding. Your mark is still open.');
+    }
+    if (this.reviewDecisionHistory?.doc !== doc) {
+      this.reviewDecisionHistory?.destroy();
+      this.reviewDecisionHistory = new ReviewDecisionHistory(doc);
+      this.reviewDecisionIds.clear();
+    }
+    return this.reviewDecisionHistory;
+  }
+
+  private performReviewDecision(ids: string[], action: ReviewAction, text?: string): void {
+    const history = this.getReviewDecisionHistory();
+    if (!this.editor) throw new Error('The editor is still loading.');
+    this.editor.action(ctx => {
+      const view = ctx.get(editorViewCtx);
+      const parser = ctx.get(parserCtx);
+      const previousSuppress = this.suppressMarksSync;
+      this.suppressMarksSync = true;
+      let failed = 0;
+      try {
+        history.decide(() => {
+          failed = 0;
+          for (const id of [...ids].reverse()) {
+            const ok = action === 'accept' ? acceptMark(view, id, parser)
+              : action === 'reject' ? rejectMark(view, id)
+              : action === 'resolve' ? markResolve(view, id)
+              : markReply(view, id, getCurrentActor(), text || '');
+            if (!ok) { failed += 1; continue; }
+            this.reviewDecisionIds.add(id);
+          }
+          const metadata = getMarkMetadataWithQuotes(view.state);
+          this.lastReceivedServerMarks = { ...metadata };
+          this.initialMarksSynced = true;
+          collabClient.setMarksMetadata(metadata);
+        });
+        if (failed) throw new Error(`${failed} mark${failed === 1 ? ' has' : 's have'} changed. Please review the remaining marks again.`);
+      } finally {
+        this.suppressMarksSync = previousSuppress;
+        this.scheduleShareSuggestionReviewDisplay(view);
+      }
+    });
+  }
+
+  private restoreReviewDecision(redo: boolean): boolean {
+    const history = this.getReviewDecisionHistory();
+    clearResolvedMarkTombstones([...this.reviewDecisionIds]);
+    const previousSuppress = this.suppressMarksSync;
+    this.suppressMarksSync = true;
+    this.restoringReviewDecision = !redo;
+    try {
+      const changed = redo ? history.redo() : history.undo();
+      const metadata = history.doc.getMap('marks').toJSON() as Record<string, StoredMark>;
+      this.lastReceivedServerMarks = { ...metadata };
+      this.editor?.action(ctx => {
+        const view = ctx.get(editorViewCtx);
+        view.dispatch(view.state.tr.setMeta(marksPluginKey, { type: 'SET_METADATA', metadata }).setMeta('addToHistory', false));
+        this.scheduleShareSuggestionReviewDisplay(view);
+      });
+      return changed;
+    } finally {
+      this.restoringReviewDecision = false;
+      this.suppressMarksSync = previousSuppress;
+    }
+  }
 
   private suggestModeStorageKey(): string {
     const slug = (window.location.pathname.match(/\/d\/([^/?#]+)/) || [])[1] || 'doc';
@@ -3776,9 +3877,10 @@ class ProofEditorImpl implements ProofEditor {
   }
 
   private updateShareSuggestionReviewDisplay(viewOverride?: EditorView): void {
+    this.playmakerReview?.update();
     const btn = this.shareBannerSuggestionReviewBtnEl;
     if (!btn) return;
-    const canShow = this.isShareMode && this.collabCanEdit;
+    const canShow = this.isShareMode && this.collabCanEdit && getReviewStyle() === 'proof';
     if (!canShow) {
       if (this.shareSuggestionReviewSignature !== 'hidden') {
         btn.style.display = 'none';
@@ -5566,6 +5668,14 @@ class ProofEditorImpl implements ProofEditor {
 
       // Override dispatchTransaction to intercept edits
       (view as any).dispatch = (tr: any) => {
+        // Yjs restores text and records atomically. Supply the restored records
+        // on that same PM update, before normalization can invent mark metadata.
+        if (this.restoringReviewDecision && this.reviewDecisionHistory) {
+          tr.setMeta(marksPluginKey, {
+            type: 'SET_METADATA',
+            metadata: this.reviewDecisionHistory.doc.getMap('marks').toJSON(),
+          });
+        }
         const dispatchWithRevision = (transaction: any) => {
           originalDispatch(transaction);
           if (transaction?.docChanged) {

@@ -2,12 +2,14 @@ export type ReviewStyle = 'proof' | 'playmaker';
 export const REVIEW_STYLE_KEY = 'proof:review-style';
 export const REVIEW_WALK_KEY = 'proof:review-walk';
 export const REVIEW_STYLE_EVENT = 'proof:review-style-changed';
+let runtimeReviewStyle: ReviewStyle | null = null;
 
 export function normalizeReviewStyle(value: unknown): ReviewStyle {
   return typeof value === 'string' && value.trim().toLowerCase() === 'playmaker' ? 'playmaker' : 'proof';
 }
 
 export function getReviewStyle(): ReviewStyle {
+  if (runtimeReviewStyle) return runtimeReviewStyle;
   let saved: string | null = null;
   try { saved = window.localStorage.getItem(REVIEW_STYLE_KEY); } catch { /* Storage is optional. */ }
   const config = (window as Window & { __PROOF_CONFIG__?: { defaultReviewStyle?: string } }).__PROOF_CONFIG__;
@@ -15,6 +17,7 @@ export function getReviewStyle(): ReviewStyle {
 }
 
 export function setReviewStyle(style: ReviewStyle): void {
+  runtimeReviewStyle = style;
   try { window.localStorage.setItem(REVIEW_STYLE_KEY, style); } catch { /* Storage is optional. */ }
   // The runtime value also makes switching immediate when storage is unavailable.
   const target = window as Window & { __PROOF_CONFIG__?: { defaultReviewStyle?: string } };
