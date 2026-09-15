@@ -18,6 +18,7 @@ import {
   getPersistedGlobalCollabAdmissionGuard,
   getProjectedDocumentBySlug,
   getDb,
+  getActiveCollabConnectionTtlMs,
   getLatestYUpdate,
   getLatestYStateVersion,
   getLatestYSnapshot,
@@ -863,7 +864,7 @@ type CollabRepairGuardEscalationState = {
 };
 const collabRepairGuardEscalationBreaker = new Map<string, CollabRepairGuardEscalationState>();
 const collabRepairGuardLogCooldowns = new Map<string, PathologyCooldownEntry>();
-const authenticatedCollabLeaseHeartbeatTimers = new Map<string, ReturnType<typeof setInterval>>();
+const authenticatedCollabPresenceHeartbeatTimers = new Map<string, ReturnType<typeof setInterval>>();
 let projectionRepairWorkerTimer: ReturnType<typeof setTimeout> | null = null;
 let projectionRepairWorkerGeneration = 0;
 let startupProjectionReconcileTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1297,40 +1298,60 @@ export function buildActiveCollabConnectionId(socketId: string | null | undefine
   return `${ACTIVE_COLLAB_INSTANCE_ID}:${suffix}`;
 }
 
+function getAuthenticatedCollabPresenceHeartbeatMs(): number {
+  const configuredHeartbeatMs = parseNonNegativeInt(
+    process.env.DOCUMENT_LIVE_COLLAB_LEASE_HEARTBEAT_MS,
+    DEFAULT_DOCUMENT_LIVE_COLLAB_LEASE_HEARTBEAT_MS,
+  );
+  const connectionHeartbeatMs = Math.max(1, Math.floor(getActiveCollabConnectionTtlMs() / 3));
+  // A live socket must refresh well inside the DB connection window. A disabled
+  // or slower lease heartbeat would otherwise let its presence row expire.
+  return configuredHeartbeatMs === 0 || configuredHeartbeatMs >= connectionHeartbeatMs
+    ? connectionHeartbeatMs
+    : configuredHeartbeatMs;
+}
+
+export function __unsafeGetAuthenticatedCollabPresenceHeartbeatMsForTests(): number {
+  return getAuthenticatedCollabPresenceHeartbeatMs();
+}
+
 function attachAuthenticatedCollabPresence(socketId: string, auth: CollabAuthContext): CollabPresenceContext {
   const connectionId = buildActiveCollabConnectionId(socketId);
   if (typeof auth.accessEpoch === 'number' && Number.isFinite(auth.accessEpoch)) {
-    noteDocumentLiveCollabLease(auth.slug, auth.accessEpoch);
+    const accessEpoch = auth.accessEpoch;
+    noteDocumentLiveCollabLease(auth.slug, accessEpoch);
     console.log('[collab] authenticated collab presence attached', {
       slug: auth.slug,
       role: auth.role,
-      accessEpoch: auth.accessEpoch,
+      accessEpoch,
       connectionId,
     });
-    const heartbeatMs = parsePositiveInt(
-      process.env.DOCUMENT_LIVE_COLLAB_LEASE_HEARTBEAT_MS,
-      DEFAULT_DOCUMENT_LIVE_COLLAB_LEASE_HEARTBEAT_MS,
-    );
-    if (heartbeatMs > 0) {
-      const existingTimer = authenticatedCollabLeaseHeartbeatTimers.get(connectionId);
-      if (existingTimer) clearInterval(existingTimer);
-      const timer = setInterval(() => {
-        try {
-          noteDocumentLiveCollabLease(auth.slug, auth.accessEpoch as number);
-        } catch {
-          // best-effort heartbeat
-        }
-      }, heartbeatMs);
-      if (typeof (timer as { unref?: () => void }).unref === 'function') {
-        (timer as { unref: () => void }).unref();
+    const heartbeatMs = getAuthenticatedCollabPresenceHeartbeatMs();
+    const existingTimer = authenticatedCollabPresenceHeartbeatTimers.get(connectionId);
+    if (existingTimer) clearInterval(existingTimer);
+    const timer = setInterval(() => {
+      try {
+        noteDocumentLiveCollabLease(auth.slug, accessEpoch);
+        upsertActiveCollabConnection({
+          connectionId,
+          slug: auth.slug,
+          role: auth.role,
+          accessEpoch,
+          instanceId: ACTIVE_COLLAB_INSTANCE_ID,
+        });
+      } catch {
+        // best-effort heartbeat
       }
-      authenticatedCollabLeaseHeartbeatTimers.set(connectionId, timer);
+    }, heartbeatMs);
+    if (typeof (timer as { unref?: () => void }).unref === 'function') {
+      (timer as { unref: () => void }).unref();
     }
+    authenticatedCollabPresenceHeartbeatTimers.set(connectionId, timer);
     upsertActiveCollabConnection({
       connectionId,
       slug: auth.slug,
       role: auth.role,
-      accessEpoch: auth.accessEpoch,
+      accessEpoch,
       instanceId: ACTIVE_COLLAB_INSTANCE_ID,
     });
     return {
@@ -1350,10 +1371,10 @@ function detachAuthenticatedCollabPresence(context: unknown): void {
     ? (context as { activeCollabConnectionId: string }).activeCollabConnectionId
     : '';
   if (!connectionId) return;
-  const heartbeatTimer = authenticatedCollabLeaseHeartbeatTimers.get(connectionId);
+  const heartbeatTimer = authenticatedCollabPresenceHeartbeatTimers.get(connectionId);
   if (heartbeatTimer) {
     clearInterval(heartbeatTimer);
-    authenticatedCollabLeaseHeartbeatTimers.delete(connectionId);
+    authenticatedCollabPresenceHeartbeatTimers.delete(connectionId);
   }
   try {
     removeActiveCollabConnection(connectionId);
@@ -1368,6 +1389,11 @@ function detachAuthenticatedCollabPresence(context: unknown): void {
 function parsePositiveInt(value: string | undefined, fallback: number): number {
   const parsed = value ? Number.parseInt(value, 10) : Number.NaN;
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseNonNegativeInt(value: string | undefined, fallback: number): number {
+  const parsed = value === undefined ? Number.NaN : Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function parsePositiveFloat(value: string | undefined, fallback: number): number {

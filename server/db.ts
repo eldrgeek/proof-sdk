@@ -1552,7 +1552,7 @@ function ensureActiveCollabConnectionsTable(): void {
   activeCollabConnectionsTableInitialized = true;
 }
 
-function getActiveCollabConnectionTtlMs(): number {
+export function getActiveCollabConnectionTtlMs(): number {
   return parsePositiveInt(process.env.ACTIVE_COLLAB_CONNECTION_TTL_MS, DEFAULT_ACTIVE_COLLAB_CONNECTION_TTL_MS);
 }
 
