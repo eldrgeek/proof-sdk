@@ -78,8 +78,64 @@ async function testDialog(base: string, ownsServer: boolean): Promise<void> {
   };
   const browser = await chromium.launch({ headless: true });
   try {
+    // X1e uses the owned embedded server and two simultaneously open pages.
+    if (ownsServer) {
+      const created = await createDocument();
+      const context = await browser.newContext();
+      await context.route('**/*', route => new URL(route.request().url()).origin === base
+        ? route.continue() : route.abort());
+      const pages = [await context.newPage(), await context.newPage()];
+      for (const page of pages) {
+        await page.goto(`${base}/d/${created.slug}`);
+        const anonymous = page.getByRole('button', { name: 'Continue anonymously', exact: true });
+        if (page === pages[0]) await anonymous.click();
+        await page.getByRole('button', { name: 'Add agent', exact: true }).waitFor();
+      }
+      const page = pages[0];
+      await page.getByRole('button', { name: 'Add agent', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: 'Add agent', exact: true });
+      const keys: string[] = [];
+      for (const name of ['Key A', 'Key B']) {
+        await dialog.getByLabel('Agent name', { exact: true }).fill(name);
+        await dialog.getByRole('button', { name: 'Create agent key', exact: true }).click();
+        await page.waitForFunction(() => document.querySelector('[data-status]')?.textContent === 'Key created. Copy the instructions to your AI.');
+        const invitation = await dialog.getByLabel('Instructions to paste into your AI chat').inputValue();
+        const key = invitation.match(/x-share-token: (\S+)/)?.[1];
+        assert.ok(key, 'Created invitation must include a credential');
+        keys.push(key);
+      }
+      await dialog.getByRole('button', { name: 'Close agent dialog' }).click();
+      for (const key of keys) {
+        const read = await fetch(`${base}/api/agent/${created.slug}/state`, { headers: { 'x-share-token': key } });
+        assert.equal(read.status, 200);
+      }
+      for (const openPage of pages) {
+        await openPage.waitForFunction(() => document.querySelectorAll('.share-pill-agent-face').length === 2);
+      }
+      await page.locator('.share-pill-agent-trigger').click();
+      await page.getByRole('menuitem', { name: 'Add agent / manage keys', exact: true }).click();
+      for (const [name, remaining] of [['Key A', 1], ['Key B', 0]] as const) {
+        await dialog.getByRole('button', { name: `Revoke ${name}`, exact: true }).click();
+        // Start both page deadlines together: each must update within five seconds.
+        await Promise.all(pages.map(openPage => openPage.waitForFunction(
+          count => document.querySelectorAll('.share-pill-agent-face').length === count
+            && (count !== 0 || document.querySelector('.share-pill-agent-trigger')?.getAttribute('aria-label') === 'Add agent'),
+          remaining, { timeout: 5_000 },
+        )));
+      }
+      await dialog.getByRole('button', { name: 'Close agent dialog' }).click();
+      for (const openPage of pages) {
+        await openPage.getByRole('button', { name: 'Add agent', exact: true }).waitFor({ timeout: 5_000 });
+        await openPage.reload();
+        await openPage.waitForFunction(() => (window as any).proof?.collabConnectionStatus === 'connected' && (window as any).proof?.collabIsSynced === true);
+        await openPage.getByRole('button', { name: 'Add agent', exact: true }).waitFor({ timeout: 5_000 });
+        assert.equal(await openPage.locator('.share-pill-agent-face').count(), 0);
+      }
+      await context.close();
+      console.log('✓ X1e: two keys read; dialog revocation updates both pages within five seconds; last AI restores Add agent through reload');
+    }
     for (const width of [1280, 400]) {
-      // Presence outlives key revocation, so each independent scenario gets a document.
+      // Each viewport scenario gets an independent document.
       const created = await createDocument();
       const sessionResponse = await fetch(`${base}/api/documents/${created.slug}/collab-session`, { headers: clientHeaders });
       assert.equal(sessionResponse.status, 200);

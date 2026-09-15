@@ -17,8 +17,11 @@ const db = await import('../../server/db.js');
 const collab = await import('../../server/collab.js');
 const { setupWebSocket } = await import('../../server/ws.js');
 const { apiRoutes } = await import('../../server/routes.js');
+const { agentRoutes } = await import('../../server/agent-routes.js');
 const app = express();
+app.use(express.json());
 app.use('/api', apiRoutes);
+app.use('/api/agent', agentRoutes);
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 setupWebSocket(wss);
@@ -63,10 +66,52 @@ try {
   }
   docs[0].getMap('revocation-test').set('allowed', 'before');
   await waitFor(() => docs[1].getMap('revocation-test').get('allowed') === 'before', 'Key can write before revocation');
+  // X1e: exercise real authenticated reads and mutation-created cursors.
+  for (const [credential, id] of [[key, 'ai:key-a'], [other, 'ai:key-b']] as const) {
+    const read = await fetch(`http://127.0.0.1:${port}/api/agent/${slug}/state`, {
+      headers: { 'x-share-token': credential.secret, 'x-agent-id': id },
+    });
+    assert.equal(read.status, 200);
+    const mutation = await fetch(`http://127.0.0.1:${port}/api/agent/${slug}/ops`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-share-token': credential.secret, 'x-agent-id': id },
+      body: JSON.stringify({ type: 'comment.add', by: id, quote: 'Original content.', text: 'Key cursor test' }),
+    });
+    assert.equal(mutation.status, 200);
+  }
+  // Unkeyed presence represents owner/member/tokenless participation.
+  collab.applyAgentPresenceToLoadedCollab(slug, { id: 'ai:owner', name: 'Owner AI' });
+  collab.applyAgentCursorHintToLoadedCollab(slug, { id: 'ai:owner', quote: 'Original content.', ttlMs: 60_000 });
+  const room = (collab.__unsafeGetHocuspocusInstanceForTests() as any).documents.get(slug) as Y.Doc;
+  const presence = room.getMap<any>('agentPresence');
+  const cursors = room.getMap<any>('agentCursors');
+  await waitFor(() => ['ai:key-a', 'ai:key-b', 'ai:owner'].every(id =>
+    docs[1].getMap('agentPresence').has(id) && docs[1].getMap('agentCursors').has(id)), 'Both keys and owner must have presence and cursors');
+  // Keep cursors alive beyond the five-second assertion window, preserving route metadata.
+  for (const id of ['ai:key-a', 'ai:key-b']) {
+    collab.applyAgentCursorHintToLoadedCollab(slug, { ...cursors.get(id), ttlMs: 60_000 });
+  }
+  const survivorPresence = JSON.stringify(presence.get('ai:key-b'));
+  const survivorCursor = JSON.stringify(cursors.get('ai:key-b'));
+  const ownerPresence = JSON.stringify(presence.get('ai:owner'));
+  const ownerCursor = JSON.stringify(cursors.get('ai:owner'));
   const epoch = db.getDocumentBySlug(slug)!.access_epoch;
   let closed = false;
   providers[0].on('close', () => { closed = true; });
   db.revokeDocumentAgentKey(slug, key.tokenId);
+  assert.equal(presence.has('ai:key-a'), false, 'Revoking A must immediately remove A presence');
+  assert.equal(cursors.has('ai:key-a'), false, 'Revoking A must immediately remove A cursor');
+  await waitFor(() => !docs[1].getMap('agentPresence').has('ai:key-a')
+    && !docs[1].getMap('agentCursors').has('ai:key-a'), 'Removal must broadcast to the other open client');
+  assert.ok(JSON.stringify(presence.get('ai:key-b')) === survivorPresence, 'B presence must stay unchanged');
+  assert.ok(JSON.stringify(cursors.get('ai:key-b')) === survivorCursor, 'B cursor must stay unchanged');
+  assert.ok(JSON.stringify(presence.get('ai:owner')) === ownerPresence, 'Owner presence must stay unchanged');
+  assert.ok(JSON.stringify(cursors.get('ai:owner')) === ownerCursor, 'Owner cursor must stay unchanged');
+  assert.ok(presence.get('ai:key-b').tokenId === other.tokenId, 'Read/mutation presence must record its authenticated key ID');
+  assert.ok(cursors.get('ai:key-b').tokenId === other.tokenId, 'Mutation cursor must record its authenticated key ID');
+  assert.equal(presence.get('ai:owner').tokenId ?? null, null);
+  assert.equal(cursors.get('ai:owner').tokenId ?? null, null);
+  console.log('✓ X1e: revoking A removes its presence and cursor on open clients; B and owner stay unchanged');
   docs[0].getMap('revocation-test').set('forbidden', 'after');
   await waitFor(() => closed, 'Revocation must close the existing connection');
   assert.equal(docs[1].getMap('revocation-test').has('forbidden'), false, 'Revoked writes must never reach the live document');

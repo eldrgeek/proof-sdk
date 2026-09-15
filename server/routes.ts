@@ -337,6 +337,7 @@ function maybeBuildAgentParticipation(
     avatar: identity.avatar,
     status: 'editing',
     details: 'ops',
+    tokenId: resolveDocumentAccess(String(req.params.slug), getPresentedSecret(req) ?? '')?.tokenId ?? null,
     at: new Date().toISOString(),
   };
 
@@ -1824,6 +1825,7 @@ apiRoutes.post('/documents/:slug/ops', opsRateLimiter, async (req: Request, res:
                 if (participation.cursorQuote) {
                   applyAgentCursorHintToLoadedCollab(slug, {
                     id: String(participation.presenceEntry.id),
+                    tokenId: typeof participation.presenceEntry.tokenId === 'string' ? participation.presenceEntry.tokenId : null,
                     quote: participation.cursorQuote,
                     ttlMs: 3000,
                     name: typeof participation.presenceEntry.name === 'string' ? participation.presenceEntry.name : undefined,

@@ -9,6 +9,7 @@ import {
   listDocumentEvents,
   rebuildDocumentBlocks,
   resolveDocumentAccessRole,
+  resolveDocumentAccess,
 } from './db.js';
 import {
   activateDurableCollabQuarantine,
@@ -841,7 +842,8 @@ function checkAuth(
   }
 
   const secret = getPresentedSecret(req, slug);
-  const role = secret ? resolveDocumentAccessRole(slug, secret) : null;
+  const access = secret ? resolveDocumentAccess(slug, secret) : null;
+  const role = access?.role ?? null;
   const effectiveShareState = getEffectiveShareStateForRole(doc, role, Boolean(secret && role));
 
   if (effectiveShareState === 'REVOKED' && role !== 'owner_bot') {
@@ -866,6 +868,7 @@ function checkAuth(
     });
     return null;
   }
+  agentRequestTokenIds.set(req, access?.tokenId ?? null);
   return role;
 }
 
@@ -1013,6 +1016,10 @@ function maybeLogMarkHydrationMismatch(
   });
 }
 
+// Capture at authentication, before asynchronous mutations can yield to revocation.
+// Owner credentials resolve to null; never accept attribution from the request body.
+const agentRequestTokenIds = new WeakMap<Request, string | null>();
+
 type AgentParticipation = {
   presenceEntry: Record<string, unknown>;
   cursorHint?: { quote?: string; ttlMs?: number } | null;
@@ -1045,6 +1052,7 @@ function ensureAgentPresenceForAuthenticatedCall(
     details,
     at: now,
     expiresAt: getAgentPresenceExpiresAt(now),
+    tokenId: agentRequestTokenIds.get(req) ?? null,
   };
   const activity = {
     type: 'agent.presence',
@@ -1162,6 +1170,7 @@ function buildParticipationFromMutation(
     avatar: identity.avatar,
     status: 'editing',
     details: options?.details ?? '',
+    tokenId: agentRequestTokenIds.get(req) ?? null,
     at: now,
   };
   const quote = (options?.quote ?? extractCursorQuote(slug, body)) ?? null;
@@ -1190,6 +1199,7 @@ function applyParticipationToLoadedCollab(
     try {
       cursorApplied = applyAgentCursorHintToLoadedCollab(slug, {
         id: String(participation.presenceEntry.id),
+        tokenId: typeof participation.presenceEntry.tokenId === 'string' ? participation.presenceEntry.tokenId : null,
         quote: participation.cursorHint.quote,
         ttlMs: participation.cursorHint.ttlMs,
         name: typeof participation.presenceEntry.name === 'string' ? participation.presenceEntry.name : undefined,
@@ -1661,6 +1671,7 @@ function notifyCollabMutation(
         try {
           cursorApplied = applyAgentCursorHintToLoadedCollab(slug, {
             id: String(participation.presenceEntry.id),
+            tokenId: typeof participation.presenceEntry.tokenId === 'string' ? participation.presenceEntry.tokenId : null,
             quote: participation.cursorHint.quote,
             ttlMs: participation.cursorHint.ttlMs,
             name: typeof participation.presenceEntry.name === 'string' ? participation.presenceEntry.name : undefined,
@@ -3040,6 +3051,7 @@ agentRoutes.post('/:slug/presence', (req: Request, res: Response) => {
         : '',
     at: now,
     expiresAt: getAgentPresenceExpiresAt(now),
+    tokenId: agentRequestTokenIds.get(req) ?? null,
   };
 
   const activity = {
@@ -3169,7 +3181,8 @@ agentRoutes.post('/:slug/ops', async (req: Request, res: Response) => {
   }
 
   const secret = getPresentedSecret(req, slug);
-  const role = secret ? resolveDocumentAccessRole(slug, secret) : null;
+  const access = secret ? resolveDocumentAccess(slug, secret) : null;
+  const role = access?.role ?? null;
   if (!role) {
     sendMutationResponse(res, 401, { success: false, error: 'Missing or invalid share token', code: 'UNAUTHORIZED' }, { route: mutationRoute, slug });
     return;
@@ -3196,6 +3209,7 @@ agentRoutes.post('/:slug/ops', async (req: Request, res: Response) => {
     return;
   }
 
+  agentRequestTokenIds.set(req, access?.tokenId ?? null);
   const participationBody = { ...asPayload(req.body), ...payload };
   ensureAgentPresenceForAuthenticatedCall(req, slug, participationBody, 'ops.request');
   const requestId = readRequestId(req);
