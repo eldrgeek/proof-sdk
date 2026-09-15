@@ -39,6 +39,7 @@ import {
   calculateAuthorshipStats,
   canonicalizeStoredMarks,
   getActorName,
+  getMarkColor,
 } from '../../formats/marks.js';
 
 // ============================================================================
@@ -1024,6 +1025,7 @@ function finalizeMarkTransaction(
     tr = stampSuggestionMetadataOnDocument(view.state, tr, normalized);
   }
   tr = tr.setMeta(marksPluginKey, { type: 'SET_METADATA', metadata: normalized });
+  if (!options?.isRemote) tr = tr.setMeta('proofLocalMarkChange', true);
   if (options?.action) {
     tr = tr.setMeta(proofMarkActionMeta, options.action);
   }
@@ -3086,7 +3088,7 @@ function insertMarkdownNeedsReparse(
   return hasInlineFormatting;
 }
 
-export function accept(view: EditorView, markId: string, parser?: MarkdownParser): boolean {
+export function accept(view: EditorView, markId: string, parser?: MarkdownParser, preview = false): boolean {
   const effectiveParser = resolveMarkdownParser(parser);
   const marks = getMarks(view.state);
   const mark = marks.find(item => item.id === markId);
@@ -3201,13 +3203,13 @@ export function accept(view: EditorView, markId: string, parser?: MarkdownParser
 
   if (!applied) return false;
   const updatedMetadata = removeMetadataEntries(metadata, [markId]);
-  markResolvedMarkIds([markId], Date.now(), RESOLVED_MARK_TOMBSTONE_TTL_MS, 'deleted');
+  if (!preview) markResolvedMarkIds([markId], Date.now(), RESOLVED_MARK_TOMBSTONE_TTL_MS, 'deleted');
   finalizeMarkTransaction(view, tr, updatedMetadata, { action: 'accept' });
-  emitMarkEvent('suggestion.accepted', { markId, kind: mark.kind, by: mark.by });
+  if (!preview) emitMarkEvent('suggestion.accepted', { markId, kind: mark.kind, by: mark.by });
   return true;
 }
 
-export function reject(view: EditorView, markId: string): boolean {
+export function reject(view: EditorView, markId: string, preview = false): boolean {
   const marks = getMarks(view.state);
   const mark = marks.find(item => item.id === markId);
   if (!mark) return false;
@@ -3276,10 +3278,40 @@ export function reject(view: EditorView, markId: string): boolean {
   }
 
   const updatedMetadata = removeMetadataEntries(metadata, [markId]);
-  markResolvedMarkIds([markId], Date.now(), RESOLVED_MARK_TOMBSTONE_TTL_MS, 'deleted');
+  if (!preview) markResolvedMarkIds([markId], Date.now(), RESOLVED_MARK_TOMBSTONE_TTL_MS, 'deleted');
   finalizeMarkTransaction(view, tr, updatedMetadata, { action: 'reject' });
-  emitMarkEvent('suggestion.rejected', { markId, kind: mark.kind, by: mark.by });
+  if (!preview) emitMarkEvent('suggestion.rejected', { markId, kind: mark.kind, by: mark.by });
   return true;
+}
+
+/** Prepare the complete batch against an isolated PM state. No Yjs writes,
+ * tombstones, events, or view updates happen until every command succeeds. */
+export function prepareSuggestionBatch(view: EditorView, ids: string[], action: 'accept' | 'reject', parser?: Parameters<typeof accept>[2]) {
+  const initial = view.state;
+  const transaction = initial.tr;
+  const failedIds: string[] = [];
+  const preview = {
+    state: initial,
+    dispatch(tr: Transaction) {
+      for (const step of tr.steps) transaction.step(step);
+      this.state = this.state.apply(tr);
+    },
+  } as EditorView;
+  for (const id of [...ids].reverse()) {
+    const ok = action === 'accept' ? accept(preview, id, parser, true) : reject(preview, id, true);
+    if (!ok) failedIds.push(id);
+  }
+  const metadata = getMarkMetadata(preview.state);
+  return {
+    failedIds,
+    apply() {
+      if (failedIds.length || view.state !== initial) throw new Error('Suggestions changed. Nothing was changed.');
+      const marks = getMarks(initial).filter(mark => ids.includes(mark.id));
+      markResolvedMarkIds(ids, Date.now(), RESOLVED_MARK_TOMBSTONE_TTL_MS, 'deleted');
+      finalizeMarkTransaction(view, transaction, metadata, { action });
+      for (const mark of marks) emitMarkEvent(`suggestion.${action}ed`, { markId: mark.id, kind: mark.kind, by: mark.by });
+    },
+  };
 }
 
 export function acceptAll(view: EditorView, parser?: MarkdownParser): number {
@@ -3628,7 +3660,7 @@ export function createDecorations(
         decorations.push(
           Decoration.inline(from, to, {
             class: [cssClass, glowClass].filter(Boolean).join(' '),
-            style,
+            style: `${style} --review-author: ${getMarkColor(mark.by)};`,
             'data-mark-id': mark.id,
             'data-mark-kind': mark.kind,
             ...(suggestionTitle ? { title: suggestionTitle } : {}),
@@ -3644,7 +3676,7 @@ export function createDecorations(
             () => {
               const span = document.createElement('span');
               span.className = ['mark-replace-insert', 'mark-insert', glowClass].filter(Boolean).join(' ');
-              span.style.cssText = STYLES.insert;
+              span.style.cssText = `${STYLES.insert} --review-author: ${getMarkColor(mark.by)};`;
               span.setAttribute('data-mark-id', mark.id);
               span.setAttribute('data-mark-kind', mark.kind);
               if (suggestionTitle) span.title = suggestionTitle;

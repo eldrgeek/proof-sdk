@@ -9,6 +9,10 @@
  * - Inline spans are derived from marks when saving/displaying
  */
 
+import { PlayMakerReview, type ReviewAction } from '../ui/playmaker-review';
+import { getReviewStyle } from './review-style';
+import { ReviewDecisionHistory, reconnectNativeUndoManager } from './review-decision-history';
+
 import { getAgentPresenceDisplay } from '../shared/agent-presence';
 
 import {
@@ -33,6 +37,7 @@ import {
   yCursorPlugin,
   yCursorPluginKey,
   ySyncPluginKey,
+  yUndoPluginKey,
   absolutePositionToRelativePosition,
 } from 'y-prosemirror';
 import { applyAwarenessUpdate, removeAwarenessStates } from 'y-protocols/awareness';
@@ -93,6 +98,7 @@ import {
   marksPlugins,
   marksPluginKey,
   proofMarkActionMeta,
+  prepareSuggestionBatch,
   getMarks,
   getActiveMarkId,
   getMarkMetadata,
@@ -1107,6 +1113,11 @@ class ProofEditorImpl implements ProofEditor {
   private shareMenuCleanup: (() => void) | null = null;
   private presenceMenuCleanup: (() => void) | null = null;
   private agentMenuCleanup: (() => void) | null = null;
+  private playmakerReview: PlayMakerReview | null = null;
+  private reviewDecisionHistory: ReviewDecisionHistory | null = null;
+  private reviewDecisionIds = new Set<string>();
+  private capturingReviewDecision = false;
+  private restoringReviewDecision = false;
   private suggestionReviewMenuCleanup: (() => void) | null = null;
   private shareWelcomeToast: HTMLElement | null = null;
   private shareDocTitle: string = 'Untitled';
@@ -2092,7 +2103,14 @@ class ProofEditorImpl implements ProofEditor {
 
         const nextPlugins = view.state.plugins.concat(cursorPlugin);
         ctx.set(prosePluginsCtx, nextPlugins);
+        const undoManager = yUndoPluginKey.getState(view.state)?.undoManager;
         view.updateState(view.state.reconfigure({ plugins: nextPlugins }));
+        // Reconfiguration recreates every plugin view. yUndoPlugin destroys its
+        // manager even though PM retains the plugin state and that same manager.
+        // Reattach its Yjs subscriptions after the new selection hooks are installed.
+        if (undoManager && yUndoPluginKey.getState(view.state)?.undoManager === undoManager) {
+          reconnectNativeUndoManager(undoManager);
+        }
       } catch (error) {
         const details = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
         console.warn('[share] failed to install yCursor plugin', details);
@@ -3542,6 +3560,7 @@ class ProofEditorImpl implements ProofEditor {
       syncStatusInline,
       avatars,
       suggestToggle,
+      this.createReviewStyleControl(),
       suggestionReview,
       agentSlot,
       shareBtn,
@@ -3551,6 +3570,108 @@ class ProofEditorImpl implements ProofEditor {
     this.scheduleBannerLayoutUpdate();
   }
 
+
+  private createReviewStyleControl(): HTMLElement {
+    if (!this.playmakerReview) {
+      this.playmakerReview = new PlayMakerReview({
+        marks: () => {
+          let marks: Mark[] = [];
+          this.editor?.action(ctx => { marks = getMarks(ctx.get(editorViewCtx).state); });
+          return marks;
+        },
+        decide: (ids, action, text) => this.performReviewDecision(ids, action, text),
+        history: redo => this.restoreReviewDecision(redo),
+        jump: id => {
+          const element = document.querySelector<HTMLElement>(`.ProseMirror [data-mark-id="${CSS.escape(id)}"]`);
+          element?.scrollIntoView({ block: 'center', behavior: 'instant' });
+        },
+        changed: () => {
+          this.closeSuggestionReviewMenu();
+          this.shareSuggestionReviewSignature = '';
+          this.updateShareSuggestionReviewDisplay();
+        },
+      });
+    }
+    return this.playmakerReview.control;
+  }
+
+  private getReviewDecisionHistory(): ReviewDecisionHistory {
+    const doc = collabClient.getYDoc();
+    if (!doc || !this.collabCanEdit || this.getShareSuggestionResolutionTransport() !== 'collab') {
+      throw new Error('Connect to the document before deciding. Your mark is still open.');
+    }
+    const view = this.editor?.ctx.get(editorViewCtx);
+    const manager = view && yUndoPluginKey.getState(view.state)?.undoManager;
+    if (!manager) throw new Error('The editor is still loading.');
+    if (this.reviewDecisionHistory?.doc !== doc || this.reviewDecisionHistory.manager !== manager) {
+      this.reviewDecisionHistory?.destroy();
+      this.reviewDecisionHistory = new ReviewDecisionHistory(doc, manager, view);
+      this.reviewDecisionIds.clear();
+    }
+    return this.reviewDecisionHistory;
+  }
+
+  private performReviewDecision(ids: string[], action: ReviewAction, text?: string): void {
+    const history = this.getReviewDecisionHistory();
+    if (!this.editor) throw new Error('The editor is still loading.');
+    this.editor.action(ctx => {
+      const view = ctx.get(editorViewCtx);
+      const parser = ctx.get(parserCtx);
+      const batch = action === 'accept' || action === 'reject' ? prepareSuggestionBatch(view, ids, action, parser) : null;
+      if (batch?.failedIds.length) {
+        const verb = action === 'accept' ? 'accepted' : 'rejected';
+        throw Object.assign(new Error(`${batch.failedIds.length} of ${ids.length} suggestions changed and can't be ${verb}. Nothing was changed.`), { failedIds: batch.failedIds });
+      }
+      const previousSuppress = this.suppressMarksSync;
+      this.suppressMarksSync = true;
+      this.capturingReviewDecision = true;
+      let failed = 0;
+      try {
+        history.decide(() => {
+          failed = 0;
+          if (batch) {
+            batch.apply(); ids.forEach(id => this.reviewDecisionIds.add(id));
+          } else for (const id of [...ids].reverse()) {
+            const ok = action === 'resolve' ? markResolve(view, id)
+              : markReply(view, id, getCurrentActor(), text || '');
+            if (!ok) { failed += 1; continue; }
+            this.reviewDecisionIds.add(id);
+          }
+          const metadata = getMarkMetadataWithQuotes(view.state);
+          this.lastReceivedServerMarks = { ...metadata };
+          this.initialMarksSynced = true;
+          collabClient.setMarksMetadata(metadata);
+        });
+        if (failed) throw new Error(`${failed} mark${failed === 1 ? ' has' : 's have'} changed. Please review the remaining marks again.`);
+      } finally {
+        this.capturingReviewDecision = false;
+        this.suppressMarksSync = previousSuppress;
+        this.scheduleShareSuggestionReviewDisplay(view);
+      }
+    });
+  }
+
+  private restoreReviewDecision(redo: boolean): boolean {
+    const history = this.getReviewDecisionHistory();
+    clearResolvedMarkTombstones([...this.reviewDecisionIds]);
+    const previousSuppress = this.suppressMarksSync;
+    this.suppressMarksSync = true;
+    this.restoringReviewDecision = true;
+    try {
+      const changed = redo ? history.redo() : history.undo();
+      const metadata = history.doc.getMap('marks').toJSON() as Record<string, StoredMark>;
+      this.lastReceivedServerMarks = { ...metadata };
+      this.editor?.action(ctx => {
+        const view = ctx.get(editorViewCtx);
+        view.dispatch(view.state.tr.setMeta(marksPluginKey, { type: 'SET_METADATA', metadata }).setMeta('addToHistory', false));
+        this.scheduleShareSuggestionReviewDisplay(view);
+      });
+      return changed;
+    } finally {
+      this.restoringReviewDecision = false;
+      this.suppressMarksSync = previousSuppress;
+    }
+  }
 
   private suggestModeStorageKey(): string {
     const slug = (window.location.pathname.match(/\/d\/([^/?#]+)/) || [])[1] || 'doc';
@@ -3759,9 +3880,10 @@ class ProofEditorImpl implements ProofEditor {
   }
 
   private updateShareSuggestionReviewDisplay(viewOverride?: EditorView): void {
+    this.playmakerReview?.update();
     const btn = this.shareBannerSuggestionReviewBtnEl;
     if (!btn) return;
-    const canShow = this.isShareMode && this.collabCanEdit;
+    const canShow = this.isShareMode && this.collabCanEdit && getReviewStyle() === 'proof';
     if (!canShow) {
       if (this.shareSuggestionReviewSignature !== 'hidden') {
         btn.style.display = 'none';
@@ -5540,8 +5662,37 @@ class ProofEditorImpl implements ProofEditor {
 
       // Override dispatchTransaction to intercept edits
       (view as any).dispatch = (tr: any) => {
+        // Yjs restores text and records atomically. Supply the restored records
+        // on that same PM update, before normalization can invent mark metadata.
+        if (this.restoringReviewDecision || (tr.docChanged && tr.getMeta(ySyncPluginKey)?.isChangeOrigin && !tr.getMeta(marksPluginKey))) {
+          tr.setMeta(marksPluginKey, {
+            type: 'SET_METADATA',
+            metadata: collabClient.getYDoc()?.getMap('marks').toJSON() ?? this.lastReceivedServerMarks,
+          });
+        }
         const dispatchWithRevision = (transaction: any) => {
-          originalDispatch(transaction);
+          // Group local text and derived records in the native history transaction.
+          // All derived mark writes from this dispatch stay in that same edit.
+          if (transaction.getMeta('proofLocalMarkChange') && !this.capturingReviewDecision
+            && !this.restoringReviewDecision && !this.isYjsChangeOriginTransaction(transaction)
+            && this.collabCanEdit && collabClient.getYDoc()
+            && this.getShareSuggestionResolutionTransport() === 'collab') {
+            // Proof's popover uses the same mark functions as the review dialog.
+            // Capture its text and records atomically, with the same refusal guards.
+            const history = this.getReviewDecisionHistory();
+            Object.keys(getMarkMetadataWithQuotes(view.state)).forEach(id => this.reviewDecisionIds.add(id));
+            history.decide(() => {
+              originalDispatch(transaction);
+              const metadata = getMarkMetadataWithQuotes(view.state);
+              this.lastReceivedServerMarks = { ...metadata };
+              this.initialMarksSynced = true;
+              collabClient.setMarksMetadata(metadata);
+            });
+          } else if (isLocalContentChange && !this.capturingReviewDecision && !tr.getMeta('history$') && tr.getMeta('addToHistory') !== false
+            && this.collabCanEdit && collabClient.getYDoc()
+            && this.getShareSuggestionResolutionTransport() === 'collab') {
+            this.getReviewDecisionHistory().edit(() => originalDispatch(transaction));
+          } else originalDispatch(transaction);
           if (transaction?.docChanged) {
             this.revision += 1;
           }
@@ -7600,7 +7751,7 @@ class ProofEditorImpl implements ProofEditor {
           this.lastReceivedServerMarks = { ...metadata };
           this.initialMarksSynced = true;
 
-          void shareClient.resolveComment(markId, actor).then((result) => {
+          if (this.getShareSuggestionResolutionTransport() !== 'collab') void shareClient.resolveComment(markId, actor).then((result) => {
             if (!result || 'error' in result || result.success !== true) return;
             const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
               ? result.marks as Record<string, StoredMark>

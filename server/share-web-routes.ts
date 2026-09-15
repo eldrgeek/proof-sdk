@@ -1,3 +1,4 @@
+import { normalizeReviewStyle } from '../src/editor/review-style.js';
 import { injectSomaFeedback } from './soma-page.js';
 import { createHash } from 'crypto';
 import { Router, type Request, type Response } from 'express';
@@ -145,6 +146,7 @@ function buildLiveViewerLeaseConnectionId(
 function buildShareRuntimeConfigScript(slug: string, shareToken?: string | null): string {
   const commentUiDefaultMode = normalizeCommentUiMode(process.env.PROOF_COMMENT_UI_DEFAULT_MODE);
   const configLines = [
+    `window.__PROOF_CONFIG__.defaultReviewStyle = ${JSON.stringify(normalizeReviewStyle(process.env.PROOF_DEFAULT_REVIEW_STYLE))};`,
     shareToken ? `window.__PROOF_CONFIG__.shareSlug = ${JSON.stringify(slug)};` : '',
     shareToken ? `window.__PROOF_CONFIG__.shareToken = ${JSON.stringify(shareToken)};` : '',
     commentUiDefaultMode ? `window.__PROOF_CONFIG__.commentUiDefaultMode = ${JSON.stringify(commentUiDefaultMode)};` : '',
