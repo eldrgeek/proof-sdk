@@ -256,8 +256,19 @@ export class CollabClient {
         // Preserve buffered local edits, then obtain a fresh server-backed document.
         // A failed view update must not leave the page reporting a successful sync.
         this.flushPendingLocalStateForUnload();
-        if (typeof window !== 'undefined') window.location.reload();
-        else throw error;
+        if (typeof window !== 'undefined') {
+          // Reload at most once a minute, so a failure that repeats on every load leaves
+          // its error on screen instead of reloading the page in a loop.
+          const reloadKey = 'proof-collab-recovery-reload-at';
+          let lastReloadAt = 0;
+          try { lastReloadAt = Number(window.sessionStorage.getItem(reloadKey) || 0); } catch { /* storage unavailable */ }
+          if (Date.now() - lastReloadAt > 60_000) {
+            try { window.sessionStorage.setItem(reloadKey, String(Date.now())); } catch { /* storage unavailable */ }
+            window.location.reload();
+          }
+        } else {
+          throw error;
+        }
       }
     });
   }
