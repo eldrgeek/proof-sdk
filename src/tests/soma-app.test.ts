@@ -24,7 +24,8 @@ globalThis.fetch = async (input, init) => {
   const token = (init?.headers as any).Authorization;
   if (url.endsWith('/auth/v1/user')) {
     if (token === 'Bearer invalid' || token === 'Bearer expired') return Response.json({ message: 'invalid' }, { status: 401 });
-    return Response.json({ email: token === 'Bearer admin-token' ? 'ADMIN@example.test' : token === 'Bearer member-token' ? 'member@example.test' : 'stranger@example.test', user_metadata: { full_name: 'SOMA Admin' } });
+    if (token === 'Bearer unconfirmed-token') return Response.json({ email: 'member@example.test', email_confirmed_at: null, confirmed_at: null });
+    return Response.json({ email: token === 'Bearer admin-token' ? 'ADMIN@example.test' : token === 'Bearer member-token' ? 'member@example.test' : 'stranger@example.test', email_confirmed_at: '2026-09-01T00:00:00.000Z', user_metadata: { full_name: 'SOMA Admin' } });
   }
   assert.deepEqual(JSON.parse(String(init?.body)), { target_app: 'proof-plus' });
   return Response.json(token === 'Bearer admin-token' && admin);
@@ -47,6 +48,9 @@ try {
   const member = auth.createLibraryMember({ name: 'Library Member', email: 'member@example.test', isOwner: true });
   for (const Origin of ['', 'https://foreign.test']) assert.equal((await request('POST', '/library/api/session', { accessToken: 'admin-token' }, '', { Origin })).status, 403);
   for (const accessToken of ['invalid', 'expired']) assert.equal((await request('POST', '/library/api/session', { accessToken })).status, 401);
+  const unconfirmed = await request('POST', '/library/api/session', { accessToken: 'unconfirmed-token' });
+  assert.equal(unconfirmed.status, 401, 'an unconfirmed email cannot claim an existing membership');
+  assert.equal(unconfirmed.cookie, '', 'no session cookie for an unconfirmed email');
   const stranger = await request('POST', '/library/api/session', { accessToken: 'stranger', email: 'admin@example.test', isOwner: true });
   assert.equal(stranger.status, 403);
   assert.equal(stranger.json.message, "You're signed in as stranger@example.test, but this Proof+ isn't shared with that address. Ask Mike or Eric to add you.");
