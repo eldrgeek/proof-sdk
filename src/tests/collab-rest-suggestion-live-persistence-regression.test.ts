@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { unlinkSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -24,6 +25,7 @@ import {
   marksPluginKey,
   reject as rejectMark,
 } from '../editor/plugins/marks.js';
+import { stripAllProofSpanTags } from '../../server/proof-span-strip.js';
 
 const CLIENT_HEADERS = {
   'X-Proof-Client-Version': '0.31.2',
@@ -34,6 +36,7 @@ const CLIENT_HEADERS = {
 type CreatedDocument = {
   slug: string;
   ownerSecret: string;
+  accessToken?: string;
 };
 
 type CollabSession = {
@@ -56,6 +59,36 @@ type ConnectedClient = {
   provider: HocuspocusProvider;
   destroy: () => void;
 };
+
+function loadChromium(): any {
+  const packageJson = process.env.PROOF_PLAYWRIGHT_PACKAGE_JSON;
+  const require = createRequire(packageJson || import.meta.url);
+  try {
+    return require('playwright').chromium;
+  } catch {
+    throw new Error(
+      'Playwright is required. Set PROOF_PLAYWRIGHT_PACKAGE_JSON to a package.json beside an installed playwright package.',
+    );
+  }
+}
+
+async function openBrowserEditor(browser: any, url: string): Promise<any> {
+  const page = await browser.newPage({ viewport: { width: 1100, height: 700 } });
+  await page.goto(url, { waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(
+    () => document.querySelector('.ProseMirror')?.getAttribute('contenteditable') === 'true',
+    null,
+    { timeout: 30_000 },
+  );
+  const nameInput = page.getByPlaceholder('Your name');
+  if (await nameInput.isVisible()) {
+    await nameInput.fill('Connected accept regression');
+    await page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await nameInput.waitFor({ state: 'hidden', timeout: 10_000 });
+  }
+  await page.waitForTimeout(1_000);
+  return page;
+}
 
 function assert(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -860,6 +893,199 @@ async function runStructuredAiInsertCases(context: {
   }
 }
 
+const EXPECTED_ACCEPTED_TABLE_LINES = [
+  '| Name  | Role     |',
+  '| :---- | :------- |',
+  '| Eric  | Writer   |',
+  '| Diana | Director |',
+  '| Mike  | Producer |',
+];
+
+function assertVisibleTableLayout(markdown: string, label: string): void {
+  const visibleMarkdown = stripAllProofSpanTags(markdown);
+  const tableLines = visibleMarkdown.split('\n').filter((line) => line.startsWith('|'));
+  assert(
+    JSON.stringify(tableLines) === JSON.stringify(EXPECTED_ACCEPTED_TABLE_LINES),
+    `${label} table must be padded from visible text only, got:\n${tableLines.join('\n')}`,
+  );
+}
+
+async function runCombinedBrowserAcceptCase(
+  context: {
+    httpBase: string;
+    chromium: any;
+    db: typeof import('../../server/db.ts');
+    collab: typeof import('../../server/collab.ts');
+    warnings: unknown[][];
+  },
+): Promise<void> {
+  const fixture = await createInsertFixture(
+    context.httpBase,
+    'combined browser insert accept',
+    STRUCTURED_INSERT_MARKDOWN,
+  );
+  assert(typeof fixture.accessToken === 'string' && fixture.accessToken.length > 0, 'Expected browser access token');
+  const browser = await context.chromium.launch();
+  let page: any = null;
+  try {
+    const url = `${context.httpBase}/d/${fixture.slug}?token=${encodeURIComponent(fixture.accessToken)}`;
+    const suggestions = [
+      { quote: 'Intro paragraph one.', content: ' AI inline words.', structure: 'inline' },
+      { quote: 'Closing paragraph.', content: '\n\nAnother AI paragraph.', structure: 'block' },
+      { quote: 'Director', content: '\n| Mike | Producer |', structure: 'table_row' },
+    ] as const;
+    const markIds: string[] = [];
+    for (const suggestion of suggestions) {
+      const response = await mustJson<SuggestionResponse>(
+        await postAgent(
+          context.httpBase,
+          fixture.slug,
+          fixture.ownerSecret,
+          '/ops',
+          {
+            type: 'suggestion.add',
+            kind: 'insert',
+            quote: suggestion.quote,
+            content: suggestion.content,
+            by: 'ai:test',
+          },
+        ),
+        `browser ${suggestion.structure} insert`,
+      );
+      const markId = response.markId ?? '';
+      assert(markId.length > 0, `Expected browser ${suggestion.structure} mark id`);
+      markIds.push(markId);
+      await waitFor(async () => {
+        const state = await mustJson<{ markdown?: string; marks?: Record<string, unknown> }>(
+          await fetch(`${context.httpBase}/api/agent/${fixture.slug}/state`, {
+            headers: { ...CLIENT_HEADERS, 'x-share-token': fixture.ownerSecret },
+          }),
+          `browser ${suggestion.structure} server state`,
+        );
+        return Object.prototype.hasOwnProperty.call(state.marks ?? {}, markId);
+      }, 10_000, `browser ${suggestion.structure} stored before connect`);
+      await sleep(1_000);
+    }
+
+    page = await openBrowserEditor(browser, url);
+    try {
+      await page.waitForFunction(
+        () => {
+          const text = document.querySelector('.ProseMirror')?.textContent ?? '';
+          return text.includes('Intro paragraph one. AI inline words.')
+            && text.includes('Another AI paragraph.')
+            && text.includes('Mike')
+            && text.includes('Producer');
+        },
+        null,
+        { timeout: 30_000 },
+      );
+    } catch (error) {
+      const browserState = await page.evaluate(() => ({
+        text: document.querySelector('.ProseMirror')?.textContent ?? '',
+        marks: (window as any).proof.getAllMarks(),
+      }));
+      const serverState = await mustJson<Record<string, unknown>>(
+        await fetch(`${context.httpBase}/api/agent/${fixture.slug}/state`, {
+          headers: { ...CLIENT_HEADERS, 'x-share-token': fixture.ownerSecret },
+        }),
+        'combined browser diagnostic state',
+      );
+      throw new Error(`Browser did not receive inserts: ${JSON.stringify({ browserState, serverState, error: String(error) })}`);
+    }
+    await page.waitForFunction(
+      (ids: string[]) => {
+        const pendingIds = new Set(
+          (window as any).proof.getPendingMarkSuggestions().map((mark: { id?: string }) => String(mark.id)),
+        );
+        return ids.every((id) => pendingIds.has(id));
+      },
+      markIds,
+      { timeout: 30_000 },
+    );
+    const pendingState = await mustJson<{
+      markdown?: string;
+      marks?: Record<string, { status?: string }>;
+      projectionFresh?: boolean;
+    }>(
+      await fetch(`${context.httpBase}/api/agent/${fixture.slug}/state`, {
+        headers: { ...CLIENT_HEADERS, 'x-share-token': fixture.ownerSecret },
+      }),
+      'combined browser pending state',
+    );
+    assert(pendingState.projectionFresh === true, 'Combined browser pending projection must be fresh');
+    for (const markId of markIds) {
+      assert(pendingState.marks?.[markId]?.status === 'pending', `Pending browser mark ${markId} must reach the server`);
+    }
+    assertVisibleTableLayout(pendingState.markdown ?? '', 'Pending browser suggestion');
+
+    for (const markId of markIds) {
+      const accepted = await page.evaluate((id: string) => (window as any).proof.markAccept(id), markId);
+      assert(accepted === true, `Browser markAccept must succeed for ${markId}`);
+      await page.waitForTimeout(1_000);
+    }
+
+    await waitFor(
+      () => {
+        const row = context.db.getDocumentBySlug(fixture.slug);
+        if (!row) return false;
+        const marks = JSON.parse(row.marks ?? '{}') as Record<string, unknown>;
+        return markIds.every((markId) => !Object.prototype.hasOwnProperty.call(marks, markId));
+      },
+      15_000,
+      'browser accepts in canonical marks',
+    );
+    const state = await mustJson<{
+      markdown?: string;
+      marks?: Record<string, unknown>;
+      readSource?: string;
+      projectionFresh?: boolean;
+      mutationReady?: boolean;
+      repairPending?: boolean;
+    }>(
+      await fetch(`${context.httpBase}/api/agent/${fixture.slug}/state`, {
+        headers: { ...CLIENT_HEADERS, 'x-share-token': fixture.ownerSecret },
+      }),
+      'combined browser accepted state',
+    );
+    const markdown = state.markdown ?? '';
+    assert(state.readSource === 'projection', `Browser accepts must read from projection, got ${String(state.readSource)}`);
+    assert(state.projectionFresh === true, 'Browser accepts must leave projection fresh');
+    assert(state.mutationReady === true, 'Browser accepts must leave mutations ready');
+    assert(state.repairPending !== true, 'Browser accepts must not queue projection repair');
+    assert((markdown.match(/AI inline words\./g) ?? []).length === 1, 'Browser inline insert must be stored exactly once');
+    assert((markdown.match(/Another AI paragraph\./g) ?? []).length === 1, 'Browser paragraph insert must be stored exactly once');
+    assert((markdown.match(/Mike\s*\|\s*Producer/g) ?? []).length === 1, 'Browser table row insert must be stored exactly once');
+    assertVisibleTableLayout(markdown, 'Accepted browser suggestion');
+
+    const unsafeWarnings = context.warnings.filter((args) => {
+      const details = args.find((arg) => arg && typeof arg === 'object') as { slug?: string } | undefined;
+      return details?.slug === fixture.slug
+        && (args[0] === '[collab] auto quarantined slug'
+          || args[0] === '[collab] blocked unsafe projection write; keeping canonical DB projection');
+    });
+    assert(unsafeWarnings.length === 0, 'Browser accepts must not trip the projection guard or quarantine');
+    assert(context.collab.getLiveCollabBlockStatus(fixture.slug).active === false, 'Browser accepts must leave live collab available');
+
+    await page.close();
+    page = await openBrowserEditor(browser, url);
+    await page.waitForFunction(
+      () => {
+        const text = document.querySelector('.ProseMirror')?.textContent ?? '';
+        return text.includes('Intro paragraph one. AI inline words.')
+          && text.includes('Another AI paragraph.')
+          && text.includes('Mike')
+          && text.includes('Producer');
+      },
+      null,
+      { timeout: 30_000 },
+    );
+  } finally {
+    await page?.close().catch(() => {});
+    await browser.close();
+  }
+}
+
 async function runCombinedConnectedInsertResolutionCase(
   action: 'accept' | 'reject',
   context: {
@@ -1189,19 +1415,39 @@ async function run(): Promise<void> {
     originalWarn(...args);
   };
 
-  const [{ apiRoutes }, { agentRoutes }, { setupWebSocket }, collab, db, milkdown] = await Promise.all([
+  const [
+    { apiRoutes },
+    { agentRoutes },
+    { setupWebSocket },
+    collab,
+    db,
+    milkdown,
+    { shareWebRoutes },
+    { createBridgeMountRouter },
+    { enforceApiClientCompatibility, enforceBridgeClientCompatibility },
+  ] = await Promise.all([
     import('../../server/routes.js'),
     import('../../server/agent-routes.js'),
     import('../../server/ws.js'),
     import('../../server/collab.js'),
     import('../../server/db.js'),
     import('../../server/milkdown-headless.js'),
+    import('../../server/share-web-routes.js'),
+    import('../../server/bridge.js'),
+    import('../../server/client-capabilities.js'),
   ]);
 
   const app = express();
-  app.use(express.json({ limit: '2mb' }));
-  app.use('/api', apiRoutes);
+  app.use(express.json({ limit: '10mb' }));
+  app.use('/assets', express.static(path.join(process.cwd(), 'dist', 'assets')));
+  app.use(express.static(path.join(process.cwd(), 'public')));
+  app.use('/api', enforceApiClientCompatibility, apiRoutes);
   app.use('/api/agent', agentRoutes);
+  app.use(apiRoutes);
+  app.use('/d', createBridgeMountRouter(enforceBridgeClientCompatibility));
+  app.use('/documents', createBridgeMountRouter(enforceBridgeClientCompatibility));
+  app.use('/documents', agentRoutes);
+  app.use(shareWebRoutes);
   const server = createServer(app);
   const wss = new WebSocketServer({ server, path: '/ws' });
   setupWebSocket(wss);
@@ -1212,6 +1458,13 @@ async function run(): Promise<void> {
   const parser = await milkdown.getHeadlessMilkdownParser();
 
   try {
+    await runCombinedBrowserAcceptCase({
+      httpBase,
+      chromium: loadChromium(),
+      db,
+      collab,
+      warnings,
+    });
     await runDisconnectedInsertCases(httpBase);
     await runAiInsertCase({
       httpBase,

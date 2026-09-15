@@ -20,7 +20,7 @@ import {
   prosePluginsCtx,
 } from '@milkdown/core';
 import { commonmark } from '@milkdown/preset-commonmark';
-import { gfm } from '@milkdown/preset-gfm';
+import { gfm, remarkGFMPlugin } from '@milkdown/preset-gfm';
 import { history } from '@milkdown/plugin-history';
 import { collab, collabServiceCtx } from '@milkdown/plugin-collab';
 import { listener, listenerCtx } from '@milkdown/plugin-listener';
@@ -1266,6 +1266,11 @@ class ProofEditorImpl implements ProofEditor {
         this.handleMarksChange(actionMarks, view, actionMetadata);
       }))
       .config((ctx) => {
+        // remark-gfm otherwise measures serialized Proof <span> wrappers when
+        // aligning table columns, leaving large invisible padding after stripping.
+        ctx.set(remarkGFMPlugin.options.key, {
+          stringLength: (value: string) => stripProofSpanTags(value).length,
+        });
         // Note: remarkProofMarks is now registered via .use(remarkProofMarksPlugin)
         ctx.update(remarkStringifyOptionsCtx, (prev) => ({
           ...prev,
