@@ -5683,6 +5683,16 @@ class ProofEditorImpl implements ProofEditor {
     this.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx);
 
+      // Direct props run before Milkdown's native history/collab keymaps.
+      // The document listener also covers Edit-menu events outside the editor.
+      view.setProps({
+        handleKeyDown: (_view, event) => this.playmakerReview?.handleHistoryInput(event) ?? false,
+        handleDOMEvents: {
+          ...view.props.handleDOMEvents,
+          beforeinput: (_view, event) => this.playmakerReview?.handleHistoryInput(event as InputEvent) ?? false,
+        },
+      });
+
       // Store the original dispatchTransaction
       const originalDispatch = view.dispatch.bind(view);
 
