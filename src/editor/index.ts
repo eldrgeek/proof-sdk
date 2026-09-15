@@ -1,3 +1,4 @@
+import { markApiView, isOwnHumanMarkChange, withHumanReviewWrite } from './review-mark-origin';
 /**
  * Proof Editor
  *
@@ -3849,7 +3850,7 @@ class ProofEditorImpl implements ProofEditor {
         if (count <= 0) return false;
         const confirmed = window.confirm(`Accept all ${count} suggestion${count === 1 ? '' : 's'}?`);
         if (!confirmed) return false;
-        this.markAcceptAll();
+        withHumanReviewWrite(() => this.markAcceptAll());
         return true;
       });
       addActionItem('Reject all', () => {
@@ -3857,7 +3858,7 @@ class ProofEditorImpl implements ProofEditor {
         if (count <= 0) return false;
         const confirmed = window.confirm(`Reject all ${count} suggestion${count === 1 ? '' : 's'}?`);
         if (!confirmed) return false;
-        this.markRejectAll();
+        withHumanReviewWrite(() => this.markRejectAll());
         return true;
       });
 
@@ -5709,7 +5710,11 @@ class ProofEditorImpl implements ProofEditor {
         const dispatchWithRevision = (transaction: any) => {
           // Group local text and derived records in the native history transaction.
           // All derived mark writes from this dispatch stay in that same edit.
-          if (transaction.getMeta('proofLocalMarkChange') && !this.capturingReviewDecision
+          const humanMark = isOwnHumanMarkChange(transaction,
+            marksPluginKey.getState(view.state)?.metadata ?? {},
+            transaction.getMeta(marksPluginKey)?.metadata ?? {}, getCurrentActor());
+          if (transaction.getMeta('proofLocalMarkChange') && !humanMark) transaction.setMeta('addToHistory', false);
+          if (humanMark && !this.capturingReviewDecision
             && !this.restoringReviewDecision && !this.isYjsChangeOriginTransaction(transaction)
             && this.collabCanEdit && collabClient.getYDoc()
             && this.getShareSuggestionResolutionTransport() === 'collab') {
@@ -7499,7 +7504,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       mark = approve(view, quote, by);
       if (mark) {
         console.log('[markApprove] Created approval:', mark.id);
@@ -7521,7 +7526,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const range = resolveSelectorRange(view.state.doc, selector);
       if (!range) {
         throw new Error('Selector did not resolve');
@@ -7548,7 +7553,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const range = this.getSelectionRangeOrBlock(view);
       if (!range) return;
       const quote = this.quoteForRange(view, range);
@@ -7573,7 +7578,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let success = false;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       success = unapprove(view, quote, by);
       console.log('[markUnapprove] Removed approval:', success);
     });
@@ -7590,7 +7595,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       mark = flag(view, quote, by, note);
       if (mark) {
         console.log('[markFlag] Created flag:', mark.id);
@@ -7612,7 +7617,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const range = resolveSelectorRange(view.state.doc, selector);
       if (!range) {
         throw new Error('Selector did not resolve');
@@ -7639,7 +7644,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const range = this.getSelectionRangeOrBlock(view);
       if (!range) return;
       const quote = this.quoteForRange(view, range);
@@ -7664,7 +7669,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let success = false;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       success = unflag(view, quote, by);
       console.log('[markUnflag] Removed flag:', success);
     });
@@ -7681,7 +7686,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const matches = findMatchesInDoc(view.state.doc, quote, {
         regex: false,
         caseSensitive: true,
@@ -7707,7 +7712,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const range = this.getSelectionRangeOrBlock(view);
       if (!range) return;
       const quote = this.quoteForRange(view, range);
@@ -7729,7 +7734,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const range = resolveSelectorRange(view.state.doc, selector);
       const quoteSource = selector.quote || (range ? view.state.doc.textBetween(range.from, range.to, '\n', '\n') : '');
       const quote = normalizeQuote(quoteSource);
@@ -7752,7 +7757,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       mark = markReply(view, markId, by, text);
       if (mark) {
         console.log('[markReply] Created reply:', mark.id);
@@ -7772,7 +7777,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let success = false;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       if (this.isShareMode) this.suppressMarksSync = true;
       try {
         success = markResolve(view, markId);
@@ -7823,7 +7828,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let success = false;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       if (this.isShareMode) this.suppressMarksSync = true;
       try {
         success = markUnresolve(view, markId);
@@ -7871,7 +7876,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let success = false;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       success = deleteMark(view, markId);
     });
     return success;
@@ -7888,7 +7893,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
 
       // Validate quote exists in document
       if (!range) {
@@ -7921,7 +7926,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
 
       // Validate quote exists in document
       if (!range) {
@@ -7954,7 +7959,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const parser = ctx.get(parserCtx);
 
       // Validate quote exists in document
@@ -7996,7 +8001,7 @@ class ProofEditorImpl implements ProofEditor {
     };
 
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const parser = ctx.get(parserCtx);
       const scope = options?.scope ?? 'all';
       if (scope === 'selection' && view.state.selection.from === view.state.selection.to) {
@@ -8370,7 +8375,7 @@ class ProofEditorImpl implements ProofEditor {
   markAllAsAuthored(by: string): void {
     if (!this.editor) return;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const authoredMarkType = view.state.schema.marks.proofAuthored;
       if (!authoredMarkType) return;
       const tr = view.state.tr.addMark(
@@ -8388,7 +8393,7 @@ class ProofEditorImpl implements ProofEditor {
   markHunksAsAuthored(by: string, hunks: Array<{start_line: number, end_line: number, lines: string[]}>): void {
     if (!this.editor) return;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const authoredMarkType = view.state.schema.marks.proofAuthored;
       if (!authoredMarkType) return;
 
@@ -8874,7 +8879,7 @@ class ProofEditorImpl implements ProofEditor {
     };
 
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const scope = options?.scope ?? 'all';
       if (scope === 'selection' && view.state.selection.from === view.state.selection.to) {
         result = { success: false, count: 0, error: 'No selection' };
@@ -8978,7 +8983,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let success = false;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       success = modifySuggestionContent(view, markId, content);
       console.log('[markModifySuggestion] Modified:', success);
     });
@@ -9098,7 +9103,7 @@ class ProofEditorImpl implements ProofEditor {
       const transport = this.getShareSuggestionResolutionTransport();
       let accepted = false;
       this.editor.action((ctx) => {
-        const view = ctx.get(editorViewCtx);
+        const view = markApiView(ctx.get(editorViewCtx));
         const parser = ctx.get(parserCtx);
         const removedServerMarks = this.dropSuggestionIdsFromServerMarkCache([markId]);
         this.applyShareSuggestionLocally(transport, () => {
@@ -9153,7 +9158,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let success = false;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const parser = ctx.get(parserCtx);
       success = acceptMark(view, markId, parser);
       console.log('[markAccept] Accepted:', success);
@@ -9180,7 +9185,7 @@ class ProofEditorImpl implements ProofEditor {
       const transport = this.getShareSuggestionResolutionTransport();
       let rejected = false;
       this.editor.action((ctx) => {
-        const view = ctx.get(editorViewCtx);
+        const view = markApiView(ctx.get(editorViewCtx));
         const removedServerMarks = this.dropSuggestionIdsFromServerMarkCache([markId]);
         this.applyShareSuggestionLocally(transport, () => {
           rejected = rejectMark(view, markId);
@@ -9238,7 +9243,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let success = false;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       success = rejectMark(view, markId);
       console.log('[markReject] Rejected:', success);
       if (success) {
@@ -9262,7 +9267,7 @@ class ProofEditorImpl implements ProofEditor {
       let acceptedCount = 0;
       let acceptedIds: string[] = [];
       this.editor.action((ctx) => {
-        const view = ctx.get(editorViewCtx);
+        const view = markApiView(ctx.get(editorViewCtx));
         const parser = ctx.get(parserCtx);
         const pendingIds = getPendingSuggestions(getMarks(view.state))
           .map((mark) => mark.id)
@@ -9328,7 +9333,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let count = 0;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const parser = ctx.get(parserCtx);
       count = acceptAll(view, parser);
       console.log('[markAcceptAll] Accepted:', count);
@@ -9356,7 +9361,7 @@ class ProofEditorImpl implements ProofEditor {
       let rejectedIds: string[] = [];
       let rejectedCount = 0;
       this.editor.action((ctx) => {
-        const view = ctx.get(editorViewCtx);
+        const view = markApiView(ctx.get(editorViewCtx));
         rejectedIds = getPendingSuggestions(getMarks(view.state))
           .map((mark) => mark.id)
           .filter((id) => this.isSuggestionPendingOnServer(id));
@@ -9414,7 +9419,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let count = 0;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       count = rejectAll(view);
       console.log('[markRejectAll] Rejected:', count);
       if (count > 0) {
@@ -9437,7 +9442,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let success = false;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       success = deleteMark(view, markId);
       console.log('[markDelete] Deleted:', success);
     });
@@ -9454,7 +9459,7 @@ class ProofEditorImpl implements ProofEditor {
     }
 
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       setActiveMark(view, markId);
       console.log('[markSetActive] Set active mark:', markId);
     });
@@ -9531,7 +9536,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const range = this.getSelectionRangeOrBlock(view);
       if (!range) return;
       mark = setAuthoredMark(view, by, range);
