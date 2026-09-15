@@ -47,8 +47,8 @@ function injectStyles(): void {
       inset: 0;
       z-index: 10000;
       background: rgba(0, 0, 0, 0.5);
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
+      
+      
       display: flex;
       align-items: center;
       justify-content: center;

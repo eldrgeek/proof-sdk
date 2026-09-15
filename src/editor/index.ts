@@ -3283,7 +3283,7 @@ class ProofEditorImpl implements ProofEditor {
         background:rgba(17,24,39,0.96);border:1px solid rgba(255,255,255,0.12);
         border-radius:12px;padding:8px;z-index:1002;
         box-shadow:0 16px 40px rgba(0,0,0,0.35);
-        backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+         
       `;
 
       const header = document.createElement('div');
@@ -3794,7 +3794,7 @@ class ProofEditorImpl implements ProofEditor {
         background:rgba(17,24,39,0.96);border:1px solid rgba(255,255,255,0.12);
         border-radius:12px;padding:6px;z-index:1002;
         box-shadow:0 16px 40px rgba(0,0,0,0.35);
-        backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+         
       `;
 
       const addActionItem = (title: string, onSelect: () => boolean) => {
@@ -4550,7 +4550,7 @@ class ProofEditorImpl implements ProofEditor {
         background:rgba(17,24,39,0.96);border:1px solid rgba(255,255,255,0.12);
         border-radius:12px;padding:6px;z-index:1002;
         box-shadow:0 16px 40px rgba(0,0,0,0.35);
-        backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+         
       `;
 
       const addItem = (title: string, onSelect: (itemLabel: HTMLSpanElement) => Promise<boolean> | boolean, opts?: { subtle?: boolean; disabled?: boolean }) => {
@@ -4893,7 +4893,7 @@ class ProofEditorImpl implements ProofEditor {
         background:rgba(17,24,39,0.96);border:1px solid rgba(255,255,255,0.12);
         border-radius:12px;padding:8px;z-index:1002;
         box-shadow:0 16px 40px rgba(0,0,0,0.35);
-        backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+         
       `;
 
       const addDivider = () => {
@@ -5103,8 +5103,8 @@ class ProofEditorImpl implements ProofEditor {
       left: 50%;
       transform: translateX(-50%);
       background: rgba(255,255,255,0.94);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
+      
+      
       color: #374151;
       border: 1px solid rgba(0,0,0,0.06);
       border-radius: 28px;
