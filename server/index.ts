@@ -53,6 +53,8 @@ async function main(): Promise<void> {
 
   app.use(requireAgentKeyOrigin);
   app.use(express.json({ limit: '10mb' }));
+  // Share HTML comes from dist; serve its matching bundle without requiring nginx.
+  app.use('/assets', express.static(path.join(__dirname, '..', 'dist', 'assets'), { maxAge: 0 }));
   app.use(express.static(path.join(__dirname, '..', 'public')));
   app.use(libraryRoutes);
   app.use(somaFeedbackRoutes);

@@ -273,18 +273,9 @@ Rebuild with `npm run build` after changing `VITE_*` variables.
 
 ## Known issues when self-hosting
 
-### Static assets from `dist/` are not served by default ([#52](https://github.com/EveryInc/proof-sdk/issues/52), [#73](https://github.com/EveryInc/proof-sdk/issues/73))
+### Static assets from `dist/`
 
-`npm run serve` serves `public/` only (`express.static` in `server/index.ts`). Share pages load HTML from `dist/index.html` (`shareWebRoutes` in `server/share-web-routes.ts`), but hashed bundles under `dist/assets/` are not automatically exposed.
-
-**Workaround:** after `npm run build`, copy built assets into the served tree:
-
-```bash
-mkdir -p public/assets
-cp -R dist/assets/. public/assets/
-```
-
-Upstream [PR #55](https://github.com/EveryInc/proof-sdk/pull/55) and [PR #30](https://github.com/EveryInc/proof-sdk/pull/30) address serving `dist/` directly.
+Run `npm run build` before `npm run serve`. The server serves `/assets/` from `dist/assets/`, matching the share HTML in `dist/index.html`. No asset copying or proxy-specific static routing is needed. Built assets take precedence over old copies in `public/assets/` and are revalidated because bundle filenames are stable across builds.
 
 ### Share page returns 500 "Editor not built" ([#52](https://github.com/EveryInc/proof-sdk/issues/52))
 
