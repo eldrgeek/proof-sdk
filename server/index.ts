@@ -1,3 +1,4 @@
+import { requireAgentKeyOrigin } from './agent-key-routes.js';
 import { clientErrorRoutes } from './client-errors.js';
 import { somaFeedbackRoutes } from './soma-feedback.js';
 import express from 'express';
@@ -50,6 +51,7 @@ async function main(): Promise<void> {
   });
   const allowedCorsOrigins = parseAllowedCorsOrigins();
 
+  app.use(requireAgentKeyOrigin);
   app.use(express.json({ limit: '10mb' }));
   app.use(express.static(path.join(__dirname, '..', 'public')));
   app.use(libraryRoutes);

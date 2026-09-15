@@ -2,9 +2,27 @@ import { Router, type RequestHandler } from 'express';
 import { createDocumentAccessToken, getDocumentBySlug, listDocumentAgentKeys, revokeDocumentAgentKey } from './db.js';
 import { getClientIp } from './client-address.js';
 import { createRateLimiter } from './rate-limiter.js';
+import { requireLibraryJsonOrigin } from './library/auth.js';
+import { getPublicOrigin } from './public-origin.js';
 import { resolveSharePageAccess } from './share-page-access.js';
 
+// Run before general CORS (including preflight) on both public route aliases.
+export const requireAgentKeyOrigin: RequestHandler = (req, res, next) => {
+  if (!/^\/(?:api\/)?documents\/[^/]+\/agent-keys(?:\/|$)/i.test(req.path)) return next();
+  const origin = req.header('origin');
+  if (origin !== undefined && origin !== getPublicOrigin(req)) {
+    res.status(403).json({ code: 'FORBIDDEN' });
+    return;
+  }
+  if (req.method === 'POST' || req.method === 'DELETE') {
+    requireLibraryJsonOrigin(req, res, next);
+    return;
+  }
+  next();
+};
+
 export const agentKeyRoutes = Router();
+agentKeyRoutes.use(requireAgentKeyOrigin);
 // Independent budgets: changing addresses cannot evade the document budget, and
 // changing documents cannot evade the address budget. Each server process enforces these.
 const documentLimit = createRateLimiter({ windowMs: 60_000, maxRequests: 10,

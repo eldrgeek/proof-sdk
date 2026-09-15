@@ -685,7 +685,8 @@ export class ShareClient {
 
   async revokeAgentKey(tokenId: string): Promise<void> {
     const response = await fetch(`${this.getApiBase()}/documents/${this.slug}/agent-keys/${encodeURIComponent(tokenId)}`, {
-      method: 'DELETE', headers: this.getShareAuthHeaders(),
+      method: 'DELETE', headers: { ...this.getShareAuthHeaders(), 'Content-Type': 'application/json' },
+      body: '{}',
     });
     if (!response.ok) throw new Error('Could not revoke the agent key');
   }

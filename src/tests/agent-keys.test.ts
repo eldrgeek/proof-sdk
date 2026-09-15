@@ -17,19 +17,40 @@ const app = express();
 app.use(express.json());
 app.use('/api', apiRoutes);
 app.use('/api/agent', agentRoutes);
+app.use(apiRoutes);
 app.use(shareWebRoutes);
 const server = createServer(app);
 await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
 const address = server.address() as { port: number };
 const base = `http://127.0.0.1:${address.port}`;
 const call = async (url: string, method = 'GET', body?: unknown, headers: Record<string, string> = {}) => {
-  const response = await fetch(base + url, { method, headers: { 'Content-Type': 'application/json', ...headers },
-    body: body === undefined ? undefined : JSON.stringify(body) });
+  const response = await fetch(base + url, { method, headers: { 'Content-Type': 'application/json', Origin: base, ...headers },
+    body: body === undefined ? (method === 'DELETE' ? '{}' : undefined) : JSON.stringify(body) });
   return { status: response.status, headers: response.headers, body: await response.json() };
 };
 const mint = (slug: string, ip = '192.0.2.1', headers: Record<string, string> = {}) =>
   call(`/api/documents/${slug}/agent-keys`, 'POST', { label: 'Test assistant' }, { 'x-forwarded-for': ip, ...headers });
 try {
+  db.createDocument('x1-csrf', 'CSRF test', {});
+  for (const prefix of ['', '/api']) {
+    const endpoint = `${prefix}/documents/x1-csrf/agent-keys`;
+    const form = await fetch(base + endpoint, { method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Origin: base }, body: 'label=Attack' });
+    assert.equal(form.status, 403, 'Form POST must be forbidden');
+    for (const origin of ['https://attacker.test', 'null']) {
+      for (const method of ['GET', 'POST', 'DELETE', 'OPTIONS']) {
+        const suffix = method === 'DELETE' ? '/any-key' : '';
+        const result = await call(endpoint + suffix, method,
+          method === 'POST' ? { label: 'Attack' } : undefined, { Origin: origin });
+        assert.equal(result.status, 403, `${method} from ${origin} must be forbidden`);
+        assert.equal(result.headers.get('access-control-allow-origin'), null);
+      }
+    }
+    for (const method of ['POST', 'DELETE']) {
+      assert.equal((await call(endpoint, method, {}, { Origin: '' })).status, 403);
+      assert.equal((await call(endpoint, method, {}, { 'Content-Type': 'text/plain' })).status, 403);
+    }
+  }
   db.createDocument('x1-editor', '# Hello\n\nHello world', {}, 'X1 test');
   const page = await call('/d/x1-editor?format=json');
   assert.equal(page.body.capabilities.canEdit, true);
