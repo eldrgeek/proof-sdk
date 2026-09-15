@@ -1049,6 +1049,11 @@ function scheduleAgentPresenceExpiry(slug: string, agentId: string, at: string, 
     agentPresenceExpiryTimers.delete(key);
     clearAgentPresenceForSlug(slug, agentId, at);
   }, ttlMs);
+  // Presence now lasts 15 minutes. An expiry timer must not keep a finished process
+  // (a test, a CLI) alive that long; the long-running server still fires it.
+  if (typeof (timer as { unref?: () => void }).unref === 'function') {
+    (timer as { unref: () => void }).unref();
+  }
   agentPresenceExpiryTimers.set(key, timer);
 }
 
@@ -1061,6 +1066,9 @@ function scheduleAgentCursorExpiry(slug: string, agentId: string, at: string, tt
     agentCursorExpiryTimers.delete(key);
     clearAgentCursorForSlug(slug, agentId, at);
   }, ttlMs);
+  if (typeof (timer as { unref?: () => void }).unref === 'function') {
+    (timer as { unref: () => void }).unref();
+  }
   agentCursorExpiryTimers.set(key, timer);
 }
 
