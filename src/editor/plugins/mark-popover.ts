@@ -1,3 +1,5 @@
+import { withHumanReviewWrite } from '../review-mark-origin';
+import { getReviewStyle, REVIEW_STYLE_EVENT } from '../review-style';
 import { $prose } from '@milkdown/kit/utils';
 import { Plugin, PluginKey } from '@milkdown/kit/prose/state';
 import type { EditorView } from '@milkdown/kit/prose/view';
@@ -437,6 +439,7 @@ class MarkPopoverController {
   };
 
   constructor(view: EditorView) {
+    window.addEventListener(REVIEW_STYLE_EVENT, this.reviewStyleChanged);
     this.view = view;
 
     this.popover = document.createElement('div');
@@ -651,6 +654,7 @@ class MarkPopoverController {
   }
 
   destroy(): void {
+    window.removeEventListener(REVIEW_STYLE_EVENT, this.reviewStyleChanged);
     this.close();
     this.clearUndoToast();
     this.resetStripGestureVisual();
@@ -690,6 +694,11 @@ class MarkPopoverController {
     this.undoToast.remove();
     this.clearMobileStripPadding();
   }
+
+  private reviewStyleChanged = (): void => {
+    this.close();
+    this.scheduleMobileStripRender();
+  };
 
   update(view: EditorView): void {
     this.view = view;
@@ -756,6 +765,7 @@ class MarkPopoverController {
     pos?: number | null,
     options?: { threadFocusMode?: ThreadFocusMode },
   ): void {
+    if (getReviewStyle() === 'playmaker') return;
     const marks = getMarks(this.view.state);
     const mark = marks.find(item => item.id === markId);
     if (!mark) return;
@@ -1098,7 +1108,7 @@ class MarkPopoverController {
         if (!text) return;
         const proof = getProofEditorApi();
         const created = proof?.markReply
-          ? proof.markReply(mark.id, getCurrentActor(), text)
+          ? withHumanReviewWrite(() => proof.markReply(mark.id, getCurrentActor(), text))
           : replyToComment(this.view, mark.id, getCurrentActor(), text);
         if (!created) return;
         if (this.renderMode === 'mobile-sheet') {
@@ -1140,14 +1150,14 @@ class MarkPopoverController {
         const proof = getProofEditorApi();
         if (resolved) {
           if (proof?.markUnresolve) {
-            proof.markUnresolve(mark.id);
+            withHumanReviewWrite(() => proof.markUnresolve(mark.id));
           } else {
             unresolveComment(this.view, mark.id);
           }
           this.openForMark(mark.id);
         } else {
           if (proof?.markResolve) {
-            proof.markResolve(mark.id);
+            withHumanReviewWrite(() => proof.markResolve(mark.id));
           } else {
             resolveComment(this.view, mark.id);
           }
@@ -1161,7 +1171,7 @@ class MarkPopoverController {
       installTouchSafeButton(deleteButton, () => {
         const proof = getProofEditorApi();
         if (proof?.markDeleteThread) {
-          proof.markDeleteThread(mark.id);
+          withHumanReviewWrite(() => proof.markDeleteThread(mark.id));
         } else {
           deleteMark(this.view, mark.id);
         }
@@ -1260,7 +1270,7 @@ class MarkPopoverController {
       if (!canEdit) return;
       const proof = getProofEditorApi();
       if (proof?.markAccept) {
-        proof.markAccept(mark.id);
+        withHumanReviewWrite(() => proof.markAccept(mark.id));
       } else {
         acceptSuggestion(this.view, mark.id);
       }
@@ -1274,7 +1284,7 @@ class MarkPopoverController {
       if (!canEdit) return;
       const proof = getProofEditorApi();
       if (proof?.markReject) {
-        proof.markReject(mark.id);
+        withHumanReviewWrite(() => proof.markReject(mark.id));
       } else {
         rejectSuggestion(this.view, mark.id);
       }
@@ -1418,7 +1428,7 @@ class MarkPopoverController {
   }
 
   private renderMobileStrip(): void {
-    if (!shouldUseCommentUiV2()) {
+    if (getReviewStyle() === 'playmaker' || !shouldUseCommentUiV2()) {
       this.strip.style.display = 'none';
       this.mobileStripSignature = '';
       this.mobileStripExpanded = false;
