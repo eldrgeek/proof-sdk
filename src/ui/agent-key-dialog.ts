@@ -7,6 +7,7 @@ export interface AgentKey {
 }
 
 export function showAgentKeyDialog(actions: {
+  isSignedInMember: boolean;
   create: (label: string) => Promise<AgentKey & { token: string }>;
   list: () => Promise<AgentKey[]>;
   revoke: (id: string) => Promise<void>;
@@ -52,6 +53,7 @@ export function showAgentKeyDialog(actions: {
     </section>
     <h3 style="margin-bottom:4px;font-size:15px">Agent keys</h3>
     <div data-keys>Loading keys…</div>
+    ${actions.isSignedInMember ? '' : '<p data-revocation-note>Revoking stops that key from working. While this document can be opened from its link without signing in, anyone who has the link can still edit it.</p>'}
   `;
   const form = dialog.querySelector('form')!;
   const label = dialog.querySelector<HTMLInputElement>('input')!;

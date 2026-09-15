@@ -4302,6 +4302,8 @@ class ProofEditorImpl implements ProofEditor {
 
   private openAgentKeyDialog(): boolean {
     showAgentKeyDialog({
+      // A2 will add team-only documents; today this notice depends on member sign-in.
+      isSignedInMember: Boolean(window.__PROOF_LIBRARY_MEMBER__),
       create: label => shareClient.createAgentKey(label),
       list: () => shareClient.listAgentKeys(),
       revoke: id => shareClient.revokeAgentKey(id),

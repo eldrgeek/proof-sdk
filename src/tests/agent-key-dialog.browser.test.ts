@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 
+const revocationNote = 'Revoking stops that key from working. While this document can be opened from its link without signing in, anyone who has the link can still edit it.';
+
 const base = process.env.SHARE_BASE_URL || 'http://127.0.0.1:44191';
 assert.ok(['127.0.0.1', 'localhost'].includes(new URL(base).hostname), 'Browser test requires a local server');
 const response = await fetch(`${base}/api/documents`, {
@@ -38,6 +40,8 @@ try {
     await addAgent.click();
     const dialog = page.getByRole('dialog', { name: 'Add agent', exact: true });
     await dialog.waitFor();
+    assert.equal(await dialog.locator('[data-keys] + [data-revocation-note]').textContent(), revocationNote);
+    assert.equal(await dialog.getByText(revocationNote, { exact: true }).isVisible(), true);
     assert.equal(mints, 0, 'Opening the dialog should wait for the person to request a key');
     await dialog.getByLabel('Agent name', { exact: true }).fill(`Browser assistant ${width}`);
     await dialog.getByRole('button', { name: 'Create agent key', exact: true }).click();
@@ -63,12 +67,29 @@ try {
     await page.waitForFunction(() => document.querySelector('[data-status]')?.textContent === 'Agent key revoked.');
     const revoked = await fetch(`${base}/api/agent/${created.slug}/state`, { headers: { 'x-share-token': key! } });
     assert.equal(revoked.status, 401);
-    await page.screenshot({ path: `/tmp/proof-x1b-agent-dialog-${width}.png` });
+    await page.screenshot({ path: `/tmp/proof-x1c-agent-dialog-${width}.png` });
     await page.waitForTimeout(3500);
     assert.equal(polls, 0, 'A real tokenless editor page must not poll');
     console.log(`✓ browser at ${width}px: tokenless editor, named key, displayed/copied invitation, key list, revocation, no credential URLs or polls`);
     await context.close();
   }
+
+  // Exercise the server's existing member marker (its real session injection is
+  // covered by library.test.ts). A display name alone must not hide the note.
+  const memberContext = await browser.newContext();
+  await memberContext.route('**/*', route => new URL(route.request().url()).origin === base
+    ? route.continue() : route.abort());
+  await memberContext.addInitScript(() => {
+    window.__PROOF_LIBRARY_MEMBER__ = { name: 'Signed-in member' };
+  });
+  const memberPage = await memberContext.newPage();
+  await memberPage.goto(`${base}/d/${created.slug}`);
+  await memberPage.getByRole('button', { name: 'Add agent', exact: true }).click();
+  const memberDialog = memberPage.getByRole('dialog', { name: 'Add agent', exact: true });
+  await memberDialog.waitFor();
+  assert.equal(await memberDialog.locator('[data-revocation-note]').count(), 0);
+  await memberContext.close();
+  console.log('✓ browser: signed-in member marker hides the anonymous-link revocation note');
 
   const retryContext = await browser.newContext();
   await retryContext.route('**/*', route => new URL(route.request().url()).origin === base
