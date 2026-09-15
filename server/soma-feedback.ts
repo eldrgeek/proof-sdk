@@ -43,6 +43,14 @@ somaFeedbackRoutes.post('/api/soma-feedback', requireLibraryJsonOrigin, async (r
   const body = { ...req.body };
   delete body.adminToken;
   delete body.googleIdToken;
+  // Share links are bearer credentials. Feedback may name a document, but
+  // must not pass access tokens to the feedback service.
+  if (typeof body.url === 'string') body.url = body.url.split(/[?#]/, 1)[0];
+  for (const field of ['text', 'page', 'elementHint']) {
+    if (typeof body[field] === 'string') {
+      body[field] = body[field].replace(/([?&]token=|#token=?)[^\s&#\"'`<>\])}]*/gi, '$1[redacted]');
+    }
+  }
   body.site = 'proof-plus';
   const session = isLibraryEnabled() ? getLibrarySession(req) : null;
   if (session?.member.isOwner && process.env.SOMA_ADMIN_TOKEN) body.adminToken = process.env.SOMA_ADMIN_TOKEN;

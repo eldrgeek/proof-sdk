@@ -62,6 +62,19 @@ try {
     const { adminToken: ___, ...actual } = sent;
     assert.deepEqual(actual, rest);
   }
+  const sharePage = origin + '/d/shared-slug?token=SECRET#private';
+  const shareFeedback = {
+    ...body, url: sharePage,
+    text: 'Please fix ' + sharePage + ' and /d/other?view=edit&token=SECRET and /d/third#token=SECRET',
+    page: 'My document ' + sharePage,
+    elementHint: 'selected text: \"/d/shared-slug#tokenSECRET\"',
+  };
+  assert.equal((await request('POST', '/api/soma-feedback', shareFeedback)).status, 200);
+  const shareSent = bodies.at(-1);
+  assert.equal(shareSent.url, origin + '/d/shared-slug');
+  assert(!JSON.stringify(shareSent).includes('SECRET'), 'share credentials never reach feedback');
+  assert(shareSent.text.includes('Please fix'));
+  assert(shareSent.page.includes('My document'));
   upstream = { status: 'clarify', question: 'Which button?', nested: { untouched: true } };
   assert.deepEqual((await request('POST', '/api/soma-feedback', body)).json, upstream);
   assert.equal((await request('POST', '/api/soma-feedback', body, admin.cookie, { Origin: 'https://foreign.test' })).status, 403);
