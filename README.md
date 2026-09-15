@@ -6,7 +6,7 @@ live-check runs on builds 5b5c779 and 00c0e15._
 This branch holds the browser evidence that suggesting mode works on our self-hosted Proof, at
 https://proof.vpsmikewolf.duckdns.org. That server runs the fork `eldrgeek/proof-sdk`, branch `deploy/vps`.
 
-The server now runs build `00c0e15`, deployed on 15 September 2026 at about 03:35 UTC. The sections below go in time
+The server now runs build `00c0e15`, deployed on 15 September 2026 at 01:46 UTC. The sections below go in time
 order: `dab0365` first, then `0b3f8dd`, then `5b5c779` and `00c0e15`. Every test used a fresh test document and
 headless Chromium, driven by Playwright.
 
