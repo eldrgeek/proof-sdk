@@ -98,3 +98,14 @@ npm test
 
 - Code: `MIT` in `LICENSE`
 - Trademark guidance: `TRADEMARKS.md`
+
+### Agent presence in the share bar
+
+AI avatars stay visible for 15 minutes after the last action. After one minute
+without activity, the avatar dims and its tooltip shows the minutes since the
+last action. A new action makes it active again. Set the server environment
+variable `AGENT_PRESENCE_TTL_MS` to a positive number of milliseconds to override
+the 15-minute retention period; the server sends that expiry to connected clients.
+An agent can leave immediately by posting to `POST /api/agent/:slug/presence`
+with its usual authentication and identity and `status: "left"`, for example
+`{"agentId":"ai:claude","status":"left"}`. Leaving also removes its cursor.
