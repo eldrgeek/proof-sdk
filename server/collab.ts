@@ -11492,7 +11492,9 @@ export async function startCollabRuntime(mainHttpPort: number): Promise<CollabRu
           logLiveClientWriteDropped(data.documentName, 'onChange', 'rewrite_lock');
           return;
         }
-        ensureFragmentEditTracking(data.document).dirty = true;
+        // afterTransaction tracks whether the ProseMirror fragment changed without
+        // the markdown mirror. Do not classify Y.Text-only client updates as fragment
+        // edits or projection refresh will restore the stale fragment over those edits.
         rememberLoadedDoc(data.documentName, data.document);
         markDocChanged(data.documentName);
         schedulePersistDoc(data.documentName, data.document);
@@ -11660,7 +11662,9 @@ export async function startCollabRuntimeEmbedded(mainHttpPort: number): Promise<
           logLiveClientWriteDropped(data.documentName, 'onChange', 'rewrite_lock');
           return;
         }
-        ensureFragmentEditTracking(data.document).dirty = true;
+        // afterTransaction tracks whether the ProseMirror fragment changed without
+        // the markdown mirror. Do not classify Y.Text-only client updates as fragment
+        // edits or projection refresh will restore the stale fragment over those edits.
         rememberLoadedDoc(data.documentName, data.document);
         markDocChanged(data.documentName);
         schedulePersistDoc(data.documentName, data.document);
@@ -11846,7 +11850,9 @@ export async function startCollabRuntimeAttached(mainHttpServer: HttpServer, mai
           logLiveClientWriteDropped(data.documentName, 'onChange', 'rewrite_lock');
           return;
         }
-        ensureFragmentEditTracking(data.document).dirty = true;
+        // afterTransaction tracks whether the ProseMirror fragment changed without
+        // the markdown mirror. Do not classify Y.Text-only client updates as fragment
+        // edits or projection refresh will restore the stale fragment over those edits.
         rememberLoadedDoc(data.documentName, data.document);
         markDocChanged(data.documentName);
         schedulePersistDoc(data.documentName, data.document);
