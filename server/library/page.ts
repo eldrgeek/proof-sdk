@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
-import { getLibrarySession } from './auth.js';
+import { somaAuthHead } from './soma-page.js';
+import { getLibrarySession, isSomaAuthEnabled } from './auth.js';
 
 function escapeHtml(value: string): string {
   return value
@@ -35,12 +36,13 @@ const sharedHead = `
   </style>`;
 
 function signedOutPage(): string {
-  return `<!doctype html><html lang="en"><head>${sharedHead}</head><body>
+  return `<!doctype html><html lang="en"><head>${sharedHead}${somaAuthHead()}</head><body>
     <header class="topbar shell"><span class="wordmark">Proof</span></header>
     <main class="shell" style="max-width:680px;padding:48px 0 80px">
       <h1 style="font-size:42px;letter-spacing:-1.6px;margin:0 0 24px">Your team’s documents</h1>
-      <p style="font-size:18px;line-height:1.6;color:var(--muted)">To sign in, open the sign-in link a teammate sent you. Lost it? Ask a teammate for a new one.</p>
+      <p style="font-size:18px;line-height:1.6;color:var(--muted)">${isSomaAuthEnabled() ? 'Sign in with your SOMA account to open your library.' : 'To sign in, open the sign-in link a teammate sent you. Lost it? Ask a teammate for a new one.'}</p>
       <p style="font-size:16px;line-height:1.6;color:var(--muted)">You don’t need to sign in to open a document from its own link.</p>
+      ${isSomaAuthEnabled() ? somaSigninForm() : ''}
     </main>
     <footer class="footer shell"><a href="/developers">Developer API</a></footer>
   </body></html>`;
@@ -48,7 +50,7 @@ function signedOutPage(): string {
 
 function signedInPage(name: string, isOwner: boolean): string {
   const initials = name.split(/\s+/).slice(0, 2).map((part) => part[0] || '').join('').toUpperCase();
-  return `<!doctype html><html lang="en"><head>${sharedHead}</head><body data-member-name="${escapeHtml(name)}" data-owner="${isOwner ? '1' : '0'}">
+  return `<!doctype html><html lang="en"><head>${sharedHead}${somaAuthHead()}</head><body data-member-name="${escapeHtml(name)}" data-owner="${isOwner ? '1' : '0'}" data-soma="${isSomaAuthEnabled() ? '1' : '0'}">
     <header class="topbar shell">
       <span class="wordmark">Proof</span>
       <div class="header-actions">
@@ -58,7 +60,7 @@ function signedInPage(name: string, isOwner: boolean): string {
           <div class="menu" id="account-menu" hidden>
             <div class="menu-name">${escapeHtml(name)}</div>
             <button id="people-button">People</button>
-            <button id="device-button">Sign in on another device</button>
+            ${isSomaAuthEnabled() ? '' : '<button id="device-button">Sign in on another device</button>'}
             <button id="signout-button">Sign out</button>
           </div>
         </div>
@@ -82,13 +84,13 @@ function signedInPage(name: string, isOwner: boolean): string {
       <div class="empty" id="empty" hidden></div>
     </main>
     <footer class="footer shell"><a href="/developers">Developer API</a></footer>
-    ${dialogs()}
+    ${dialogs(isOwner)}
     <div class="toast-region" id="toasts" aria-live="polite"></div>
     <script src="/library/client.js" defer></script>
   </body></html>`;
 }
 
-function dialogs(): string {
+function dialogs(isOwner: boolean): string {
   return `
     <dialog id="new-dialog" role="dialog" aria-modal="true" aria-labelledby="new-title-heading"><form method="dialog" class="dialog-body" id="new-form">
       <div class="dialog-head"><h2 id="new-title-heading">New document</h2><button type="button" class="btn icon-btn quiet" value="cancel" aria-label="Close">×</button></div>
@@ -100,11 +102,22 @@ function dialogs(): string {
       <div class="dialog-actions"><button type="button" class="btn" value="cancel">Cancel</button><button class="btn primary" id="create-button" value="default">Create</button></div>
     </form></dialog>
     <dialog id="rename-dialog" role="dialog" aria-modal="true" aria-labelledby="rename-heading"><form method="dialog" class="dialog-body" id="rename-form"><div class="dialog-head"><h2 id="rename-heading">Rename document</h2><button type="button" class="btn icon-btn quiet" value="cancel" aria-label="Close">×</button></div><div class="field"><label for="rename-title">Title</label><input id="rename-title"></div><p class="error" id="rename-error"></p><div class="dialog-actions"><button type="button" class="btn" value="cancel">Cancel</button><button class="btn primary" value="default">Save</button></div></form></dialog>
-    <dialog id="people-dialog" role="dialog" aria-modal="true" aria-labelledby="people-heading"><div class="dialog-body"><div class="dialog-head"><h2 id="people-heading">People</h2><button class="btn icon-btn quiet" data-close aria-label="Close">×</button></div><ul class="people-list" id="people-list"></ul><form id="invite-form"><h3>Invite someone</h3><div class="field"><label for="invite-name">Name</label><input id="invite-name" required autocomplete="name"></div><div class="field"><label for="invite-email">Email</label><input id="invite-email" type="email" required autocomplete="email"></div><p class="error" id="invite-error"></p><button class="btn primary">Create sign-in link</button></form><div id="invite-result" hidden><p id="invite-help"></p><div class="link-result"><input id="invite-link" readonly aria-label="One-time invite link"><button class="btn" id="copy-invite">Copy</button></div></div></div></dialog>
-    <dialog id="device-dialog" role="dialog" aria-modal="true" aria-labelledby="device-heading"><div class="dialog-body"><div class="dialog-head"><h2 id="device-heading">Sign in on another device</h2><button class="btn icon-btn quiet" data-close aria-label="Close">×</button></div><p>This one-time link works once and expires in 30 minutes.</p><div class="link-result"><input id="device-link" readonly aria-label="One-time device link"><button class="btn" id="copy-device">Copy</button></div><p class="error" id="device-error"></p></div></dialog>`;
+    <dialog id="people-dialog" role="dialog" aria-modal="true" aria-labelledby="people-heading"><div class="dialog-body"><div class="dialog-head"><h2 id="people-heading">People</h2><button class="btn icon-btn quiet" data-close aria-label="Close">×</button></div><ul class="people-list" id="people-list"></ul><form id="invite-form" ${isSomaAuthEnabled() && !isOwner ? 'hidden' : ''}><h3>${isSomaAuthEnabled() ? 'Add someone' : 'Invite someone'}</h3><div class="field"><label for="invite-name">Name</label><input id="invite-name" required autocomplete="name"></div><div class="field"><label for="invite-email">Email</label><input id="invite-email" type="email" required autocomplete="email"></div><p class="error" id="invite-error"></p><button class="btn primary">${isSomaAuthEnabled() ? 'Add member' : 'Create sign-in link'}</button></form><div id="invite-result" hidden><p id="invite-help"></p><div class="link-result" ${isSomaAuthEnabled() ? 'hidden' : ''}><input id="invite-link" readonly aria-label="One-time invite link"><button class="btn" id="copy-invite">Copy</button></div></div></div></dialog>
+    ${isSomaAuthEnabled() ? '' : `    <dialog id="device-dialog" role="dialog" aria-modal="true" aria-labelledby="device-heading"><div class="dialog-body"><div class="dialog-head"><h2 id="device-heading">Sign in on another device</h2><button class="btn icon-btn quiet" data-close aria-label="Close">×</button></div><p>This one-time link works once and expires in 30 minutes.</p><div class="link-result"><input id="device-link" readonly aria-label="One-time device link"><button class="btn" id="copy-device">Copy</button></div><p class="error" id="device-error"></p></div></dialog>`}`;
 }
 
 export function renderLibraryHome(req: Request, res: Response): void {
   const session = getLibrarySession(req, res);
+  res.setHeader('Cache-Control', 'no-store');
   res.type('html').send(session ? signedInPage(session.member.name, session.member.isOwner) : signedOutPage());
+}
+
+function somaSigninForm(): string {
+  return `<section aria-label="Sign in">
+    <button class="btn" id="soma-google">Continue with Google</button>
+    <form id="soma-email-form"><div class="field"><label for="soma-email">Email</label><input id="soma-email" type="email" required autocomplete="email"></div>
+    <button class="btn primary">Email me a sign-in link</button></form>
+    <p id="soma-message" role="status" aria-live="polite"></p>
+    <button class="btn" id="soma-switch" hidden>Use another account</button>
+  </section>`;
 }

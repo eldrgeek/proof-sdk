@@ -129,6 +129,13 @@ async function main(): Promise<void> {
   assert((await request('GET', '/library/client.js')).text.includes('loadDocuments'), 'library client is served without a build step');
   const injected = shareWeb.injectLibraryMemberIntoShareHtml('<html><head></head><body></body></html>', '</script><b>x');
   assert(injected.includes('window.__PROOF_LIBRARY_MEMBER__'), 'member global is injected');
+  for (const name of ['$&', "$`", "$'", '<script>']) {
+    const html = shareWeb.injectLibraryMemberIntoShareHtml('<html><head></head><body>content</body></html>', name);
+    const encoded = html.match(/window.__PROOF_LIBRARY_MEMBER__=(.*);/)[1];
+    equal(JSON.parse(encoded).name, name, 'replacement metacharacters survive injection');
+    equal((html.match(/<head>/g) || []).length, 1, 'injection preserves page structure');
+  }
+
   assert(injected.includes('\\u003c/script>') && !injected.includes('</script><b>x'), 'member name cannot escape the script');
 
   const review = await request('GET', '/library/api/documents?filter=review', undefined, cookie);
@@ -176,7 +183,7 @@ async function main(): Promise<void> {
   for (let index = 0; index < 30; index += 1) assert(documents.allowLibraryDocumentCreation(rateKey), 'first 30 creates allowed');
   assert(!documents.allowLibraryDocumentCreation(rateKey), '31st create is rate-limited');
 
-  const storedNames = new Map<string, string>();
+  const storedNames = new Map<string, string>([['proof-share-viewer-name', 'Anonymous']]);
   Object.assign(globalThis, {
     window: { __PROOF_LIBRARY_MEMBER__: { name: 'Signed-in Writer' } },
     localStorage: {
@@ -186,6 +193,7 @@ async function main(): Promise<void> {
   });
   const sourceRoot = '../ui';
   const namePrompt = await import(`${sourceRoot}/name-prompt.js`);
+  equal(namePrompt.getViewerName(), 'Signed-in Writer', 'member identity wins before the stored-name check');
   equal(await namePrompt.promptForName(), 'Signed-in Writer', 'member name bypasses the viewer prompt');
   equal(storedNames.get('proof-share-viewer-name'), 'Signed-in Writer', 'member name is saved for authorship');
 

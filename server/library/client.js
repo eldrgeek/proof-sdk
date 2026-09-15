@@ -12,6 +12,7 @@
   const renameDialog = document.getElementById('rename-dialog');
   const peopleDialog = document.getElementById('people-dialog');
   const deviceDialog = document.getElementById('device-dialog');
+  const somaEnabled = document.body.dataset.soma === '1';
   const isOwner = document.body.dataset.owner === '1';
   let searchTimer = 0;
 
@@ -348,7 +349,8 @@
   });
   document.getElementById('signout-button').addEventListener('click', async () => {
     await api('/library/api/signout', { method: 'POST', body: '{}' });
-    location.reload();
+    if (somaEnabled && window.SomaAuth) await window.SomaAuth.signOut();
+    location.replace(somaEnabled ? '/?signedout=1' : '/');
   });
 
   const loadPeople = async () => {
@@ -365,7 +367,7 @@
       if (person.isOwner) {
         const ownerTag = document.createElement('span');
         ownerTag.className = 'owner-tag';
-        ownerTag.textContent = 'owner';
+        ownerTag.textContent = somaEnabled ? 'admin' : 'owner';
         name.append(' ', ownerTag);
       }
       const meta = document.createElement('div');
@@ -392,7 +394,7 @@
 
   document.getElementById('people-button').addEventListener('click', async () => {
     accountMenu.hidden = true;
-    document.getElementById('invite-form').hidden = false;
+    document.getElementById('invite-form').hidden = somaEnabled && !isOwner;
     document.getElementById('invite-result').hidden = true;
     peopleDialog.showModal();
     await loadPeople();
@@ -407,8 +409,8 @@
         method: 'POST',
         body: JSON.stringify({ name, email: document.getElementById('invite-email').value }),
       });
-      document.getElementById('invite-link').value = invited.link;
-      document.getElementById('invite-help').textContent = `Send this link to ${name}. It signs them in on one device, works once, and expires in 7 days.`;
+      document.getElementById('invite-link').value = invited.link || '';
+      document.getElementById('invite-help').textContent = somaEnabled ? `${name} can now sign in with SOMA Auth using that email.` : `Send this link to ${name}. It signs them in on one device, works once, and expires in 7 days.`;
       document.getElementById('invite-form').hidden = true;
       document.getElementById('invite-result').hidden = false;
       await loadPeople();
@@ -418,7 +420,7 @@
   });
   document.getElementById('copy-invite').addEventListener('click', () => copy(document.getElementById('invite-link').value));
 
-  document.getElementById('device-button').addEventListener('click', async () => {
+  document.getElementById('device-button')?.addEventListener('click', async () => {
     accountMenu.hidden = true;
     document.getElementById('device-link').value = '';
     document.getElementById('device-error').textContent = '';
@@ -430,7 +432,7 @@
       document.getElementById('device-error').textContent = error.message;
     }
   });
-  document.getElementById('copy-device').addEventListener('click', () => copy(document.getElementById('device-link').value));
+  document.getElementById('copy-device')?.addEventListener('click', () => copy(document.getElementById('device-link').value));
   document.querySelectorAll('[data-close]').forEach((button) => button.addEventListener('click', () => button.closest('dialog').close()));
   document.querySelectorAll('[value="cancel"]').forEach((button) => button.addEventListener('click', () => button.closest('dialog').close()));
 

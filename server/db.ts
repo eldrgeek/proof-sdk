@@ -1376,6 +1376,12 @@ function initDatabase(): void {
     )
   `);
   d.exec('CREATE INDEX IF NOT EXISTS idx_library_sessions_member ON library_sessions(member_id, revoked_at, expires_at)');
+  const librarySessionColumns = d.prepare('PRAGMA table_info(library_sessions)').all() as Array<{ name: string }>;
+  if (!librarySessionColumns.some((column) => column.name === 'soma_verified_at')) {
+    d.exec('ALTER TABLE library_sessions ADD COLUMN soma_verified_at TEXT');
+    d.exec('ALTER TABLE library_sessions ADD COLUMN soma_admin INTEGER NOT NULL DEFAULT 0');
+  }
+
 
   d.exec(`
     CREATE TABLE IF NOT EXISTS library_document_meta (

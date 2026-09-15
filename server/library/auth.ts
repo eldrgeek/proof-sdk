@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import type { NextFunction, Request, Response } from 'express';
+import { getClientIp } from '../client-address.js';
 import { getCookie } from '../cookies.js';
 import { getDb } from '../db.js';
 import { getPublicOrigin, isSecureRequest } from '../public-origin.js';
@@ -38,6 +39,8 @@ type LibrarySessionRow = {
   last_seen_at: string;
   revoked_at: string | null;
   user_agent: string | null;
+  soma_verified_at: string | null;
+  soma_admin: number;
 };
 
 const signinAttemptBuckets = new Map<string, { count: number; resetAt: number }>();
@@ -133,6 +136,10 @@ export function listLibraryPeople(): Array<LibraryMember & {
   }>;
   return rows.map((row) => ({
     ...mapMember(row),
+    ...(isSomaAuthEnabled() ? { isOwner: Boolean(getDb().prepare(`
+      SELECT 1 FROM library_sessions WHERE member_id = ? AND soma_admin = 1
+        AND revoked_at IS NULL AND expires_at > ? AND soma_verified_at > ? LIMIT 1
+    `).get(row.id, new Date().toISOString(), new Date(Date.now() - SESSION_TOUCH_AFTER_MS).toISOString())) } : {}),
     invitedByName: row.invited_by_name,
     lastActiveAt: row.last_active_at,
   }));
@@ -273,9 +280,16 @@ export function getLibrarySession(
       AND m.removed_at IS NULL
     LIMIT 1
   `).get(sessionHash, nowIso) as LibrarySessionRow | undefined;
-  if (!row) return null;
+  if (!row || (isSomaAuthEnabled() && !row.soma_verified_at)) return null;
   const member = getLibraryMemberById(row.member_id);
   if (!member) return null;
+
+  if (isSomaAuthEnabled()) {
+    // No stored upstream token: an expired admin lease fails closed until the
+    // browser supplies a fresh token to the session endpoint for the daily check.
+    member.isOwner = row.soma_admin === 1 && Date.parse(row.soma_verified_at || "") + SESSION_TOUCH_AFTER_MS > now.getTime();
+    return { member, sessionHash };
+  }
 
   const lastSeen = Date.parse(row.last_seen_at);
   if (!Number.isFinite(lastSeen) || now.getTime() - lastSeen > SESSION_TOUCH_AFTER_MS) {
@@ -318,7 +332,10 @@ export function requireLibraryJsonOrigin(req: Request, res: Response, next: Next
 
 export function allowLibrarySigninAttempt(req: Request): boolean {
   const now = Date.now();
-  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  const ip = getClientIp(req);
+  for (const [key, bucket] of signinAttemptBuckets) {
+    if (bucket.resetAt <= now) signinAttemptBuckets.delete(key);
+  }
   const current = signinAttemptBuckets.get(ip);
   if (!current || current.resetAt <= now) {
     signinAttemptBuckets.set(ip, { count: 1, resetAt: now + 10 * 60 * 1000 });
@@ -331,4 +348,64 @@ export function allowLibrarySigninAttempt(req: Request): boolean {
 
 export function publicLibraryOrigin(req: Request): string {
   return getPublicOrigin(req);
+}
+
+export function isSomaAuthEnabled(): boolean {
+  return process.env.PROOF_SOMA_AUTH_ENABLED === '1';
+}
+
+// Verify identity remotely. Neither email nor privilege ever comes from req.body.
+export async function exchangeSomaSession(req: Request): Promise<{
+  sessionId?: string; email?: string; isAdmin?: boolean; status: number; message?: string;
+}> {
+  const token = req.body?.accessToken;
+  if (typeof token !== 'string' || !token || token.length > 16384) {
+    return { status: 401, message: 'Your sign-in has expired. Please sign in again.' };
+  }
+  const base = process.env.SOMA_AUTH_URL?.replace(/\/+$/, '');
+  const apikey = process.env.SOMA_AUTH_ANON_KEY;
+  if (!base || !apikey) return { status: 503, message: 'Sign-in is unavailable. Please try again later.' };
+  const headers = { apikey, Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  try {
+    const verified = await fetch(`${base}/auth/v1/user`, { headers, signal: AbortSignal.timeout(10000) });
+    if (!verified.ok) return { status: verified.status >= 500 ? 503 : 401, message: 'Please sign in again.' };
+    const user = await verified.json() as { email?: string; user_metadata?: { full_name?: string; name?: string } };
+    if (typeof user.email !== 'string' || !user.email.includes('@')) return { status: 401, message: 'A verified email is required.' };
+    const email = normalizeEmail(user.email);
+    let member = getLibraryMemberByEmail(email);
+    const existing = getLibrarySession(req);
+    const previous = existing && existing.member.email === email
+      ? getDb().prepare('SELECT * FROM library_sessions WHERE session_hash = ?').get(existing.sessionHash) as LibrarySessionRow
+      : null;
+    const now = new Date();
+    if (previous && Date.parse(previous.soma_verified_at || '') + SESSION_TOUCH_AFTER_MS > now.getTime()) {
+      return { status: 200, isAdmin: previous.soma_admin === 1, sessionId: getCookie(req, LIBRARY_SESSION_COOKIE) || undefined };
+    }
+    const role = await fetch(`${base}/rest/v1/rpc/is_app_admin`, {
+      method: 'POST', headers, body: JSON.stringify({ target_app: 'proof-plus' }), signal: AbortSignal.timeout(10000),
+    });
+    if (!role.ok) return { status: 503, message: 'Could not check access. Please try again later.' };
+    const isAdmin = await role.json() === true;
+    if (!isAdmin && (!member || member.removedAt)) {
+      return { status: 403, email, message: `You're signed in as ${email}, but this Proof+ isn't shared with that address. Ask Mike or Eric to add you.` };
+    }
+    if (!member) {
+      const metadataName = user.user_metadata?.full_name || user.user_metadata?.name;
+      member = createLibraryMember({ name: typeof metadataName === 'string' ? metadataName : email, email });
+    } else if (member.removedAt && isAdmin) {
+      getDb().prepare('UPDATE library_members SET removed_at = NULL WHERE id = ?').run(member.id);
+    }
+    const sessionId = previous ? getCookie(req, LIBRARY_SESSION_COOKIE)! : randomOpaqueValue();
+    const nowIso = now.toISOString();
+    const expiresAt = new Date(now.getTime() + SESSION_MAX_AGE_SECONDS * 1000).toISOString();
+    getDb().prepare(`
+      INSERT INTO library_sessions (session_hash, member_id, created_at, expires_at, last_seen_at, user_agent, soma_verified_at, soma_admin)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(session_hash) DO UPDATE SET expires_at=excluded.expires_at,
+        last_seen_at=excluded.last_seen_at, soma_verified_at=excluded.soma_verified_at, soma_admin=excluded.soma_admin
+    `).run(hashOpaqueValue(sessionId), member.id, nowIso, expiresAt, nowIso, req.header('user-agent')?.slice(0, 500) || null, nowIso, isAdmin ? 1 : 0);
+    return { status: 200, sessionId, isAdmin };
+  } catch {
+    return { status: 503, message: 'Sign-in is unavailable. Please try again later.' };
+  }
 }

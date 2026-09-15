@@ -16,7 +16,7 @@
     "test": "npm run test:proof-sdk && npm run test:server-routes-share && npm run test:library",
     "test:proof-sdk": "tsx src/tests/proof-sdk-agent-bridge-client.test.ts",
     "test:server-routes-share": "tsx src/tests/server-routes-and-share.test.ts",
-    "test:library": "tsx src/tests/library.test.ts",
+    "test:library": "tsx src/tests/library.test.ts && tsx src/tests/soma-app.test.ts",
     "demo:agent": "npm --workspace proof-example run demo:agent"
   },
   "dependencies": {

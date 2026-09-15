@@ -1613,6 +1613,7 @@ class ProofEditorImpl implements ProofEditor {
       if (attemptSeq !== this.shareInitAttemptSeq) return;
       this.clearErrorBanner();
       this.resetShareInitRetryState();
+      window.dispatchEvent(new Event('proof:editor-ready'));
     } catch (error) {
       if (attemptSeq !== this.shareInitAttemptSeq) return;
       console.error('[initFromShare] Failed:', error);

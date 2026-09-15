@@ -1,3 +1,4 @@
+import { getClientIp, trustProxyHeaders } from './client-address.js';
 import { createHash, randomUUID } from 'crypto';
 import { Router, text, type Request, type Response } from 'express';
 import { generateSlug } from './slug.js';
@@ -138,10 +139,6 @@ function isMarksPayload(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function trustProxyHeaders(): boolean {
-  const value = (process.env.PROOF_TRUST_PROXY_HEADERS || '').trim().toLowerCase();
-  return value === '1' || value === 'true' || value === 'yes';
-}
 
 function parseJson(value: string): Record<string, unknown> {
   try {
@@ -167,18 +164,6 @@ function hashRequestBody(body: unknown): string {
   }
 }
 
-function getClientIp(req: Request): string {
-  if (trustProxyHeaders()) {
-    const forwardedFor = req.header('x-forwarded-for');
-    if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
-      const first = forwardedFor.split(',')[0]?.trim();
-      if (first) return first;
-    }
-  }
-  if (req.ip && req.ip.trim()) return req.ip;
-  if (req.socket?.remoteAddress) return req.socket.remoteAddress;
-  return 'unknown';
-}
 
 function parsePositiveIntEnv(name: string, fallback: number): number {
   const raw = process.env[name];

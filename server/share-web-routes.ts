@@ -40,7 +40,6 @@ import {
 } from './proof-sdk-routes.js';
 import { getPublicOrigin, isSecureRequest } from './public-origin.js';
 import { getLibrarySession, isLibraryEnabled } from './library/auth.js';
-import { recordLibraryVisit } from './library/documents.js';
 
 export { getPublicOrigin, isSecureRequest } from './public-origin.js';
 
@@ -237,6 +236,12 @@ window.__PROOF_LIBRARY_MEMBER__=${memberJson};
 (function () {
   var slug = ${slugJson};
   if (slug) {
+    window.addEventListener('proof:editor-ready', function () {
+      fetch('/library/api/visits/' + encodeURIComponent(slug), {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({event: 'open'})
+      }).catch(function () {});
+    }, {once: true});
     window.addEventListener('pagehide', function () {
       fetch('/library/api/visits/' + encodeURIComponent(slug), {
         method: 'POST',
@@ -261,7 +266,7 @@ window.__PROOF_LIBRARY_MEMBER__=${memberJson};
   document.addEventListener('DOMContentLoaded', linkWordmark);
 })();
 </script>`;
-  return html.includes('</head>') ? html.replace('</head>', `${script}\n</head>`) : `${script}${html}`;
+  return html.includes('</head>') ? html.replace('</head>', () => `${script}\n</head>`) : `${script}${html}`;
 }
 
 /**
@@ -400,9 +405,6 @@ shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
 
   const doc = slug ? (getCanonicalReadableDocumentSync(slug, 'share') ?? null) : null;
   const librarySession = isLibraryEnabled() ? getLibrarySession(req, res) : null;
-  if (doc && librarySession) {
-    recordLibraryVisit(librarySession.member.id, slug, 'open');
-  }
   const tokenFromCookie = slug ? getCookie(req, shareTokenCookieName(slug)) : null;
   const roleFromQuery = slug && tokenFromQuery ? resolveDocumentAccessRole(slug, tokenFromQuery) : null;
   const queryOwner = Boolean(doc && tokenFromQuery && canMutateByOwnerIdentity(doc, tokenFromQuery));

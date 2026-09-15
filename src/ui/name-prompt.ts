@@ -30,6 +30,11 @@ function shouldAutofocusInput(): boolean {
 }
 
 export function getViewerName(): string | null {
+  const memberName = typeof window !== 'undefined' ? window.__PROOF_LIBRARY_MEMBER__?.name : undefined;
+  if (typeof memberName === 'string' && memberName.trim()) {
+    setViewerName(memberName);
+    return memberName;
+  }
   return localStorage.getItem(STORAGE_KEY);
 }
 

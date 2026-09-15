@@ -9,6 +9,8 @@ import {
   getLibraryMemberByEmail,
   getLibrarySession,
   isLibraryEnabled,
+  isSomaAuthEnabled,
+  exchangeSomaSession,
   listLibraryPeople,
   publicLibraryOrigin,
   requireLibraryJsonOrigin,
@@ -38,7 +40,12 @@ const SIGNIN_FAILURE = {
 };
 
 libraryRoutes.use('/library', (_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store');
   if (!isLibraryEnabled()) {
+    res.status(404).end();
+    return;
+  }
+  if (isSomaAuthEnabled() && ['/signin', '/api/signin', '/api/device-link'].includes(_req.path.replace(/\/$/, ''))) {
     res.status(404).end();
     return;
   }
@@ -93,7 +100,20 @@ libraryRoutes.get('/library/signin', (_req: Request, res: Response) => {
 </html>`);
 });
 
-libraryRoutes.get('/library/client.js', (_req: Request, res: Response) => {
+libraryRoutes.post('/library/api/session', (req, res, next) => {
+  if (!isSomaAuthEnabled()) { res.status(404).end(); return; }
+  next();
+}, requireLibraryJsonOrigin, async (req, res) => {
+  if (!allowLibrarySigninAttempt(req)) {
+    res.status(429).json({ message: 'Too many sign-in attempts. Try again later.' });
+    return;
+  }
+  const result = await exchangeSomaSession(req);
+  if (result.sessionId) setLibrarySessionCookie(req, res, result.sessionId);
+  res.status(result.status).json({ ok: result.status === 200, message: result.message, email: result.email, isAdmin: result.isAdmin });
+});
+
+libraryRoutes.get('/library/client.js' , (_req: Request, res: Response) => {
   res.setHeader('Cache-Control', 'no-cache');
   res.type('application/javascript').send(libraryClientScript);
 });
@@ -278,6 +298,10 @@ libraryRoutes.post(
   requireLibrarySession,
   requireLibraryJsonOrigin,
   (req: Request, res: Response) => {
+    if (isSomaAuthEnabled() && !librarySessionFromResponse(res).member.isOwner) {
+      res.status(403).json({ message: 'Only an admin can add a member.' });
+      return;
+    }
     const name = typeof req.body?.name === 'string' ? req.body.name : '';
     const email = typeof req.body?.email === 'string' ? req.body.email : '';
     if (getLibraryMemberByEmail(email)) {
@@ -287,6 +311,7 @@ libraryRoutes.post(
     try {
       const session = librarySessionFromResponse(res);
       const member = createLibraryMember({ name, email, invitedBy: session.member.id });
+      if (isSomaAuthEnabled()) { res.status(201).json({ member }); return; }
       const { link } = createLibrarySigninLink({
         memberId: member.id,
         purpose: 'invite',
