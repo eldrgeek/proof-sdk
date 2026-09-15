@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express';
+import { readFileSync } from 'fs';
 import {
   allowLibrarySigninAttempt,
   clearLibrarySessionCookie,
@@ -26,6 +27,8 @@ import {
   type LibraryDocumentFilter,
   type LibraryDocumentSort,
 } from './documents.js';
+
+const libraryClientScript = readFileSync(new URL('./client.js', import.meta.url), 'utf8');
 
 export const libraryRoutes = Router();
 
@@ -88,6 +91,11 @@ libraryRoutes.get('/library/signin', (_req: Request, res: Response) => {
   </script>
 </body>
 </html>`);
+});
+
+libraryRoutes.get('/library/client.js', (_req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-cache');
+  res.type('application/javascript').send(libraryClientScript);
 });
 
 libraryRoutes.post(

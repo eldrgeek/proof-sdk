@@ -20,14 +20,19 @@ function equal<T>(actual: T, expected: T, message: string): void {
 
 async function main(): Promise<void> {
   const serverRoot = '../../server';
-  const [{ libraryRoutes }, auth, documents, dbModule] = await Promise.all([
+  const [{ libraryRoutes }, auth, documents, dbModule, page] = await Promise.all([
     import(`${serverRoot}/library/routes.js`),
     import(`${serverRoot}/library/auth.js`),
     import(`${serverRoot}/library/documents.js`),
     import(`${serverRoot}/db.js`),
+    import(`${serverRoot}/library/page.js`),
   ]);
   const app = express();
   app.use(express.json({ limit: '10mb' }), libraryRoutes);
+  app.get('/', (req, res) => {
+    if (auth.isLibraryEnabled()) page.renderLibraryHome(req, res);
+    else res.type('html').send('<title>Proof SDK</title><h1>Proof SDK</h1>');
+  });
   const server = createServer(app);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -115,6 +120,13 @@ async function main(): Promise<void> {
   dbModule.createDocument('archived-fixture', '# Archived fixture', {}, 'Archived fixture');
   dbModule.getDb().prepare('INSERT INTO library_document_meta (slug, archived_at, archived_by) VALUES (?, ?, ?)').run('archived-fixture', now, owner.id);
 
+  const signedOutHome = await request('GET', '/');
+  assert(signedOutHome.text.includes('Your team’s documents'), 'signed-out home has sign-in guidance');
+  assert(!signedOutHome.text.includes('review-fixture') && !signedOutHome.text.includes('Review'), 'signed-out home leaks no document data');
+  const signedInHome = await request('GET', '/', undefined, cookie);
+  assert(signedInHome.text.includes('Documents · Proof') && signedInHome.text.includes('New document'), 'signed-in home renders Documents UI');
+  assert((await request('GET', '/library/client.js')).text.includes('loadDocuments'), 'library client is served without a build step');
+
   const review = await request('GET', '/library/api/documents?filter=review', undefined, cookie);
   equal(review.json.documents.length, 1, 'review filter');
   equal(review.json.documents[0].pendingSuggestions, 3, 'pending count');
@@ -162,6 +174,7 @@ async function main(): Promise<void> {
 
   process.env.PROOF_LIBRARY_ENABLED = '0';
   equal((await request('GET', '/library/api/me', undefined, cookie)).status, 404, 'flag off hides library routes');
+  assert((await request('GET', '/')).text.includes('Proof SDK'), 'flag off preserves developer landing');
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   console.log('library tests passed');
 }

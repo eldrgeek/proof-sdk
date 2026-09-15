@@ -93,16 +93,17 @@ function buildSnippet(text: string, query: string): {
   matchEnd: number;
 } | null {
   if (!query) return null;
-  const matchIndex = text.toLocaleLowerCase().indexOf(query.toLocaleLowerCase());
+  const normalizedText = text.replace(/\s+/g, ' ').trim();
+  const matchIndex = normalizedText.toLocaleLowerCase().indexOf(query.toLocaleLowerCase());
   if (matchIndex < 0) return null;
   const targetLength = 120;
   let start = Math.max(0, matchIndex - Math.floor((targetLength - query.length) / 2));
-  let end = Math.min(text.length, start + targetLength);
+  let end = Math.min(normalizedText.length, start + targetLength);
   if (end - start < targetLength) start = Math.max(0, end - targetLength);
   const prefix = start > 0 ? '…' : '';
-  const suffix = end < text.length ? '…' : '';
+  const suffix = end < normalizedText.length ? '…' : '';
   return {
-    snippet: `${prefix}${text.slice(start, end).replace(/\s+/g, ' ').trim()}${suffix}`,
+    snippet: `${prefix}${normalizedText.slice(start, end)}${suffix}`,
     matchStart: prefix.length + Math.max(0, matchIndex - start),
     matchEnd: prefix.length + Math.max(0, matchIndex - start) + query.length,
   };
