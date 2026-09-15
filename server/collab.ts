@@ -86,7 +86,7 @@ import {
   synchronizeAuthoredMarks,
 } from './proof-authored-mark-sync.js';
 import { isShuttingDown } from './shutdown-state.js';
-import { stripProofSpanTags } from './proof-span-strip.js';
+import { stripAllProofSpanTags, stripProofSpanTags } from './proof-span-strip.js';
 import { restoreStandaloneBlankParagraphLines } from '../src/editor/explicit-blank-paragraphs.js';
 import { normalizeAgentScopedId } from '../src/shared/agent-identity.js';
 import { traceServerIncident, toErrorTraceData, type IncidentTraceLevel } from './incident-tracing.js';
@@ -3234,6 +3234,11 @@ export function evaluateProjectionSafety(
   candidateMarkdown: string,
   doc: Y.Doc,
 ): ProjectionSafetyDecision {
+  // Proof spans are projection metadata, not document growth. Excluding their
+  // wrappers keeps suggestion add/accept/remove cycles from tripping length
+  // guardrails while the fragment's visible text remains authoritative.
+  const safetyBaselineMarkdown = stripAllProofSpanTags(baselineMarkdown);
+  const safetyCandidateMarkdown = stripAllProofSpanTags(candidateMarkdown);
   const maxChars = parsePositiveInt(
     process.env.COLLAB_PROJECTION_GUARD_MAX_CHARS,
     DEFAULT_PROJECTION_GUARD_MAX_CHARS,
@@ -3262,47 +3267,53 @@ export function evaluateProjectionSafety(
     process.env.COLLAB_PROJECTION_GUARD_MIN_TOKEN_OVERLAP,
     DEFAULT_PROJECTION_GUARD_MIN_TOKEN_OVERLAP,
   );
-  const repeatCount = detectPathologicalProjectionRepeat(baselineMarkdown, candidateMarkdown);
+  const repeatCount = detectPathologicalProjectionRepeat(safetyBaselineMarkdown, safetyCandidateMarkdown);
 
-  if (candidateMarkdown.length > maxChars) {
+  if (safetyCandidateMarkdown.length > maxChars) {
     return {
       safe: false,
       reason: 'max_chars_exceeded',
       details: {
-        baselineChars: baselineMarkdown.length,
-        candidateChars: candidateMarkdown.length,
+        baselineChars: safetyBaselineMarkdown.length,
+        candidateChars: safetyCandidateMarkdown.length,
         maxChars,
         repeatCount: repeatCount > 0 ? repeatCount : undefined,
       },
     };
   }
 
-  const canonicalReplayRepeatCount = detectCanonicalReplayRepeatCount(baselineMarkdown, candidateMarkdown);
+  const canonicalReplayRepeatCount = detectCanonicalReplayRepeatCount(
+    safetyBaselineMarkdown,
+    safetyCandidateMarkdown,
+  );
   if (canonicalReplayRepeatCount >= CANONICAL_REPLAY_MIN_REPEATS) {
     return {
       safe: false,
       reason: 'pathological_repeat',
       details: {
-        baselineChars: baselineMarkdown.length,
-        candidateChars: candidateMarkdown.length,
+        baselineChars: safetyBaselineMarkdown.length,
+        candidateChars: safetyCandidateMarkdown.length,
         repeatCount: canonicalReplayRepeatCount,
         canonicalReplay: true,
       },
     };
   }
 
-  if (baselineMarkdown.length > 0 && candidateMarkdown.length > (baselineMarkdown.length * maxGrowthMultiplier)) {
-    const absoluteGrowthChars = candidateMarkdown.length - baselineMarkdown.length;
+  if (
+    safetyBaselineMarkdown.length > 0
+    && safetyCandidateMarkdown.length > (safetyBaselineMarkdown.length * maxGrowthMultiplier)
+  ) {
+    const absoluteGrowthChars = safetyCandidateMarkdown.length - safetyBaselineMarkdown.length;
     const allowSmallBaselineGrowth = smallBaselineBypassEnabled
-      && baselineMarkdown.length < minBaselineChars
+      && safetyBaselineMarkdown.length < minBaselineChars
       && absoluteGrowthChars <= maxSmallBaselineGrowthChars;
     if (!allowSmallBaselineGrowth) {
       return {
         safe: false,
         reason: 'growth_multiplier_exceeded',
         details: {
-          baselineChars: baselineMarkdown.length,
-          candidateChars: candidateMarkdown.length,
+          baselineChars: safetyBaselineMarkdown.length,
+          candidateChars: safetyCandidateMarkdown.length,
           absoluteGrowthChars,
           maxGrowthMultiplier,
           smallBaselineBypassEnabled,
@@ -3319,15 +3330,15 @@ export function evaluateProjectionSafety(
       safe: false,
       reason: 'pathological_repeat',
       details: {
-        baselineChars: baselineMarkdown.length,
-        candidateChars: candidateMarkdown.length,
+        baselineChars: safetyBaselineMarkdown.length,
+        candidateChars: safetyCandidateMarkdown.length,
         repeatCount,
       },
     };
   }
 
   const fragmentPlain = getFragmentPlainTextFromDoc(doc);
-  const markdownPlain = normalizeMarkdownForDriftComparison(candidateMarkdown);
+  const markdownPlain = normalizeMarkdownForDriftComparison(safetyCandidateMarkdown);
   if (fragmentPlain.length > 0 && markdownPlain.length > 0) {
     const lengthDriftRatio = Math.abs(fragmentPlain.length - markdownPlain.length)
       / Math.max(fragmentPlain.length, markdownPlain.length);
