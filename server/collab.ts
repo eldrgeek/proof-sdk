@@ -7905,59 +7905,6 @@ async function persistDoc(
       return;
     }
   }
-  if (sourceActor === 'collab') {
-    if (isCollabQuarantined(slug)) {
-      if (allowDuringShutdown) {
-        maybeThrowOnDirtyShutdownGuard(slug, ydoc, 'auto_quarantined');
-      }
-      persistPending.delete(slug);
-      logLiveClientWriteDropped(slug, 'persistDoc', 'collab_quarantined', { sourceActor });
-      invalidateLoadedCollabDocument(slug);
-      return;
-    }
-    const loadedMeta = loadedDocDbMeta.get(slug);
-    const row = getDocumentBySlug(slug);
-    const currentUpdatedAt = row?.updated_at ?? null;
-    const currentYStateVersion = getLatestYStateVersion(slug);
-    const shouldResolveConflict = !loadedMeta
-      || loadedMeta.updatedAt !== currentUpdatedAt
-      || loadedMeta.yStateVersion !== currentYStateVersion;
-    if (shouldResolveConflict) {
-      const resolution = resolveOnStoreConflict(slug, ydoc);
-      if (resolution.action === 'reload') {
-        if (resolution.accessEpochChanged) {
-          logStaleEpochWrite(slug, 'persistDoc', {
-            reason: resolution.reason,
-            sourceActor,
-            loadedAccessEpoch: loadedMeta?.accessEpoch ?? null,
-            currentAccessEpoch: resolution.persistedState.accessEpoch,
-          });
-        }
-        applyPersistedStateToLoadedDoc(slug, resolution.persistedState);
-        const quarantine = maybeQuarantineStaleOnStoreReload(slug, resolution, { source: 'persistDoc', sourceActor });
-        if (!resolution.logSuppressed) {
-          console.warn('[collab_stale_onstore_reload]', {
-            slug,
-            reason: resolution.reason,
-            accessEpochChanged: resolution.accessEpochChanged,
-            projectionDrift: resolution.projectionDrift,
-            loadedUpdatedAt: resolution.loadedUpdatedAt,
-            currentUpdatedAt: resolution.currentUpdatedAt,
-            loadedYStateVersion: resolution.loadedYStateVersion,
-            currentYStateVersion: resolution.currentYStateVersion,
-            dbMissingBytes: resolution.dbMissingBytes,
-            localUnsavedBytes: resolution.localUnsavedBytes,
-            sourceActor,
-            autoQuarantined: quarantine.quarantined,
-            autoQuarantineReason: quarantine.reason ?? null,
-          });
-        }
-        scheduleStaleOnStoreReload(slug);
-        persistPending.delete(slug);
-        return;
-      }
-    }
-  }
   let queuedRepairReason: string | null = null;
   let projectionMarkdownOverride: string | null = null;
   let skipProjectionWriteDueToDeriveFailure = false;
@@ -7969,6 +7916,10 @@ async function persistDoc(
       if (persistPauseHookForTests) {
         await persistPauseHookForTests({ slug });
       }
+      // Client-side suggestion resolution changes the ProseMirror fragment before
+      // the markdown mirror. Refresh first because resolveOnStoreConflict compares
+      // that mirror with the canonical row; checking it earlier turns valid accepts
+      // into projection drift and can trip the stale-onStore quarantine breakers.
       const refreshed = await refreshMarkdownTextFromFragment(slug, ydoc, 'server-projection-refresh');
       if (refreshed.blockedSuspiciousCollapse) {
         persistPending.delete(slug);
@@ -7989,6 +7940,71 @@ async function persistDoc(
       });
       skipProjectionWriteDueToDeriveFailure = true;
       queuedRepairReason = queuedRepairReason ?? 'derive_fragment_markdown_failed';
+    }
+    if (sourceActor === 'collab') {
+      if (isCollabQuarantined(slug)) {
+        if (allowDuringShutdown) {
+          maybeThrowOnDirtyShutdownGuard(slug, ydoc, 'auto_quarantined');
+        }
+        persistPending.delete(slug);
+        logLiveClientWriteDropped(slug, 'persistDoc', 'collab_quarantined', { sourceActor });
+        invalidateLoadedCollabDocument(slug);
+        return;
+      }
+      const loadedMeta = loadedDocDbMeta.get(slug);
+      const row = getDocumentBySlug(slug);
+      const currentUpdatedAt = row?.updated_at ?? null;
+      const currentYStateVersion = getLatestYStateVersion(slug);
+      const shouldResolveConflict = !loadedMeta
+        || loadedMeta.updatedAt !== currentUpdatedAt
+        || loadedMeta.yStateVersion !== currentYStateVersion;
+      if (shouldResolveConflict) {
+        const resolution = resolveOnStoreConflict(slug, ydoc);
+        if (resolution.action === 'canonical-reconcile') {
+          const applied = await applyCanonicalDocumentToCollab(slug, {
+            markdown: resolution.markdown,
+            marks: resolution.marks,
+            source: 'persist-canonical-reconcile',
+          });
+          if (!applied) {
+            scheduleStaleOnStoreReload(slug);
+          }
+          persistPending.delete(slug);
+          return;
+        }
+        if (resolution.action === 'reload') {
+          if (resolution.accessEpochChanged) {
+            logStaleEpochWrite(slug, 'persistDoc', {
+              reason: resolution.reason,
+              sourceActor,
+              loadedAccessEpoch: loadedMeta?.accessEpoch ?? null,
+              currentAccessEpoch: resolution.persistedState.accessEpoch,
+            });
+          }
+          applyPersistedStateToLoadedDoc(slug, resolution.persistedState);
+          const quarantine = maybeQuarantineStaleOnStoreReload(slug, resolution, { source: 'persistDoc', sourceActor });
+          if (!resolution.logSuppressed) {
+            console.warn('[collab_stale_onstore_reload]', {
+              slug,
+              reason: resolution.reason,
+              accessEpochChanged: resolution.accessEpochChanged,
+              projectionDrift: resolution.projectionDrift,
+              loadedUpdatedAt: resolution.loadedUpdatedAt,
+              currentUpdatedAt: resolution.currentUpdatedAt,
+              loadedYStateVersion: resolution.loadedYStateVersion,
+              currentYStateVersion: resolution.currentYStateVersion,
+              dbMissingBytes: resolution.dbMissingBytes,
+              localUnsavedBytes: resolution.localUnsavedBytes,
+              sourceActor,
+              autoQuarantined: quarantine.quarantined,
+              autoQuarantineReason: quarantine.reason ?? null,
+            });
+          }
+          scheduleStaleOnStoreReload(slug);
+          persistPending.delete(slug);
+          return;
+        }
+      }
     }
     try {
       if ((persistGeneration.get(slug) ?? 0) !== generation || collabInvalidations.has(slug)) {

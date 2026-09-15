@@ -1,7 +1,12 @@
 import { createHash, randomUUID } from 'crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import * as Y from 'yjs';
-import { prosemirrorToYXmlFragment, updateYFragment, yXmlFragmentToProseMirrorRootNode } from 'y-prosemirror';
+import {
+  initProseMirrorDoc,
+  prosemirrorToYXmlFragment,
+  updateYFragment,
+  yXmlFragmentToProseMirrorRootNode,
+} from 'y-prosemirror';
 import type { Node as ProseMirrorNode, Schema } from '@milkdown/prose/model';
 import {
   addDocumentEvent,
@@ -503,11 +508,15 @@ function replaceYXmlFragment(fragment: Y.XmlFragment, pmDoc: unknown): void {
 }
 
 function updateYXmlFragment(fragment: Y.XmlFragment, pmDoc: unknown): void {
+  // Seed update metadata from the current fragment so the incremental diff can
+  // match existing Y.Xml nodes to their ProseMirror counterparts.
+  const nextDoc = pmDoc as ProseMirrorNode;
+  const { meta } = initProseMirrorDoc(fragment as any, nextDoc.type.schema as any);
   updateYFragment(
     fragment.doc as Y.Doc,
     fragment as any,
-    pmDoc as any,
-    { mapping: new Map(), isOMark: new Map() } as any,
+    nextDoc as any,
+    meta as any,
   );
 }
 
