@@ -2,12 +2,20 @@ import * as Y from 'yjs';
 import { defaultDeleteFilter, defaultProtectedNodes, ySyncPluginKey } from 'y-prosemirror';
 import { changedRange, rangeMatches, snapshotText, type DecisionRange } from './review-decision-range';
 
+/** Yjs visits children first: a surviving child must keep every ancestor alive. */
+function deleteEmptyContainer(item: Y.Item): boolean {
+  return defaultDeleteFilter(item, defaultProtectedNodes)
+    && !(item.content instanceof Y.ContentType
+      && item.content.type instanceof Y.XmlElement && item.content.type.length > 0);
+}
+
 /** Review metadata extends the page's native history, including its selection hooks. */
 export class ReviewDecisionHistory {
   private readonly origin = {};
   private readonly rangeKey = Symbol('review decision text');
   readonly manager: Y.UndoManager;
   private readonly ownsManager: boolean;
+  private readonly previousDeleteFilter: Y.UndoManager['deleteFilter'];
   constructor(readonly doc: Y.Doc, manager?: Y.UndoManager) {
     this.ownsManager = !manager;
     this.manager = manager ?? new Y.UndoManager(doc.getXmlFragment('prosemirror'), {
@@ -15,6 +23,8 @@ export class ReviewDecisionHistory {
       deleteFilter: item => defaultDeleteFilter(item, defaultProtectedNodes),
       captureTransaction: tr => tr.meta.get('addToHistory') !== false,
     });
+    this.previousDeleteFilter = this.manager.deleteFilter;
+    this.manager.deleteFilter = item => this.previousDeleteFilter(item) && deleteEmptyContainer(item);
     this.manager.addToScope(doc.getMap('marks'));
     this.manager.addTrackedOrigin(this.origin);
   }
@@ -63,7 +73,7 @@ export class ReviewDecisionHistory {
     Y.applyUpdate(copy, Y.encodeStateAsUpdate(this.doc));
     const manager = new Y.UndoManager([copy.getXmlFragment('prosemirror'), copy.getMap('marks')], {
       trackedOrigins: new Set(), captureTimeout: 0,
-      deleteFilter: item => defaultDeleteFilter(item, defaultProtectedNodes),
+      deleteFilter: source.deleteFilter,
     });
     manager.undoStack = [...source.undoStack];
     manager.redoStack = [...source.redoStack];
@@ -73,6 +83,7 @@ export class ReviewDecisionHistory {
   undo(): boolean { return this.restore(false); }
   redo(): boolean { return this.restore(true); }
   destroy(): void {
+    this.manager.deleteFilter = this.previousDeleteFilter;
     this.manager.removeTrackedOrigin(this.origin);
     if (this.ownsManager) this.manager.destroy();
   }

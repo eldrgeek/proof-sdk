@@ -60,6 +60,28 @@ async function pair() {
   return { alice, bob, close() { alice.close(); bob.close(); } };
 }
 const tests: Record<string, () => Promise<void>> = {
+  '1': async () => {
+    for (const structure of ['blockquote', 'bullet_list', 'ordered_list', 'table', 'heading', 'code_block']) {
+      const p = await pair();
+      try {
+        const para = schema.node('paragraph', null, schema.text('ALICE'));
+        const node = structure === 'table' ? schema.node('table', null, schema.node('table_row', null, [schema.node('table_cell', null, para), schema.node('table_header', null, para)]))
+          : structure.endsWith('_list') ? schema.node(structure, null, schema.node('list_item', null, para))
+          : schema.node(structure, null, structure === 'blockquote' ? para : schema.text('ALICE'));
+        p.alice.edit(() => p.alice.view.dispatch(p.alice.view.state.tr.insert(10, node)));
+        let pos = 0; p.bob.view.state.doc.descendants((n: any, at: number) => { if (!pos && n.isText && n.text === 'ALICE') pos = at + 2; });
+        p.bob.edit(() => p.bob.view.dispatch(p.bob.view.state.tr.insertText('BOB', pos)));
+        assert(p.alice.restore());
+        for (const peer of [p.alice, p.bob]) {
+          assert(peer.view.state.doc.textContent.includes('BOB'), `${structure}: Bob survives undo on both peers`);
+          assert(!peer.view.state.doc.textContent.includes('AL'), `${structure}: Alice's characters go`);
+        }
+        assert(p.alice.restore(true));
+        assert(p.alice.restore());
+        for (const peer of [p.alice, p.bob]) assert(peer.view.state.doc.textContent.includes('BOB'), `${structure}: Bob survives redo and second undo`);
+      } finally { p.close(); }
+    }
+  },
   '3': async () => {
     if (production) { console.log('Production has no style switch (R1a absent)'); return; }
     for (const from of ['playmaker', 'proof']) {
