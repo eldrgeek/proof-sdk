@@ -22,6 +22,7 @@ import {
   getLoadedCollabMarkdownForVerification,
   getLoadedCollabMarkdownFromFragment,
   getLoadedCollabFragmentTextHash,
+  getAgentPresenceExpiresAt,
   hasAgentPresenceInLoadedCollab,
   isCanonicalReadMutationReady,
   invalidateLoadedCollabDocument,
@@ -1034,8 +1035,6 @@ function ensureAgentPresenceForAuthenticatedCall(
     upgradeProvisionalAutoPresence(req, slug, id);
   }
 
-  if (hasAgentPresenceInLoadedCollab(slug, id)) return false;
-
   const now = new Date().toISOString();
   const entry = {
     id,
@@ -1045,6 +1044,7 @@ function ensureAgentPresenceForAuthenticatedCall(
     status: 'active',
     details,
     at: now,
+    expiresAt: getAgentPresenceExpiresAt(now),
   };
   const activity = {
     type: 'agent.presence',
@@ -3039,6 +3039,7 @@ agentRoutes.post('/:slug/presence', (req: Request, res: Response) => {
         ? body.summary
         : '',
     at: now,
+    expiresAt: getAgentPresenceExpiresAt(now),
   };
 
   const activity = {
