@@ -39,6 +39,8 @@ import {
   buildProofSdkLinks,
 } from './proof-sdk-routes.js';
 import { getPublicOrigin, isSecureRequest } from './public-origin.js';
+import { getLibrarySession, isLibraryEnabled } from './library/auth.js';
+import { recordLibraryVisit } from './library/documents.js';
 
 export { getPublicOrigin, isSecureRequest } from './public-origin.js';
 
@@ -227,6 +229,41 @@ function injectShareHtmlDiscoveryTags(
   return out;
 }
 
+export function injectLibraryMemberIntoShareHtml(html: string, name: string, slug: string = ''): string {
+  const memberJson = JSON.stringify({ name }).replace(/</g, '\\u003c');
+  const slugJson = JSON.stringify(slug).replace(/</g, '\\u003c');
+  const script = `<script>
+window.__PROOF_LIBRARY_MEMBER__=${memberJson};
+(function () {
+  var slug = ${slugJson};
+  if (slug) {
+    window.addEventListener('pagehide', function () {
+      fetch('/library/api/visits/' + encodeURIComponent(slug), {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({event: 'leave'}),
+        keepalive: true
+      }).catch(function () {});
+    });
+  }
+  function linkWordmark() {
+    var links = document.querySelectorAll('#share-banner a');
+    for (var i = 0; i < links.length; i += 1) {
+      if (links[i].textContent === 'Proof') {
+        links[i].href = '/';
+        links[i].title = 'Back to Documents';
+        links[i].removeAttribute('target');
+        links[i].removeAttribute('rel');
+      }
+    }
+  }
+  new MutationObserver(linkWordmark).observe(document.documentElement, {childList: true, subtree: true});
+  document.addEventListener('DOMContentLoaded', linkWordmark);
+})();
+</script>`;
+  return html.includes('</head>') ? html.replace('</head>', `${script}\n</head>`) : `${script}${html}`;
+}
+
 /**
  * Detect non-browser user-agents that explicitly request text/html.
  * These are typically agent web_fetch tools (e.g., OpenClaw, ChatGPT browsing)
@@ -362,6 +399,10 @@ shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
   const origin = getPublicOrigin(req);
 
   const doc = slug ? (getCanonicalReadableDocumentSync(slug, 'share') ?? null) : null;
+  const librarySession = isLibraryEnabled() ? getLibrarySession(req, res) : null;
+  if (doc && librarySession) {
+    recordLibraryVisit(librarySession.member.id, slug, 'open');
+  }
   const tokenFromCookie = slug ? getCookie(req, shareTokenCookieName(slug)) : null;
   const roleFromQuery = slug && tokenFromQuery ? resolveDocumentAccessRole(slug, tokenFromQuery) : null;
   const queryOwner = Boolean(doc && tokenFromQuery && canMutateByOwnerIdentity(doc, tokenFromQuery));
@@ -640,5 +681,16 @@ shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
     } : null,
     shareState: doc?.share_state ?? 'MISSING',
   });
-  res.type('html').send(injectShareHtmlDiscoveryTags(shareHtml ?? '', slug, doc?.markdown ?? '', preview, configShareToken));
+  const responseHtml = injectShareHtmlDiscoveryTags(
+    shareHtml ?? '',
+    slug,
+    doc?.markdown ?? '',
+    preview,
+    configShareToken,
+  );
+  res.type('html').send(
+    librarySession
+      ? injectLibraryMemberIntoShareHtml(responseHtml, librarySession.member.name, slug)
+      : responseHtml,
+  );
 });

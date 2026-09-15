@@ -988,7 +988,8 @@ apiRoutes.post('/auth/start', (req: Request, res: Response) => {
 });
 
 function handleOAuthPoll(req: Request, res: Response): void {
-  const requestId = req.params.requestId;
+  const requestIdParam = req.params.requestId;
+  const requestId = Array.isArray(requestIdParam) ? requestIdParam[0] : requestIdParam;
   if (!requestId || !requestId.trim()) {
     res.status(400).json({ error: 'Missing requestId', code: 'BAD_REQUEST' });
     return;
@@ -1312,8 +1313,8 @@ apiRoutes.put('/documents/:slug/title', (req: Request, res: Response) => {
 
   const body = isRecord(req.body) ? req.body : {};
   const title = body.title;
-  const actor = body.actor;
-  const clientId = body.clientId;
+  const actor = typeof body.actor === 'string' ? body.actor : undefined;
+  const clientId = typeof body.clientId === 'string' ? body.clientId : undefined;
   if (title !== null && typeof title !== 'string') {
     res.status(400).json({ error: 'title must be a string or null when provided' });
     return;
@@ -1467,7 +1468,7 @@ apiRoutes.put('/documents/:slug', async (req: Request, res: Response) => {
       slug,
       nextMarkdown: sanitizedMarkdown,
       nextMarks: hasMarksUpdate
-        ? normalizedMarks
+        ? (normalizedMarks ?? {})
         : canonicalizeStoredMarks(parseJson(currentDoc.marks) as Record<string, unknown>),
       source: 'rest-put',
       baseUpdatedAt: currentDoc.updated_at,
@@ -1554,11 +1555,12 @@ apiRoutes.put('/documents/:slug', async (req: Request, res: Response) => {
     return;
   }
 
-  updatedDoc = getDocumentBySlug(slug);
-  if (!updatedDoc) {
+  const reloadedDoc = getDocumentBySlug(slug);
+  if (!reloadedDoc) {
     res.status(500).json({ error: 'Document update persisted but document could not be reloaded' });
     return;
   }
+  updatedDoc = reloadedDoc;
   const integrity = summarizeDocumentIntegrity(updatedDoc.markdown);
   if (hasMarkdownUpdate) {
     try {
@@ -2194,7 +2196,7 @@ apiRoutes.get('/documents/:slug/collab-session', (req: Request, res: Response) =
     return;
   }
 
-  const canRead = doc.share_state !== 'DELETED';
+  const canRead = true;
   const canEdit = role === 'owner_bot'
     ? (doc.share_state === 'ACTIVE' || doc.share_state === 'PAUSED')
     : (role === 'editor' && doc.share_state === 'ACTIVE');

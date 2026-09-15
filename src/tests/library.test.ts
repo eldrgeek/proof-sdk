@@ -20,12 +20,13 @@ function equal<T>(actual: T, expected: T, message: string): void {
 
 async function main(): Promise<void> {
   const serverRoot = '../../server';
-  const [{ libraryRoutes }, auth, documents, dbModule, page] = await Promise.all([
+  const [{ libraryRoutes }, auth, documents, dbModule, page, shareWeb] = await Promise.all([
     import(`${serverRoot}/library/routes.js`),
     import(`${serverRoot}/library/auth.js`),
     import(`${serverRoot}/library/documents.js`),
     import(`${serverRoot}/db.js`),
     import(`${serverRoot}/library/page.js`),
+    import(`${serverRoot}/share-web-routes.js`),
   ]);
   const app = express();
   app.use(express.json({ limit: '10mb' }), libraryRoutes);
@@ -126,6 +127,9 @@ async function main(): Promise<void> {
   const signedInHome = await request('GET', '/', undefined, cookie);
   assert(signedInHome.text.includes('Documents · Proof') && signedInHome.text.includes('New document'), 'signed-in home renders Documents UI');
   assert((await request('GET', '/library/client.js')).text.includes('loadDocuments'), 'library client is served without a build step');
+  const injected = shareWeb.injectLibraryMemberIntoShareHtml('<html><head></head><body></body></html>', '</script><b>x');
+  assert(injected.includes('window.__PROOF_LIBRARY_MEMBER__'), 'member global is injected');
+  assert(injected.includes('\\u003c/script>') && !injected.includes('</script><b>x'), 'member name cannot escape the script');
 
   const review = await request('GET', '/library/api/documents?filter=review', undefined, cookie);
   equal(review.json.documents.length, 1, 'review filter');
@@ -171,6 +175,19 @@ async function main(): Promise<void> {
   const rateKey = `rate-${unique}`;
   for (let index = 0; index < 30; index += 1) assert(documents.allowLibraryDocumentCreation(rateKey), 'first 30 creates allowed');
   assert(!documents.allowLibraryDocumentCreation(rateKey), '31st create is rate-limited');
+
+  const storedNames = new Map<string, string>();
+  Object.assign(globalThis, {
+    window: { __PROOF_LIBRARY_MEMBER__: { name: 'Signed-in Writer' } },
+    localStorage: {
+      getItem: (key: string) => storedNames.get(key) ?? null,
+      setItem: (key: string, value: string) => storedNames.set(key, value),
+    },
+  });
+  const sourceRoot = '../ui';
+  const namePrompt = await import(`${sourceRoot}/name-prompt.js`);
+  equal(await namePrompt.promptForName(), 'Signed-in Writer', 'member name bypasses the viewer prompt');
+  equal(storedNames.get('proof-share-viewer-name'), 'Signed-in Writer', 'member name is saved for authorship');
 
   process.env.PROOF_LIBRARY_ENABLED = '0';
   equal((await request('GET', '/library/api/me', undefined, cookie)).status, 404, 'flag off hides library routes');
