@@ -28,6 +28,7 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Real-IP $remote_addr;
     }
 
@@ -40,6 +41,8 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Real-IP $remote_addr;
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
     }
@@ -310,6 +313,6 @@ The canonical feedback assets are v4.1 (2026-08-07), copied verbatim on 2026-09-
 
 Error reports contain bounded diagnostic strings, page paths, and the build identifier; they do not collect editor state, document content, DOM text, or console argument objects. URL queries and fragments are removed. `client_errors` holds one aggregate per signature for a 30-minute window, with counts and a sample. Only the first occurrence is forwarded in that window. If forwarding fails, the local record remains, and the banner does not claim delivery; no automatic retry is made within that window. Browser reporting is capped at five per page load; the server allows 20 per client address per 10 minutes. Session exchanges allow ten per client address per 10 minutes.
 
-Behind a trusted reverse proxy, set `PROOF_TRUST_PROXY_HEADERS=1` and have nginx overwrite `X-Forwarded-For` with the client's address (`proxy_set_header X-Forwarded-For $remote_addr;`). Session, error-report, and share limiters use the same address resolver.
+Behind a trusted reverse proxy, set `PROOF_TRUST_PROXY_HEADERS=1` and have nginx set `X-Real-IP $remote_addr` and overwrite `X-Forwarded-For` with `$remote_addr`. The shared resolver prefers `X-Real-IP`, then the last `X-Forwarded-For` entry appended by the trusted proxy; it never trusts leading entries supplied by visitors. Session, error-report, and share limiters use the same address resolver.
 
 With SOMA auth disabled, the legacy web sign-in and device-link paths remain available for rollback. With SOMA auth enabled they return 404. The obsolete `signin-link` CLI command is removed in both modes. With feedback disabled, the chip, proxy, and error reporting are absent. Document URLs remain open under the existing sharing rules; library membership adds the member name, back link, and protected POST visits.

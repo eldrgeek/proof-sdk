@@ -140,8 +140,27 @@ try {
     db.createDocument(slug, 'Limit', {});
     assert.equal((await mint(slug, '203.0.113.1')).status, i < 30 ? 201 : 429);
   }
+  // Leading forwarded addresses are attacker-controlled. Proxy identity wins.
+  db.createDocument('x1-proxy-attribution', 'Proxy attribution', {});
+  const proxyKey = await mint('x1-proxy-attribution', 'spoofed, 198.51.100.200', { 'x-real-ip': '192.0.2.200' });
+  assert.equal(proxyKey.status, 201);
+  const proxyRow = db.getDb().prepare('SELECT requested_from FROM document_access WHERE token_id = ?')
+    .get(proxyKey.body.tokenId) as { requested_from: string };
+  assert.equal(proxyRow.requested_from, '192.0.2.200', 'X-Real-IP must take precedence');
+  const { getClientIp } = await import('../../server/client-address.js');
+  const request = (headers: Record<string, string>) => ({ header: (name: string) => headers[name],
+    ip: '127.0.0.1', socket: { remoteAddress: '127.0.0.1' } }) as import('express').Request;
+  assert.equal(getClientIp(request({ 'x-forwarded-for': 'spoofed, 198.51.100.200' })), '198.51.100.200');
+  assert.equal(getClientIp(request({ 'x-real-ip': ' 192.0.2.200 ', 'x-forwarded-for': 'spoofed' })), '192.0.2.200');
+  assert.equal(getClientIp(request({ 'x-forwarded-for': 'spoofed,  ' })), '127.0.0.1');
+  for (let i = 0; i < 31; i++) {
+    const slug = `x1-proxy-limit-${i}`;
+    db.createDocument(slug, 'Limit', {});
+    assert.equal((await mint(slug, `forged-${i}, 203.0.113.200`)).status, i < 30 ? 201 : 429);
+  }
   // Forwarded addresses are ignored unless the trusted-proxy switch is enabled.
   process.env.PROOF_TRUST_PROXY_HEADERS = 'false';
+  assert.equal(getClientIp(request({ 'x-real-ip': 'forged', 'x-forwarded-for': 'also-forged' })), '127.0.0.1');
   for (let i = 0; i < 31; i++) {
     const slug = `x1-untrusted-${i}`;
     db.createDocument(slug, 'Limit', {});

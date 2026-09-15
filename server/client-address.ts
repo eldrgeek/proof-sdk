@@ -8,10 +8,13 @@ export function trustProxyHeaders(): boolean {
 
 export function getClientIp(req: Request): string {
   if (trustProxyHeaders()) {
+    const realIp = req.header('x-real-ip')?.trim();
+    if (realIp) return realIp;
     const forwardedFor = req.header('x-forwarded-for');
     if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
-      const first = forwardedFor.split(',')[0]?.trim();
-      if (first) return first;
+      // The trusted proxy appends the last entry; leading entries are visitor input.
+      const last = forwardedFor.split(',').at(-1)?.trim();
+      if (last) return last;
     }
   }
   if (req.ip && req.ip.trim()) return req.ip;
