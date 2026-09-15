@@ -115,6 +115,9 @@ try {
     assert.equal((await mint(slug)).status, 403);
     assert.equal((await call(`/d/${slug}?format=json`)).body.capabilities.canEdit, false);
   }
+  const pausedOwner = db.createDocumentAccessToken('x1-paused', 'owner_bot');
+  assert.equal((await mint('x1-paused', '192.0.2.6', { 'x-share-token': pausedOwner.secret })).status, 403,
+    'Even owners must not mint while sharing is paused');
   assert.equal((await mint('x1-missing')).status, 403);
   // Signed-in request attribution uses the verified local library session identity.
   const { createLibraryMember } = await import('../../server/library/auth');

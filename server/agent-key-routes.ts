@@ -53,7 +53,14 @@ agentKeyRoutes.route('/documents/:slug/agent-keys')
   .get(authorize, (req, res) => {
     res.json({ keys: listDocumentAgentKeys(String(req.params.slug)) });
   })
-  .post(authorize, documentLimit, addressLimit, (req, res) => {
+  .post(authorize, (req, res, next) => {
+    // Owner editing on a paused page does not authorize issuing new agent keys.
+    if (getDocumentBySlug(String(req.params.slug))?.share_state !== 'ACTIVE') {
+      res.status(403).json({ error: 'Sharing must be active to create agent keys' });
+      return;
+    }
+    next();
+  }, documentLimit, addressLimit, (req, res) => {
     const label = req.body?.label ?? 'AI assistant';
     if (typeof label !== 'string' || !label.trim() || label.trim().length > 80 || /[\x00-\x1f\x7f]/.test(label)) {
       res.status(400).json({ error: 'Agent name must be 1–80 characters without control characters' });
