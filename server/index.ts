@@ -16,6 +16,7 @@ import {
   enforceBridgeClientCompatibility,
 } from './client-capabilities.js';
 import { getBuildInfo } from './build-info.js';
+import { libraryRoutes } from './library/routes.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -47,6 +48,7 @@ async function main(): Promise<void> {
 
   app.use(express.json({ limit: '10mb' }));
   app.use(express.static(path.join(__dirname, '..', 'public')));
+  app.use(libraryRoutes);
 
   app.use((req, res, next) => {
     const originHeader = req.header('origin');

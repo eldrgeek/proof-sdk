@@ -31,7 +31,6 @@ import {
   buildSharePreviewModel,
   renderShareMetaTags,
   renderShareOgPng,
-  resolvePublicOrigin,
   type SharePreviewModel,
 } from './share-preview.js';
 import {
@@ -39,6 +38,9 @@ import {
   buildProofSdkDocumentPaths,
   buildProofSdkLinks,
 } from './proof-sdk-routes.js';
+import { getPublicOrigin, isSecureRequest } from './public-origin.js';
+
+export { getPublicOrigin, isSecureRequest } from './public-origin.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -93,20 +95,6 @@ function wantsMarkdown(req: Request): boolean {
   if (format === 'markdown' || format === 'md') return true;
   const accept = (req.header('accept') || '').toLowerCase();
   return accept.includes('text/markdown') || accept.includes('text/x-markdown');
-}
-
-function isSecureRequest(req: Request): boolean {
-  if (req.secure) return true;
-  const proto = (req.header('x-forwarded-proto') || '').split(',')[0]?.trim().toLowerCase();
-  return proto === 'https';
-}
-
-function getPublicOrigin(req: Request): string {
-  const configured = process.env.PROOF_PUBLIC_ORIGIN?.trim();
-  if (configured) return resolvePublicOrigin(configured);
-  const host = req.get('host') || '';
-  if (!host) return resolvePublicOrigin(null);
-  return `${isSecureRequest(req) ? 'https' : 'http'}://${host}`;
 }
 
 function deriveShareCapabilities(role: ShareRole, shareState: string): { canRead: boolean; canComment: boolean; canEdit: boolean } {
