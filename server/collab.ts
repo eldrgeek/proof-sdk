@@ -3272,13 +3272,16 @@ export function evaluateProjectionSafety(
   );
   const repeatCount = detectPathologicalProjectionRepeat(safetyBaselineMarkdown, safetyCandidateMarkdown);
 
-  if (safetyCandidateMarkdown.length > maxChars) {
+  // The absolute cap stays on the stored text, span wrappers included: it is the ceiling against a
+  // runaway loop that keeps nesting wrappers while the visible text stays the same. The growth and
+  // repeat checks below compare visible text only.
+  if (candidateMarkdown.length > maxChars) {
     return {
       safe: false,
       reason: 'max_chars_exceeded',
       details: {
-        baselineChars: safetyBaselineMarkdown.length,
-        candidateChars: safetyCandidateMarkdown.length,
+        baselineChars: baselineMarkdown.length,
+        candidateChars: candidateMarkdown.length,
         maxChars,
         repeatCount: repeatCount > 0 ? repeatCount : undefined,
       },
