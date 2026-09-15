@@ -1,0 +1,13 @@
+HOW-TO jdx1z5e0 {'readSource': 'projection', 'projectionFresh': True, 'mutationReady': True, 'revision': 1} chars 38653 markup-in-text: False pending: 0
+agent-live-baseline0b3 dlvimvbf rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+ai-block-accept-baseline0b3 jkf0ti7e rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+ai-block-reject-baseline0b3 g3316j0v rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+ai-format-1-baseline0b3 cwyv19jb rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+ai-format-2-baseline0b3 hzvwgush rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+ai-format-3-baseline0b3 p3x1pbew rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+closetab-baseline0b3 rlykdaf0 rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+e2e-brackets-baseline0b3 e8ilxxr4 rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+e2e-plain-baseline0b3 44uoibnv rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+rest-reject-baseline0b3 n3pzt0eq rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+two-rev-edit-baseline0b3 3z21nocy rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+two-rev-suggest-baseline0b3 se7qj28q rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0

@@ -1,0 +1,150 @@
+{
+ "at": "2026-09-15T01:02:39.447Z",
+ "slug": "co2jsifn",
+ "text": "plain",
+ "crashed": false,
+ "results": [
+  {
+   "step": "open a fresh document in Suggesting mode",
+   "ok": true,
+   "detail": {
+    "suggesting": true,
+    "pending": 0
+   }
+  },
+  {
+   "step": "type an insertion key by key: drawn green, attributed",
+   "ok": true,
+   "detail": {
+    "id": "m1789434108103_58b406559aeb_1",
+    "kind": "insert",
+    "by": "human:Claude E2E",
+    "text": " E2E insert words",
+    "content": " E2E insert words",
+    "drawn": {
+     "text": " E2E insert words",
+     "title": "Suggested by Claude E2E",
+     "cls": "mark-insert"
+    }
+   }
+  },
+  {
+   "step": "suggest a deletion: drawn red",
+   "ok": true,
+   "detail": {
+    "id": "m1789434111042_58b406559aeb_2",
+    "kind": "delete",
+    "by": "human:Claude E2E",
+    "text": "teh",
+    "content": null,
+    "drawn": {
+     "text": "teh",
+     "title": "Suggested by Claude E2E",
+     "cls": "mark-delete"
+    }
+   }
+  },
+  {
+   "step": "reload: both suggestions persist and are drawn",
+   "ok": true,
+   "detail": {
+    "insert": {
+     "id": "m1789434108103_58b406559aeb_1",
+     "kind": "insert",
+     "by": "human:Claude E2E",
+     "text": " E2E insert words",
+     "content": " E2E insert words",
+     "drawn": {
+      "text": " E2E insert words",
+      "title": "Suggested by Claude E2E",
+      "cls": "mark-insert"
+     }
+    },
+    "delete": {
+     "id": "m1789434111042_58b406559aeb_2",
+     "kind": "delete",
+     "by": "human:Claude E2E",
+     "text": "teh",
+     "content": null,
+     "drawn": {
+      "text": "teh",
+      "title": "Suggested by Claude E2E",
+      "cls": "mark-delete"
+     }
+    },
+    "pill": "2 suggestions"
+   }
+  },
+  {
+   "step": "click the insertion: card shows author and change",
+   "ok": true,
+   "detail": {
+    "header": "Suggestion",
+    "meta": "Suggested by Claude E2E",
+    "body": "Insert:  E2E insert words"
+   }
+  },
+  {
+   "step": "accept the insertion",
+   "ok": true,
+   "detail": {
+    "pending": 1
+   }
+  },
+  {
+   "step": "reject the deletion",
+   "ok": true,
+   "detail": {
+    "pending": 0
+   }
+  },
+  {
+   "step": "reload: accept and reject persisted",
+   "ok": true,
+   "detail": {
+    "pending": 0
+   }
+  },
+  {
+   "step": "accept a deletion: text removed exactly once",
+   "ok": true,
+   "detail": {
+    "tail": " is ready.DIANA\nThe second act needs scene. E2E insert words"
+   }
+  },
+  {
+   "step": "review pill counts two new suggestions",
+   "ok": true,
+   "detail": "2 suggestions"
+  },
+  {
+   "step": "reject all",
+   "ok": true,
+   "detail": {
+    "pill": null
+   }
+  },
+  {
+   "step": "accept all",
+   "ok": true,
+   "detail": {
+    "pill": null
+   }
+  },
+  {
+   "step": "final reload",
+   "ok": true,
+   "detail": {
+    "tail": "\nI think teh play is ready.DIANA\nThe second act needs scene. E2E insert words bulk B words"
+   }
+  }
+ ],
+ "consoleErrors": [],
+ "server": {
+  "projectionFresh": true,
+  "readSource": "projection",
+  "revision": 12,
+  "markdownTail": "# Proof E2E\n\nERIC\\\nI think teh play is ready.\n\nDIANA\\\nThe second act needs scene. E2E insert words bulk B words\n",
+  "pendingSuggestions": 0
+ }
+}

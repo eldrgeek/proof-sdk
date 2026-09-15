@@ -1,0 +1,4 @@
+accept: {"found":true,"id":"m1789434303305_4a358f06a914_1","returned":true,"stillMarkedSameTick":false}
+tab closed 300 ms after Accept; REST accept/reject calls from the tab: 0
+server: {"readSource":"projection","projectionFresh":true,"mutationReady":true,"repairPending":false,"wordsStoredTimes":1,"markupInText":false,"pending":[]}
+fresh reader: {"wordsShownTimes":1,"pendingShown":0}

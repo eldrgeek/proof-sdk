@@ -1,0 +1,6 @@
+1 AI suggestion.add replace -> {"status":200,"success":true}
+2 person sees the AI suggestion: true
+3 AI suggestion.reject -> {"status":200,"success":true}
+4 before reload, person sees: {"beforeReject":true,"afterReject":true,"tehKept":true,"pending":["replace:ai:cos-probe","insert:human:Claude Person","insert:human:Claude Person"]}
+5 after reload, person sees: {"beforeReject":true,"afterReject":true,"tehKept":true,"pending":["replace:ai:cos-probe","insert:human:Claude Person","insert:human:Claude Person"]}
+6 server: {"readSource":"projection","projectionFresh":true,"repairPending":false,"revision":7,"beforeReject":true,"afterReject":true,"tehKept":true,"markupInText":false,"pending":["replace:ai:cos-probe","insert:human:Claude Person","insert:human:Claude Person"]}

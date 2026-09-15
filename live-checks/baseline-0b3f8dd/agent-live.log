@@ -1,0 +1,8 @@
+1 person has the document open in Suggesting mode
+2 AI suggestion.add -> 200 {"success":true}
+3 person sees: {"aiText":false,"human1":false,"human2":false,"pending":["insert:ai:cos-probe"]}
+4 person typed; server: {"readSource":"projection","projectionFresh":true,"repairPending":false,"revision":4,"aiText":false,"human1":true,"human2":false,"markupInText":false,"pending":["insert:ai:cos-probe","insert:human:Claude Person"]}
+5 after reload, person sees: {"aiText":false,"human1":true,"human2":false,"pending":["insert:ai:cos-probe","insert:human:Claude Person"]}
+6 person accepts the AI suggestion: found returned true
+7 after reload, person sees: {"aiText":false,"human1":true,"human2":true,"pending":["insert:human:Claude Person","insert:human:Claude Person"]}
+8 server: {"readSource":"projection","projectionFresh":true,"repairPending":false,"revision":6,"aiText":false,"human1":true,"human2":true,"markupInText":false,"pending":["insert:human:Claude Person","insert:human:Claude Person"]}

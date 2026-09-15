@@ -1,0 +1,6 @@
+1 both open in Editing mode, separate browser processes
+2 Mike sees: {"mikeWords":false,"ericWords":false,"text":"Proof E2EERIC\nI think  play is ready. DIANA\nThe  act needs one more scene. meirkiec  ttyyppeedd  wwoorrddss","pending":[]}
+2 Eric sees: {"mikeWords":false,"ericWords":false,"text":"Proof E2EERIC\nI think  play is ready. DIANA\nThe  act needs one more scene. meirkiec  ttyyppeedd  wwoorrddss","pending":[]}
+2 server: {"readSource":"projection","projectionFresh":true,"revision":2,"mikeWords":false,"ericWords":false,"markupInText":false,"pending":[]}
+3 after reload, Mike sees: {"mikeWords":false,"ericWords":false,"text":"Proof E2EERIC\nI think  play is ready. DIANA\nThe  act needs one more scene. meirkiec  ttyyppeedd  wwoorrddss","pending":[]}
+3 after reload, Eric sees: {"mikeWords":false,"ericWords":false,"text":"Proof E2EERIC\nI think  play is ready. DIANA\nThe  act needs one more scene. meirkiec  ttyyppeedd  wwoorrddss","pending":[]}

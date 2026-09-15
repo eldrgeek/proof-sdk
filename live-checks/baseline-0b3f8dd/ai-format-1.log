@@ -1,0 +1,12 @@
+set 1 | paragraphs at start: ["The **Format** line sets the style for the play.","Read [the guide](https://example.com/guide) before you start.","Plain closing line."]
+AI A plain quote across bold -> 200 {"success":true}
+AI B markdown link quote -> 200 {"success":true}
+AI C plain quote next to link -> 200 {"success":true}
+mark in page: {"id":"619ad80f-8258-47cf-9394-2195e2aca54d","kind":"replace","covered":"Format line sets the style","content":"The **Format** line sets the house style"}
+mark in page: {"id":"a908896d-e31e-44da-a87d-4b86ca221814","kind":"replace","covered":"before you start","content":"before you begin"}
+server pending before accepting: ["The Format line sets the style","[the guide](https://example.com/guide)","before you start"]
+accept A plain quote across bold: returned true; paragraphs: ["The The **Format** line sets the house style for the play.","Read [the guide](https://example.com/guide) before you start.","Plain closing line."]
+accept B markdown link quote: NO MARK in page
+accept C plain quote next to link: returned true; paragraphs: ["The The **Format** line sets the house style for the play.","Read [the guide](https://example.com/guide) before you begin.","Plain closing line."]
+paragraphs after reload: ["The The **Format** line sets the house style for the play.","Read [the guide](https://example.com/guide) before you begin.","Plain closing line."]
+server: {"readSource":"projection","projectionFresh":true,"revision":5,"pending":[],"markdown":"# Format test\n\nThe The **Format** line sets the house style for the play.\n\nRead [the guide](https://example.com/guide) before you begin.\n\nPlain closing line.\n"}

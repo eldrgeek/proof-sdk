@@ -1,0 +1,16 @@
+set 2 | paragraphs at start: ["The **Format** line sets the style for the play.","Each **Scene** heading starts a new scene in the play.","The **Cue** name comes before the speech.","A plain paragraph with no formatting."]
+AI D plain run after bold -> 200 {"success":true}
+AI E last plain words + new paragraph -> 200 {"success":true}
+AI F starts inside bold -> 200 {"success":true}
+AI G whole plain paragraph + new paragraph -> 200 {"success":true}
+mark in page: {"id":"28ed6692-3f9f-4a90-9e95-9dcc13763228","kind":"replace","covered":"line sets the style","content":"line sets the house style"}
+mark in page: {"id":"c060ef52-9c4e-4c9a-afb9-399e4712bdab","kind":"replace","covered":"a new scene in the play.","content":"a new scene in the play.\n\nA new AI paragraph."}
+mark in page: {"id":"cae07efd-f303-4b95-b303-c22b74ccc5ac","kind":"replace","covered":"Cue name comes","content":"Cue name always comes"}
+mark in page: {"id":"799c753a-f6e4-4a44-bf27-6278c87c6a7f","kind":"replace","covered":"A plain paragraph with no formatting.","content":"A plain paragraph with no formatting.\n\nSecond new AI paragraph."}
+server pending before accepting: ["line sets the style","a new scene in the play.","Cue name comes","A plain paragraph with no formatting."]
+accept D plain run after bold: returned true; paragraphs: ["The **Format** line sets the house style for the play.","Each **Scene** heading starts a new scene in the play.","The **Cue** name comes before the speech.","A plain paragraph with no formatting."]
+accept E last plain words + new paragraph: returned false; paragraphs: ["The **Format** line sets the house style for the play.","Each **Scene** heading starts a new scene in the play.","The **Cue** name comes before the speech.","A plain paragraph with no formatting."]
+accept F starts inside bold: returned true; paragraphs: ["The **Format** line sets the house style for the play.","Each **Scene** heading starts a new scene in the play.","The Cue name always comes before the speech.","A plain paragraph with no formatting."]
+accept G whole plain paragraph + new paragraph: returned true; paragraphs: ["The **Format** line sets the house style for the play.","Each **Scene** heading starts a new scene in the play.","The Cue name always comes before the speech.","A plain paragraph with no formatting.","Second new AI paragraph."]
+paragraphs after reload: ["The **Format** line sets the house style for the play.","Each **Scene** heading starts a new scene in the play.","The Cue name always comes before the speech.","A plain paragraph with no formatting.","Second new AI paragraph."]
+server: {"readSource":"projection","projectionFresh":true,"revision":9,"pending":["a new scene in the play."],"markdown":"# Format test 2\n\nThe **Format** line sets the house style for the play.\n\nEach **Scene** heading starts a new scene in the play.\n\nThe Cue name always comes before the speech.\n\nA plain paragraph with no formatting.\n\nSecond new AI paragraph.\n"}

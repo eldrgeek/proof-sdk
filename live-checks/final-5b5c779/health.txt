@@ -1,0 +1,13 @@
+HOW-TO jdx1z5e0 {'readSource': 'projection', 'projectionFresh': True, 'mutationReady': True, 'revision': 1} chars 38653 markup-in-text: False pending: 0
+agent-live-final5b5 5aw2x1no rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+ai-block-accept-final5b5 ecbvkrlr rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+ai-block-reject-final5b5 rdq9nwvj rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+ai-format-1-final5b5 3s3jhi2q rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+ai-format-2-final5b5 k25st7ne rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+ai-format-3-final5b5 kf4krl9d rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+closetab-final5b5 9d8k40jb rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+e2e-brackets-final5b5 1p0ce15k rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+e2e-plain-final5b5 co2jsifn rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+rest-reject-final5b5 5o21v0uu rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+two-rev-edit-final5b5 3dphpffw rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0
+two-rev-suggest-final5b5 dgl3iiz3 rebuilds: 0 dropped-live-writes: 0 tombstoned-drops: 0

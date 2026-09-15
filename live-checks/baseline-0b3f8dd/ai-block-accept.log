@@ -1,0 +1,17 @@
+action: accept | blocks at start: ["heading: Block test","paragraph: Intro paragraph one.","row: Name | Role","row: Eric | Writer","row: Diana | Director","paragraph: Closing paragraph."]
+AI inline text via insert -> 200 {"success":true}
+AI paragraph via insert after a paragraph end -> 200 {"success":true}
+AI table row via insert anchored on a cell -> 200 {"success":true}
+mark in page: {"id":"5fd3f556-1bce-4a56-9b8e-e74a36193cc2","kind":"insert","covered":"Intro paragraph one.","content":" AI inline words."}
+mark in page: {"id":"fa8687f5-0e81-4d2f-a31c-ace3bc93a5d3","kind":"insert","covered":"Director","content":"\n| Mike | Producer |"}
+mark in page: {"id":"7d40fd68-a4b6-4e36-80ba-917d9e0e00ed","kind":"insert","covered":"Closing paragraph.","content":"\n\nAnother AI paragraph."}
+blocks with suggestions pending: ["heading: Block test","paragraph: Intro paragraph one.","row: Name | Role","row: Eric | Writer","row: Diana | Director","paragraph: Closing paragraph."]
+accept inline text via insert: returned true
+   blocks after: ["heading: Block test","paragraph: Intro paragraph one.","row: Name | Role","row: Eric | Writer","row: Diana | Director","paragraph: Closing paragraph."]
+accept paragraph via insert after a paragraph end: returned true
+   blocks after: ["heading: Block test","paragraph: Intro paragraph one.","row: Name | Role","row: Eric | Writer","row: Diana | Director","paragraph: Closing paragraph."]
+accept table row via insert anchored on a cell: returned true
+   blocks after: ["heading: Block test","paragraph: Intro paragraph one.","row: Name | Role","row: Eric | Writer","row: Diana | Director","paragraph: Closing paragraph."]
+blocks after reload: ["heading: Block test","paragraph: Intro paragraph one.","row: Name | Role","row: Eric | Writer","row: Diana | Director","paragraph: Closing paragraph."]
+server: {"readSource":"projection","projectionFresh":true,"revision":8,"pending":[],"inlineWordsTimes":0,"anotherParagraphTimes":0,"mikeRowTimes":0,"tableColumnsPerRow":[2,2,2,2],"markupInText":false}
+server markdown: "# Block test\n\nIntro paragraph one.\n\n| Name  | Role                                                               |\n| :---- | :----------------------------------------------------------------- |\n| Eric  | Writer                                                             |\n| Diana | Director |\n\nClosing paragraph.\n"
