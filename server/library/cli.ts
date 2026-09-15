@@ -1,5 +1,7 @@
 import {
   createLibraryMember,
+  createLibrarySigninLink,
+  isSomaAuthEnabled,
   getLibraryMemberByEmail,
   listLibraryMembers,
   removeLibraryMember,
@@ -60,6 +62,27 @@ async function main(): Promise<void> {
     const member = getLibraryMemberByEmail(email);
     if (!member || !removeLibraryMember(member.id)) throw new Error('Member not found');
     console.log(`Removed ${member.name}`);
+    return;
+  }
+
+  if (command === 'signin-link') {
+    if (isSomaAuthEnabled()) throw new Error('Sign in with SOMA Auth; signin-link is disabled.');
+    const email = requireOption(args, '--email');
+    const member = getLibraryMemberByEmail(email);
+    if (!member || member.removedAt) throw new Error('Member not found');
+    const origin = readOption(args, '--origin')?.trim() || process.env.PROOF_PUBLIC_ORIGIN?.trim();
+    if (!origin) throw new Error('Pass --origin or set PROOF_PUBLIC_ORIGIN');
+    const rawHours = readOption(args, '--hours');
+    const hours = rawHours ? Number.parseInt(rawHours, 10) : 24;
+    if (!Number.isFinite(hours) || hours < 1) throw new Error('--hours must be a positive integer');
+    const { link } = createLibrarySigninLink({
+      memberId: member.id,
+      purpose: 'operator',
+      createdBy: 'operator',
+      origin,
+      hours,
+    });
+    console.log(link);
     return;
   }
 

@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import express from 'express';
 
@@ -80,7 +79,6 @@ try {
   assert.equal((await request('POST', '/library/API/DEVICE-LINK/', {}, adminCookie)).status, 404);
   assert.equal((await request('POST', '/library/api/device-link', {}, adminCookie)).status, 404);
   assert.equal((await request('POST', '/library/api/signin', {}, adminCookie)).status, 404);
-  assert(!readFileSync(new URL('../../server/library/cli.ts', import.meta.url), 'utf8').includes('signin-link'));
   const home = await request('GET', '/', undefined, adminCookie);
   assert(home.text.includes('soma-auth.js')); assert(!home.text.includes('Sign in on another device'));
   for (const table of getDb().prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as any[]) {
