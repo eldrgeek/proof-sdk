@@ -49,7 +49,7 @@ import { isShareRole, type ShareRole } from './share-types.js';
 import { broadcastToRoom, closeRoom, getActiveCollabClientBreakdown, getRoomSize } from './ws.js';
 import { runLegacyMarkRangeBackfillOnce } from './marks-range-backfill.js';
 import { createRateLimiter } from './rate-limiter.js';
-import { getCookie, shareTokenCookieName } from './cookies.js';
+import { getCookie, getCookies, shareTokenCookieName } from './cookies.js';
 import { canonicalizeStoredMarks } from '../src/formats/marks.js';
 import {
   recordRewriteBarrierFailure,
@@ -736,7 +736,7 @@ async function resolveOpenContextAccess(
     req.header('x-share-token'),
     req.header('x-bridge-token'),
     req.query.token,
-    getCookie(req, shareTokenCookieName(slug)),
+    ...getCookies(req, shareTokenCookieName(slug)),
     req.header('authorization') === undefined ? undefined : bearerToken ?? '',
   ];
   let resolved: ReturnType<typeof resolveDocumentAccess> = null;
