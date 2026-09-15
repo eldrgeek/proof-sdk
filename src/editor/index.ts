@@ -97,6 +97,7 @@ import {
   marksPlugins,
   marksPluginKey,
   proofMarkActionMeta,
+  prepareSuggestionBatch,
   getMarks,
   getActiveMarkId,
   getMarkMetadata,
@@ -3621,16 +3622,21 @@ class ProofEditorImpl implements ProofEditor {
     this.editor.action(ctx => {
       const view = ctx.get(editorViewCtx);
       const parser = ctx.get(parserCtx);
+      const batch = action === 'accept' || action === 'reject' ? prepareSuggestionBatch(view, ids, action, parser) : null;
+      if (batch?.failedIds.length) {
+        const verb = action === 'accept' ? 'accepted' : 'rejected';
+        throw Object.assign(new Error(`${batch.failedIds.length} of ${ids.length} suggestions changed and can't be ${verb}. Nothing was changed.`), { failedIds: batch.failedIds });
+      }
       const previousSuppress = this.suppressMarksSync;
       this.suppressMarksSync = true;
       let failed = 0;
       try {
         history.decide(() => {
           failed = 0;
-          for (const id of [...ids].reverse()) {
-            const ok = action === 'accept' ? acceptMark(view, id, parser)
-              : action === 'reject' ? rejectMark(view, id)
-              : action === 'resolve' ? markResolve(view, id)
+          if (batch) {
+            batch.apply(); ids.forEach(id => this.reviewDecisionIds.add(id));
+          } else for (const id of [...ids].reverse()) {
+            const ok = action === 'resolve' ? markResolve(view, id)
               : markReply(view, id, getCurrentActor(), text || '');
             if (!ok) { failed += 1; continue; }
             this.reviewDecisionIds.add(id);

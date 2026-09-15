@@ -30,6 +30,8 @@ export class PlayMakerReview {
   private settled = new Set<string>();
   private panelSignature = '';
   private previousOpen = new Set<string>();
+  private failedIds = new Set<string>();
+  private historyMessage = '';
   private readonly settledKey = `proof:review-settled:${location.pathname}`;
 
   constructor(private readonly bridge: ReviewBridge) {
@@ -77,7 +79,7 @@ export class PlayMakerReview {
     }
     try { localStorage.setItem(this.settledKey, JSON.stringify([...this.settled])); } catch { /* optional cache */ }
     if (this.activeId && !marks.some(mark => mark.id === this.activeId)) this.close();
-    const signature = JSON.stringify([marks, [...this.settled], this.walk]);
+    const signature = JSON.stringify([marks, [...this.settled], this.walk, [...this.failedIds], this.historyMessage]);
     if (signature === this.panelSignature) return;
     this.panelSignature = signature;
     const focusId = (document.activeElement as HTMLElement)?.dataset.reviewRow;
@@ -102,12 +104,17 @@ export class PlayMakerReview {
     const list = document.createElement('div'); list.className = 'pm-review-list';
     for (const mark of marks) {
       const row = this.button('', () => this.open(mark.id)); row.className = 'pm-review-row'; row.dataset.reviewRow = mark.id;
+      if (this.failedIds.has(mark.id)) { row.setAttribute('aria-invalid', 'true'); row.title = 'This suggestion changed. Review it before deciding.'; }
       row.style.setProperty('--review-author', getMarkColor(mark.by));
       const author = document.createElement('strong'); author.textContent = getActorName(mark.by);
       const snippet = document.createElement('span'); snippet.textContent = `${mark.kind === 'comment' ? 'Comment' : 'Suggestion'} · ${(mark.quote || (mark.data as ReplaceData)?.content || 'Unanchored mark').slice(0, 100)}`;
       row.append(author, snippet); list.append(row);
     }
     this.panel.append(list);
+    if (this.historyMessage) {
+      const message = document.createElement('p'); message.setAttribute('role', 'alert');
+      message.textContent = this.historyMessage; this.panel.append(message);
+    }
     if (focusId) this.panel.querySelector<HTMLElement>(`[data-review-row="${CSS.escape(focusId)}"]`)?.focus();
   }
   private button(label: string, action: () => void, disabled = false): HTMLButtonElement {
@@ -208,10 +215,13 @@ export class PlayMakerReview {
   private perform(ids: string[], action: ReviewAction, text?: string): void {
     const order = this.openMarks().map(mark => mark.id); const last = ids[ids.length - 1];
     try {
+      this.failedIds.clear(); this.historyMessage = '';
       this.bridge.decide(ids, action, text);
       if (action !== 'reply') ids.forEach(id => this.settled.add(id));
       this.close(); this.update(); this.advance(order, last);
     } catch (error) {
+      this.failedIds = new Set((error as { failedIds?: string[] })?.failedIds || []);
+      this.update();
       const message = document.createElement('p'); message.setAttribute('role', 'alert'); message.textContent = error instanceof Error ? error.message : 'Unable to save decision.';
       (this.dialog || this.panel).append(message);
     }
@@ -242,10 +252,9 @@ export class PlayMakerReview {
     const typing = target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z' && !typing) {
       event.preventDefault(); event.stopImmediatePropagation(); this.cancelWalk(); this.close();
-      try { this.bridge.history(event.shiftKey); this.update(); } catch (error) {
-        const message = document.createElement('p'); message.setAttribute('role', 'alert');
-        message.textContent = error instanceof Error ? error.message : 'Unable to restore decision.';
-        this.panel.querySelector('[role=alert]')?.remove(); this.panel.append(message);
+      try { this.historyMessage = ''; this.bridge.history(event.shiftKey); this.update(); } catch (error) {
+        this.historyMessage = error instanceof Error ? error.message : 'Unable to restore decision.';
+        this.update();
       }
       return;
     }

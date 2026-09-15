@@ -12,7 +12,7 @@ export function snapshotText(fragment: Y.XmlFragment): TextSnapshot {
   const visit = (type: Y.XmlFragment | Y.XmlText): void => {
     const positions: number[] = []; offsets.set(type, positions);
     if (type instanceof Y.XmlText) {
-      const text = type.toDelta().map(part => typeof part.insert === 'string' ? part.insert : '\uFFFC').join('');
+      const text = type.toDelta().map((part: { insert: unknown }) => typeof part.insert === 'string' ? part.insert : '\uFFFC').join('');
       for (let i = 0; i < text.length; i++) {
         positions[i] = units.length;
         units.push({ value: text[i], start: { type, index: i }, end: { type, index: i + 1 } });

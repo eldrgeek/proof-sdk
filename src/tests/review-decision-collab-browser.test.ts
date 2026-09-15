@@ -148,8 +148,13 @@ async function run(): Promise<void> {
     };
     tests['5'] = async () => {
       const entries = Array.from({ length: 11 }, (_, i) => ({ quote: `Original paragraph ${i}`, content: `Changed paragraph ${i}`, kind: i === 0 ? 'insert' : 'replace', by: i === 0 ? 'human:Alice' : 'ai:Izzy' }));
-      const { alice, ids, state } = await fixture(entries);
-      const before = await state(); const beforeText = await alice.locator('.ProseMirror').innerText();
+      const { alice, bob, ids, state } = await fixture(entries);
+      // The insertion's recorded table row has become a paragraph. Its structural
+      // rejection must refuse, while the ten ordinary replacements remain valid.
+      await changeRecord(bob, ids[0], { insertStructure: 'table_row' });
+      await alice.waitForFunction((id: string) => (window as any).proof.getReviewDecisionHistory().doc.getMap('marks').get(id)?.insertStructure === 'table_row', ids[0]);
+      const before = await state();
+      const beforeText = await alice.locator('.ProseMirror').innerText();
       alice.on('dialog', (dialog: any) => dialog.accept());
       await alice.getByRole('button', { name: 'Reject all', exact: true }).click(); await alice.waitForTimeout(600);
       assert.equal(await alice.locator('.pm-review-row').count(), 11, 'Failed batch must leave all eleven open');
@@ -171,6 +176,24 @@ async function run(): Promise<void> {
       await alice.getByRole('button', { name: 'Accept (A)', exact: true }).click();
       await bob.waitForFunction(() => document.querySelector('.ProseMirror')?.textContent?.includes('Refreshed proposal'));
       assert((await state()).markdown.includes('Refreshed proposal'));
+    };
+    tests['history-order'] = async () => {
+      const { alice, ids: [id] } = await fixture([{ quote: 'Original', content: 'Changed' }, { quote: 'Another paragraph', content: 'Another proposal' }]);
+      await accept(alice, id);
+      await alice.getByRole('button', { name: /^Suggesting:/ }).click();
+      await alice.evaluate(() => {
+        const view = (window as any).proof.editor.ctx.get('editorView');
+        view.dispatch(view.state.tr.insertText(' local', view.state.doc.content.size - 1));
+      });
+      await history(alice);
+      assert(!(await alice.locator('.ProseMirror').innerText()).includes(' local'), 'Undo from the queue must undo the most recent edit');
+      assert((await alice.locator('.ProseMirror').innerText()).includes('Changed'));
+      await alice.locator('.ProseMirror').focus(); await alice.keyboard.press('Control+z');
+      assert((await alice.locator('.ProseMirror').innerText()).includes('Original'), 'Next undo must undo the decision even with text focus');
+      await history(alice, true);
+      assert((await alice.locator('.ProseMirror').innerText()).includes('Changed'));
+      await history(alice, true);
+      assert((await alice.locator('.ProseMirror').innerText()).includes(' local'));
     };
     let failures = 0;
     for (const [id, test] of Object.entries(tests)) {

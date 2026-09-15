@@ -31,3 +31,5 @@
   #share-banner .share-pill-suggestion-review { grid-row:4; }
   .pm-review-panel { top:190px; max-height:calc(100dvh - 204px); }
 }
+
+.pm-review-row[aria-invalid="true"] { outline: 2px solid #b45309; background: #fffbeb; }
