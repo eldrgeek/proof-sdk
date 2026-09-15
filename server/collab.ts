@@ -662,6 +662,9 @@ const persistGeneration = new Map<string, number>();
 const docPersistGenerations = new WeakMap<Y.Doc, number>();
 const invalidatedOnStoreDocRefs = new WeakSet<Y.Doc>();
 let persistPauseHookForTests: ((context: { slug: string }) => Promise<void> | void) | null = null;
+let canonicalReconcileHookForTests:
+  | ((context: { slug: string; source: 'persistDoc' | 'onStoreDocument' }) => void)
+  | null = null;
 let activeCollabConnectionCountOverrideForTests: (() => number) | null = null;
 let shutdownForceCloseHookForTests: (() => void) | null = null;
 type FragmentEditState = { dirty: boolean };
@@ -7961,16 +7964,12 @@ async function persistDoc(
       if (shouldResolveConflict) {
         const resolution = resolveOnStoreConflict(slug, ydoc);
         if (resolution.action === 'canonical-reconcile') {
-          const applied = await applyCanonicalDocumentToCollab(slug, {
-            markdown: resolution.markdown,
-            marks: resolution.marks,
-            source: 'persist-canonical-reconcile',
-          });
-          if (!applied) {
-            scheduleStaleOnStoreReload(slug);
-          }
-          persistPending.delete(slug);
-          return;
+          canonicalReconcileHookForTests?.({ slug, source: 'persistDoc' });
+          // The row's marks are authoritative here, but its markdown can lag a
+          // connected client's fragment. Reconcile marks and persist live text.
+          ydoc.transact(() => {
+            applyMarksMapDiff(ydoc.getMap('marks'), resolution.marks);
+          }, 'persist-canonical-reconcile');
         }
         if (resolution.action === 'reload') {
           if (resolution.accessEpochChanged) {
@@ -8488,7 +8487,6 @@ type StoreConflictResolution =
   | { action: 'persist' }
   | {
       action: 'canonical-reconcile';
-      markdown: string;
       marks: Record<string, unknown>;
       reason: 'canonical_marks_ahead';
     }
@@ -8987,7 +8985,6 @@ function resolveOnStoreConflict(slug: string, inMemoryDoc: Y.Doc): StoreConflict
   if (canonicalMarksAhead) {
     return {
       action: 'canonical-reconcile',
-      markdown: rowMarkdown,
       marks: rowMarks,
       reason: 'canonical_marks_ahead',
     };
@@ -9151,15 +9148,11 @@ async function persistOnStoreDocument(
   }
   const resolution = resolveOnStoreConflict(slug, inMemoryDoc);
   if (resolution.action === 'canonical-reconcile') {
-    const applied = await applyCanonicalDocumentToCollab(slug, {
-      markdown: resolution.markdown,
-      marks: resolution.marks,
-      source: 'onstore-canonical-reconcile',
-    });
-    if (!applied) {
-      scheduleStaleOnStoreReload(slug);
-    }
-    return;
+    canonicalReconcileHookForTests?.({ slug, source: 'onStoreDocument' });
+    // Never replace live text with the row merely because canonical marks are ahead.
+    inMemoryDoc.transact(() => {
+      applyMarksMapDiff(inMemoryDoc.getMap('marks'), resolution.marks);
+    }, 'onstore-canonical-reconcile');
   }
   if (resolution.action === 'reload') {
     if (resolution.accessEpochChanged) {
@@ -9773,6 +9766,14 @@ async function syncCanonicalDocumentStateToCollabInner(
       fragmentAuthorityMarkdown = previewResolved.markdown;
     }
 
+    if (!parsedDoc) {
+      await maybePauseCanonicalSyncPreviewForTests({
+        slug,
+        source: sourceActor,
+        hasMarkdown,
+        hasMarks,
+      });
+    }
     const marks = hasMarks
       ? canonicalizeStoredMarks(dropTombstonedMarks(
         slug,
@@ -9784,10 +9785,9 @@ async function syncCanonicalDocumentStateToCollabInner(
       if (parsedDoc && fragmentAuthorityMarkdown !== null) {
         replaceYXmlFragment(ydoc.getXmlFragment('prosemirror'), parsedDoc);
         ensureFragmentEditTracking(ydoc).dirty = true;
-      } else if (sanitizedMarkdown !== null) {
-        applyYTextDiff(ydoc.getText('markdown'), sanitizedMarkdown);
-        ensureFragmentEditTracking(ydoc).dirty = false;
       }
+      // A marks-only sync must not copy a pre-await text snapshot over newer typing.
+      // The following persist refreshes the markdown mirror from the live fragment.
       if (marks) {
         applyMarksMapDiff(ydoc.getMap('marks'), marks);
       }
@@ -12312,6 +12312,7 @@ export async function stopCollabRuntime(options?: { skipDocFlush?: boolean }): P
   canonicalSyncPostApplyFailureForTests = null;
   canonicalSyncForcedRefusalForTests = null;
   persistPauseHookForTests = null;
+  canonicalReconcileHookForTests = null;
   invalidateCollabFailureForTests = null;
   canonicalSyncPreviewPauseHookForTests = null;
   projectionHealthWriteFailureForTests = false;
@@ -12690,6 +12691,12 @@ export function __unsafeSetPersistPauseHookForTests(
   hook: ((context: { slug: string }) => Promise<void> | void) | null,
 ): void {
   persistPauseHookForTests = hook;
+}
+
+export function __unsafeSetCanonicalReconcileHookForTests(
+  hook: ((context: { slug: string; source: 'persistDoc' | 'onStoreDocument' }) => void) | null,
+): void {
+  canonicalReconcileHookForTests = hook;
 }
 
 export function __unsafePrimeLoadedDocForTests(slug: string, ydoc: Y.Doc): void {
