@@ -1,3 +1,4 @@
+import { injectSomaFeedback } from './soma-page.js';
 import { createHash } from 'crypto';
 import { Router, type Request, type Response } from 'express';
 import { readFileSync } from 'fs';
@@ -692,7 +693,7 @@ shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
   );
   res.type('html').send(
     librarySession
-      ? injectLibraryMemberIntoShareHtml(responseHtml, librarySession.member.name, slug)
-      : responseHtml,
+      ? injectSomaFeedback(injectLibraryMemberIntoShareHtml(responseHtml, librarySession.member.name, slug), 'editor', librarySession.member)
+      : injectSomaFeedback(responseHtml, 'editor'),
   );
 });

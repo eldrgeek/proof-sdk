@@ -1,3 +1,4 @@
+import { somaFeedbackRoutes } from './soma-feedback.js';
 import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
@@ -51,6 +52,7 @@ async function main(): Promise<void> {
   app.use(express.json({ limit: '10mb' }));
   app.use(express.static(path.join(__dirname, '..', 'public')));
   app.use(libraryRoutes);
+  app.use(somaFeedbackRoutes);
 
   app.use((req, res, next) => {
     const originHeader = req.header('origin');

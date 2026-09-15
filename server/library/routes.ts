@@ -1,3 +1,4 @@
+import { injectSomaFeedback } from '../soma-page.js';
 import { Router, type Request, type Response } from 'express';
 import { readFileSync } from 'fs';
 import {
@@ -53,7 +54,7 @@ libraryRoutes.use('/library', (_req, res, next) => {
 });
 
 libraryRoutes.get('/library/signin', (_req: Request, res: Response) => {
-  res.type('html').send(`<!doctype html>
+  res.type('html').send(injectSomaFeedback(`<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -97,7 +98,7 @@ libraryRoutes.get('/library/signin', (_req: Request, res: Response) => {
     })();
   </script>
 </body>
-</html>`);
+</html>`, 'sign-in'));
 });
 
 libraryRoutes.post('/library/api/session', (req, res, next) => {

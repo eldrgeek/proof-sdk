@@ -1,3 +1,4 @@
+import { injectSomaFeedback } from '../soma-page.js';
 import type { Request, Response } from 'express';
 import { somaAuthHead } from './soma-page.js';
 import { getLibrarySession, isSomaAuthEnabled } from './auth.js';
@@ -109,7 +110,7 @@ function dialogs(isOwner: boolean): string {
 export function renderLibraryHome(req: Request, res: Response): void {
   const session = getLibrarySession(req, res);
   res.setHeader('Cache-Control', 'no-store');
-  res.type('html').send(session ? signedInPage(session.member.name, session.member.isOwner) : signedOutPage());
+  res.type('html').send(injectSomaFeedback(session ? signedInPage(session.member.name, session.member.isOwner) : signedOutPage(), session ? 'library' : 'sign-in', session?.member));
 }
 
 function somaSigninForm(): string {
