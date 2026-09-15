@@ -921,6 +921,7 @@ const ACTIVE_COLLAB_INSTANCE_ID = (
 
 export type AgentPresenceEntry = {
   id: string;
+  tokenId?: string | null;
   name?: string;
   color?: string;
   avatar?: string;
@@ -932,6 +933,7 @@ export type AgentPresenceEntry = {
 
 export type AgentCursorHint = {
   id: string;
+  tokenId?: string | null;
   quote?: string;
   ttlMs?: number;
   at?: string;
@@ -958,7 +960,8 @@ function pruneExpiredAgentEphemera(slug: string, doc: Y.Doc): void {
         const value = presenceMap.get(key) as any;
         const normalizedKey = normalizeAgentScopedId(key);
         const normalizedValueId = normalizeAgentScopedId(value?.id);
-        if (!normalizedKey || !normalizedValueId || normalizedKey !== normalizedValueId) {
+        if (!normalizedKey || !normalizedValueId || normalizedKey !== normalizedValueId
+          || (value?.tokenId && !isDocumentAccessTokenActive(slug, value.tokenId))) {
           presenceMap.delete(key);
           if (typeof key === 'string' && key.trim()) removedPresenceIds.add(key.trim());
           if (typeof value?.id === 'string' && value.id.trim()) removedPresenceIds.add(value.id.trim());
@@ -978,7 +981,8 @@ function pruneExpiredAgentEphemera(slug: string, doc: Y.Doc): void {
         const value = cursorMap.get(key) as any;
         const normalizedKey = normalizeAgentScopedId(key);
         const normalizedValueId = normalizeAgentScopedId(value?.id);
-        if (!normalizedKey || !normalizedValueId || normalizedKey !== normalizedValueId || removedPresenceIds.has(normalizedKey)) {
+        if (!normalizedKey || !normalizedValueId || normalizedKey !== normalizedValueId || removedPresenceIds.has(normalizedKey)
+          || (value?.tokenId && !isDocumentAccessTokenActive(slug, value.tokenId))) {
           cursorMap.delete(key);
           if (typeof key === 'string' && key.trim()) removedCursorIds.add(key.trim());
           if (typeof value?.id === 'string' && value.id.trim()) removedCursorIds.add(value.id.trim());
@@ -1036,6 +1040,7 @@ function mergeAgentPresence(
     details: incoming.details ?? (typeof base.details === 'string' ? String(base.details) : undefined),
     at: incoming.at ?? (typeof base.at === 'string' ? String(base.at) : undefined),
     expiresAt: incoming.expiresAt,
+    tokenId: incoming.tokenId ?? null,
   };
 
   // Ensure `name` is always non-empty for UI display.
@@ -1706,6 +1711,26 @@ function assertCollabKeyActive(slug: string, tokenId: string | null | undefined)
 // Close this process's sockets immediately. The DB check before every message also
 // fences connections on other processes, before Yjs can apply or broadcast a write.
 documentAccessEvents.on('revoked', (slug: string, tokenId: string) => {
+  const ydoc = getLiveHocuspocusDoc(slug) ?? loadedDocs.get(slug);
+  if (ydoc) {
+    // Use the same Yjs deletion/broadcast path as inactivity expiry. Match each
+    // map independently: a cursor may have a different lifetime or creator.
+    for (const [id, entry] of ydoc.getMap<AgentPresenceEntry>('agentPresence')) {
+      if (entry?.tokenId !== tokenId) continue;
+      const timerKey = agentTimerKey(slug, id);
+      clearTimeout(agentPresenceExpiryTimers.get(timerKey));
+      agentPresenceExpiryTimers.delete(timerKey);
+      clearAgentPresenceForSlug(slug, id, entry.at ?? '');
+    }
+    for (const [id, hint] of ydoc.getMap<AgentCursorHint>('agentCursors')) {
+      if (hint?.tokenId !== tokenId) continue;
+      const timerKey = agentTimerKey(slug, id);
+      clearTimeout(agentCursorExpiryTimers.get(timerKey));
+      agentCursorExpiryTimers.delete(timerKey);
+      clearAgentCursorForSlug(slug, id, hint.at ?? '');
+    }
+  }
+
   const instance = hocuspocusInstance as unknown as {
     documents?: Map<string, { getConnections(): Connection[] }>;
   } | null;
@@ -10429,6 +10454,8 @@ export function applyAgentPresenceToLoadedCollab(
 
   const agentId = normalizeAgentScopedId(entry.id);
   if (!agentId) return false;
+  // A request started before revocation must not recreate ephemera afterwards.
+  if (typeof entry.tokenId === 'string' && !isDocumentAccessTokenActive(slug, entry.tokenId)) return false;
 
   if (entry.status === 'left') {
     removeAgentPresenceFromLoadedCollab(slug, agentId, activity);
@@ -10537,6 +10564,7 @@ export function applyAgentCursorHintToLoadedCollab(
 
   const agentId = normalizeAgentScopedId(hint.id);
   if (!agentId) return false;
+  if (hint.tokenId && !isDocumentAccessTokenActive(slug, hint.tokenId)) return false;
 
   const nowIso = new Date().toISOString();
   const ttlMs = hint.ttlMs ?? parsePositiveInt(process.env.AGENT_CURSOR_TTL_MS, DEFAULT_AGENT_CURSOR_TTL_MS);
@@ -10546,6 +10574,7 @@ export function applyAgentCursorHintToLoadedCollab(
     const cursorMap = ydoc.getMap<unknown>('agentCursors');
     cursorMap.set(agentId, {
       id: agentId,
+      tokenId: hint.tokenId ?? null,
       quote: typeof hint.quote === 'string' ? hint.quote : undefined,
       ttlMs,
       at,
