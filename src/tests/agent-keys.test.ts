@@ -103,10 +103,26 @@ try {
   for (const role of ['viewer', 'commenter'] as const) {
     const access = db.createDocumentAccessToken('x1-editor', role);
     const headers = { 'x-share-token': access.secret };
-    assert.equal((await call('/d/x1-editor?format=json', 'GET', undefined, headers)).body.capabilities.canEdit, false);
+    assert.equal((await call(`/d/x1-editor?format=json&token=${access.secret}`, 'GET', undefined, headers)).body.capabilities.canEdit, false);
     assert.equal((await mint('x1-editor', '192.0.2.2', headers)).status, 403);
     assert.equal((await call('/api/documents/x1-editor/agent-keys', 'GET', undefined, headers)).status, 403);
     assert.equal((await call(`/api/documents/x1-editor/agent-keys/${tokenId}`, 'DELETE', undefined, headers)).status, 403);
+  }
+  const viewer = db.createDocumentAccessToken('x1-editor', 'viewer');
+  const editorHeader = { 'x-share-token': other.secret };
+  assert.equal((await call(`/d/x1-editor?format=json&token=${viewer.secret}`, 'GET', undefined, editorHeader))
+    .body.capabilities.canEdit, false, 'Valid viewer query must outrank an editor header');
+  const viewerCookie = { cookie: `proof_share_token_x1-editor=${viewer.secret}`, ...editorHeader };
+  assert.equal((await call('/d/x1-editor?format=json&token=stale', 'GET', undefined, viewerCookie))
+    .body.capabilities.canEdit, false, 'Valid cookie must survive a stale query and ignore headers');
+  assert.equal((await call(`/d/x1-editor?format=json&token=${other.secret}`, 'GET', undefined, viewerCookie))
+    .body.capabilities.canEdit, true, 'Valid query must outrank a valid cookie');
+  for (const headers of [{ 'x-share-token': viewer.secret }, { 'x-bridge-token': viewer.secret },
+    { authorization: `Bearer ${viewer.secret}` }] as Record<string, string>[]) {
+    assert.equal((await call('/d/x1-editor?format=json', 'GET', undefined, headers)).body.capabilities.canEdit, true,
+      'Page must ignore authentication headers');
+    assert.equal((await call('/api/documents/x1-editor/agent-keys', 'GET', undefined, headers)).status, 403,
+      'Key management must still honor headers');
   }
   for (const state of ['REVOKED', 'DELETED', 'PAUSED']) {
     const slug = `x1-${state.toLowerCase()}`;

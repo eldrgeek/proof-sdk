@@ -15,9 +15,8 @@ export function deriveShareCapabilities(role: ShareRole, shareState: string) {
   };
 }
 
-/** The live page and agent-key management must use this same access decision.
- * SOMA currently identifies visitors; it does not gate page access. Keep any future
- * sign-in requirement here so key management follows the page's editing rights.
+/** Preserve page credential precedence; key management explicitly opts into headers
+ * and rejects unresolved credentials instead of falling back to anonymous access.
  */
 export function resolveSharePageAccess(req: Request, res: Response, slug: string, doc: DocumentRow | null, mode: 'page' | 'key-management' = 'page') {
   const librarySession = isLibraryEnabled() ? getLibrarySession(req, res) : null;
@@ -37,9 +36,12 @@ export function resolveSharePageAccess(req: Request, res: Response, slug: string
   let token: string | null = null;
   let tokenSource: 'query:token' | 'cookie' | 'header' | 'none' = 'none';
   let resolved: ReturnType<typeof resolveDocumentAccess> = null;
-  // The editor forwards its URL credential in a header. Otherwise preserve the
-  // page's valid-query, then valid-cookie precedence (including stale links).
-  for (const [secret, source] of [[header, 'header'], [query, 'query:token'], [cookie, 'cookie']] as const) {
+  // Pages prefer a valid query, then a valid cookie, and ignore auth headers.
+  // Key management receives the editor's URL credential through a header.
+  const candidates = mode === 'key-management'
+    ? [[header, 'header'], [query, 'query:token'], [cookie, 'cookie']] as const
+    : [[query, 'query:token'], [cookie, 'cookie']] as const;
+  for (const [secret, source] of candidates) {
     const access = secret ? resolveDocumentAccess(slug, secret) : null;
     if (access) {
       token = secret;
