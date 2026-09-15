@@ -242,7 +242,11 @@ export class PlayMakerReview {
     const typing = target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z' && !typing) {
       event.preventDefault(); event.stopImmediatePropagation(); this.cancelWalk(); this.close();
-      try { this.bridge.history(event.shiftKey); this.update(); } catch (error) { console.error(error); }
+      try { this.bridge.history(event.shiftKey); this.update(); } catch (error) {
+        const message = document.createElement('p'); message.setAttribute('role', 'alert');
+        message.textContent = error instanceof Error ? error.message : 'Unable to restore decision.';
+        this.panel.querySelector('[role=alert]')?.remove(); this.panel.append(message);
+      }
       return;
     }
     if (!this.dialog?.contains(target)) return;
