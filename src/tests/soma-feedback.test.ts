@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
 import { tmpdir } from 'node:os';
 import express from 'express';
 
@@ -51,6 +52,16 @@ function checkChip(html: string, area: string) {
 }
 try {
   const admin = session(true), member = session(false);
+  const escapedName = '</script><script>throw new Error(\"injected\")</script>';
+  const identityHtml = injectSomaFeedback('<html><head></head></html>', 'library', { ...member.member, name: escapedName });
+  const identityScript = identityHtml.match(/<script>(window\.somaFeedbackIdentity=.*?)<\/script>/)![1];
+  assert(!identityScript.includes('<'), 'identity JSON must escape script-opening characters');
+  const identityWindow: any = {};
+  runInNewContext(identityScript, { window: identityWindow });
+  assert.equal(typeof identityWindow.somaFeedbackIdentity, 'function');
+  assert.equal(identityWindow.somaFeedbackIdentity().name, escapedName);
+  assert.equal(identityWindow.somaFeedbackIdentity().email, member.member.email);
+
   const body = { text: 'Please improve this', site: 'proof-plus', conversation: [{ role: 'user', content: 'More detail' }], adminToken: 'fake', googleIdToken: 'fake-google', name: 'Name', area: 'library' };
   for (const cookie of ['', 'proof_library_session=fake', member.cookie, admin.cookie]) {
     const response = await request('POST', '/api/soma-feedback', body, cookie, { Authorization: 'Bearer fake' });

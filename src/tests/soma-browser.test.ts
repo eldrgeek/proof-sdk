@@ -51,7 +51,12 @@ try {
         signOut:async function(){sessionStorage.removeItem('test-session');session=null;callback('SIGNED_OUT',null);return {}}
       }}}};` });
     }
+    await route.abort();
     throw new Error(`Unexpected external browser request: ${url}`);
+  });
+  await page.addInitScript(() => {
+    localStorage.setItem('soma-feedback:name', 'Previous Person');
+    localStorage.setItem('soma-feedback:email', 'previous@example.test');
   });
   await page.goto(origin);
   await page.locator('.soma-feedback-root').waitFor();
@@ -61,7 +66,17 @@ try {
   assert.equal(await page.evaluate(() => (window as any).testOtp.options.emailRedirectTo), origin + '/');
   await page.getByRole('button', { name: 'Continue with Google' }).click();
   await page.locator('#new-document').waitFor();
-  assert.equal(await page.evaluate(() => (window as any).somaFeedbackIdentity.email), 'admin@example.test');
+  await page.locator('.soma-feedback-tab').click();
+  await page.getByPlaceholder('What should we change? Be as specific as you can.').fill('Please improve the library');
+  const submitted = page.waitForResponse((response: any) => response.url() === origin + '/api/soma-feedback' && response.request().method() === 'POST');
+  await page.locator('.soma-feedback-submit').filter({ hasText: 'Submit' }).click();
+  assert.equal((await submitted).status(), 200);
+  assert.equal(forwarded[0].name, 'Browser Admin');
+  assert.equal(forwarded[0].email, 'admin@example.test');
+  assert(!JSON.stringify(forwarded[0]).includes('Previous Person'));
+  assert(!JSON.stringify(forwarded[0]).includes('previous@example.test'));
+  assert.equal(await page.evaluate(() => (window as any).somaFeedbackIdentity().email), 'admin@example.test');
+  await page.locator('.soma-feedback-tab').click();
   await page.locator('#avatar').click();
   await page.getByRole('button', { name: 'People', exact: true }).click();
   await page.locator('#invite-name').fill('New Person');
