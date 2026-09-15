@@ -1113,6 +1113,7 @@ class ProofEditorImpl implements ProofEditor {
   private playmakerReview: PlayMakerReview | null = null;
   private reviewDecisionHistory: ReviewDecisionHistory | null = null;
   private reviewDecisionIds = new Set<string>();
+  private capturingReviewDecision = false;
   private restoringReviewDecision = false;
   private suggestionReviewMenuCleanup: (() => void) | null = null;
   private shareWelcomeToast: HTMLElement | null = null;
@@ -3629,6 +3630,7 @@ class ProofEditorImpl implements ProofEditor {
       }
       const previousSuppress = this.suppressMarksSync;
       this.suppressMarksSync = true;
+      this.capturingReviewDecision = true;
       let failed = 0;
       try {
         history.decide(() => {
@@ -3648,6 +3650,7 @@ class ProofEditorImpl implements ProofEditor {
         });
         if (failed) throw new Error(`${failed} mark${failed === 1 ? ' has' : 's have'} changed. Please review the remaining marks again.`);
       } finally {
+        this.capturingReviewDecision = false;
         this.suppressMarksSync = previousSuppress;
         this.scheduleShareSuggestionReviewDisplay(view);
       }
@@ -5674,6 +5677,7 @@ class ProofEditorImpl implements ProofEditor {
 
       // Override dispatchTransaction to intercept edits
       (view as any).dispatch = (tr: any) => {
+        if (this.capturingReviewDecision) tr.setMeta('addToHistory', false);
         // Yjs restores text and records atomically. Supply the restored records
         // on that same PM update, before normalization can invent mark metadata.
         if (this.restoringReviewDecision || (tr.docChanged && tr.getMeta(ySyncPluginKey)?.isChangeOrigin && !tr.getMeta(marksPluginKey))) {
@@ -5683,7 +5687,13 @@ class ProofEditorImpl implements ProofEditor {
           });
         }
         const dispatchWithRevision = (transaction: any) => {
-          originalDispatch(transaction);
+          // Give a local edit its own origin, separate from review decisions.
+          // All derived mark writes from this dispatch stay in that same edit.
+          if (isLocalContentChange && !this.capturingReviewDecision && !tr.getMeta('history$') && tr.getMeta('addToHistory') !== false
+            && getReviewStyle() === 'playmaker' && this.collabCanEdit && collabClient.getYDoc()
+            && this.getShareSuggestionResolutionTransport() === 'collab') {
+            this.getReviewDecisionHistory().edit(() => originalDispatch(transaction));
+          } else originalDispatch(transaction);
           if (transaction?.docChanged) {
             this.revision += 1;
           }

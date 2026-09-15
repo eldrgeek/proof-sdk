@@ -24,6 +24,9 @@ export class PlayMakerReview {
   private readonly toggle = document.createElement('button');
   private dialog: HTMLDivElement | null = null;
   private activeId: string | null = null;
+  private displayedMark: Mark | null = null;
+  private displayedSignature = '';
+  private refreshPending = false;
   private returnFocus: HTMLElement | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private walk = getReviewWalk();
@@ -78,7 +81,9 @@ export class PlayMakerReview {
       else if (['comment', 'insert', 'delete', 'replace'].includes(mark.kind)) this.settled.add(mark.id);
     }
     try { localStorage.setItem(this.settledKey, JSON.stringify([...this.settled])); } catch { /* optional cache */ }
-    if (this.activeId && !marks.some(mark => mark.id === this.activeId)) this.close();
+    if (this.activeId && this.markSignature(this.bridge.marks().find(mark => mark.id === this.activeId)) !== this.displayedSignature) {
+      this.refreshActive();
+    }
     const signature = JSON.stringify([marks, [...this.settled], this.walk, [...this.failedIds], this.historyMessage]);
     if (signature === this.panelSignature) return;
     this.panelSignature = signature;
@@ -143,9 +148,24 @@ export class PlayMakerReview {
     event.preventDefault(); event.stopImmediatePropagation();
     this.open(id, { x: event.clientX, y: event.clientY });
   };
-  open(id: string, point?: { x: number; y: number }): void {
+  private markSignature(mark?: Mark): string {
+    return JSON.stringify(mark ? [mark.id, mark.kind, mark.by, mark.at, mark.quote, mark.data] : null);
+  }
+  private refreshActive(needsAcknowledgment = true): void {
+    if (!this.activeId || !this.dialog) return;
+    const rect = this.dialog.getBoundingClientRect(), returnFocus = this.returnFocus;
+    this.open(this.activeId, { x: rect.x, y: rect.y }, true);
+    this.returnFocus = returnFocus;
+    this.refreshPending = needsAcknowledgment;
+  }
+  open(id: string, point?: { x: number; y: number }, changed = false): void {
+    const current = this.bridge.marks().find(mark => mark.id === id);
+    const mark = current ?? (changed && this.displayedMark?.id === id ? this.displayedMark : null);
     this.cancelWalk(); this.close(false);
-    const mark = this.openMarks().find(mark => mark.id === id); if (!mark) return;
+    if (!mark || (!changed && !isOpenReviewMark(mark))) return;
+    this.displayedMark = structuredClone(mark);
+    this.displayedSignature = this.markSignature(current);
+    this.refreshPending = changed;
     this.returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : this.toggle;
     if (!point) {
       this.bridge.jump(id);
@@ -178,9 +198,17 @@ export class PlayMakerReview {
       const line = document.createElement('p'); line.textContent = `${getActorName(reply.by)}: ${reply.text}`; changes.append(line);
     }
     dialog.append(changes);
+    if (changed) {
+      const notice = document.createElement('p'); notice.setAttribute('role', 'status');
+      notice.textContent = 'This suggestion changed while it was open.';
+      if (!current) notice.textContent += ' It was removed.';
+      else if (!isOpenReviewMark(current)) notice.textContent += ' It was resolved.';
+      dialog.append(notice);
+    }
+    const unavailable = !current || !isOpenReviewMark(current);
     const actions = document.createElement('div'); actions.className = 'pm-review-actions';
     const add = (label: string, key: string, action: () => void) => {
-      const button = this.button(`${label} (${key.toUpperCase()})`, action); button.dataset.reviewKey = key; actions.append(button);
+      const button = this.button(`${label} (${key.toUpperCase()})`, action, unavailable && key !== 'l'); button.dataset.reviewKey = key; actions.append(button);
     };
     if (mark.kind !== 'comment') {
       add('Accept', 'a', () => this.perform([id], 'accept'));
@@ -213,6 +241,13 @@ export class PlayMakerReview {
     this.dialog.append(field, send); field.focus();
   }
   private perform(ids: string[], action: ReviewAction, text?: string): void {
+    if (ids.length === 1 && ids[0] === this.activeId) {
+      const current = this.bridge.marks().find(mark => mark.id === ids[0]);
+      if (this.refreshPending || this.markSignature(current) !== this.displayedSignature) {
+        this.refreshActive(false); return;
+      }
+      if (!current || !isOpenReviewMark(current)) return;
+    }
     const order = this.openMarks().map(mark => mark.id); const last = ids[ids.length - 1];
     try {
       this.failedIds.clear(); this.historyMessage = '';
@@ -221,6 +256,10 @@ export class PlayMakerReview {
       this.close(); this.update(); this.advance(order, last);
     } catch (error) {
       this.failedIds = new Set((error as { failedIds?: string[] })?.failedIds || []);
+      if (!this.dialog) {
+        this.historyMessage = error instanceof Error ? error.message : 'Unable to save decision.';
+        this.update(); return;
+      }
       this.update();
       const message = document.createElement('p'); message.setAttribute('role', 'alert'); message.textContent = error instanceof Error ? error.message : 'Unable to save decision.';
       (this.dialog || this.panel).append(message);
@@ -250,7 +289,7 @@ export class PlayMakerReview {
     if (getReviewStyle() !== 'playmaker') return;
     const target = event.target as HTMLElement;
     const typing = target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z' && !typing) {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) {
       event.preventDefault(); event.stopImmediatePropagation(); this.cancelWalk(); this.close();
       try { this.historyMessage = ''; this.bridge.history(event.shiftKey); this.update(); } catch (error) {
         this.historyMessage = error instanceof Error ? error.message : 'Unable to restore decision.';

@@ -111,7 +111,8 @@ async function run(): Promise<void> {
     const changeRecord = (page: any, id: string, changes: any) => page.evaluate(({ id, changes }: any) => {
       const map = (window as any).proof.getReviewDecisionHistory().doc.getMap('marks'); map.set(id, { ...map.get(id), ...changes });
     }, { id, changes });
-    const accept = async (page: any, id: string) => { await page.locator(`[data-review-row="${id}"]`).click(); await page.getByRole('button', { name: 'Accept (A)', exact: true }).click(); };
+    const accept = async (page: any, id: string) => { await page.locator(`[data-review-row="${id}"]`).click(); await page.getByRole('button', { name: 'Accept (A)', exact: true }).click(); await page.locator(`[data-review-row="${id}"]`).waitFor({ state: 'hidden' }); };
+    const documentText = (page: any) => page.evaluate(() => (window as any).proof.editor.ctx.get('editorView').state.doc.textContent);
     const history = async (page: any, redo = false) => { await page.getByRole('button', { name: 'Marks', exact: true }).focus(); await page.keyboard.press(redo ? 'Control+Shift+z' : 'Control+z'); };
     tests['2'] = async () => {
       const { alice, bob, ids: [id], state } = await fixture();
@@ -142,7 +143,7 @@ async function run(): Promise<void> {
       });
       await alice.waitForFunction(() => document.querySelector('.ProseMirror')?.textContent?.includes('OrigBOBinal'));
       await history(alice, true); await alice.waitForTimeout(500);
-      for (const page of [alice, bob]) assert((await page.locator('.ProseMirror').innerText()).includes('OrigBOBinal'), 'Bob’s text must survive redo');
+      for (const page of [alice, bob]) assert((await documentText(page)).includes('OrigBOBinal'), 'Bob’s text must survive redo');
       assert((await alice.locator('.pm-review-panel').innerText()).includes("Can't redo: someone has changed this text since."), 'Visible one-line refusal');
       assert((await state()).markdown.includes('OrigBOBinal'));
     };
@@ -170,7 +171,7 @@ async function run(): Promise<void> {
       await changeRecord(bob, id, { content: 'Refreshed proposal' });
       await alice.waitForFunction((id: string) => (window as any).proof.getAllMarks().find((m: any) => m.id === id)?.data?.content === 'Refreshed proposal', id);
       await alice.getByRole('button', { name: 'Accept (A)', exact: true }).click();
-      assert((await alice.locator('.ProseMirror').innerText()).includes('Original'), 'First click must apply nothing');
+      assert((await documentText(alice)).includes('Original'), 'First click must apply nothing');
       assert.equal(await alice.locator('.pm-review-dialog ins').innerText(), 'Refreshed proposal');
       assert((await alice.locator('.pm-review-dialog').innerText()).includes('This suggestion changed while it was open.'));
       await alice.getByRole('button', { name: 'Accept (A)', exact: true }).click();
@@ -186,14 +187,14 @@ async function run(): Promise<void> {
         view.dispatch(view.state.tr.insertText(' local', view.state.doc.content.size - 1));
       });
       await history(alice);
-      assert(!(await alice.locator('.ProseMirror').innerText()).includes(' local'), 'Undo from the queue must undo the most recent edit');
-      assert((await alice.locator('.ProseMirror').innerText()).includes('Changed'));
+      assert(!(await documentText(alice)).includes(' local'), 'Undo from the queue must undo the most recent edit');
+      assert((await documentText(alice)).includes('Changed'), 'The accepted text must be Changed');
       await alice.locator('.ProseMirror').focus(); await alice.keyboard.press('Control+z');
-      assert((await alice.locator('.ProseMirror').innerText()).includes('Original'), 'Next undo must undo the decision even with text focus');
+      assert((await documentText(alice)).includes('Original'), 'Next undo must undo the decision even with text focus');
       await history(alice, true);
-      assert((await alice.locator('.ProseMirror').innerText()).includes('Changed'));
+      assert((await documentText(alice)).includes('Changed'), 'The accepted text must be Changed');
       await history(alice, true);
-      assert((await alice.locator('.ProseMirror').innerText()).includes(' local'));
+      assert((await documentText(alice)).includes(' local'), 'Second redo must restore the local edit');
     };
     let failures = 0;
     for (const [id, test] of Object.entries(tests)) {
