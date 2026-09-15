@@ -20,7 +20,7 @@
     "test:soma-feedback": "tsx src/tests/soma-feedback.test.ts",
     "test:library": "tsx src/tests/library-cli.test.ts && tsx src/tests/library.test.ts && tsx src/tests/soma-app.test.ts",
     "demo:agent": "npm --workspace proof-example run demo:agent",
-    "test:agent-keys": "tsx src/tests/agent-keys.test.ts && tsx src/tests/share-event-poller.test.ts",
+    "test:agent-keys": "tsx src/tests/agent-keys.test.ts && tsx src/tests/agent-key-collab-revocation.test.ts && tsx src/tests/share-event-poller.test.ts",
     "test:agent-key-dialog": "tsx src/tests/agent-key-dialog.browser.test.ts"
   },
   "dependencies": {

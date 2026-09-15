@@ -1,3 +1,4 @@
+import { documentAccessEvents } from './document-access-events.js';
 import { createHash, randomUUID, timingSafeEqual } from 'crypto';
 import Database from 'better-sqlite3';
 import path from 'path';
@@ -2383,10 +2384,18 @@ export function listDocumentAgentKeys(slug: string): Array<{
 
 export function revokeDocumentAgentKey(slug: string, tokenId: string): boolean {
   assertWritesAllowed('revokeDocumentAgentKey');
-  return getDb().prepare(`
+  const revoked = getDb().prepare(`
     UPDATE document_access SET revoked_at = COALESCE(revoked_at, ?)
     WHERE document_slug = ? AND token_id = ? AND label IS NOT NULL
   `).run(new Date().toISOString(), slug, tokenId).changes > 0;
+  if (revoked) documentAccessEvents.emit('revoked', slug, tokenId);
+  return revoked;
+}
+
+export function isDocumentAccessTokenActive(slug: string, tokenId: string): boolean {
+  return Boolean(getDb().prepare(`
+    SELECT 1 FROM document_access WHERE document_slug = ? AND token_id = ? AND revoked_at IS NULL
+  `).get(slug, tokenId));
 }
 
 export function revokeDocumentAccessTokens(
