@@ -932,7 +932,14 @@ function buildSuggestionAttrs(
 
   if (!meta) return attrs;
 
-  if ((kind === 'insert' || kind === 'replace') && typeof meta.content === 'string') {
+  // Pending insert content changes on every keystroke. Keeping it in the
+  // ProseMirror mark attrs makes y-prosemirror rewrite the formatting boundary
+  // for the whole run on every key; a concurrent edit in the same text block
+  // can then rebuild from an intermediate boundary and leave the newest
+  // character outside the mark. Insert content remains authoritative in the
+  // marks metadata map and can be recovered from the covered text if metadata
+  // has not arrived yet.
+  if (kind === 'replace' && typeof meta.content === 'string') {
     attrs.content = meta.content;
   }
   if (meta.status) attrs.status = meta.status;
@@ -1095,15 +1102,18 @@ function buildCommentData(id: string, meta: StoredMark | undefined): CommentData
 function buildSuggestionData(
   kind: MarkKind,
   meta: StoredMark | undefined,
-  quote: string
+  coveredText: string,
+  anchoredBy?: string,
 ): InsertData | DeleteData | ReplaceData {
   const status = meta?.status ?? 'pending';
   const orchestrationMeta = extractOrchestrationMeta(meta);
 
   if (kind === 'insert') {
+    const isHumanInlineInsert = anchoredBy?.startsWith('human:')
+      && meta?.insertStructure === undefined;
     return {
       ...orchestrationMeta,
-      content: meta?.content ?? quote,
+      content: isHumanInlineInsert ? coveredText : (meta?.content ?? coveredText),
       status,
     } as InsertData;
   }
@@ -1111,7 +1121,7 @@ function buildSuggestionData(
   if (kind === 'replace') {
     return {
       ...orchestrationMeta,
-      content: meta?.content ?? quote,
+      content: meta?.content ?? coveredText,
       status,
     } as ReplaceData;
   }
@@ -1252,7 +1262,7 @@ function buildAnchorMarks(
     if (anchor.kind === 'comment') {
       data = buildCommentData(anchor.id, pluginMeta);
     } else if (anchor.kind === 'insert' || anchor.kind === 'delete' || anchor.kind === 'replace') {
-      data = buildSuggestionData(anchor.kind, meta as StoredMark | undefined, quote);
+      data = buildSuggestionData(anchor.kind, meta as StoredMark | undefined, text, anchor.by);
     } else if (anchor.kind === 'flagged') {
       data = pluginMeta?.note ? { note: pluginMeta.note } : undefined;
     }
@@ -1289,7 +1299,7 @@ function buildAnchorMarks(
     if (stored.kind === 'comment') {
       data = buildCommentData(id, stored);
     } else if (stored.kind === 'insert' || stored.kind === 'delete' || stored.kind === 'replace') {
-      data = buildSuggestionData(stored.kind, stored, quote);
+      data = buildSuggestionData(stored.kind, stored, text);
     } else if (stored.kind === 'flagged') {
       data = stored.note ? { note: stored.note } : undefined;
     }
@@ -3203,34 +3213,43 @@ export function reject(view: EditorView, markId: string): boolean {
   if (!mark) return false;
 
   const metadata = getMarkMetadata(view.state);
-  let tr = view.state.tr;
   const ranges = resolveActionRangesDescending(view.state.doc, mark);
   if (ranges.length === 0) return false;
+  const insertStructure = metadata[markId]?.insertStructure;
+  let shouldDeleteInlineInsert = false;
+  if (mark.kind === 'insert' && insertStructure !== 'block' && insertStructure !== 'table_row') {
+    const data = mark.data as InsertData | undefined;
+    const content = data?.content;
+    const coveredText = [...ranges]
+      .sort((a, b) => a.from - b.from)
+      .map(range => getTextForRange(view.state.doc, range))
+      .join('');
+    const matchesContent = typeof content === 'string' && coveredText === content;
+    const matchesAppliedInlineQuote = insertStructure === 'inline'
+      && normalizeQuote(coveredText) === normalizeQuote(mark.quote);
+    shouldDeleteInlineInsert = matchesContent || matchesAppliedInlineQuote;
+    if (!shouldDeleteInlineInsert && mark.by.startsWith('human:')) return false;
+  }
 
+  let tr = view.state.tr;
   switch (mark.kind) {
     case 'insert': {
-      const markType = getMarkTypeForKind(view.state, 'insert');
-      if (!markType) return false;
-      const structure = metadata[markId]?.insertStructure;
-      if (structure === 'block' || structure === 'table_row') {
-        const structuralRanges = resolveInsertedStructureRangesDescending(view.state.doc, mark, structure);
+      if (insertStructure === 'block' || insertStructure === 'table_row') {
+        const structuralRanges = resolveInsertedStructureRangesDescending(view.state.doc, mark, insertStructure);
         if (structuralRanges.length === 0) return false;
         for (const range of structuralRanges) {
           tr = tr.delete(range.from, range.to);
         }
         break;
       }
+      const markType = getMarkTypeForKind(view.state, 'insert');
+      if (!markType) return false;
       for (const range of ranges) {
-        const data = mark.data as InsertData | undefined;
-        const content = data?.content ?? getTextForRange(view.state.doc, range);
-        const coveredText = getTextForRange(view.state.doc, range);
-        if (normalizeQuote(coveredText) === normalizeQuote(content)
-          || (
-            metadata[markId]?.insertStructure === 'inline'
-            && normalizeQuote(coveredText) === normalizeQuote(mark.quote)
-          )) {
+        if (shouldDeleteInlineInsert) {
           tr = tr.delete(range.from, range.to);
         } else {
+          // Quote-anchored API insert: the proposed content is not in the
+          // document, so rejection resolves the anchor without deleting text.
           tr = tr.removeMark(range.from, range.to, markType);
         }
       }

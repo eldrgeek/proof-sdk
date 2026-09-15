@@ -7,6 +7,8 @@ import type { AddressInfo } from 'node:net';
 import express from 'express';
 import { WebSocketServer } from 'ws';
 
+import { stripAllProofSpanTags } from '../../server/proof-span-strip.js';
+
 const CLIENT_HEADERS = {
   'X-Proof-Client-Version': '0.31.2',
   'X-Proof-Client-Build': 'concurrent-typing-browser-test',
@@ -104,48 +106,173 @@ async function placeCaretAfter(page: any, needle: string): Promise<void> {
 
 async function readEditor(page: any): Promise<{
   text: string;
-  markdown: string;
-  insertSuggestions: Array<{ by: string; text: string }>;
-  suggestionSegments: Array<{ id: string; by: string; from: number; to: number; text: string }>;
 }> {
   return page.evaluate(() => {
     const proof = (window as any).proof;
     const view = proof.editor.ctx.get('editorView');
-    const insertSuggestions = (proof.getAllMarks() || [])
-      .filter((mark: any) => mark.kind === 'insert' && mark.range)
-      .map((mark: any) => ({
-        by: String(mark.by),
-        text: view.state.doc.textBetween(mark.range.from, mark.range.to, '\n', '\n'),
-      }));
-    const suggestionSegments: Array<{ id: string; by: string; from: number; to: number; text: string }> = [];
-    view.state.doc.descendants((node: any, from: number) => {
-      if (!node.isText) return true;
-      for (const mark of node.marks) {
-        if (mark.type.name !== 'proofSuggestion' || mark.attrs.kind !== 'insert') continue;
-        suggestionSegments.push({
-          id: String(mark.attrs.id),
-          by: String(mark.attrs.by),
-          from,
-          to: from + node.nodeSize,
-          text: node.text ?? '',
-        });
+    return {
+      text: view.state.doc.textContent,
+    };
+  });
+}
+
+async function readParagraph(page: any, needle: string): Promise<string> {
+  return page.evaluate((text: string) => {
+    const view = (window as any).proof.editor.ctx.get('editorView');
+    let paragraph = '';
+    view.state.doc.descendants((node: any) => {
+      if (!paragraph && node.isTextblock && node.textContent.includes(text)) {
+        paragraph = node.textContent;
+        return false;
+      }
+      return !paragraph;
+    });
+    return paragraph;
+  }, needle);
+}
+
+async function inspectSuggestionCoverage(
+  page: any,
+  actorName: string,
+  insertedText: string,
+): Promise<{
+  uncoveredOffsets: number[];
+  suggestions: Array<{ id: string; text: string; content: string }>;
+}> {
+  return page.evaluate(({ actorName, insertedText }: { actorName: string; insertedText: string }) => {
+    const proof = (window as any).proof;
+    const view = proof.editor.ctx.get('editorView');
+    let from = -1;
+    view.state.doc.descendants((node: any, at: number) => {
+      if (from >= 0 || !node.isTextblock) return from < 0;
+      const index = node.textContent.indexOf(insertedText);
+      if (index >= 0) {
+        from = at + 1 + index;
+        return false;
       }
       return true;
     });
-    return {
-      text: view.state.doc.textContent,
-      markdown: proof.getMarkdownSnapshot()?.content ?? '',
-      insertSuggestions,
-      suggestionSegments,
-    };
-  });
+    if (from < 0) {
+      return { uncoveredOffsets: insertedText.split('').map((_: string, index: number) => index), suggestions: [] };
+    }
+
+    const uncoveredOffsets: number[] = [];
+    for (let offset = 0; offset < insertedText.length; offset += 1) {
+      let covered = false;
+      view.state.doc.nodesBetween(from + offset, from + offset + 1, (node: any) => {
+        if (!node.isText) return true;
+        covered ||= node.marks.some((mark: any) => (
+          mark.type.name === 'proofSuggestion'
+          && mark.attrs.kind === 'insert'
+          && String(mark.attrs.by).includes(actorName)
+        ));
+        return !covered;
+      });
+      if (!covered) uncoveredOffsets.push(offset);
+    }
+
+    const suggestions = (proof.getAllMarks() || [])
+      .filter((mark: any) => (
+        mark.kind === 'insert'
+        && mark.range
+        && String(mark.by).includes(actorName)
+      ))
+      .map((mark: any) => ({
+        id: String(mark.id),
+        text: view.state.doc.textBetween(mark.range.from, mark.range.to, '\n', '\n'),
+        content: String(mark.data?.content ?? ''),
+      }));
+    return { uncoveredOffsets, suggestions };
+  }, { actorName, insertedText });
+}
+
+async function selectText(page: any, needle: string): Promise<void> {
+  const selected = await page.evaluate((text: string) => {
+    const view = (window as any).proof.editor.ctx.get('editorView');
+    let from = -1;
+    view.state.doc.descendants((node: any, at: number) => {
+      if (from >= 0 || !node.isText) return;
+      const index = node.text.indexOf(text);
+      if (index >= 0) from = at + index;
+    });
+    if (from < 0) return false;
+    const Selection = view.state.selection.constructor;
+    view.dispatch(view.state.tr.setSelection(Selection.create(view.state.doc, from, from + text.length)));
+    view.focus();
+    return true;
+  }, needle);
+  assert(selected, `Could not select "${needle}"`);
+}
+
+async function suggestionIds(page: any, actorName?: string, kind: 'insert' | 'delete' = 'insert'): Promise<string[]> {
+  return page.evaluate(({ actorName, kind }: { actorName?: string; kind: string }) => (
+    ((window as any).proof.getAllMarks() || [])
+      .filter((mark: any) => (
+        mark.kind === kind
+        && (!actorName || String(mark.by).includes(actorName))
+      ))
+      .map((mark: any) => String(mark.id))
+  ), { actorName, kind });
+}
+
+async function resolveSuggestions(
+  page: any,
+  ids: string[],
+  action: 'accept' | 'reject',
+): Promise<boolean[]> {
+  return page.evaluate(({ ids, action }: { ids: string[]; action: string }) => ids.map((id) => (
+    action === 'accept'
+      ? Boolean((window as any).proof.markAccept(id))
+      : Boolean((window as any).proof.markReject(id))
+  )), { ids, action });
+}
+
+async function readServerState(
+  httpBase: string,
+  slug: string,
+  accessToken: string,
+): Promise<{
+  markdown: string;
+  marks: Record<string, {
+    kind?: string;
+    status?: string;
+    by?: string;
+    content?: string;
+    range?: { from: number; to: number };
+  }>;
+}> {
+  const state = await mustJson<{
+    markdown?: string;
+    content?: string;
+    marks?: Record<string, {
+      kind?: string;
+      status?: string;
+      by?: string;
+      content?: string;
+      range?: { from: number; to: number };
+    }>;
+  }>(await fetch(`${httpBase}/documents/${slug}/state`, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'X-Agent-Id': 'concurrent-typing-browser-test',
+    },
+  }), 'server document state');
+  return {
+    markdown: state.markdown ?? state.content ?? '',
+    marks: state.marks ?? {},
+  };
 }
 
 async function runMode(
   httpBase: string,
   chromium: any,
   mode: 'edit' | 'suggest',
+  options: {
+    sameParagraph?: boolean;
+    resolution?: 'reject-mike' | 'accept-all';
+  } = {},
 ): Promise<void> {
+  const sameParagraph = options.sameParagraph === true;
   const created = await mustJson<{
     slug: string;
     tokenUrl: string;
@@ -154,7 +281,7 @@ async function runMode(
     method: 'POST',
     headers: { ...CLIENT_HEADERS, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      title: `Concurrent typing ${mode}`,
+      title: `Concurrent typing ${mode} ${sameParagraph ? 'same paragraph' : 'different paragraphs'}`,
       markdown: INITIAL_MARKDOWN,
       marks: {},
     }),
@@ -170,26 +297,29 @@ async function runMode(
     ]);
 
     await Promise.all([
-      placeCaretAfter(mike, 'play is ready.'),
+      placeCaretAfter(mike, sameParagraph ? 'The second act' : 'play is ready.'),
       placeCaretAfter(eric, 'one more scene.'),
     ]);
     await Promise.all([
-      mike.keyboard.type(' mike typed words', { delay: 40 }),
-      eric.keyboard.type(' eric typed words', { delay: 40 }),
+      mike.keyboard.type(' mike typed words', { delay: 60 }),
+      eric.keyboard.type(' eric typed words', { delay: 60 }),
     ]);
 
+    const expectedMikeContext = sameParagraph
+      ? 'The second act mike typed words needs one more scene.'
+      : 'play is ready. mike typed words';
     await waitForAsync(async () => {
       const [mikeState, ericState] = await Promise.all([readEditor(mike), readEditor(eric)]);
-      return mikeState.text.includes('play is ready. mike typed words')
+      return mikeState.text.includes(expectedMikeContext)
         && mikeState.text.includes('one more scene. eric typed words')
-        && ericState.text.includes('play is ready. mike typed words')
+        && ericState.text.includes(expectedMikeContext)
         && ericState.text.includes('one more scene. eric typed words');
-    }, 15_000, `${mode} editors to converge`);
+    }, 15_000, `${mode} ${sameParagraph ? 'same-paragraph' : 'different-paragraph'} editors to converge`);
 
     const [mikeState, ericState] = await Promise.all([readEditor(mike), readEditor(eric)]);
     for (const [label, state] of [['Mike', mikeState], ['Eric', ericState]] as const) {
       assert(
-        state.text.includes('play is ready. mike typed words'),
+        state.text.includes(expectedMikeContext),
         `${mode}: ${label} lost or moved Mike's insertion: ${state.text}`,
       );
       assert(
@@ -199,16 +329,23 @@ async function runMode(
     }
 
     if (mode === 'suggest') {
-      const mikeInsertions = mikeState.insertSuggestions.filter((mark) => mark.by.includes('Mike Concurrent'));
-      const ericInsertions = mikeState.insertSuggestions.filter((mark) => mark.by.includes('Eric Concurrent'));
-      assert(
-        mikeInsertions.length === 1 && mikeInsertions[0].text === ' mike typed words',
-        `suggest: expected one continuous Mike insertion, got ${JSON.stringify(mikeInsertions)}; segments=${JSON.stringify(mikeState.suggestionSegments)}`,
-      );
-      assert(
-        ericInsertions.length === 1 && ericInsertions[0].text === ' eric typed words',
-        `suggest: expected one continuous Eric insertion, got ${JSON.stringify(ericInsertions)}`,
-      );
+      for (const [pageLabel, page] of [['Mike', mike], ['Eric', eric]] as const) {
+        for (const [actor, insertedText] of [
+          ['Mike Concurrent', ' mike typed words'],
+          ['Eric Concurrent', ' eric typed words'],
+        ] as const) {
+          const coverage = await inspectSuggestionCoverage(page, actor, insertedText);
+          assert(
+            coverage.uncoveredOffsets.length === 0,
+            `${pageLabel}: ${actor} had unmarked offsets ${JSON.stringify(coverage.uncoveredOffsets)} in ${JSON.stringify(insertedText)}; suggestions=${JSON.stringify(coverage.suggestions)}`,
+          );
+          assert(
+            coverage.suggestions.length === 1
+              && coverage.suggestions.every((suggestion) => suggestion.text === suggestion.content),
+            `${pageLabel}: ${actor} expected one content/range-aligned suggestion: ${JSON.stringify(coverage.suggestions)}`,
+          );
+        }
+      }
     }
 
     await waitForAsync(async () => {
@@ -222,11 +359,111 @@ async function runMode(
         `${mode} server state`,
       );
       const markdown = state.markdown ?? state.content ?? '';
-      return markdown.includes('play is ready. mike typed words')
+      return markdown.includes(expectedMikeContext)
         && markdown.includes('one more scene. eric typed words');
     }, 15_000, `${mode} server projection`);
 
-    console.log(`✓ concurrent ${mode} typing stays at each client caret`);
+    if (mode === 'suggest' && options.resolution === 'reject-mike') {
+      await selectText(mike, 'teh');
+      await mike.keyboard.press('Backspace');
+      await waitForAsync(
+        async () => (await suggestionIds(eric, 'Mike Concurrent', 'delete')).length === 1,
+        10_000,
+        'Mike deletion suggestion to reach Eric',
+      );
+
+      const ericInsertIds = await suggestionIds(mike, 'Eric Concurrent');
+      const acceptedEric = await resolveSuggestions(mike, ericInsertIds, 'accept');
+      assert(
+        acceptedEric.length > 0 && acceptedEric.every(Boolean),
+        `Expected every Eric insert accept to succeed, got ${JSON.stringify(acceptedEric)}`,
+      );
+      await waitForAsync(
+        async () => (await suggestionIds(eric, 'Eric Concurrent')).length === 0,
+        10_000,
+        'Eric insert acceptance to converge',
+      );
+
+      const deletionIds = await suggestionIds(eric, 'Mike Concurrent', 'delete');
+      const rejectedDeletion = await resolveSuggestions(eric, deletionIds, 'reject');
+      assert(
+        rejectedDeletion.length === 1 && rejectedDeletion.every(Boolean),
+        `Expected Mike's deletion reject to succeed, got ${JSON.stringify(rejectedDeletion)}`,
+      );
+      const paragraphBeforeInsertReject = await readParagraph(eric, 'The second act');
+      assert(
+        paragraphBeforeInsertReject === 'DIANA\nThe second act mike typed words needs one more scene. eric typed words',
+        `Resolution introduced whitespace drift: ${JSON.stringify(paragraphBeforeInsertReject)}`,
+      );
+
+      const mikeInsertIds = await suggestionIds(eric, 'Mike Concurrent');
+      const rejectedMike = await resolveSuggestions(eric, mikeInsertIds, 'reject');
+      assert(
+        rejectedMike.length > 0 && rejectedMike.every(Boolean),
+        `Expected every Mike insert reject to remove text, got ${JSON.stringify(rejectedMike)}`,
+      );
+      const rejectedParagraph = 'DIANA\nThe second act needs one more scene. eric typed words';
+      await waitForAsync(async () => (
+        await readParagraph(mike, 'The second act') === rejectedParagraph
+        && await readParagraph(eric, 'The second act') === rejectedParagraph
+      ), 10_000, 'Mike insert rejection to converge');
+
+      await mike.reload({ waitUntil: 'domcontentloaded' });
+      await mike.waitForFunction(
+        () => document.querySelector('.ProseMirror')?.getAttribute('contenteditable') === 'true',
+        null,
+        { timeout: 30_000 },
+      );
+      assert(
+        await readParagraph(mike, 'The second act') === rejectedParagraph,
+        'Reload resurrected text from rejected Mike suggestions',
+      );
+      await waitForAsync(async () => {
+        const state = await readServerState(httpBase, created.slug, created.accessToken);
+        const visible = stripAllProofSpanTags(state.markdown);
+        const pending = Object.values(state.marks).filter((mark) => (
+          (mark.kind === 'insert' || mark.kind === 'delete' || mark.kind === 'replace')
+          && mark.status !== 'accepted'
+          && mark.status !== 'rejected'
+        ));
+        return visible.includes('DIANA\\\nThe second act needs one more scene. eric typed words\n')
+          && !visible.includes('mike typed words')
+          && pending.length === 0;
+      }, 15_000, 'rejected text and marks to persist on the server');
+    }
+
+    if (mode === 'suggest' && options.resolution === 'accept-all') {
+      const allInsertIds = await suggestionIds(mike);
+      const accepted = await resolveSuggestions(mike, allInsertIds, 'accept');
+      assert(
+        accepted.length > 0 && accepted.every(Boolean),
+        `Expected every insert accept to succeed, got ${JSON.stringify(accepted)}`,
+      );
+      const acceptedParagraph = 'DIANA\nThe second act mike typed words needs one more scene. eric typed words';
+      await waitForAsync(async () => (
+        await readParagraph(mike, 'The second act') === acceptedParagraph
+        && await readParagraph(eric, 'The second act') === acceptedParagraph
+        && (await suggestionIds(mike)).length === 0
+        && (await suggestionIds(eric)).length === 0
+      ), 10_000, 'accepted inserts to converge without pending suggestions');
+      await waitForAsync(async () => {
+        const state = await readServerState(httpBase, created.slug, created.accessToken);
+        const visible = stripAllProofSpanTags(state.markdown);
+        const pending = Object.values(state.marks).filter((mark) => (
+          (mark.kind === 'insert' || mark.kind === 'delete' || mark.kind === 'replace')
+          && mark.status !== 'accepted'
+          && mark.status !== 'rejected'
+        ));
+        return visible.includes(
+          'DIANA\\\nThe second act mike typed words needs one more scene. eric typed words\n',
+        ) && pending.length === 0;
+      }, 15_000, 'accepted text and cleared suggestions to persist on the server');
+    }
+
+    console.log(
+      `✓ concurrent ${mode} typing ${sameParagraph ? 'in one paragraph' : 'in different paragraphs'}`
+      + `${options.resolution ? ` (${options.resolution})` : ''}`,
+    );
   } finally {
     await Promise.allSettled([browserA.close(), browserB.close()]);
   }
@@ -283,6 +520,14 @@ async function run(): Promise<void> {
     const chromium = loadChromium();
     await runMode(httpBase, chromium, 'edit');
     await runMode(httpBase, chromium, 'suggest');
+    await runMode(httpBase, chromium, 'suggest', {
+      sameParagraph: true,
+      resolution: 'reject-mike',
+    });
+    await runMode(httpBase, chromium, 'suggest', {
+      sameParagraph: true,
+      resolution: 'accept-all',
+    });
   } finally {
     await collab.stopCollabRuntime();
     for (const client of wss.clients) client.terminate();
