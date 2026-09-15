@@ -1,3 +1,5 @@
+import { sanitizeErrorText } from './proof-error-sanitizer.js';
+
 // Only diagnostic fields are read. Never serialize errors, events, editor state,
 // DOM text, Yjs updates, or console argument lists into an error report.
 (function () {
@@ -5,13 +7,10 @@
   if (!config) return;
   var sent = 0;
   var pending = new Map();
-  function clean(text) {
-    return String(text || '').replace(/(?:[a-z][a-z0-9+.-]*:\/\/|\/)[^\s<>"'`]+/gi, function (url) { return url.split(/[?#]/)[0]; });
-  }
   function report(message, stack) {
-    message = clean(message).slice(0, 500);
+    message = sanitizeErrorText(message).slice(0, 500);
     // Omit the stack's duplicated message and retain only actual stack frames.
-    stack = clean(stack).split('\n').filter(function (line) { return /^\s*at\s|@(?:https?:|\/)/.test(line); }).join('\n').slice(0, 4096);
+    stack = sanitizeErrorText(stack).split('\n').filter(function (line) { return /^\s*at\s|@(?:https?:|\/)/.test(line); }).join('\n').slice(0, 4096);
     var key = message + '\n' + stack;
     if (pending.has(key)) return pending.get(key);
     if (sent >= 5) return Promise.resolve(false);

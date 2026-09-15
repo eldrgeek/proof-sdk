@@ -1,3 +1,4 @@
+import { sanitizeErrorText } from '../public/js/proof-error-sanitizer.js';
 import { createHash } from 'node:crypto';
 import { Router } from 'express';
 import { getDb } from './db.js';
@@ -8,12 +9,8 @@ import { forwardFeedback, isFeedbackEnabled } from './soma-feedback.js';
 export const ERROR_WINDOW_MS = 30 * 60 * 1000;
 const buckets = new Map<string, { count: number; until: number }>();
 
-export function stripUrlSecrets(text: string): string {
-  // Includes URLs in messages and stack frames, not just the page URL field.
-  return text.replace(/(?:[a-z][a-z0-9+.-]*:\/\/|\/)[^\s<>"'`]+/gi, url => url.split(/[?#]/, 1)[0]);
-}
 function bounded(value: unknown, size: number): string {
-  return stripUrlSecrets(typeof value === 'string' ? value : '').slice(0, size);
+  return sanitizeErrorText(value).slice(0, size);
 }
 function boundedStack(value: unknown): string {
   let text = bounded(value, 4096);

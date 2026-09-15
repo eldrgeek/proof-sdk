@@ -1,3 +1,4 @@
+import { sanitizeErrorText } from '../../public/js/proof-error-sanitizer.js';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
@@ -31,7 +32,15 @@ async function report(body: any, ip = `198.51.100.${address++}`, extra = {}) {
   return { status: response.status, json: await response.json().catch(() => null) };
 }
 try {
-  const large = { message: 'm'.repeat(900), stack: '😀'.repeat(3000), url: 'https://site.test/d/slug?token=secret#fragment', page: '/d/slug?token=secret', build: 'build-a', userAgent: 'agent', area: 'editor', text: 'DO NOT STORE DOCUMENT TEXT', adminToken: 'fake' };
+  const privateMessage = 'Index 9 out of range for <"CONFIDENTIAL document sentence">';
+  assert.equal((await report({ message: privateMessage, stack: privateMessage + '\n at update (https://site.test/editor.js?token=SECRET:9:3)' })).status, 202);
+  const privateSample = getDb().prepare('SELECT sample FROM client_errors').get().sample;
+  assert(!privateSample.includes('CONFIDENTIAL'));
+  assert(!JSON.stringify(forwarded).includes('CONFIDENTIAL'));
+  assert(!JSON.stringify(forwarded).includes('SECRET'));
+  assert(forwarded.at(-1).text.includes('editor.js:9:3'));
+  getDb().prepare('DELETE FROM client_errors').run();
+  const large = { message: 'm!'.repeat(450), stack: '😀'.repeat(3000), url: 'https://site.test/d/slug?token=secret#fragment', page: '/d/slug?token=secret', build: 'build-a', userAgent: 'agent', area: 'editor', text: 'DO NOT STORE DOCUMENT TEXT', adminToken: 'fake' };
   assert.equal((await report(large)).status, 202);
   let row = getDb().prepare('SELECT * FROM client_errors').get();
   let sample = JSON.parse(row.sample);
@@ -69,10 +78,14 @@ try {
   const document = { createElement: () => ({ textContent: '', style: {}, append(text: string) { this.textContent += text; }, remove() {} }), body: { appendChild: (node: any) => banners.push(node) } };
   const browserConsole = { error: () => {} };
   const source = readFileSync(new URL('../../public/js/proof-client-errors.js', import.meta.url), 'utf8');
-  runInNewContext(source, { window, document, console: browserConsole, location: { origin: 'https://site.test', pathname: '/d/test', search: '?token=secret' }, navigator: { userAgent: 'test' }, fetch: async (_: any, init: any) => { posts.push(JSON.parse(init.body)); return { ok: true, json: async () => ({ accepted: true }) }; } });
+  runInNewContext(source.replace(/^import .*;\n/, ''), { sanitizeErrorText, window, document, console: browserConsole, location: { origin: 'https://site.test', pathname: '/d/test', search: '?token=secret' }, navigator: { userAgent: 'test' }, fetch: async (_: any, init: any) => { posts.push(JSON.parse(init.body)); return { ok: true, json: async () => ({ accepted: true }) }; } });
+  await window.proofReportClientError(privateMessage, privateMessage + '\n at update (/editor.js?token=SECRET:9:3)');
+  assert.equal(posts[0].message, 'Index 9 out of range for [text]');
+  assert.equal(posts[0].stack, ' at update (/editor.js:9:3)');
+  assert(!JSON.stringify(posts).includes('CONFIDENTIAL'));
   events.error({ message: 'window-error', error: { stack: 'Error: private duplicate message\n at fn (https://site.test/app.js?token=secret)' }, document: 'NEVER SEND' });
   await window.proofReportClientError('window-error', 'Error: private duplicate message\n at fn (https://site.test/app.js?token=secret)');
-  assert.equal(posts.length, 1, 'banner and event share a report');
+  assert.equal(posts.length, 2, 'banner and event share a report');
   events.unhandledrejection({ reason: { message: 'rejected', stack: ' at rejected (/app.js?secret=secret)' } });
   (browserConsole.error as any)('Caught error while handling a Yjs update', { message: 'bad update', stack: ' at apply (/app.js?token=secret)', document: 'NEVER SEND' }, 'NEVER SEND');
   await window.proofReportClientError('Caught error while handling a Yjs update: bad update', ' at apply (/app.js?token=secret)');
