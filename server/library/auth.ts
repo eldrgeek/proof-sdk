@@ -376,7 +376,7 @@ export async function exchangeSomaSession(req: Request): Promise<{
     if (typeof user.email !== 'string' || !user.email.includes('@')) return { status: 401, message: 'A verified email is required.' };
     // Membership is granted by email, so only an email Supabase has confirmed may claim it.
     // The shared project requires confirmation today; this keeps Proof+ safe if that setting changes.
-    if (!user.email_confirmed_at && !user.confirmed_at) return { status: 401, message: 'Please confirm your email address, then sign in again.' };
+    if (!user.email_confirmed_at) return { status: 401, message: 'Please confirm your email address, then sign in again.' };
     const email = normalizeEmail(user.email);
     let member = getLibraryMemberByEmail(email);
     const existing = getLibrarySession(req);

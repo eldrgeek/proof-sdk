@@ -20,7 +20,7 @@ const nativeFetch = globalThis.fetch;
 const forwarded: any[] = [];
 globalThis.fetch = async (input, init) => {
   const url = String(input);
-  if (url === 'https://soma.test/auth/v1/user') return Response.json({ email: 'admin@example.test', user_metadata: { full_name: 'Browser Admin' } });
+  if (url === 'https://soma.test/auth/v1/user') return Response.json({ email: 'admin@example.test', email_confirmed_at: '2026-09-01T00:00:00.000Z', user_metadata: { full_name: 'Browser Admin' } });
   if (url === 'https://soma.test/rest/v1/rpc/is_app_admin') return Response.json(true);
   assert.equal(url, 'http://127.0.0.1:4252/feedback');
   forwarded.push(JSON.parse(String(init?.body)));

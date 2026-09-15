@@ -25,6 +25,7 @@ globalThis.fetch = async (input, init) => {
   if (url.endsWith('/auth/v1/user')) {
     if (token === 'Bearer invalid' || token === 'Bearer expired') return Response.json({ message: 'invalid' }, { status: 401 });
     if (token === 'Bearer unconfirmed-token') return Response.json({ email: 'member@example.test', email_confirmed_at: null, confirmed_at: null });
+    if (token === 'Bearer phone-confirmed-token') return Response.json({ email: 'member@example.test', email_confirmed_at: null, confirmed_at: '2026-09-01T00:00:00.000Z' });
     return Response.json({ email: token === 'Bearer admin-token' ? 'ADMIN@example.test' : token === 'Bearer member-token' ? 'member@example.test' : 'stranger@example.test', email_confirmed_at: '2026-09-01T00:00:00.000Z', user_metadata: { full_name: 'SOMA Admin' } });
   }
   assert.deepEqual(JSON.parse(String(init?.body)), { target_app: 'proof-plus' });
@@ -51,6 +52,10 @@ try {
   const unconfirmed = await request('POST', '/library/api/session', { accessToken: 'unconfirmed-token' });
   assert.equal(unconfirmed.status, 401, 'an unconfirmed email cannot claim an existing membership');
   assert.equal(unconfirmed.cookie, '', 'no session cookie for an unconfirmed email');
+  const phoneConfirmed = await request('POST', '/library/api/session', { accessToken: 'phone-confirmed-token' });
+  assert.equal(phoneConfirmed.status, 401, 'phone confirmation cannot claim an existing email membership');
+  assert.equal(phoneConfirmed.cookie, '', 'no session cookie for a phone-confirmed account');
+  assert.equal(getDb().prepare('SELECT COUNT(*) AS n FROM library_sessions').get().n, 0);
   const stranger = await request('POST', '/library/api/session', { accessToken: 'stranger', email: 'admin@example.test', isOwner: true });
   assert.equal(stranger.status, 403);
   assert.equal(stranger.json.message, "You're signed in as stranger@example.test, but this Proof+ isn't shared with that address. Ask Mike or Eric to add you.");
