@@ -16,4 +16,6 @@ setReviewStyle('proof'); assert.equal(getReviewStyle(), 'proof');
 setReviewStyle('playmaker'); assert.equal(getReviewStyle(), 'playmaker');
 assert.equal(changes, 2, 'Switching takes effect by event, without navigation');
 assert.equal(getReviewWalk(), true); setReviewWalk(false); assert.equal(getReviewWalk(), false);
+target.localStorage = { getItem: () => 'playmaker', setItem: () => { throw new Error('Quota exceeded'); } };
+setReviewStyle('proof'); assert.equal(getReviewStyle(), 'proof', 'A storage write failure cannot prevent immediate switching');
 console.log('✓ review settings and immediate switching');
