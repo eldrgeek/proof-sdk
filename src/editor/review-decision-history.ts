@@ -1,3 +1,4 @@
+import { historyCandidate } from './review-history-candidate';
 import * as Y from 'yjs';
 import type { EditorView } from '@milkdown/kit/prose/view';
 import { defaultDeleteFilter, defaultProtectedNodes, ySyncPluginKey, getRelativeSelection } from 'y-prosemirror';
@@ -105,7 +106,7 @@ export class ReviewDecisionHistory {
   }
   private restore(redo: boolean): boolean {
     const manager = this.manager;
-    const candidate = this.preview(manager, redo);
+    const candidate = historyCandidate(manager, redo);
     // Also inspect entries Yjs would skip, before changing either live stack.
     const stack = redo ? manager.redoStack : manager.undoStack;
     for (let i = stack.length - 1; i >= 0; i--) {
@@ -114,7 +115,10 @@ export class ReviewDecisionHistory {
       }
       if (stack[i] === candidate) break;
     }
-    if (!candidate) return false;
+    if (!candidate) {
+      // Native history consumes ineffective entries even when no edit remains.
+      return (redo ? manager.redo() : manager.undo()) !== null;
+    }
     if (candidate.meta.has(this.rangeKey) && !rangeMatches(this.doc, candidate.meta.get(this.rangeKey) as DecisionRange | null)) {
       throw new Error(`Can't ${redo ? 'redo' : 'undo'}: someone has changed this text since.`);
     }
@@ -154,24 +158,6 @@ export class ReviewDecisionHistory {
       const current = this.suggestionRecord(id);
       return current.version === record.version && current.value === record.value;
     });
-  }
-  /** Preview on an isolated copy: find the effective entry before touching live state.
-   * Yjs owns the rules for skipping entries superseded by remote map writes.
-   * The original stack items identify the result; only the copy's structs change.
-   */
-  private preview(source: Y.UndoManager, redo: boolean) {
-    const stack = redo ? source.redoStack : source.undoStack;
-    if (!stack.length) return null;
-    const copy = new Y.Doc({ gc: false });
-    Y.applyUpdate(copy, Y.encodeStateAsUpdate(this.doc));
-    const manager = new Y.UndoManager([copy.getXmlFragment('prosemirror'), copy.getMap('marks')], {
-      trackedOrigins: new Set(), captureTimeout: 0,
-      deleteFilter: source.deleteFilter,
-    });
-    manager.undoStack = [...source.undoStack];
-    manager.redoStack = [...source.redoStack];
-    try { return redo ? manager.redo() : manager.undo(); }
-    finally { manager.destroy(); copy.destroy(); }
   }
   undo(): boolean { return this.restore(false); }
   redo(): boolean { return this.restore(true); }
