@@ -9,6 +9,8 @@
  * - Inline spans are derived from marks when saving/displaying
  */
 
+import { getAgentPresenceDisplay } from '../shared/agent-presence';
+
 import {
   Editor,
   rootCtx,
@@ -1107,6 +1109,7 @@ class ProofEditorImpl implements ProofEditor {
   private shareWelcomeToast: HTMLElement | null = null;
   private shareDocTitle: string = 'Untitled';
   private shareBannerTitleEl: HTMLElement | null = null;
+  private shareBannerResizeObserver: ResizeObserver | null = null;
   private shareBannerAvatarsEl: HTMLElement | null = null;
   private shareBannerAgentSlotEl: HTMLElement | null = null;
   private shareBannerSyncDotEl: HTMLElement | null = null;
@@ -1136,6 +1139,7 @@ class ProofEditorImpl implements ProofEditor {
     color: string;
     avatar?: string;
     at: string;
+    expiresAt?: string;
   }>();
   private shareAgentPresenceExpiryTimer: ReturnType<typeof setTimeout> | null = null;
   private shareAgentPresenceCleanup: (() => void) | null = null;
@@ -2544,13 +2548,14 @@ class ProofEditorImpl implements ProofEditor {
       const id = typeof message.id === 'string' ? message.id.trim() : '';
       if (!id || !isAgentScopedId(id)) return;
       const status = typeof message.status === 'string' && message.status.trim() ? message.status.trim() : 'idle';
-      if (status === 'disconnected') {
+      if (status === 'disconnected' || status === 'left') {
         this.shareAgentPresenceFallback.delete(id);
       } else {
         this.shareAgentPresenceFallback.set(id, {
           id,
           name: typeof message.name === 'string' && message.name.trim() ? message.name.trim() : id,
           status,
+          expiresAt: typeof message.expiresAt === 'string' ? message.expiresAt : undefined,
           color: typeof message.color === 'string' && /^#(?:[0-9a-fA-F]{3}){1,2}$/.test(message.color)
             ? message.color
             : '#6366f1',
@@ -2848,8 +2853,8 @@ class ProofEditorImpl implements ProofEditor {
     return now < this.shareStatusTextVisibleUntilMs;
   }
 
-  private getHumanCollaboratorAvatars(): Array<{ name: string; color: string; initial: string }> {
-    const avatars: Array<{ name: string; color: string; initial: string }> = [];
+  private getHumanCollaboratorAvatars(): Array<{ name: string; color: string; initial: string; state: string }> {
+    const avatars: Array<{ name: string; color: string; initial: string; state: string }> = [];
     const awareness = collabClient.getAwareness();
     if (!awareness) return avatars;
     const states = awareness.getStates?.();
@@ -2872,6 +2877,7 @@ class ProofEditorImpl implements ProofEditor {
         name,
         color,
         initial: name.charAt(0).toUpperCase(),
+        state: state?.cursor ? 'editing' : 'viewing',
       });
     });
     return avatars;
@@ -2922,6 +2928,7 @@ class ProofEditorImpl implements ProofEditor {
     color: string;
     avatar?: string;
     at: string;
+    expiresAt?: string;
   }> {
     return this.collectConnectedAgentEntries().entries;
   }
@@ -2934,6 +2941,7 @@ class ProofEditorImpl implements ProofEditor {
       color: string;
       avatar?: string;
       at: string;
+      expiresAt?: string;
     }>;
     nextExpiryAtMs: number | null;
   } {
@@ -2943,7 +2951,6 @@ class ProofEditorImpl implements ProofEditor {
     }
 
     const nowMs = Date.now();
-    const ttlMs = 60_000;
     let nextExpiryAtMs: number | null = null;
     const entries: Array<{
       id: string;
@@ -2952,6 +2959,7 @@ class ProofEditorImpl implements ProofEditor {
       color: string;
       avatar?: string;
       at: string;
+      expiresAt?: string;
     }> = [];
 
     const pushEntry = (
@@ -2960,23 +2968,24 @@ class ProofEditorImpl implements ProofEditor {
       status: string,
       avatar: string | undefined,
       atRaw: string,
+      expiresAt?: string,
     ) => {
       const at = atRaw.trim();
       if (!at) return;
-      const atMs = Date.parse(at);
-      if (!Number.isFinite(atMs)) return;
-      if ((nowMs - atMs) > ttlMs) return;
-      const expiryAtMs = atMs + ttlMs;
+      const display = getAgentPresenceDisplay({ at, status, expiresAt }, nowMs);
+      if (!display.visible) return;
+      const expiryAtMs = display.nextUpdateAtMs!;
       if (nextExpiryAtMs === null || expiryAtMs < nextExpiryAtMs) {
         nextExpiryAtMs = expiryAtMs;
       }
       entries.push({
         id,
         name,
-        status,
+        status: display.idle ? 'idle' : 'active',
         color: this.getAgentPresenceColor(id),
         avatar,
         at: at,
+        expiresAt,
       });
     };
 
@@ -2990,7 +2999,7 @@ class ProofEditorImpl implements ProofEditor {
         const status = typeof value.status === 'string' && value.status.trim() ? value.status.trim() : 'idle';
         const avatar = typeof value.avatar === 'string' && value.avatar.trim() ? value.avatar.trim() : undefined;
         const at = typeof value.at === 'string' ? value.at : '';
-        pushEntry(id, name, status, avatar, at);
+        pushEntry(id, name, status, avatar, at, value.expiresAt);
       });
     } catch {
       return { entries: [], nextExpiryAtMs: null };
@@ -2999,7 +3008,7 @@ class ProofEditorImpl implements ProofEditor {
     for (const fallback of this.shareAgentPresenceFallback.values()) {
       if (!isAgentScopedId(fallback.id)) continue;
       if (entries.some((entry) => entry.id === fallback.id)) continue;
-      pushEntry(fallback.id, fallback.name, fallback.status, fallback.avatar, fallback.at);
+      pushEntry(fallback.id, fallback.name, fallback.status, fallback.avatar, fallback.at, fallback.expiresAt);
     }
 
     entries.sort((a, b) => {
@@ -3044,6 +3053,31 @@ class ProofEditorImpl implements ProofEditor {
         0%, 100% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.40), 0 0 0 0.5px rgba(0,0,0,0.08); }
         50% { box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.00), 0 0 0 0.5px rgba(0,0,0,0.08); }
       }
+      #share-banner {
+        padding: 16px 16px 16px 24px !important;
+        border-radius: 36px !important;
+        gap: 14px !important;
+        font-size: 15px !important;
+      }
+      #share-banner > a,
+      #share-banner > .share-pill-title,
+      #share-banner > button,
+      #share-banner .share-pill-agent-trigger,
+      #share-banner .share-pill-share-btn > button {
+        min-height: 48px !important;
+        min-width: 44px;
+        font-size: 15px !important;
+      }
+      #share-banner .share-pill-title {
+        line-height: 48px;
+      }
+      #share-banner .share-pill-agent-trigger:not(.has-agents) > span:first-child {
+        font-size: 20px !important;
+      }
+      #share-banner .share-pill-share-btn > button > span:last-child {
+        font-size: 14px !important;
+      }
+      #share-banner .share-pill-human-count { display: none; }
       #share-banner .share-pill-title {
         min-width: 0;
         overflow: hidden;
@@ -3069,7 +3103,7 @@ class ProofEditorImpl implements ProofEditor {
       }
       #share-banner .share-pill-status-inline .status-label {
         color:#6b7280;
-        font-size:11px;
+        font-size:15px;
         font-weight:500;
         line-height:1;
       }
@@ -3086,11 +3120,13 @@ class ProofEditorImpl implements ProofEditor {
         transform:translateX(-50%);
         background:#1a1a1a;
         color:#fff;
-        font-size:11px;
+        font-size:13px;
         font-weight:500;
         padding:4px 8px;
         border-radius:6px;
-        white-space:nowrap;
+        width:max-content;
+        max-width:340px;
+        white-space:normal;
         pointer-events:none;
         opacity:0;
         transition:opacity 0.12s ease;
@@ -3106,51 +3142,54 @@ class ProofEditorImpl implements ProofEditor {
         border:4px solid transparent;
         border-bottom-color:#1a1a1a;
       }
-      #share-banner .proof-avatar-wrap:hover .proof-avatar-tooltip {
+      #share-banner .proof-avatar-wrap:hover .proof-avatar-tooltip,
+      #share-banner .proof-avatar-wrap:focus .proof-avatar-tooltip,
+      #share-banner .share-pill-agent-trigger:focus-visible .proof-avatar-tooltip {
         opacity:1;
       }
       #share-banner .share-pill-agent-btn.menu-open .proof-avatar-tooltip {
         display:none !important;
       }
-      @media (max-width: 480px) {
+      @media (max-width: 900px) {
+        #share-banner { gap: 8px !important; }
+        #share-banner .share-pill-human-avatars > .proof-avatar-wrap,
+        #share-banner .share-pill-human-avatars > span:not(.share-pill-human-count):not([role]) { display: none !important; }
+        #share-banner .share-pill-human-count { display: inline; font-size: 15px; white-space: nowrap; }
+      }
+      @media (max-width: 600px) {
         #share-banner {
           left: 12px !important;
           right: 12px !important;
           transform: none !important;
           min-width: unset !important;
           max-width: unset !important;
-          padding: 8px 10px 8px 14px !important;
-          gap: 8px !important;
+          padding: 8px 12px !important;
+          gap: 6px !important;
           top: 16px !important;
+          display: grid !important;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          border-radius: 28px !important;
         }
-        #share-banner .share-pill-sep {
-          display: none !important;
-        }
-        #share-banner .share-pill-title {
-          flex: 1 1 auto !important;
-          min-width: 0 !important;
-        }
-        #share-banner .share-pill-human-avatars {
-          display: none !important;
-        }
-        #share-banner .share-pill-agent-trigger {
-          padding: 0 10px !important;
-        }
-        #share-banner .share-pill-agent-trigger.has-agents {
-          padding: 0 2px !important;
-        }
-        #share-banner .share-pill-agent-trigger .agent-btn-label {
-          font-size: 11px !important;
-        }
-        #share-banner .share-pill-status-inline .status-label {
-          display:none !important;
-        }
-        #share-banner .share-pill-status-sep {
-          display:none !important;
-        }
-        #share-banner .proof-avatar-tooltip {
-          display:none !important;
-        }
+        #share-banner > a { grid-column: 1; }
+        #share-banner .share-pill-title { grid-column: 2 / 4; }
+        #share-banner .share-pill-status-inline { grid-column: 4; justify-self: end; }
+        #share-banner .share-pill-sep,
+        #share-banner .share-pill-status-sep { display: none !important; }
+        #share-banner .share-pill-human-avatars { grid-column: 1; justify-content: center; }
+        #share-banner .share-pill-suggest-toggle { grid-column: 2; padding: 0 4px !important; gap: 3px !important; font-size: 12px !important; }
+        #share-banner .share-pill-agent-slot { grid-column: 3; justify-content: center; min-width: 0; }
+        #share-banner .share-pill-share-btn { grid-column: 4; }
+        #share-banner .share-pill-share-btn > button { padding: 0 8px !important; width: 100%; }
+        #share-banner .share-pill-suggestion-review { grid-column: 1 / -1; grid-row: 3; }
+        #share-banner .share-pill-agent-btn { max-width: 100%; min-width: 0; }
+        #share-banner .share-pill-agent-trigger { padding: 0 4px !important; max-width: 100%; }
+        #share-banner .share-pill-agent-trigger:not(.has-agents) { width: 100%; }
+        #share-banner .share-pill-agent-trigger .agent-btn-label { min-width: 0; }
+        #share-banner .share-pill-agent-trigger .agent-btn-label { font-size: 15px !important; white-space: normal; }
+        #share-banner .share-pill-status-inline .status-label { display: none !important; }
+        #share-banner .share-pill-agent-overflow { display: none !important; }
+        #share-banner .share-pill-agent-trigger .proof-avatar-wrap > span:first-child { width: auto !important; }
+        #share-banner .proof-avatar-tooltip { display: none !important; }
       }
     `;
     document.head.appendChild(style);
@@ -3161,7 +3200,7 @@ class ProofEditorImpl implements ProofEditor {
     if (!container) return;
     const avatars = this.getHumanCollaboratorAvatars();
     container.className = 'share-pill-human-avatars';
-    container.style.cssText = 'display:none;align-items:center;flex-shrink:0;padding-left:4px;position:relative;';
+    container.style.cssText = 'display:none;align-items:center;flex-shrink:0;min-height:44px;min-width:44px;position:relative;';
     container.replaceChildren();
 
     if (avatars.length === 0) {
@@ -3176,19 +3215,27 @@ class ProofEditorImpl implements ProofEditor {
     container.style.cursor = 'pointer';
     container.setAttribute('role', 'button');
     container.setAttribute('tabindex', '0');
+    container.setAttribute('aria-haspopup', 'menu');
     container.setAttribute('aria-label', `${avatars.length} collaborator${avatars.length === 1 ? '' : 's'}`);
+
+    const count = document.createElement('span');
+    count.className = 'share-pill-human-count';
+    count.textContent = `${avatars.length} here`;
+    container.appendChild(count);
 
     for (let i = 0; i < Math.min(avatars.length, 5); i++) {
       const avatar = avatars[i];
       const wrap = document.createElement('span');
       wrap.className = 'proof-avatar-wrap';
-      wrap.style.cssText = `display:inline-flex;align-items:center;justify-content:center;margin-left:${i > 0 ? '-6px' : '0'};z-index:${5 - i};position:relative;`;
+      wrap.tabIndex = 0;
+      wrap.setAttribute('aria-label', `${avatar.name} — ${avatar.state}`);
+      wrap.style.cssText = `display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;z-index:${5 - i};position:relative;`;
       const circle = document.createElement('span');
       circle.textContent = avatar.initial;
       circle.style.cssText = `
-        width:24px;height:24px;border-radius:50%;
+        width:32px;height:32px;border-radius:50%;
         background:${avatar.color};color:#fff;
-        font-size:11px;font-weight:600;
+        font-size:14px;font-weight:600;
         display:inline-flex;align-items:center;justify-content:center;
         border:2px solid #fff;
         box-shadow:0 0 0 0.5px rgba(0,0,0,0.08);
@@ -3197,10 +3244,10 @@ class ProofEditorImpl implements ProofEditor {
       tooltip.className = 'proof-avatar-tooltip';
       const tooltipName = document.createElement('span');
       tooltipName.style.cssText = 'display:block;font-weight:600';
-      tooltipName.textContent = avatar.name;
+      tooltipName.textContent = `${avatar.name} — ${avatar.state}`;
       const tooltipType = document.createElement('span');
       tooltipType.style.cssText = 'display:block;font-size:10px;opacity:0.7;margin-top:1px';
-      tooltipType.textContent = 'Collaborator';
+      tooltipType.textContent = 'Open people list';
       tooltip.append(tooltipName, tooltipType);
       wrap.appendChild(circle);
       wrap.appendChild(tooltip);
@@ -3210,7 +3257,7 @@ class ProofEditorImpl implements ProofEditor {
       const overflow = document.createElement('span');
       overflow.textContent = `+${avatars.length - 5}`;
       overflow.style.cssText = `
-        width:24px;height:24px;border-radius:50%;
+        width:32px;height:32px;border-radius:50%;
         background:#e5e7eb;color:#4b5563;
         font-size:10px;font-weight:600;
         display:inline-flex;align-items:center;justify-content:center;
@@ -3240,10 +3287,10 @@ class ProofEditorImpl implements ProofEditor {
 
       const header = document.createElement('div');
       header.textContent = 'Collaborators';
-      header.style.cssText = 'padding:4px 8px 8px 8px;color:rgba(255,255,255,0.70);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;';
+      header.style.cssText = 'padding:4px 8px 8px 8px;color:rgba(255,255,255,0.70);font-size:14px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;';
       menu.appendChild(header);
 
-      for (const avatar of avatars.slice(0, 10)) {
+      for (const avatar of avatars) {
         const row = document.createElement('div');
         row.setAttribute('role', 'menuitem');
         row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px;border-radius:8px;';
@@ -3251,12 +3298,13 @@ class ProofEditorImpl implements ProofEditor {
         dot.style.cssText = `width:18px;height:18px;border-radius:50%;background:${avatar.color};color:#fff;font-size:10px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;`;
         dot.textContent = avatar.initial;
         const name = document.createElement('span');
-        name.textContent = avatar.name;
+        name.textContent = `${avatar.name} — ${avatar.state}`;
         name.style.cssText = 'color:rgba(255,255,255,0.92);font-size:12px;font-weight:500;';
         row.append(dot, name);
         menu.appendChild(row);
       }
 
+      container.setAttribute('aria-expanded', 'true');
       container.appendChild(menu);
       this.clampMenuToViewport(menu);
 
@@ -3271,6 +3319,7 @@ class ProofEditorImpl implements ProofEditor {
       const cleanup = () => {
         document.removeEventListener('mousedown', onDocMouseDown, true);
         document.removeEventListener('keydown', onKeyDown, true);
+        container.setAttribute('aria-expanded', 'false');
         if (menu.isConnected) menu.remove();
         if (this.presenceMenuCleanup === cleanup) this.presenceMenuCleanup = null;
       };
@@ -3396,16 +3445,19 @@ class ProofEditorImpl implements ProofEditor {
     const { entries: agents, nextExpiryAtMs } = this.collectConnectedAgentEntries();
     this.scheduleShareAgentPresenceExpiryRefresh(nextExpiryAtMs);
     const nextState = agents.length > 0 ? 'connected' : 'empty';
-    const signature = agents.map((agent) => `${agent.id}:${agent.status}:${agent.at}`).join('|');
+    const signature = agents.map((agent) => `${agent.id}:${agent.name}:${agent.status}:${agent.at}:${getAgentPresenceDisplay(agent).label}`).join('|');
     if (
       this.shareBannerAgentSlotEl.dataset.agentState === nextState
       && this.shareBannerAgentSlotEl.dataset.agentSignature === signature
       && this.shareBannerAgentSlotEl.firstElementChild
     ) return;
+    const focused = this.shareBannerAgentSlotEl.contains(document.activeElement);
     this.closeAgentMenu();
     this.shareBannerAgentSlotEl.dataset.agentState = nextState;
     this.shareBannerAgentSlotEl.dataset.agentSignature = signature;
     this.shareBannerAgentSlotEl.replaceChildren(this.createAgentMenuButton(agents));
+    if (focused) this.shareBannerAgentSlotEl.querySelector<HTMLButtonElement>('button')?.focus();
+    this.scheduleBannerLayoutUpdate();
   }
 
   private updateShareBannerSyncDisplay(): void {
@@ -3934,24 +3986,17 @@ class ProofEditorImpl implements ProofEditor {
       });
     };
 
-    const refresh = () => {
-      const nowMs = Date.now();
-      const ttlMs = 60_000;
+    const refresh = (event?: any) => {
+      event?.changes?.keys?.forEach((change: { action: string }, id: string) => {
+        if (change.action === 'delete') this.shareAgentPresenceFallback.delete(id);
+      });
       const entries: any[] = [];
       try {
         presenceMap.forEach((value: any) => entries.push(value));
       } catch {
         // ignore
       }
-
-      const fresh = entries.filter((e) => {
-        if (!e || typeof e !== 'object') return false;
-        const at = (e as any).at;
-        if (typeof at !== 'string' || !at.trim()) return true;
-        const parsed = Date.parse(at);
-        if (!Number.isFinite(parsed)) return true;
-        return (nowMs - parsed) <= ttlMs;
-      });
+      const fresh = entries.filter((entry) => entry && getAgentPresenceDisplay(entry).visible);
 
       const active = fresh.filter((e) => e && typeof e === 'object' && typeof e.status === 'string' && e.status !== 'idle');
       const chosen = (active.length > 0 ? active : fresh).slice(0, 3);
@@ -3983,10 +4028,8 @@ class ProofEditorImpl implements ProofEditor {
       this.shareAgentActivitySignature = activitySignature;
       this.shareAgentActivityItems = items;
 
-      if (summaryChanged || activityChanged) {
-        this.updateShareBannerPresenceDisplay();
-        this.updateShareBannerAgentControlDisplay();
-      }
+      if (summaryChanged || activityChanged) this.updateShareBannerPresenceDisplay();
+      this.updateShareBannerAgentControlDisplay();
     };
 
     try {
@@ -4544,6 +4587,7 @@ class ProofEditorImpl implements ProofEditor {
       color: string;
       avatar?: string;
       at: string;
+      expiresAt?: string;
     }>,
   ): HTMLElement {
     const container = document.createElement('div');
@@ -4557,6 +4601,9 @@ class ProofEditorImpl implements ProofEditor {
         id: string;
         name: string;
         avatar?: string;
+        at: string;
+        expiresAt?: string;
+        status: string;
       },
       options: {
         size: number;
@@ -4575,7 +4622,12 @@ class ProofEditorImpl implements ProofEditor {
         className: 'share-pill-agent-face__svg',
       });
       face.dataset.agentFamily = family;
-      face.style.animation = 'proof-agent-pulse 2s ease-in-out infinite';
+      face.dataset.agentId = agent.id;
+      const display = getAgentPresenceDisplay(agent);
+      face.dataset.presenceState = display.idle ? 'idle' : 'active';
+      face.style.opacity = display.idle ? '0.45' : '1';
+      face.style.animation = display.idle ? 'none' : 'proof-agent-pulse 2s ease-in-out infinite';
+      face.title = `${agent.name} — ${display.label}`;
       face.style.filter = 'drop-shadow(0 1px 1px rgba(15,23,42,0.10))';
       face.style.borderRadius = '999px';
       face.style.boxShadow = `0 0 0 1px ${palette.accent}22`;
@@ -4592,27 +4644,30 @@ class ProofEditorImpl implements ProofEditor {
         id: string;
         name: string;
         avatar?: string;
+        at: string;
+        expiresAt?: string;
+        status: string;
       }>,
     ): { element: HTMLSpanElement; tooltipLabel: string; tooltipSubtext: string } => {
       const stack = document.createElement('span');
-      stack.style.cssText = 'display:inline-flex;align-items:center;justify-content:flex-start;position:relative;height:26px;';
+      stack.style.cssText = 'display:inline-flex;align-items:center;justify-content:flex-start;position:relative;height:32px;';
 
       if (items.length === 1) {
-        stack.style.width = '26px';
+        stack.style.width = '32px';
         stack.appendChild(buildAgentFace(items[0], {
-          size: 26,
+          size: 32,
           title: `${items[0].name} icon`,
           zIndex: 2,
         }));
         return {
           element: stack,
-          tooltipLabel: items[0].name,
-          tooltipSubtext: 'agent collaborator',
+          tooltipLabel: `${items[0].name} — ${getAgentPresenceDisplay(items[0]).label}`,
+          tooltipSubtext: 'Open agent actions',
         };
       }
 
       const visible = items.slice(0, 2);
-      const faceSize = 23;
+      const faceSize = 32;
       const overlap = -7;
       const chipGap = 5;
       const overflowCount = Math.max(0, items.length - 2);
@@ -4645,7 +4700,7 @@ class ProofEditorImpl implements ProofEditor {
 
       return {
         element: stack,
-        tooltipLabel: `${items.length} agent collaborators`,
+        tooltipLabel: items.map((agent) => `${agent.name} — ${getAgentPresenceDisplay(agent).label}`).join('\n'),
         tooltipSubtext: 'Click to manage',
       };
     };
@@ -4655,7 +4710,7 @@ class ProofEditorImpl implements ProofEditor {
     btn.className = 'share-pill-agent-trigger';
     if (hasAgents) {
       btn.classList.add('has-agents');
-      btn.setAttribute('aria-label', `${agents.length} agent collaborator${agents.length === 1 ? '' : 's'}. Open actions`);
+      btn.setAttribute('aria-label', `${agents.map((agent) => `${agent.name} — ${getAgentPresenceDisplay(agent).label}`).join('; ')}. Open agent actions`);
       btn.setAttribute('aria-haspopup', 'menu');
       btn.setAttribute('aria-expanded', 'false');
       btn.style.cssText = `
@@ -4671,12 +4726,15 @@ class ProofEditorImpl implements ProofEditor {
         id: agent.id,
         name: agent.name,
         avatar: agent.avatar,
+        at: agent.at,
+        expiresAt: agent.expiresAt,
+        status: agent.status,
       })));
       wrap.appendChild(stack.element);
       const tooltip = document.createElement('span');
       tooltip.className = 'proof-avatar-tooltip';
       const tooltipName = document.createElement('span');
-      tooltipName.style.cssText = 'display:block;font-weight:600';
+      tooltipName.style.cssText = 'display:block;font-weight:600;white-space:pre-line';
       tooltipName.textContent = stack.tooltipLabel;
       const tooltipType = document.createElement('span');
       tooltipType.style.cssText = 'display:block;font-size:10px;opacity:0.7;margin-top:1px';
@@ -4970,10 +5028,14 @@ class ProofEditorImpl implements ProofEditor {
     this.shareOtherViewerCount = Math.max(0, viewers);
     this.renderShareBannerContent(banner, this.shareOtherViewerCount);
     document.body.appendChild(banner);
+    this.shareBannerResizeObserver = new ResizeObserver(() => this.scheduleBannerLayoutUpdate());
+    this.shareBannerResizeObserver.observe(banner);
     this.scheduleBannerLayoutUpdate();
   }
 
   private clearShareBanner(): void {
+    this.shareBannerResizeObserver?.disconnect();
+    this.shareBannerResizeObserver = null;
     this.clearShareAgentPresenceExpiryTimer();
     this.closeShareMenu();
     this.closePresenceMenu();

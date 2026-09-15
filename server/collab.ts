@@ -1,3 +1,4 @@
+import { DEFAULT_AGENT_PRESENCE_TTL_MS } from '../src/shared/agent-presence.js';
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import type { Server as HttpServer } from 'http';
 import * as Y from 'yjs';
@@ -724,7 +725,6 @@ const DEFAULT_MAX_LOADED_DOCS = 100;
 const DEFAULT_DOC_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_DOC_EVICTION_INTERVAL_MS = 5 * 60 * 1000;
 const DEFAULT_DIRECT_CONNECTION_TIMEOUT_MS = 5 * 1000;
-const DEFAULT_AGENT_PRESENCE_TTL_MS = 60 * 1000;
 const DEFAULT_AGENT_CURSOR_TTL_MS = 3 * 1000;
 const DEFAULT_INVALIDATION_COOLDOWN_MS = 1000;
 const DEFAULT_STARTUP_STALE_PROJECTION_RECONCILE_ENABLED = false;
@@ -924,6 +924,7 @@ export type AgentPresenceEntry = {
   status?: string;
   details?: string;
   at?: string;
+  expiresAt?: string;
 };
 
 export type AgentCursorHint = {
@@ -1031,6 +1032,7 @@ function mergeAgentPresence(
     status: incoming.status ?? (typeof base.status === 'string' ? String(base.status) : undefined),
     details: incoming.details ?? (typeof base.details === 'string' ? String(base.details) : undefined),
     at: incoming.at ?? (typeof base.at === 'string' ? String(base.at) : undefined),
+    expiresAt: incoming.expiresAt,
   };
 
   // Ensure `name` is always non-empty for UI display.
@@ -10372,6 +10374,11 @@ export function hasAgentPresenceInLoadedCollab(slug: string, agentId: string): b
   }
 }
 
+export function getAgentPresenceExpiresAt(at: string): string {
+  const ttlMs = parsePositiveInt(process.env.AGENT_PRESENCE_TTL_MS, DEFAULT_AGENT_PRESENCE_TTL_MS);
+  return new Date(Date.parse(at) + ttlMs).toISOString();
+}
+
 export function applyAgentPresenceToLoadedCollab(
   slug: string,
   entry: Record<string, unknown>,
@@ -10384,6 +10391,11 @@ export function applyAgentPresenceToLoadedCollab(
   const agentId = normalizeAgentScopedId(entry.id);
   if (!agentId) return false;
 
+  if (entry.status === 'left') {
+    removeAgentPresenceFromLoadedCollab(slug, agentId, activity);
+    return true;
+  }
+
   const nowIso = new Date().toISOString();
   const incomingAt = normalizeIsoTimestamp((entry as any).at, nowIso);
   const ttlMs = parsePositiveInt(process.env.AGENT_PRESENCE_TTL_MS, DEFAULT_AGENT_PRESENCE_TTL_MS);
@@ -10392,6 +10404,7 @@ export function applyAgentPresenceToLoadedCollab(
     ...(entry as any),
     id: agentId,
     at: incomingAt,
+    expiresAt: getAgentPresenceExpiresAt(incomingAt),
   };
 
   let merged: AgentPresenceEntry | null = null;
@@ -10419,7 +10432,7 @@ export function applyAgentPresenceToLoadedCollab(
   const expiryAt = typeof incoming.at === 'string' && incoming.at.trim().length > 0
     ? incoming.at
     : nowIso;
-  scheduleAgentPresenceExpiry(slug, agentId, expiryAt, ttlMs);
+  scheduleAgentPresenceExpiry(slug, agentId, expiryAt, Math.max(0, Date.parse(expiryAt) + ttlMs - Date.now()));
   return true;
 }
 

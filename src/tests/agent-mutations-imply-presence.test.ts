@@ -126,7 +126,7 @@ async function run(): Promise<void> {
     assert(sessionPayload.success === true, 'Expected collab-session success');
 
     const wsUrl = (() => {
-      const raw = sessionPayload.session.collabWsUrl.replace(/\\?slug=.*$/, '');
+      const raw = sessionPayload.session.collabWsUrl.replace(/\?slug=.*$/, '');
       try {
         const url = new URL(raw);
         if (url.hostname === 'localhost') url.hostname = '127.0.0.1';
@@ -307,6 +307,34 @@ async function run(): Promise<void> {
     await sleep(250);
     assert(!cursorMap.get('ai:r2c2'), 'Expected disconnected cursor to stay removed');
     assert(!presenceMap.get('ai:r2c2'), 'Expected disconnected presence to stay removed');
+
+    // A presence POST can leave immediately, then a new action can rejoin.
+    const postPresence = async (status: string) => mustJson<{ success: boolean }>(await fetch(
+      `${httpBase}/api/agent/${created.slug}/presence`, {
+        method: 'POST',
+        headers: { ...CLIENT_HEADERS, 'Content-Type': 'application/json', 'x-share-token': created.ownerSecret },
+        body: JSON.stringify({ agentId: 'ai:lifecycle', name: 'Claude', status }),
+      },
+    ));
+    await postPresence('editing');
+    await waitFor(() => Boolean(presenceMap.get('ai:lifecycle')), DEFAULT_TIMEOUT_MS, 'lifecycle joins');
+    const joined = presenceMap.get('ai:lifecycle') as any;
+    assert(Date.parse(joined.expiresAt) - Date.parse(joined.at) === 500, 'Expected configured TTL on wire');
+    await sleep(200);
+    // Authenticated actions refresh existing presence, including read actions.
+    await mustJson(await fetch(`${httpBase}/api/agent/${created.slug}/state`, {
+      headers: { ...CLIENT_HEADERS, 'x-share-token': created.ownerSecret, 'x-agent-id': 'lifecycle' },
+    }));
+    await waitFor(() => (presenceMap.get('ai:lifecycle') as any)?.at !== joined.at, DEFAULT_TIMEOUT_MS, 'new action refreshes timestamp');
+    assert((presenceMap.get('ai:lifecycle') as any)?.status === 'active', 'Expected action to reactivate agent');
+    await postPresence('left');
+    await waitFor(() => !presenceMap.has('ai:lifecycle'), DEFAULT_TIMEOUT_MS, 'left removes immediately');
+    await postPresence('left'); // Leaving is idempotent.
+    assert(!presenceMap.has('ai:lifecycle'), 'Repeated left must not create presence');
+    await postPresence('editing');
+    await waitFor(() => presenceMap.has('ai:lifecycle'), DEFAULT_TIMEOUT_MS, 'new action rejoins');
+    await waitFor(() => !presenceMap.has('ai:lifecycle'), DEFAULT_TIMEOUT_MS, 'configured TTL expires');
+    console.log('✓ presence POST leave, action reactivation and configured server expiry');
 
     const humanCommentRes = await fetch(`${httpBase}/api/agent/${created.slug}/marks/comment`, {
       method: 'POST',
