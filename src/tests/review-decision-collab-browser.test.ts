@@ -31,6 +31,8 @@ async function openEditor(browser: any, url: string, name: string): Promise<any>
     await page.getByRole('button', { name: 'Continue', exact: true }).click();
     await nameInput.waitFor({ state: 'hidden' });
   }
+  // R1a exercises the collapsed-chat dialog path; U2 covers chat cards.
+  await page.getByRole('button', { name: 'Close Verso', exact: true }).click();
   return page;
 }
 async function run(): Promise<void> {
@@ -111,17 +113,17 @@ async function run(): Promise<void> {
     const changeRecord = (page: any, id: string, changes: any) => page.evaluate(({ id, changes }: any) => {
       const map = (window as any).proof.getReviewDecisionHistory().doc.getMap('marks'); map.set(id, { ...map.get(id), ...changes });
     }, { id, changes });
-    const accept = async (page: any, id: string) => { await page.locator(`[data-review-row="${id}"]`).click(); await page.getByRole('button', { name: 'Accept (A)', exact: true }).click(); await page.locator(`[data-review-row="${id}"]`).waitFor({ state: 'hidden' }); };
+    const accept = async (page: any, id: string) => { await page.locator(`[data-review-row="${id}"]`).click(); await page.getByRole('button', { name: 'Accept (A)', exact: true }).click(); await page.locator(`.pm-settled[data-review-row="${id}"]`).waitFor(); };
     const documentText = (page: any) => page.evaluate(() => (window as any).proof.editor.ctx.get('editorView').state.doc.textContent);
-    const history = async (page: any, redo = false) => { await page.getByRole('button', { name: 'Marks', exact: true }).focus(); await page.keyboard.press(redo ? 'Control+Shift+z' : 'Control+z'); };
+    const history = async (page: any, redo = false) => { await page.getByRole('button', { name: /^Marks \(/ }).focus(); await page.keyboard.press(redo ? 'Control+Shift+z' : 'Control+z'); };
     tests['2'] = async () => {
       const { alice, bob, ids: [id], state } = await fixture();
       const details = { createdAt: '2026-01-01T00:00:00Z', replies: [{ by: 'human:Bob', text: 'Keep this explanation', at: '2026-01-02T00:00:00Z' }] };
       await changeRecord(bob, id, details);
       await alice.waitForFunction(({ id, at }: any) => (window as any).proof.getAllMarks().find((m: any) => m.id === id)?.at === at, { id, at: details.createdAt });
       const original = await mapRecord(alice, id);
-      await accept(alice, id); await bob.waitForFunction(() => document.querySelectorAll('.pm-review-row').length === 0);
-      await history(alice); await bob.waitForFunction(() => document.querySelectorAll('.pm-review-row').length === 1);
+      await accept(alice, id); await bob.waitForFunction(() => document.querySelectorAll('.pm-review-row:not(.pm-settled)').length === 0);
+      await history(alice); await bob.waitForFunction(() => document.querySelectorAll('.pm-review-row:not(.pm-settled)').length === 1);
       await alice.waitForTimeout(1200);
       for (const page of [alice, bob]) {
         assert.deepEqual(await mapRecord(page, id), original, 'Shared map must restore exact record');
