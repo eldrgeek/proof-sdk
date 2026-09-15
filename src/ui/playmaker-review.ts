@@ -295,7 +295,7 @@ export class PlayMakerReview {
     const target = event.target as HTMLElement;
     const typing = target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) {
-      event.preventDefault(); event.stopImmediatePropagation(); this.cancelWalk(); this.close();
+      event.preventDefault(); event.stopImmediatePropagation(); this.cancelWalk(); this.close(!typing);
       try { this.historyMessage = ''; this.bridge.history(event.shiftKey); this.update(); } catch (error) {
         this.historyMessage = error instanceof Error ? error.message : 'Unable to restore decision.';
         this.update();

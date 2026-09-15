@@ -11,7 +11,7 @@
 
 import { PlayMakerReview, type ReviewAction } from '../ui/playmaker-review';
 import { getReviewStyle } from './review-style';
-import { ReviewDecisionHistory } from './review-decision-history';
+import { ReviewDecisionHistory, reconnectNativeUndoManager } from './review-decision-history';
 
 import { getAgentPresenceDisplay } from '../shared/agent-presence';
 
@@ -2102,7 +2102,14 @@ class ProofEditorImpl implements ProofEditor {
 
         const nextPlugins = view.state.plugins.concat(cursorPlugin);
         ctx.set(prosePluginsCtx, nextPlugins);
+        const undoManager = yUndoPluginKey.getState(view.state)?.undoManager;
         view.updateState(view.state.reconfigure({ plugins: nextPlugins }));
+        // Reconfiguration recreates every plugin view. yUndoPlugin destroys its
+        // manager even though PM retains the plugin state and that same manager.
+        // Reattach its Yjs subscriptions after the new selection hooks are installed.
+        if (undoManager && yUndoPluginKey.getState(view.state)?.undoManager === undoManager) {
+          reconnectNativeUndoManager(undoManager);
+        }
       } catch (error) {
         const details = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
         console.warn('[share] failed to install yCursor plugin', details);
@@ -3615,7 +3622,7 @@ class ProofEditorImpl implements ProofEditor {
     if (!manager) throw new Error('The editor is still loading.');
     if (this.reviewDecisionHistory?.doc !== doc || this.reviewDecisionHistory.manager !== manager) {
       this.reviewDecisionHistory?.destroy();
-      this.reviewDecisionHistory = new ReviewDecisionHistory(doc, manager);
+      this.reviewDecisionHistory = new ReviewDecisionHistory(doc, manager, view);
       this.reviewDecisionIds.clear();
     }
     return this.reviewDecisionHistory;
@@ -5692,7 +5699,22 @@ class ProofEditorImpl implements ProofEditor {
         const dispatchWithRevision = (transaction: any) => {
           // Group local text and derived records in the native history transaction.
           // All derived mark writes from this dispatch stay in that same edit.
-          if (isLocalContentChange && !this.capturingReviewDecision && !tr.getMeta('history$') && tr.getMeta('addToHistory') !== false
+          if (transaction.getMeta('proofLocalMarkChange') && !this.capturingReviewDecision
+            && !this.restoringReviewDecision && !this.isYjsChangeOriginTransaction(transaction)
+            && this.collabCanEdit && collabClient.getYDoc()
+            && this.getShareSuggestionResolutionTransport() === 'collab') {
+            // Proof's popover uses the same mark functions as the review dialog.
+            // Capture its text and records atomically, with the same refusal guards.
+            const history = this.getReviewDecisionHistory();
+            Object.keys(getMarkMetadataWithQuotes(view.state)).forEach(id => this.reviewDecisionIds.add(id));
+            history.decide(() => {
+              originalDispatch(transaction);
+              const metadata = getMarkMetadataWithQuotes(view.state);
+              this.lastReceivedServerMarks = { ...metadata };
+              this.initialMarksSynced = true;
+              collabClient.setMarksMetadata(metadata);
+            });
+          } else if (isLocalContentChange && !this.capturingReviewDecision && !tr.getMeta('history$') && tr.getMeta('addToHistory') !== false
             && this.collabCanEdit && collabClient.getYDoc()
             && this.getShareSuggestionResolutionTransport() === 'collab') {
             this.getReviewDecisionHistory().edit(() => originalDispatch(transaction));
@@ -7755,7 +7777,7 @@ class ProofEditorImpl implements ProofEditor {
           this.lastReceivedServerMarks = { ...metadata };
           this.initialMarksSynced = true;
 
-          void shareClient.resolveComment(markId, actor).then((result) => {
+          if (this.getShareSuggestionResolutionTransport() !== 'collab') void shareClient.resolveComment(markId, actor).then((result) => {
             if (!result || 'error' in result || result.success !== true) return;
             const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
               ? result.marks as Record<string, StoredMark>

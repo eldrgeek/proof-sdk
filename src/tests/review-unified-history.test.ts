@@ -8,7 +8,8 @@ import { wrapTransactionForSuggestions } from '../editor/plugins/suggestions';
 import { marksSyncPlugin } from '../editor/plugins/marks-sync';
 
 const production = process.argv.includes('--production');
-const History = production ? null : (await import('../editor/review-decision-history')).ReviewDecisionHistory;
+const historyModule = production ? null : await import('../editor/review-decision-history');
+const History = historyModule?.ReviewDecisionHistory;
 (globalThis as any).document = { createElement: () => ({}), head: { appendChild() {} } };
 const ctx = { wait: async () => {}, update() {} } as any;
 await marksPlugin(ctx)();
@@ -47,11 +48,17 @@ async function pair() {
     const native = yUndoPluginKey.getState(view.state)!.undoManager;
     native.clear(); native.stopCapturing();
     // The second argument is ignored by R1a2; R1a3 extends the installed manager.
-    const history = History ? new (History as any)(doc, native) : null;
+    const history = History ? new (History as any)(doc, native, view) : null;
     let style = production ? 'proof' : 'playmaker';
     return { doc, map, view, native, history, setStyle(s: string) { style = s; },
       edit(fn: () => void) { if (style === 'playmaker') history.edit(fn); else fn(); },
       restore(isRedo = false) { restoring = true; try { return style === 'playmaker' ? (isRedo ? history.redo() : history.undo()) : (isRedo ? redo(view.state) : undo(view.state)); } finally { restoring = false; } },
+      recreatePluginViews() {
+        for (const pv of updates) pv.destroy?.();
+        updates.length = 0;
+        for (const plugin of plugins) if (plugin.spec.view) updates.push(plugin.spec.view(view));
+        historyModule?.reconnectNativeUndoManager(native);
+      },
       close() { history?.destroy(); for (const pv of updates) pv.destroy?.(); doc.destroy(); },
     };
   }
@@ -84,15 +91,19 @@ const tests: Record<string, () => Promise<void>> = {
     }
   },
   '2': async () => {
-    for (const changed of [true, false]) {
+    for (const changed of [true, 'identical', 'own', false]) {
       const p = await pair();
       try {
         p.alice.edit(() => p.alice.view.dispatch(wrapTransactionForSuggestions(p.alice.view.state.tr.insertText('OWN', 9), p.alice.view.state, true)));
         const id = [...p.alice.map.keys()][0]; assert(id);
-        if (changed) p.bob.map.set(id, { ...p.bob.map.get(id), replies: [{ by: 'human:Bob', text: 'Keep it', at: '2026-09-15T00:00:00Z' }] });
+        if (changed === 'identical') p.bob.map.set(id, structuredClone(p.bob.map.get(id)));
+        else if (changed === 'own') {
+          p.alice.history.decide(() => p.alice.map.set(id, { ...p.alice.map.get(id), replies: [{ by: 'human:Alice', text: 'Own reply' }] }));
+          assert(p.alice.restore(), 'Undo my own reply before undoing typing');
+        } else if (changed) p.bob.map.set(id, { ...p.bob.map.get(id), replies: [{ by: 'human:Bob', text: 'Keep it', at: '2026-09-15T00:00:00Z' }] });
         const snapshot = () => JSON.stringify([p.alice.view.state.doc.toJSON(), p.alice.map.toJSON(), p.bob.view.state.doc.toJSON(), p.bob.map.toJSON()]);
         const before = snapshot();
-        if (changed) {
+        if (changed && changed !== 'own') {
           if (production) {
             p.alice.restore();
             console.log(`Production orphan: text=${p.alice.view.state.doc.textContent.includes('OWN')}, record=${p.alice.map.has(id)}, reply=${Boolean(p.alice.map.get(id)?.replies?.length)}`);
@@ -133,6 +144,38 @@ const tests: Record<string, () => Promise<void>> = {
         assert.equal(a.view.state.doc.textContent, 'OrigXYZinalSecond');
       } finally { p.close(); }
     }
+  },
+  '5': async () => {
+    if (production) return;
+    const p = await pair();
+    try {
+      const a = p.alice;
+      assert.equal(a.history.manager, a.native, 'The installed plugin owns the only manager');
+      a.recreatePluginViews(); a.recreatePluginViews();
+      a.edit(() => a.view.dispatch(a.view.state.tr.insertText('A', 9)));
+      a.edit(() => a.view.dispatch(a.view.state.tr.insertText('B', 10)));
+      await new Promise(r => setTimeout(r, 550));
+      a.edit(() => a.view.dispatch(a.view.state.tr.insertText('C', 11)));
+      assert(a.restore()); assert.equal(a.view.state.doc.textContent, 'OriginalABSecond');
+      assert(a.restore()); assert.equal(a.view.state.doc.textContent, 'OriginalSecond');
+      assert(a.restore(true)); assert(a.restore(true));
+      a.history.decide(() => a.map.set('comment', { kind: 'comment', text: 'Decision' }));
+      a.edit(() => a.view.dispatch(a.view.state.tr.insertText('D', 12)));
+      assert(a.restore()); assert(a.map.has('comment'));
+      assert(a.restore()); assert(!a.map.has('comment'));
+      assert(a.restore()); assert.equal(a.view.state.doc.textContent, 'OriginalABSecond');
+      const count = a.native.undoStack.length;
+      for (const origin of ['remote', 'server-ai', 'local-marks-sync']) {
+        a.doc.transact(() => a.map.set(origin, { kind: 'comment', text: origin }), origin);
+      }
+      assert.equal(a.native.undoStack.length, count, 'External origins never enter the shared history');
+      a.history.destroy();
+      assert(!a.native.trackedOrigins.has((a.history as any).origin));
+      assert(!a.native.trackedOrigins.has((a.history as any).editOrigin));
+      a.recreatePluginViews();
+      a.native.destroy();
+      assert(!a.doc._observers.get('afterTransaction')?.has(a.native.afterTransactionHandler), 'Document teardown detaches native subscriptions');
+    } finally { p.close(); }
   },
 };
 let failed = 0;

@@ -118,8 +118,55 @@ async function run(): Promise<void> {
           stage = 'typing after redo';
           await page.keyboard.type('Z');
           assert.equal(await text(), 'OrigXYZinalSecond', 'New typing lands after restored text');
+          if (source === 'proof' && !switchStyle) {
+            stage = 'Proof decision history';
+            const id = await page.evaluate(() => (window as any).proof.markSuggestReplace('Second', 'ai:Reviewer', 'Changed')?.id);
+            assert(id);
+            assert(await page.evaluate((markId: string) => (window as any).proof.markAccept(markId), id));
+            assert.equal(await text(), 'OrigXYZinalChanged');
+            await page.keyboard.press(`${modifier}+z`);
+            assert.equal(await text(), 'OrigXYZinalSecond', 'Undo Proof acceptance separately from typing');
+            assert(await page.evaluate((markId: string) => Boolean((window as any).proof.getAllMarks().find((m: any) => m.id === markId)), id));
+            await page.keyboard.press(`${modifier}+Shift+z`);
+            assert.equal(await text(), 'OrigXYZinalChanged');
+          }
+          if (!switchStyle) {
+            stage = 'tracked typing reply refusal';
+            const bob = await openEditor(browser, page.url(), 'Bob');
+            try {
+              await page.getByRole('button', { name: 'Editing directly. Click to suggest changes instead.', exact: true }).click();
+              await select(9); await page.keyboard.type('OWN');
+              stage = 'tracked suggestion creation';
+              const id = await page.evaluate(() => (window as any).proof.getAllMarks().find((m: any) => m.kind === 'insert' && m.quote.includes('OWN'))?.id);
+              assert(id);
+              stage = 'reply delivery';
+              await bob.waitForFunction((markId: string) => (window as any).proof.getAllMarks().some((m: any) => m.id === markId), id);
+              await bob.evaluate((markId: string) => (window as any).proof.markReply(markId, 'human:Bob', 'Keep it'), id);
+              await page.waitForFunction((markId: string) => (window as any).proof.getReviewDecisionHistory().doc.getMap('marks').get(markId)?.replies?.length > 0, id);
+              const snapshot = () => page.evaluate(() => {
+                const proof = (window as any).proof;
+                return JSON.stringify([proof.editor.ctx.get('editorView').state.doc.toJSON(), proof.getReviewDecisionHistory().doc.getMap('marks').toJSON()]);
+              });
+              stage = 'refusal snapshot';
+              const before = await snapshot();
+              await page.keyboard.press(`${modifier}+z`);
+              assert.equal(await snapshot(), before, 'A reply refuses undo without changing text or records');
+              stage = 'refusal message';
+              const message = page.getByRole('alert').filter({ hasText: "Can't undo: someone has replied to this suggestion." });
+              assert.equal(await message.count(), 1, 'Refusal is shown once in either style');
+              assert.equal(await message.textContent(), "Can't undo: someone has replied to this suggestion.");
+            } finally { await bob.context().close(); }
+          }
           console.log(`PASS browser ${source} ${switchStyle ? 'switch' : 'cursor'}`);
         } catch {
+          console.log('History diagnostic', await page.evaluate(() => {
+            const proof = (window as any).proof;
+            const view = proof.editor.ctx.get('editorView');
+            const history = proof.reviewDecisionHistory;
+            return { text: view.state.doc.textContent, cursor: view.state.selection.from, active: document.activeElement?.tagName, editable: (document.activeElement as HTMLElement)?.isContentEditable,
+              undo: history?.manager?.undoStack.length, redo: history?.manager?.redoStack.length,
+              notice: document.querySelector('.review-history-notice')?.textContent };
+          }));
           failures++;
           console.error(`FAIL browser ${source} ${switchStyle ? 'switch' : 'cursor'}: ${stage} failed`);
         } finally { await page.context().close(); }

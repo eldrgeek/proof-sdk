@@ -15,7 +15,7 @@ explicit browser preference takes precedence. No deployment is part of this chan
 | `src/editor/review-style.ts` | Normalize the default, remember the per-user style and walk preference, dispatch immediate style changes, and keep switching functional when storage writes fail. |
 | `src/ui/playmaker-review.ts` | Top-bar selector; Marks queue with author/snippet, open/settled counts and Start review; click-position dialog; dragging; A/R/C/E/L keys; reply composer; Escape and Tab focus handling; 900 ms walk; bulk confirmation above ten suggestions. |
 | `src/ui/playmaker-review.css` | Review control, queue and dialog styles; author accents; 44 px buttons; 400 px bottom sheet; small-screen top-bar layout. |
-| `src/editor/review-decision-history.ts` | A dedicated collaboration undo manager and decision callbacks for redo. |
+| `src/editor/review-decision-history.ts` | Review guards and stack-item metadata on the page's native y-prosemirror undo manager. |
 | `src/editor/index.ts` | Mount the Review style control, connect the UI to existing mark operations, synchronize a decision's text and metadata atomically, and refresh the queue. Supply restored metadata on the same editor update as restored text. Changes are confined to review flow; the Add agent dialog is untouched. |
 | `src/editor/plugins/mark-popover.ts` | Close Proof's popover on a style change and suppress its review popover/comment strip in PlayMaker. Comment creation remains available. |
 | `src/editor/plugins/marks.ts` | Supply a deterministic author-colour CSS variable through existing decorations. The style switch changes presentation, not stored marks. |
@@ -26,28 +26,31 @@ explicit browser preference takes precedence. No deployment is part of this chan
 
 ## Decision undo
 
-The implementation uses the **collaboration undo manager**, scoped to a review
-decision. It calls Proof's existing `accept`, `reject`, `resolve` and `reply`
-functions inside one Yjs transaction with a dedicated origin. A separate
-`Y.UndoManager` tracks that origin across the `prosemirror` fragment and the
-`marks` map. A bulk action is one decision. Native typing and remote transactions
-have different origins and are excluded.
+Edits and review decisions share the installed **y-prosemirror undo manager**
+in both styles. Its scope includes the `prosemirror` fragment and `marks` map.
+Local edit transactions include derived suggestion records; each decision has
+its own capture boundary and stack-item metadata. Remote updates, server writes,
+standalone marks synchronization and document loads are excluded. Bulk decisions
+are preflighted and captured as one operation.
 
-Undo clears the relevant local resolution tombstones and restores the text and
-mark records together. The restored metadata accompanies the same ProseMirror
-update, preventing normalization from inventing creation dates or restamping
-restored anchors. The browser test compares both stored Markdown and the entire
-marks object with their pre-decision values, using `GET /api/agent/:slug/state`.
+Undo and redo preflight the effective stack item on an isolated Y.Doc. Decision
+range checks refuse intervening text changes; tracked-typing record checks refuse
+changed or replied-to suggestions. Yjs performs both undo and redo, with the
+inverse range and record guards stored on the inverse item. Every nonempty XML
+container is protected, preserving collaborators' text in enclosing blocks.
 
-Redo invokes the original decision against the current anchors and captures a
-fresh undo step. This is necessary because authoritative hydration can restamp
-anchors after undo; replaying old Yjs anchor items proved unreliable in browser
-regressions. Redo still uses the same mark operations and collaborative persistence
-path as the decision.
+The editor retains y-prosemirror's typing window, relative selections and
+selection restoration. A stack item also retains the post-operation relative
+selection so deferred metadata delivery cannot displace redo's cursor. Installing
+collaborator cursors reconnects the native manager after plugin-view recreation.
 
-Cmd/Ctrl-Z and Shift-Cmd/Ctrl-Z operate on decision history outside text fields.
-Inside the editor and reply composer, the native undo owns typing. Clicking the
-page closes the decision dialog and cancels a pending walk, so typing can resume.
+Cmd/Ctrl-Z and Shift-Cmd/Ctrl-Z use this history inside the editor and in the review
+UI, regardless of style. Keyboard history keeps focus in the editor. Input fields
+and reply composers retain their own text undo. Refusals appear once in either
+style. Switching styles never writes document marks.
+
+See [R1a3 validation](r1a3-unified-history.md) for fail-before/pass-after results,
+production probes, final command statuses and implementation details.
 
 Decision history lasts for the current live collaboration session. Decisions
 require an editable, connected collaboration session; an unavailable connection
@@ -56,7 +59,7 @@ settled records with a per-document browser cache of observed settlements, since
 Proof removes accepted/rejected suggestion records. This cache is presentation
 only, not a global audit history. Switching styles never writes document marks.
 
-## Validation
+## Original R1a validation (historical)
 
 All commands below were run locally. Browser tests ran after `npm run build`.
 Each command captured its status separately with `; rc=$?; echo "rc=$rc"`;
