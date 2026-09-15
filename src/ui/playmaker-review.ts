@@ -101,6 +101,7 @@ export class PlayMakerReview {
     document.addEventListener('pointerdown', this.pointerDown, true);
     document.addEventListener('click', this.click, true);
     document.addEventListener('keydown', this.keydown, true);
+    document.addEventListener('beforeinput', this.beforeinput, true);
     this.styleChanged();
   }
 
@@ -452,6 +453,31 @@ export class PlayMakerReview {
       target.focus({ preventScroll: true });
     }
   }
+  /** Shared by the document capture listener and the editor's direct props,
+   * which take precedence over both Milkdown history keymaps in either style. */
+  handleHistoryInput(event: KeyboardEvent | InputEvent): boolean {
+    const target = event.target as HTMLElement | null;
+    // U2: Cmd/Ctrl-Z in Verso's empty message box still undoes the last decision.
+    const chatBox = target === this.message && !this.message.value;
+    if (!target || (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) && !chatBox)) return false;
+    let redo: boolean;
+    if ('inputType' in event) {
+      if (!['historyUndo', 'historyRedo'].includes(event.inputType)) return false;
+      redo = event.inputType === 'historyRedo';
+    } else {
+      const key = event.key.toLowerCase();
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || !['z', 'y'].includes(key)) return false;
+      redo = key === 'y' || event.shiftKey;
+    }
+    event.preventDefault(); event.stopImmediatePropagation();
+    const typing = target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
+    this.cancelWalk(); this.close(!typing);
+    try { this.historyMessage = ''; this.bridge.history(redo); }
+    catch (error) { this.historyMessage = error instanceof Error ? error.message : 'Unable to restore decision.'; }
+    this.update();
+    return true;
+  }
+  private beforeinput = (event: Event): void => { this.handleHistoryInput(event as InputEvent); };
   private keydown = (event: KeyboardEvent): void => {
     const target = event.target as HTMLElement;
     if (getReviewStyle() === 'playmaker' && event.key === 'Escape' && !document.querySelector('[role="menu"],dialog[open]')) {
@@ -463,14 +489,7 @@ export class PlayMakerReview {
     }
     if (['PageDown', 'PageUp', 'ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End', ' '].includes(event.key)) this.readerScrolled(event);
     const typing = target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z' && (!['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || (target === this.message && !this.message.value))) {
-      event.preventDefault(); event.stopImmediatePropagation(); this.cancelWalk(); this.close(!typing);
-      try { this.historyMessage = ''; this.bridge.history(event.shiftKey); this.update(); } catch (error) {
-        this.historyMessage = error instanceof Error ? error.message : 'Unable to restore decision.';
-        this.update();
-      }
-      return;
-    }
+    if (this.handleHistoryInput(event)) return;
     if (getReviewStyle() !== 'playmaker' || !this.dialog?.contains(target)) return;
     if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); this.cancelWalk(); this.close(); return; }
     if (event.key === 'Tab') {

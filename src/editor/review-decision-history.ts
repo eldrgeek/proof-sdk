@@ -1,3 +1,4 @@
+import { historyCandidate } from './review-history-candidate';
 import * as Y from 'yjs';
 import type { EditorView } from '@milkdown/kit/prose/view';
 import { defaultDeleteFilter, defaultProtectedNodes, ySyncPluginKey, getRelativeSelection } from 'y-prosemirror';
@@ -33,13 +34,12 @@ export class ReviewDecisionHistory {
   private readonly markVersions = new Map<string, number>();
   private readonly externalMarkVersions = new Map<string, number>();
   private readonly marksChanged = (event: Y.YMapEvent<unknown>, transaction: Y.Transaction): void => {
-    const external = transaction.origin !== this.origin && transaction.origin !== this.editOrigin
-      && transaction.origin !== this.manager;
+    const external = !transaction.local;
     for (const id of event.keysChanged) {
       this.markVersions.set(id, (this.markVersions.get(id) ?? 0) + 1);
-      // My own reply followed by undo restores the original record's Yjs lineage.
-      // An untracked replacement, even with identical data, supersedes it instead.
+      // Origin labels describe workflows, not which client wrote the record.
       if (external) this.externalMarkVersions.set(id, (this.externalMarkVersions.get(id) ?? 0) + 1);
+      else if (!this.manager.undoing && !this.manager.redoing) this.includeOwnProjection(id);
     }
   };
   private readonly documentDestroyed = (): void => this.destroy();
@@ -105,7 +105,7 @@ export class ReviewDecisionHistory {
   }
   private restore(redo: boolean): boolean {
     const manager = this.manager;
-    const candidate = this.preview(manager, redo);
+    const candidate = historyCandidate(manager, redo);
     // Also inspect entries Yjs would skip, before changing either live stack.
     const stack = redo ? manager.redoStack : manager.undoStack;
     for (let i = stack.length - 1; i >= 0; i--) {
@@ -114,7 +114,10 @@ export class ReviewDecisionHistory {
       }
       if (stack[i] === candidate) break;
     }
-    if (!candidate) return false;
+    if (!candidate) {
+      // Native history consumes ineffective entries even when no edit remains.
+      return (redo ? manager.redo() : manager.undo()) !== null;
+    }
     if (candidate.meta.has(this.rangeKey) && !rangeMatches(this.doc, candidate.meta.get(this.rangeKey) as DecisionRange | null)) {
       throw new Error(`Can't ${redo ? 'redo' : 'undo'}: someone has changed this text since.`);
     }
@@ -141,6 +144,32 @@ export class ReviewDecisionHistory {
       new Map([...records.keys()].map(id => [id, this.suggestionRecord(id)])));
     return true;
   }
+  /** A page may publish derived anchors after the typing transaction ends.
+   * Extend that typing entry to include the replacement map item, so undo still
+   * removes the text and its record together. Never absorb a reply/content edit
+   * (including a local AI/API write), or reset an already stale remote version. */
+  private includeOwnProjection(id: string): void {
+    const current = this.suggestionRecord(id);
+    const semantic = (value: string | undefined) => {
+      if (!value) return value;
+      const record = JSON.parse(value);
+      for (const key of ['range', 'quote', 'startRel', 'endRel']) delete record[key];
+      return JSON.stringify(record);
+    };
+    for (let i = this.manager.undoStack.length - 1; i >= 0; i--) {
+      const item = this.manager.undoStack[i];
+      const expected = (item.meta.get(this.suggestionsKey) as SuggestionRecords | undefined)?.get(id);
+      if (!expected) continue;
+      if (current.version !== expected.version || semantic(current.value) !== semantic(expected.value)) return;
+      const replacement = this.doc.getMap('marks')._map.get(id);
+      if (!replacement || replacement.deleted || replacement.id.client !== this.doc.clientID) return;
+      const insertion = Y.createDeleteSet();
+      insertion.clients.set(replacement.id.client, [{ clock: replacement.id.clock, len: replacement.length }]);
+      item.insertions = Y.mergeDeleteSets([item.insertions, insertion]);
+      expected.value = current.value;
+      return;
+    }
+  }
   private rememberSelection(item: StackItem): void {
     const binding = this.view && ySyncPluginKey.getState(this.view.state)?.binding;
     if (binding && this.view) item.meta.set(this.afterSelectionKey, getRelativeSelection(binding, this.view.state));
@@ -152,26 +181,8 @@ export class ReviewDecisionHistory {
     const expected = item.meta.get(this.suggestionsKey) as SuggestionRecords | undefined;
     return !expected || [...expected].every(([id, record]) => {
       const current = this.suggestionRecord(id);
-      return current.version === record.version && current.value === record.value;
+      return current.version === record.version;
     });
-  }
-  /** Preview on an isolated copy: find the effective entry before touching live state.
-   * Yjs owns the rules for skipping entries superseded by remote map writes.
-   * The original stack items identify the result; only the copy's structs change.
-   */
-  private preview(source: Y.UndoManager, redo: boolean) {
-    const stack = redo ? source.redoStack : source.undoStack;
-    if (!stack.length) return null;
-    const copy = new Y.Doc({ gc: false });
-    Y.applyUpdate(copy, Y.encodeStateAsUpdate(this.doc));
-    const manager = new Y.UndoManager([copy.getXmlFragment('prosemirror'), copy.getMap('marks')], {
-      trackedOrigins: new Set(), captureTimeout: 0,
-      deleteFilter: source.deleteFilter,
-    });
-    manager.undoStack = [...source.undoStack];
-    manager.redoStack = [...source.redoStack];
-    try { return redo ? manager.redo() : manager.undo(); }
-    finally { manager.destroy(); copy.destroy(); }
   }
   undo(): boolean { return this.restore(false); }
   redo(): boolean { return this.restore(true); }
