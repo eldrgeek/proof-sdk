@@ -286,7 +286,6 @@ export class PlayMakerReview {
     }
   }
   private keydown = (event: KeyboardEvent): void => {
-    if (getReviewStyle() !== 'playmaker') return;
     const target = event.target as HTMLElement;
     const typing = target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) {
@@ -297,7 +296,7 @@ export class PlayMakerReview {
       }
       return;
     }
-    if (!this.dialog?.contains(target)) return;
+    if (getReviewStyle() !== 'playmaker' || !this.dialog?.contains(target)) return;
     if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); this.cancelWalk(); this.close(); return; }
     if (event.key === 'Tab') {
       const focusable = [...this.dialog.querySelectorAll<HTMLElement>('button:not(:disabled),textarea,input')];
