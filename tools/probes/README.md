@@ -1,13 +1,28 @@
 # Proof suggesting-mode probes
 
 _Authored 2026-09-14 by Claude Opus 5 (CCc, the Proof session) for Mike Wolf. Rebuilt the same day, after a session
-restart wiped the scratchpad they first lived in._
+restart wiped the scratchpad they first lived in. Updated 2026-09-15: the runner scripts, the AI-while-typing probe,
+and coverage, reject-all and verdict checks in the two-reviewer probe._
 
 These scripts check the self-hosted Proof at https://proof.vpsmikewolf.duckdns.org in headless Chromium. Each one
 takes `PROOF_DOC_URL`, a document's tokenized share link, and never prints it. Playwright comes from
 `/Users/mikewolf/Projects/playmaker/node_modules`. Use a fresh document for every run.
 
-## Making a fresh document
+## Running every check at once
+
+The scripts one level up run the whole set against whatever build the server is serving. They never deploy; deploy
+deliberately first with `ssh vps '~/proof-data/proof-deploy.sh <ref>'`.
+
+- `bash ../run-live-checks.sh <label>` records the served build, creates one fresh document per check, runs every
+  probe below, and saves each probe's full output and exit code under `../runs/<label>/`. It ends by running
+  `health-and-logs.py`.
+- `ssh vps "python3 - <label> [check ...]" < ../make-docs.py` creates the documents, named `<check>-<label>`. Naming
+  checks after the label limits it to those checks. It prints only names and slugs; the links and tokens stay on the
+  VPS in `~/proof-data/<check>-<label>.json`, mode 600.
+- `ssh vps "python3 - <label>" < ../health-and-logs.py` prints the How-To document's health and, for each document of
+  that label, how many clearing rebuilds, dropped live writes and dropped tombstoned marks the server log shows.
+
+## Making one fresh document by hand
 
 Run this on the VPS. It reads the API key from `~/proof-data/proof.env` without printing it, and it saves the new
 document's link and tokens to `~/proof-data/<name>.json` with mode 600. Replace `<name>` and the markdown.
@@ -37,13 +52,15 @@ PROOF_DOC_URL="$(ssh vps 'python3 -c "import json;print(json.load(open(\"/home/u
 | Script | What it checks | Document | Settings |
 |---|---|---|---|
 | `e2e-suggest.mjs` | The 13-step browser test: type, reload, card, Accept, Reject, Accept all, Reject all, final reload, server state. Screenshots and `summary.json` go to `OUT_DIR`. | play format (below) | `OUT_DIR`, `TEXT=plain\|brackets` |
-| `two-reviewer-probe.mjs` | Two people typing at the same moment, then resolving each other's suggestions | play format | `MODE=suggest\|edit`, `SEPARATE_BROWSERS=1` |
+| `two-reviewer-probe.mjs` | Two people typing at the same moment, then resolving each other's suggestions. In Suggesting mode it also checks that every character each person typed is inside that person's suggestion (inline mark and mark range), and that rejecting all of one person's inserts leaves nothing behind. Ends with a `VERDICT` line; exits 1 on any failure. | play format | `MODE=suggest\|edit`, `SEPARATE_BROWSERS=1`, `SAME_PARAGRAPH=1` |
 | `caret-jump-probe.mjs` | Whether another person's typing moves a caret that isn't moving | play format | `MODE=suggest\|edit` |
 | `rest-reject-live-probe.mjs` | An AI's REST reject while a person edits: edits kept, reject sticks | play format | — |
 | `agent-live-probe.mjs` | An AI's insert suggestion while a person edits | play format | — |
+| `agent-concurrent-probe.mjs` | An AI adds a replace and an insert and rejects the replace while a person types a long phrase in bursts; each AI call retries on 409 PROJECTION_STALE. Checks that nothing typed is lost and the server stays fresh. Ends with a `VERDICT` line; exits 0 pass, 1 loss, 3 when the AI never got a write in. | play format | `DELAY_MS` (90), `PAUSE_MS` (1500), `CHUNKS` (4) |
 | `close-tab-probe.mjs` | An Accept followed by closing the tab | play format | `CLOSE_DELAY_MS` |
 | `ai-block-probe.mjs` | AI inserts of inline text, a paragraph and a table row | block test | `ACTION=accept\|reject` |
 | `ai-format-probe.mjs` | Replace quotes near bold and links | the set's document | `SET=1\|2\|3` |
+| `open-check.mjs` | Whether a document opens and becomes editable, how long it takes, and any error banner or console errors. Use it on a document that failed to reopen. | any | `TIMEOUT_MS` (90000) |
 
 The play-format document is `# Proof E2E\n\nERIC\\\nI think teh play is ready.\n\nDIANA\\\nThe second act needs one more scene.\n`.
 The block-test document is `# Block test\n\nIntro paragraph one.\n\n| Name | Role |\n| --- | --- |\n| Eric | Writer |\n| Diana | Director |\n\nClosing paragraph.\n`.

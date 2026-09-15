@@ -1,12 +1,14 @@
-# Proof suggesting mode: evidence, 14 September 2026
+# Proof suggesting mode: evidence, 14–15 September 2026
 
-_Authored 2026-09-14 by Claude Opus 5 (CCc, acting as chief of staff) for Mike Wolf._
+_Authored 2026-09-14 by Claude Opus 5 (CCc, acting as chief of staff) for Mike Wolf; updated 2026-09-15 with the
+live-check runs on builds 5b5c779 and 00c0e15._
 
 This branch holds the browser evidence that suggesting mode works on our self-hosted Proof, at
 https://proof.vpsmikewolf.duckdns.org. That server runs the fork `eldrgeek/proof-sdk`, branch `deploy/vps`.
 
-The tested build is `dab0365`, deployed on 14 September 2026 at about 19:57 UTC. Every test used a fresh test
-document and headless Chromium, driven by Playwright.
+The server now runs build `00c0e15`, deployed on 15 September 2026 at about 03:35 UTC. The sections below go in time
+order: `dab0365` first, then `0b3f8dd`, then `5b5c779` and `00c0e15`. Every test used a fresh test document and
+headless Chromium, driven by Playwright.
 
 ## Result
 
@@ -91,16 +93,65 @@ rejected a suggestion through the REST API while a person was editing. The perso
 reject was all stored, and the server stayed fresh. The server logged no rebuilds and no dropped live updates for any
 of the five test documents (`run-0b3f8dd/run.log`).
 
-## Known gaps, with fixes in progress
+## Live-check set on 5b5c779 and 00c0e15 (15 September)
 
-- **An AI's suggested insertion loses its text when accepted.** The API anchors an AI insertion on existing text and
-  keeps the new text only inside the suggestion, so Accept removes the suggestion without inserting anything. AI
-  replacements and deletions work. Fix B8 is being built. Until then, an AI can write an insertion as a replacement
-  of an anchor by the anchor plus the new text.
-- **An AI's REST Accept or Reject does not stick while someone has the page open.** The server applies it, but the
-  open page writes the suggestion back. Nothing typed is lost. Fix C4b is being built.
-- **Deleting a phrase at the start of a line leaves a leading space.** The server stores it as `&#x20;`. This is
-  cosmetic.
+From here on, one script runs every check against the build being served: `tools/run-live-checks.sh <label>`. It
+records the build, creates a fresh document per check (`tools/make-docs.py`), runs each probe in `tools/probes/`, and
+ends with the How-To document's health and the server-log counts (`tools/health-and-logs.py`). It never deploys. The
+runs are in `live-checks/`: `baseline-0b3f8dd` (the old build), `final-5b5c779` and `integ-00c0e15`.
+
+| Check | 5b5c779 | 00c0e15 |
+|---|---|---|
+| Both 13-step tests (plain and brackets) | pass | pass |
+| Two people typing at once in different paragraphs, Editing and Suggesting mode | pass | pass |
+| Two people typing at once in the same paragraph | text lost (local race test) | both texts kept in both modes; see the known gaps for Suggesting mode |
+| An AI rejects through REST while a person edits | pass | pass |
+| An AI suggestion accepted in the page while the person keeps typing | pass | pass |
+| An AI writes while a person types (new check) | pass | pass |
+| Tab closed 300 ms after Accept | pass | pass |
+| AI format sets 1 to 3: quotes across bold, link text, a paragraph's last words plus a new paragraph | pass | pass |
+| AI inserts inline, as a paragraph and as a table row, then all rejected | pass | pass |
+| The same three inserts all accepted | document quarantined; it will not reopen | the same; see the known gaps |
+| An AI paragraph inserted after the last block | no text landed | lands as pending text |
+
+Every check document showed 0 rebuilds and 0 dropped live writes in the server log, and the How-To document stayed
+fresh with nothing pending.
+
+The AI-while-typing check is `tools/probes/agent-concurrent-probe.mjs`. The person types a long phrase in four bursts
+with short pauses. The AI adds a replace and an insert and then rejects the replace; each call retries on
+409 PROJECTION_STALE. On both builds the three calls were accepted while the person was still typing, at 3.0, 3.1 and
+7.1 seconds, and nothing was lost on the page, after a reload or on the server
+(`live-checks/ai-while-typing-5b5c779`, and the same check in `integ-00c0e15`). When the person types without pauses
+and the AI does not retry, both AI calls get 409 PROJECTION_STALE.
+
+Local tests on `00c0e15`: the build passes, every targeted test passes, and `npm test` passes 76 of 76. The one
+failure, `collab-onstore-drift-quarantine`, fails the same way on untouched upstream `fb25787`.
+
+## Known gaps, with fixes in progress (as of 00c0e15)
+
+- **Accepting several AI block inserts in the page quarantines the document when one of them is a table row.**
+  After inline, paragraph and table-row inserts are accepted one after another, the server lays out the table with
+  columns about 131 and 135 characters wide. That trips its growth guard (201 to 1708 characters), and it quarantines
+  the document. The document will not reopen, and the server still lists all three inserts as pending. The widths
+  differ by 4, which is len("Producer") − len("Mike"), the new row's two cells. So the widths are probably measured
+  while suggestion markup is still in those cells. Rejecting the same inserts works. Fix B8e is with a worker
+  (`tools/briefs/brief-b8e-ai-block-accept-live.md`).
+- **Two people typing in the same paragraph in Suggesting mode split one person's suggestion.** One person's typed
+  run became six insert suggestions. Each holds three characters of content, but its range covers only two, so every
+  third character (here "i", " ", "p", " " and "r") carries no suggestion mark and would skip review. Rejecting all six
+  fragments, with every call returning true, left "The second act mi typ wor needs one more scene" on the page and
+  in the server's copy. Three of the six rejects removed nothing, and the unmarked characters stayed. In one of the
+  two runs the server also stopped being fresh (`live-checks/coverage-00c0e15`). With the two people in different
+  paragraphs, every character is covered and reject-all is clean. Fix C8 is with a worker
+  (`tools/briefs/brief-c8-same-paragraph-suggestions.md`).
+- **Could an AI write erase a person's newest typing?** Reading the code found two places where it might: the
+  save-conflict reconcile, and a keystroke that arrives while an AI mutation is being prepared. The live check has not
+  reproduced a loss. Worker C7 is writing deterministic tests (`tools/briefs/brief-c7-live-typing-overwrite.md`).
+- **A stray space.** After an accept in the same-paragraph case, the paragraph gains a trailing space, stored as
+  `&#x20;`. This is cosmetic.
+
+Fixed since the 14 September list: an AI's suggested insertion now keeps its text when accepted (B8, B8c), and an
+AI's REST accept or reject now sticks while someone has the page open (C4b).
 
 ## Branches in the fork
 
@@ -118,4 +169,16 @@ of the five test documents (`run-0b3f8dd/run.log`).
 - `cursor/selfhost-docs-170832` (E) and `cursor/docs-fixes-171653` (E2): the self-hosting settings guide.
 - `cursor/live-reseed-193822` (C4): a REST accept or reject on a document someone has open no longer rebuilds it,
   and the server logs any live update it drops.
-- `deploy/vps`: all of the above, merged. It is what the server runs.
+- `cursor/rest-resolution-sticks-201350` (C4b): an AI's REST accept or reject sticks while the page is open.
+- `cursor/rehydration-test-230502` (C4c): tests for how suggestions are restored when a page reloads.
+- `cursor/ai-insert-200925` (B8) and `cursor/ai-insert-structure-225400` (B8c): AI inserts land as text, inline, as
+  a paragraph or as a table row.
+- `cursor/quote-anchoring-224531` (C5): AI quotes anchor on visible text, across bold, on link text and at a
+  paragraph's end.
+- `cursor/concurrent-typing-225401` (C6): two people typing at once no longer send each other's caret to the end of
+  the document.
+- `cursor/same-paragraph-race-010042` (B2d) and `cursor/fragment-dirty-012325` (B2e): when two people type in the
+  same paragraph, both texts are saved.
+- `cursor/ai-block-accept-011611` (B8d): an AI paragraph inserted after the last block lands.
+- `integ/2026-09-15-00c0e15`: the build as verified, before `deploy/vps` moved to it.
+- `deploy/vps`: all of the above, merged (`00c0e15`). It is what the server runs.

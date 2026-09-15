@@ -1,0 +1,15 @@
+PASS open a fresh document in Suggesting mode — {"suggesting":true,"pending":0}
+PASS type an insertion key by key: drawn green, attributed — {"id":"m1789436798486_3e27c097e9b5_1","kind":"insert","by":"human:Claude E2E","text":" E2E insert words","content":" E2E insert words","drawn":{"text":" E2E insert words","title":"Suggested by Claude E2E","cls":"mark-insert"}}
+PASS suggest a deletion: drawn red — {"id":"m1789436801295_3e27c097e9b5_2","kind":"delete","by":"human:Claude E2E","text":"teh","content":null,"drawn":{"text":"teh","title":"Suggested by Claude E2E","cls":"mark-delete"}}
+PASS reload: both suggestions persist and are drawn — {"insert":{"id":"m1789436798486_3e27c097e9b5_1","kind":"insert","by":"human:Claude E2E","text":" E2E insert words","content":" E2E insert words","drawn":{"text":" E2E insert words","title":"Suggested by Claude E2E","cls":"mark-insert"}},"delete":{"id":"m1789436801295_3e27c097e9b5_2","kind":"delete",
+PASS click the insertion: card shows author and change — {"header":"Suggestion","meta":"Suggested by Claude E2E","body":"Insert:  E2E insert words"}
+PASS accept the insertion — {"pending":1}
+PASS reject the deletion — {"pending":0}
+PASS reload: accept and reject persisted — {"pending":0}
+PASS accept a deletion: text removed exactly once — {"tail":" is ready.DIANA\nThe second act needs scene. E2E insert words"}
+PASS review pill counts two new suggestions — "2 suggestions"
+PASS reject all — {"pill":null}
+PASS accept all — {"pill":null}
+PASS final reload — {"tail":"\nI think teh play is ready.DIANA\nThe second act needs scene. E2E insert words bulk B words"}
+server /state: {"projectionFresh":true,"readSource":"projection","revision":12,"markdownTail":"# Proof E2E\n\nERIC\\\nI think teh play is ready.\n\nDIANA\\\nThe second act needs scene. E2E insert words bulk B words\n","pendingSuggestions":0}
+13/13 steps passed; crashed=false; console errors: 0

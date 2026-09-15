@@ -1,0 +1,6 @@
+typing bursts (ms since typing began): [{"burst":0,"startMs":0},{"burst":1,"startMs":4189},{"burst":2,"startMs":8276},{"burst":3,"startMs":11346},{"end":14115}]
+AI calls while the person typed: {"replace":{"status":200,"success":true,"markId":"6f02b0cc-1af6-42fa-aa95-9d807abf99c2","attempts":7,"atMs":3016,"whileTyping":true},"insert":{"status":200,"success":true,"markId":"6086a858-2a80-4e2f-93fb-5f43114b3a38","attempts":1,"atMs":3117,"whileTyping":true},"reject":{"status":200,"success":true,"attempts":9,"atMs":7118,"whileTyping":true}}
+before reload, person sees: {"phraseWhole":true,"tehKept":true,"aiInsertText":true,"pending":["insert:ai:cos-probe","insert:Claude Person","insert:Claude Person","insert:Claude Person","insert:Claude Person"]}
+after reload, person sees: {"phraseWhole":true,"tehKept":true,"aiInsertText":true,"pending":["insert:ai:cos-probe","insert:Claude Person","insert:Claude Person","insert:Claude Person","insert:Claude Person"]}
+server: {"readSource":"projection","projectionFresh":true,"repairPending":false,"revision":8,"phraseWhole":true,"tehKept":true,"aiInsertText":true,"markupInText":false,"pending":["insert:Claude Person","insert:ai:cos-probe","insert:Claude Person","insert:Claude Person","insert:Claude Person"]}
+VERDICT PASS: nothing lost; AI write accepted while the person was still typing: true

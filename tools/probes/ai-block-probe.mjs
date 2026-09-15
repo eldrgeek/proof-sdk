@@ -70,11 +70,13 @@ await openDoc();
 if (!(await page.evaluate(() => window.proof.isSuggestionsEnabled()))) await page.click('.share-pill-suggest-toggle');
 console.log('action:', ACTION, '| blocks at start:', JSON.stringify(await blocks()));
 
-const ops = [
-  { label: 'inline text via insert', kind: 'insert', quote: 'Intro paragraph one.', content: ' AI inline words.', needle: 'AI inline' },
-  { label: 'paragraph via insert after a paragraph end', kind: 'insert', quote: 'Closing paragraph.', content: '\n\nAnother AI paragraph.', needle: 'Another AI' },
-  { label: 'table row via insert anchored on a cell', kind: 'insert', quote: 'Director', content: '\n| Mike | Producer |', needle: 'Mike' },
+const allOps = [
+  { key: 'inline', label: 'inline text via insert', kind: 'insert', quote: 'Intro paragraph one.', content: ' AI inline words.', needle: 'AI inline' },
+  { key: 'paragraph', label: 'paragraph via insert after a paragraph end', kind: 'insert', quote: 'Closing paragraph.', content: '\n\nAnother AI paragraph.', needle: 'Another AI' },
+  { key: 'row', label: 'table row via insert anchored on a cell', kind: 'insert', quote: 'Director', content: '\n| Mike | Producer |', needle: 'Mike' },
 ];
+// ONLY=inline|paragraph|row runs a single kind of insert, to find which one breaks a document.
+const ops = process.env.ONLY ? allOps.filter((o) => o.key === process.env.ONLY) : allOps;
 for (const o of ops) {
   const res = await fetch(`${u.origin}/documents/${slug}/ops`, {
     method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },

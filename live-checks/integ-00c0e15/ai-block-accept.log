@@ -1,0 +1,26 @@
+action: accept | blocks at start: ["heading: Block test","paragraph: Intro paragraph one.","row: Name | Role","row: Eric | Writer","row: Diana | Director","paragraph: Closing paragraph."]
+AI inline text via insert -> 200 {"success":true}
+AI paragraph via insert after a paragraph end -> 200 {"success":true}
+AI table row via insert anchored on a cell -> 200 {"success":true}
+mark in page: {"id":"ba2b66ca-316f-41ea-ae66-1ac700ada814","kind":"insert","covered":" AI inline words.","content":" AI inline words."}
+mark in page: {"id":"b802b6fb-e254-44ff-8e6f-b2afa5e31f46","kind":"insert","covered":"Mike / Producer","content":"\n| Mike | Producer |"}
+mark in page: {"id":"3b28f401-37de-48bc-b730-f5699f751f09","kind":"insert","covered":"Another AI paragraph.","content":"\n\nAnother AI paragraph."}
+blocks with suggestions pending: ["heading: Block test","paragraph: Intro paragraph one. AI inline words.","row: Name | Role","row: Eric | Writer","row: Diana | Director","row: Mike | Producer","paragraph: Closing paragraph.","paragraph: Another AI paragraph."]
+accept inline text via insert: returned true
+   blocks after: ["heading: Block test","paragraph: Intro paragraph one. AI inline words.","row: Name | Role","row: Eric | Writer","row: Diana | Director","row: Mike | Producer","paragraph: Closing paragraph.","paragraph: Another AI paragraph."]
+accept paragraph via insert after a paragraph end: returned true
+   blocks after: ["heading: Block test","paragraph: Intro paragraph one. AI inline words.","row: Name | Role","row: Eric | Writer","row: Diana | Director","row: Mike | Producer","paragraph: Closing paragraph.","paragraph: Another AI paragraph."]
+accept table row via insert anchored on a cell: returned true
+   blocks after: ["heading: Block test","paragraph: Intro paragraph one. AI inline words.","row: Name | Role","row: Eric | Writer","row: Diana | Director","row: Mike | Producer","paragraph: Closing paragraph.","paragraph: Another AI paragraph."]
+node:internal/modules/run_main:123
+    triggerUncaughtException(
+    ^
+
+page.waitForFunction: Timeout 30000ms exceeded.
+    at openDoc (/Users/mikewolf/Projects/.claude/worktrees/eager-kare-99ca0f/_estate/coo/workers/proof-2026-09-14/probes/ai-block-probe.mjs:29:14)
+    at async file:///Users/mikewolf/Projects/.claude/worktrees/eager-kare-99ca0f/_estate/coo/workers/proof-2026-09-14/probes/ai-block-probe.mjs:105:1 {
+  log: [],
+  name: 'TimeoutError'
+}
+
+Node.js v22.22.3
