@@ -245,6 +245,34 @@ export class CollabClient {
     });
   }
 
+  private deliverAfterYjsTransaction(ydoc: Y.Doc, deliver: () => void): void {
+    queueMicrotask(() => {
+      if (this.ydoc !== ydoc) return;
+      try {
+        deliver();
+      } catch (error) {
+        console.error('[collab] Failed to apply Yjs update', error,
+          error instanceof Error ? error.stack : String(error));
+        // Preserve buffered local edits, then obtain a fresh server-backed document.
+        // A failed view update must not leave the page reporting a successful sync.
+        this.flushPendingLocalStateForUnload();
+        if (typeof window !== 'undefined') {
+          // Reload at most once a minute, so a failure that repeats on every load leaves
+          // its error on screen instead of reloading the page in a loop.
+          const reloadKey = 'proof-collab-recovery-reload-at';
+          let lastReloadAt = 0;
+          try { lastReloadAt = Number(window.sessionStorage.getItem(reloadKey) || 0); } catch { /* storage unavailable */ }
+          if (Date.now() - lastReloadAt > 60_000) {
+            try { window.sessionStorage.setItem(reloadKey, String(Date.now())); } catch { /* storage unavailable */ }
+            window.location.reload();
+          }
+        } else {
+          throw error;
+        }
+      }
+    });
+  }
+
   private getDurableBufferKey(slug: string): string {
     return `${DURABLE_UPDATE_KEY_PREFIX}${slug}:${this.durableClientId}`;
   }
@@ -413,8 +441,10 @@ export class CollabClient {
       try {
         Y.applyUpdate(ydoc, update, 'durable-replay');
         nextUpdates.push(encoded);
-      } catch {
-        // skip invalid update entries
+      } catch (error) {
+        console.error('[collab] Failed to replay durable Yjs update', error,
+          error instanceof Error ? error.stack : String(error));
+        // Initial provider sync still fetches the authoritative server document.
       }
     }
     return nextUpdates;
@@ -594,7 +624,7 @@ export class CollabClient {
       document: ydoc,
       preserveConnection: false,
       parameters: this.getProviderParameters(session),
-      token: () => this.activeSession?.token ?? null,
+      token: () => this.activeSession?.token ?? '',
     });
 
     ydoc.on('update', (update, origin) => {
@@ -607,11 +637,21 @@ export class CollabClient {
 
     const markdownText = ydoc.getText('markdown');
     const marksMap = ydoc.getMap('marks');
+    let marksDeliveryQueued = false;
     marksMap.observe((_event, transaction) => {
       if (!this.marksHandler) return;
       if (transaction.origin === 'local-marks-sync') return;
       if (this.applyingLocalMarks) return;
-      this.marksHandler(this.readMarks());
+      // Shallow Y.Map observers run before y-prosemirror's deep fragment observer.
+      // Dispatching marks here sees the new Yjs tree with the old PM mapping: cursor
+      // resolution can throw, and anchor hydration can write stale text back to Yjs.
+      // Deliver the latest snapshot only after all observers have finished.
+      if (marksDeliveryQueued) return;
+      marksDeliveryQueued = true;
+      this.deliverAfterYjsTransaction(ydoc, () => {
+        marksDeliveryQueued = false;
+        this.marksHandler?.(this.readMarks());
+      });
     });
 
     provider.on('awarenessChange', (event: { states: Array<unknown> }) => {
@@ -732,7 +772,7 @@ export class CollabClient {
 
     this.provider.setConfiguration({
       parameters: this.getProviderParameters(session),
-      token: () => this.activeSession?.token ?? null,
+      token: () => this.activeSession?.token ?? '',
     });
     this.provider.configuration.websocketProvider.setConfiguration({
       parameters: this.getProviderParameters(session),
