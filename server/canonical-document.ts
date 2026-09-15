@@ -175,11 +175,28 @@ type RunawayCanonicalWriteGuardResult = {
 let beforeCanonicalApplyHookForTests:
   | null
   | ((args: { slug: string; source: string; hasBaseToken: boolean; liveRequired: boolean }) => Promise<void> | void) = null;
+let beforeCanonicalCommitHookForTests:
+  | null
+  | ((args: { slug: string; source: string; hasBaseToken: boolean; liveRequired: boolean }) => Promise<void> | void) = null;
 
 export function __setBeforeCanonicalApplyHookForTests(
   hook: typeof beforeCanonicalApplyHookForTests,
 ): void {
   beforeCanonicalApplyHookForTests = hook;
+}
+
+export function __setBeforeCanonicalCommitHookForTests(
+  hook: typeof beforeCanonicalCommitHookForTests,
+): void {
+  beforeCanonicalCommitHookForTests = hook;
+}
+
+function sameStateVector(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.byteLength !== b.byteLength) return false;
+  for (let index = 0; index < a.byteLength; index += 1) {
+    if (a[index] !== b[index]) return false;
+  }
+  return true;
 }
 
 function evaluateRunawayCanonicalWriteGuard(
@@ -1004,6 +1021,7 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
   const ydoc = handle.ydoc;
   const currentMutationBase = initialBaseResolution.base;
   const revalidateLiveBaseBeforeApply = liveRequired;
+  let validatedLiveStateVector: Uint8Array | null = null;
   if (beforeCanonicalApplyHookForTests) {
     await beforeCanonicalApplyHookForTests({
       slug: args.slug,
@@ -1013,6 +1031,7 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
     });
   }
   if (revalidateLiveBaseBeforeApply) {
+    const stateVectorBeforeRevalidation = Y.encodeStateVector(ydoc);
     const currentBaseResolution = await resolveAuthoritativeMutationBase(args.slug, {
       liveRequired,
     });
@@ -1038,7 +1057,11 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
     }
     const currentBaseToken = currentBaseResolution.base.token;
     const expectedBaseToken = baseToken ?? currentMutationBase.token;
-    if (currentBaseToken !== expectedBaseToken) {
+    const stateVectorAfterRevalidation = Y.encodeStateVector(ydoc);
+    if (
+      currentBaseToken !== expectedBaseToken
+      || !sameStateVector(stateVectorBeforeRevalidation, stateVectorAfterRevalidation)
+    ) {
       await handle.cleanup?.();
       return {
         ok: false,
@@ -1048,6 +1071,7 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
         retryWithState: `/api/agent/${args.slug}/state`,
       };
     }
+    validatedLiveStateVector = stateVectorAfterRevalidation;
   }
   const nextMarksBase = hasExplicitNextMarks ? nextMarks : authoritativeMarks;
   const authoredMarks = extractAuthoredMarksFromDoc(parsedNext.doc as ProseMirrorNode, parser.schema as Schema);
@@ -1297,6 +1321,28 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
     let nextRevision = doc.revision + 1;
     let nextYStateVersion = Math.max(doc.y_state_version, persistedState.yStateVersion);
 
+    if (beforeCanonicalCommitHookForTests) {
+      await beforeCanonicalCommitHookForTests({
+        slug: args.slug,
+        source: args.source,
+        hasBaseToken: Boolean(baseToken),
+        liveRequired,
+      });
+    }
+    if (
+      validatedLiveStateVector
+      && !sameStateVector(Y.encodeStateVector(ydoc), validatedLiveStateVector)
+    ) {
+      return {
+        ok: false,
+        status: 409,
+        code: 'STALE_BASE',
+        error: baseToken ? 'Document changed since baseToken' : 'Document changed during mutation',
+        retryWithState: `/api/agent/${args.slug}/state`,
+      };
+    }
+    // Keep this check adjacent to the transaction: every candidate derivation above
+    // can await, but no client update may land between this check and the live write.
     ydoc.transact(() => {
       if (!preserveLocallyFinalizedFragment) {
         const fragment = ydoc.getXmlFragment('prosemirror');
