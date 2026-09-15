@@ -1025,6 +1025,7 @@ function finalizeMarkTransaction(
     tr = stampSuggestionMetadataOnDocument(view.state, tr, normalized);
   }
   tr = tr.setMeta(marksPluginKey, { type: 'SET_METADATA', metadata: normalized });
+  if (!options?.isRemote) tr = tr.setMeta('proofLocalMarkChange', true);
   if (options?.action) {
     tr = tr.setMeta(proofMarkActionMeta, options.action);
   }

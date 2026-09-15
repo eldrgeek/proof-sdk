@@ -3653,7 +3653,7 @@ class ProofEditorImpl implements ProofEditor {
     clearResolvedMarkTombstones([...this.reviewDecisionIds]);
     const previousSuppress = this.suppressMarksSync;
     this.suppressMarksSync = true;
-    this.restoringReviewDecision = !redo;
+    this.restoringReviewDecision = true;
     try {
       const changed = redo ? history.redo() : history.undo();
       const metadata = history.doc.getMap('marks').toJSON() as Record<string, StoredMark>;
@@ -5670,10 +5670,10 @@ class ProofEditorImpl implements ProofEditor {
       (view as any).dispatch = (tr: any) => {
         // Yjs restores text and records atomically. Supply the restored records
         // on that same PM update, before normalization can invent mark metadata.
-        if (this.restoringReviewDecision && this.reviewDecisionHistory) {
+        if (this.restoringReviewDecision || (tr.docChanged && tr.getMeta(ySyncPluginKey)?.isChangeOrigin && !tr.getMeta(marksPluginKey))) {
           tr.setMeta(marksPluginKey, {
             type: 'SET_METADATA',
-            metadata: this.reviewDecisionHistory.doc.getMap('marks').toJSON(),
+            metadata: collabClient.getYDoc()?.getMap('marks').toJSON() ?? this.lastReceivedServerMarks,
           });
         }
         const dispatchWithRevision = (transaction: any) => {
