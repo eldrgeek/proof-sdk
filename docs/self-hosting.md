@@ -295,3 +295,21 @@ The document-create handler does not call `authorizeDirectShareRequest` (`apiRou
 
 - [#43](https://github.com/EveryInc/proof-sdk/issues/43) — general self-hosting discussion and reports.
 - [#47](https://github.com/EveryInc/proof-sdk/issues/47) / [PR #65](https://github.com/EveryInc/proof-sdk/pull/65) — documents whose markdown is not a round-trip fixed point can be marked `PROJECTION_STALE` (projection drift handling in `server/collab.ts`).
+
+## Proof+ SOMA integration
+
+Enable `PROOF_LIBRARY_ENABLED=1` and `PROOF_SOMA_AUTH_ENABLED=1` to use the shared SOMA account for the document library. Set `SOMA_AUTH_URL` and the public `SOMA_AUTH_ANON_KEY`. The library offers magic links and Google. The reference browser runtime is copied verbatim from `legends-membership-site/js/soma-auth.js`; its Proof+ config enables those two methods. Supabase's UMD bundle is pinned to 2.57.4.
+
+The operator must register the site's redirect URL and the `proof-plus` / global `*` administrator roles in SOMA Auth before enabling production sign-in. This repository does not configure Supabase. Administrators are verified with `is_app_admin`; an active `library_members` row admits other members. Add members by name and email in People, or with `npm run library -- add-member --name 'Name' --email person@example.com`. The CLI also retains `list-members`, `remove-member`, `archive`, and `unarchive`. Local `--owner` is a legacy flag and does not grant SOMA administrator authority.
+
+SOMA tokens stay in the browser. The server verifies them remotely and stores only a hashed Proof+ session identifier and a dated role result. After 24 hours, administrator authority expires until the browser supplies a fresh token for verification. The browser schedules that check at the server's lease deadline. A failed check cannot extend administrator authority. Successful daily checks slide the existing 180-day Proof+ session. A removed administrator may remain an ordinary member if they have an active library membership.
+
+`PROOF_FEEDBACK_ENABLED=1` independently enables the vendored chip and the two same-origin endpoints. `SOMA_FEEDBACK_ENDPOINT` defaults to `http://127.0.0.1:4252/feedback`. Set the server-only `SOMA_ADMIN_TOKEN` to route verified administrators' feedback as admin submissions. Client credentials are stripped; automatic error reports never carry admin credentials. `GET /api/soma-feedback?health=1` makes a non-writing empty-body probe of the upstream service. A failed submission returns visible JSON with status 502.
+
+The canonical feedback assets are v4.1 (2026-08-07), copied verbatim on 2026-09-15 from `SOMA/standards/soma-feedback/`. Run `scripts/sync-soma-feedback.sh` to refresh, or add `--check` to detect drift. Override `SOMA_FEEDBACK_SOURCE` to read another checkout of the canonical directory.
+
+Error reports contain bounded diagnostic strings, page paths, and the build identifier; they do not collect editor state, document content, DOM text, or console argument objects. URL queries and fragments are removed. `client_errors` holds one aggregate per signature for a 30-minute window, with counts and a sample. Only the first occurrence is forwarded in that window. If forwarding fails, the local record remains, and the banner does not claim delivery; no automatic retry is made within that window. Browser reporting is capped at five per page load; the server allows 20 per client address per 10 minutes. Session exchanges allow ten per client address per 10 minutes.
+
+Behind a trusted reverse proxy, set `PROOF_TRUST_PROXY_HEADERS=1` and have nginx overwrite `X-Forwarded-For` with the client's address (`proxy_set_header X-Forwarded-For $remote_addr;`). Session, error-report, and share limiters use the same address resolver.
+
+With SOMA auth disabled, the legacy web sign-in and device-link paths remain available for rollback. With SOMA auth enabled they return 404. The obsolete `signin-link` CLI command is removed in both modes. With feedback disabled, the chip, proxy, and error reporting are absent. Document URLs remain open under the existing sharing rules; library membership adds the member name, back link, and protected POST visits.

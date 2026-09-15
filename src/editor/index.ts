@@ -1605,6 +1605,7 @@ class ProofEditorImpl implements ProofEditor {
           this.lastReceivedServerMarks = initialMarks;
           this.initialMarksSynced = true;
         }
+        window.dispatchEvent(new Event('proof:editor-ready'));
         this.showErrorBanner('Live collaboration is currently unavailable for this shared document.');
         return;
       }
@@ -1613,6 +1614,7 @@ class ProofEditorImpl implements ProofEditor {
       if (attemptSeq !== this.shareInitAttemptSeq) return;
       this.clearErrorBanner();
       this.resetShareInitRetryState();
+      window.dispatchEvent(new Event('proof:editor-ready'));
     } catch (error) {
       if (attemptSeq !== this.shareInitAttemptSeq) return;
       console.error('[initFromShare] Failed:', error);

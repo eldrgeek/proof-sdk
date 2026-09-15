@@ -1335,6 +1335,87 @@ function initDatabase(): void {
     )
   `);
   d.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_library_documents_slug ON library_documents(document_slug)');
+
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS library_members (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT UNIQUE,
+      is_owner INTEGER NOT NULL DEFAULT 0,
+      invited_by TEXT,
+      created_at TEXT NOT NULL,
+      removed_at TEXT
+    )
+  `);
+  d.exec('CREATE INDEX IF NOT EXISTS idx_library_members_active ON library_members(removed_at, created_at)');
+
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS library_signin_links (
+      token_hash TEXT PRIMARY KEY,
+      member_id TEXT NOT NULL,
+      purpose TEXT NOT NULL,
+      created_by TEXT,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      used_at TEXT,
+      FOREIGN KEY (member_id) REFERENCES library_members(id)
+    )
+  `);
+  d.exec('CREATE INDEX IF NOT EXISTS idx_library_signin_links_member ON library_signin_links(member_id, used_at, expires_at)');
+
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS library_sessions (
+      session_hash TEXT PRIMARY KEY,
+      member_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      revoked_at TEXT,
+      user_agent TEXT,
+      FOREIGN KEY (member_id) REFERENCES library_members(id)
+    )
+  `);
+  d.exec('CREATE INDEX IF NOT EXISTS idx_library_sessions_member ON library_sessions(member_id, revoked_at, expires_at)');
+  const librarySessionColumns = d.prepare('PRAGMA table_info(library_sessions)').all() as Array<{ name: string }>;
+  if (!librarySessionColumns.some((column) => column.name === 'soma_verified_at')) {
+    d.exec('ALTER TABLE library_sessions ADD COLUMN soma_verified_at TEXT');
+    d.exec('ALTER TABLE library_sessions ADD COLUMN soma_admin INTEGER NOT NULL DEFAULT 0');
+  }
+
+
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS library_document_meta (
+      slug TEXT PRIMARY KEY,
+      created_by_member_id TEXT,
+      archived_at TEXT,
+      archived_by TEXT,
+      FOREIGN KEY (slug) REFERENCES documents(slug),
+      FOREIGN KEY (created_by_member_id) REFERENCES library_members(id)
+    )
+  `);
+  d.exec('CREATE INDEX IF NOT EXISTS idx_library_document_meta_archived ON library_document_meta(archived_at)');
+
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS library_visits (
+      member_id TEXT NOT NULL,
+      slug TEXT NOT NULL,
+      last_opened_at TEXT,
+      last_left_at TEXT,
+      PRIMARY KEY (member_id, slug),
+      FOREIGN KEY (member_id) REFERENCES library_members(id),
+      FOREIGN KEY (slug) REFERENCES documents(slug)
+    )
+  `);
+  d.exec('CREATE INDEX IF NOT EXISTS idx_library_visits_slug ON library_visits(slug)');
+  d.exec(`CREATE TABLE IF NOT EXISTS client_errors (
+    signature TEXT PRIMARY KEY,
+    count INTEGER NOT NULL,
+    first_seen INTEGER NOT NULL,
+    last_seen INTEGER NOT NULL,
+    sample TEXT NOT NULL,
+    forwarded INTEGER NOT NULL DEFAULT 0
+  )`);
+
 }
 
 export function createDocument(

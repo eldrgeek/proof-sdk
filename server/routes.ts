@@ -1,3 +1,4 @@
+import { getClientIp, trustProxyHeaders } from './client-address.js';
 import { createHash, randomUUID } from 'crypto';
 import { Router, text, type Request, type Response } from 'express';
 import { generateSlug } from './slug.js';
@@ -138,10 +139,6 @@ function isMarksPayload(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function trustProxyHeaders(): boolean {
-  const value = (process.env.PROOF_TRUST_PROXY_HEADERS || '').trim().toLowerCase();
-  return value === '1' || value === 'true' || value === 'yes';
-}
 
 function parseJson(value: string): Record<string, unknown> {
   try {
@@ -167,18 +164,6 @@ function hashRequestBody(body: unknown): string {
   }
 }
 
-function getClientIp(req: Request): string {
-  if (trustProxyHeaders()) {
-    const forwardedFor = req.header('x-forwarded-for');
-    if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
-      const first = forwardedFor.split(',')[0]?.trim();
-      if (first) return first;
-    }
-  }
-  if (req.ip && req.ip.trim()) return req.ip;
-  if (req.socket?.remoteAddress) return req.socket.remoteAddress;
-  return 'unknown';
-}
 
 function parsePositiveIntEnv(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -988,7 +973,8 @@ apiRoutes.post('/auth/start', (req: Request, res: Response) => {
 });
 
 function handleOAuthPoll(req: Request, res: Response): void {
-  const requestId = req.params.requestId;
+  const requestIdParam = req.params.requestId;
+  const requestId = Array.isArray(requestIdParam) ? requestIdParam[0] : requestIdParam;
   if (!requestId || !requestId.trim()) {
     res.status(400).json({ error: 'Missing requestId', code: 'BAD_REQUEST' });
     return;
@@ -1058,6 +1044,60 @@ apiRoutes.post(
   handleShareMarkdown,
 );
 
+export async function createProofDocument(input: {
+  markdown: string;
+  marks?: Record<string, unknown>;
+  title?: string;
+  ownerId?: string;
+  accessRole?: ShareRole;
+  source: string;
+  actor: string;
+  authMode?: string;
+  authenticated?: boolean;
+}): Promise<{
+  doc: ReturnType<typeof createDocument>;
+  access: ReturnType<typeof createDocumentAccessToken>;
+  ownerSecret: string;
+  sanitizedMarkdown: string;
+}> {
+  const sanitizedMarkdown = stripEphemeralCollabSpans(input.markdown);
+  const canonicalMarkdown = await deriveCanonicalMarkdownForStorage(sanitizedMarkdown);
+  const marks = canonicalizeStoredMarks(input.marks ?? {});
+  const slug = generateSlug();
+  const ownerSecret = randomUUID();
+  const doc = createDocument(
+    slug,
+    canonicalMarkdown,
+    marks,
+    input.title,
+    input.ownerId,
+    ownerSecret,
+  );
+  const access = createDocumentAccessToken(slug, input.accessRole ?? 'editor');
+  refreshSnapshotForSlug(slug);
+  addEvent(slug, 'document.created', {
+    title: input.title,
+    ownerId: input.ownerId,
+    shareState: doc.share_state,
+    source: input.source,
+    accessRole: access.role,
+    authMode: input.authMode ?? 'library_session',
+    authenticated: input.authenticated ?? true,
+  }, input.actor);
+  captureDocumentCreatedTelemetry({
+    slug: doc.slug,
+    source: input.source,
+    ownerId: input.ownerId,
+    title: input.title,
+    shareState: doc.share_state,
+    accessRole: access.role,
+    authMode: input.authMode ?? 'library_session',
+    authenticated: input.authenticated ?? true,
+    contentChars: sanitizedMarkdown.length,
+  });
+  return { doc, access, ownerSecret, sanitizedMarkdown };
+}
+
 export async function handleShareMarkdown(req: Request, res: Response): Promise<void> {
   const auth = await authorizeDirectShareRequest(req, res);
   if (!auth) return;
@@ -1115,40 +1155,22 @@ export async function handleShareMarkdown(req: Request, res: Response): Promise<
     return;
   }
 
-  const slug = generateSlug();
-  const ownerSecret = randomUUID();
-  // Normalize to the collab fragment's serialization so structural markdown
-  // (GFM tables, list-then-heading) doesn't wedge the projection. Same rationale
-  // as POST /documents.
-  const canonicalMarkdown = await deriveCanonicalMarkdownForStorage(sanitizedMarkdown);
-  const doc = createDocument(slug, canonicalMarkdown, marks, title, ownerId, ownerSecret);
-  const access = createDocumentAccessToken(slug, requestedRole);
+  const source = req.path === '/share/markdown' ? 'share.markdown' : 'api.share.markdown';
+  const { doc, access, ownerSecret } = await createProofDocument({
+    markdown: sanitizedMarkdown,
+    marks,
+    title,
+    ownerId,
+    accessRole: requestedRole,
+    source,
+    actor: ownerId || auth.actor,
+    authMode: auth.authMode,
+    authenticated: auth.authed,
+  });
   const links = buildShareLink(req, doc.slug);
   const shareUrlWithToken = withShareToken(links.shareUrl, access.secret);
   const urlWithToken = withShareToken(links.url, access.secret);
   const proofSdkPaths = buildProofSdkDocumentPaths(doc.slug);
-  refreshSnapshotForSlug(slug);
-
-  addEvent(slug, 'document.created', {
-    title,
-    ownerId,
-    shareState: doc.share_state,
-    source: req.path === '/share/markdown' ? 'share.markdown' : 'api.share.markdown',
-    accessRole: access.role,
-    authMode: auth.authMode,
-    authenticated: auth.authed,
-  }, ownerId || auth.actor);
-  captureDocumentCreatedTelemetry({
-    slug: doc.slug,
-    source: req.path === '/share/markdown' ? 'share.markdown' : 'api.share.markdown',
-    ownerId,
-    title,
-    shareState: doc.share_state,
-    accessRole: access.role,
-    authMode: auth.authMode,
-    authenticated: auth.authed,
-    contentChars: sanitizedMarkdown.length,
-  });
 
   res.json({
     success: true,
@@ -1276,8 +1298,8 @@ apiRoutes.put('/documents/:slug/title', (req: Request, res: Response) => {
 
   const body = isRecord(req.body) ? req.body : {};
   const title = body.title;
-  const actor = body.actor;
-  const clientId = body.clientId;
+  const actor = typeof body.actor === 'string' ? body.actor : undefined;
+  const clientId = typeof body.clientId === 'string' ? body.clientId : undefined;
   if (title !== null && typeof title !== 'string') {
     res.status(400).json({ error: 'title must be a string or null when provided' });
     return;
@@ -1431,7 +1453,7 @@ apiRoutes.put('/documents/:slug', async (req: Request, res: Response) => {
       slug,
       nextMarkdown: sanitizedMarkdown,
       nextMarks: hasMarksUpdate
-        ? normalizedMarks
+        ? (normalizedMarks ?? {})
         : canonicalizeStoredMarks(parseJson(currentDoc.marks) as Record<string, unknown>),
       source: 'rest-put',
       baseUpdatedAt: currentDoc.updated_at,
@@ -1518,11 +1540,12 @@ apiRoutes.put('/documents/:slug', async (req: Request, res: Response) => {
     return;
   }
 
-  updatedDoc = getDocumentBySlug(slug);
-  if (!updatedDoc) {
+  const reloadedDoc = getDocumentBySlug(slug);
+  if (!reloadedDoc) {
     res.status(500).json({ error: 'Document update persisted but document could not be reloaded' });
     return;
   }
+  updatedDoc = reloadedDoc;
   const integrity = summarizeDocumentIntegrity(updatedDoc.markdown);
   if (hasMarkdownUpdate) {
     try {
@@ -2158,7 +2181,7 @@ apiRoutes.get('/documents/:slug/collab-session', (req: Request, res: Response) =
     return;
   }
 
-  const canRead = doc.share_state !== 'DELETED';
+  const canRead = true;
   const canEdit = role === 'owner_bot'
     ? (doc.share_state === 'ACTIVE' || doc.share_state === 'PAUSED')
     : (role === 'editor' && doc.share_state === 'ACTIVE');

@@ -1,3 +1,5 @@
+import { clientErrorRoutes } from './client-errors.js';
+import { somaFeedbackRoutes } from './soma-feedback.js';
 import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
@@ -16,6 +18,9 @@ import {
   enforceBridgeClientCompatibility,
 } from './client-capabilities.js';
 import { getBuildInfo } from './build-info.js';
+import { libraryRoutes } from './library/routes.js';
+import { isLibraryEnabled } from './library/auth.js';
+import { renderLibraryHome } from './library/page.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -47,6 +52,9 @@ async function main(): Promise<void> {
 
   app.use(express.json({ limit: '10mb' }));
   app.use(express.static(path.join(__dirname, '..', 'public')));
+  app.use(libraryRoutes);
+  app.use(somaFeedbackRoutes);
+  app.use(clientErrorRoutes);
 
   app.use((req, res, next) => {
     const originHeader = req.header('origin');
@@ -80,7 +88,15 @@ async function main(): Promise<void> {
     next();
   });
 
-  app.get('/', (_req, res) => {
+  app.get('/', (req, res, next) => {
+    if (!isLibraryEnabled()) {
+      next();
+      return;
+    }
+    renderLibraryHome(req, res);
+  });
+
+  app.get(['/', '/developers'], (_req, res) => {
     res.type('html').send(`<!doctype html>
 <html lang="en">
   <head>

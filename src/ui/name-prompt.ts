@@ -7,6 +7,12 @@
 const STORAGE_KEY = 'proof-share-viewer-name';
 const MAX_VIEWER_NAME_LENGTH = 48;
 
+declare global {
+  interface Window {
+    __PROOF_LIBRARY_MEMBER__?: { name: string };
+  }
+}
+
 function normalizeViewerName(rawName: string): string {
   return rawName.replace(/\s+/g, ' ').trim().slice(0, MAX_VIEWER_NAME_LENGTH);
 }
@@ -24,6 +30,11 @@ function shouldAutofocusInput(): boolean {
 }
 
 export function getViewerName(): string | null {
+  const memberName = typeof window !== 'undefined' ? window.__PROOF_LIBRARY_MEMBER__?.name : undefined;
+  if (typeof memberName === 'string' && memberName.trim()) {
+    setViewerName(memberName);
+    return memberName;
+  }
   return localStorage.getItem(STORAGE_KEY);
 }
 
@@ -36,6 +47,13 @@ export function setViewerName(name: string): void {
  * Returns the viewer's name (from storage or newly entered).
  */
 export function promptForName(): Promise<string> {
+  const memberName = typeof window !== 'undefined'
+    ? window.__PROOF_LIBRARY_MEMBER__?.name
+    : undefined;
+  if (typeof memberName === 'string' && memberName.trim()) {
+    setViewerName(memberName);
+    return Promise.resolve(memberName);
+  }
   const existing = getViewerName();
   if (existing) return Promise.resolve(existing);
 

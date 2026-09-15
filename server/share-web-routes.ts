@@ -1,3 +1,4 @@
+import { injectSomaFeedback } from './soma-page.js';
 import { createHash } from 'crypto';
 import { Router, type Request, type Response } from 'express';
 import { readFileSync } from 'fs';
@@ -31,7 +32,6 @@ import {
   buildSharePreviewModel,
   renderShareMetaTags,
   renderShareOgPng,
-  resolvePublicOrigin,
   type SharePreviewModel,
 } from './share-preview.js';
 import {
@@ -39,6 +39,10 @@ import {
   buildProofSdkDocumentPaths,
   buildProofSdkLinks,
 } from './proof-sdk-routes.js';
+import { getPublicOrigin, isSecureRequest } from './public-origin.js';
+import { getLibrarySession, isLibraryEnabled } from './library/auth.js';
+
+export { getPublicOrigin, isSecureRequest } from './public-origin.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -93,20 +97,6 @@ function wantsMarkdown(req: Request): boolean {
   if (format === 'markdown' || format === 'md') return true;
   const accept = (req.header('accept') || '').toLowerCase();
   return accept.includes('text/markdown') || accept.includes('text/x-markdown');
-}
-
-function isSecureRequest(req: Request): boolean {
-  if (req.secure) return true;
-  const proto = (req.header('x-forwarded-proto') || '').split(',')[0]?.trim().toLowerCase();
-  return proto === 'https';
-}
-
-function getPublicOrigin(req: Request): string {
-  const configured = process.env.PROOF_PUBLIC_ORIGIN?.trim();
-  if (configured) return resolvePublicOrigin(configured);
-  const host = req.get('host') || '';
-  if (!host) return resolvePublicOrigin(null);
-  return `${isSecureRequest(req) ? 'https' : 'http'}://${host}`;
 }
 
 function deriveShareCapabilities(role: ShareRole, shareState: string): { canRead: boolean; canComment: boolean; canEdit: boolean } {
@@ -237,6 +227,47 @@ function injectShareHtmlDiscoveryTags(
   }
   out = out.replace(/<body\b[^>]*>/i, (match) => `${match}\n${noscript}\n${agentDiv}`);
   return out;
+}
+
+export function injectLibraryMemberIntoShareHtml(html: string, name: string, slug: string = ''): string {
+  const memberJson = JSON.stringify({ name }).replace(/</g, '\\u003c');
+  const slugJson = JSON.stringify(slug).replace(/</g, '\\u003c');
+  const script = `<script>
+window.__PROOF_LIBRARY_MEMBER__=${memberJson};
+(function () {
+  var slug = ${slugJson};
+  if (slug) {
+    window.addEventListener('proof:editor-ready', function () {
+      fetch('/library/api/visits/' + encodeURIComponent(slug), {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({event: 'open'})
+      }).catch(function () {});
+    }, {once: true});
+    window.addEventListener('pagehide', function () {
+      fetch('/library/api/visits/' + encodeURIComponent(slug), {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({event: 'leave'}),
+        keepalive: true
+      }).catch(function () {});
+    });
+  }
+  function linkWordmark() {
+    var links = document.querySelectorAll('#share-banner a');
+    for (var i = 0; i < links.length; i += 1) {
+      if (links[i].textContent === 'Proof') {
+        links[i].href = '/';
+        links[i].title = 'Back to Documents';
+        links[i].removeAttribute('target');
+        links[i].removeAttribute('rel');
+      }
+    }
+  }
+  new MutationObserver(linkWordmark).observe(document.documentElement, {childList: true, subtree: true});
+  document.addEventListener('DOMContentLoaded', linkWordmark);
+})();
+</script>`;
+  return html.includes('</head>') ? html.replace('</head>', () => `${script}\n</head>`) : `${script}${html}`;
 }
 
 /**
@@ -374,6 +405,7 @@ shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
   const origin = getPublicOrigin(req);
 
   const doc = slug ? (getCanonicalReadableDocumentSync(slug, 'share') ?? null) : null;
+  const librarySession = isLibraryEnabled() ? getLibrarySession(req, res) : null;
   const tokenFromCookie = slug ? getCookie(req, shareTokenCookieName(slug)) : null;
   const roleFromQuery = slug && tokenFromQuery ? resolveDocumentAccessRole(slug, tokenFromQuery) : null;
   const queryOwner = Boolean(doc && tokenFromQuery && canMutateByOwnerIdentity(doc, tokenFromQuery));
@@ -652,5 +684,16 @@ shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
     } : null,
     shareState: doc?.share_state ?? 'MISSING',
   });
-  res.type('html').send(injectShareHtmlDiscoveryTags(shareHtml ?? '', slug, doc?.markdown ?? '', preview, configShareToken));
+  const responseHtml = injectShareHtmlDiscoveryTags(
+    shareHtml ?? '',
+    slug,
+    doc?.markdown ?? '',
+    preview,
+    configShareToken,
+  );
+  res.type('html').send(
+    librarySession
+      ? injectSomaFeedback(injectLibraryMemberIntoShareHtml(responseHtml, librarySession.member.name, slug), 'editor', librarySession.member)
+      : injectSomaFeedback(responseHtml, 'editor'),
+  );
 });
