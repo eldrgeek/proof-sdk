@@ -122,7 +122,10 @@ async function run(): Promise<void> {
             stage = 'Proof decision history';
             const id = await page.evaluate(() => (window as any).proof.markSuggestReplace('Second', 'ai:Reviewer', 'Changed')?.id);
             assert(id);
-            assert(await page.evaluate((markId: string) => (window as any).proof.markAccept(markId), id));
+            // A person accepts through the Proof popover. A direct proof.markAccept call is an API
+            // write, which R1a4 rule 3 keeps out of the undo history on purpose.
+            await page.locator(`.ProseMirror [data-mark-id="${id}"]`).first().click();
+            await page.locator('.mark-popover-actions button', { hasText: 'Accept' }).first().click();
             assert.equal(await text(), 'OrigXYZinalChanged');
             await page.keyboard.press(`${modifier}+z`);
             assert.equal(await text(), 'OrigXYZinalSecond', 'Undo Proof acceptance separately from typing');
