@@ -4,6 +4,7 @@ import { Schema } from '@milkdown/kit/prose/model';
 import { EditorState, TextSelection } from '@milkdown/kit/prose/state';
 import { ySyncPlugin, yUndoPlugin, ySyncPluginKey, yUndoPluginKey, updateYFragment, undo, redo } from 'y-prosemirror';
 import { marksPlugin, marksPluginKey } from '../editor/plugins/marks';
+import { wrapTransactionForSuggestions } from '../editor/plugins/suggestions';
 import { marksSyncPlugin } from '../editor/plugins/marks-sync';
 
 const production = process.argv.includes('--production');
@@ -43,7 +44,7 @@ async function pair() {
     } };
     for (const plugin of plugins) if (plugin.spec.view) updates.push(plugin.spec.view(view));
     map.observe(() => view.dispatch(view.state.tr.setMeta(marksPluginKey, { type: 'SET_METADATA', metadata: map.toJSON() }).setMeta('addToHistory', false)));
-    const native = yUndoPluginKey.getState(view.state).undoManager;
+    const native = yUndoPluginKey.getState(view.state)!.undoManager;
     native.clear(); native.stopCapturing();
     // The second argument is ignored by R1a2; R1a3 extends the installed manager.
     const history = History ? new (History as any)(doc, native) : null;
@@ -79,6 +80,30 @@ const tests: Record<string, () => Promise<void>> = {
         assert(p.alice.restore(true));
         assert(p.alice.restore());
         for (const peer of [p.alice, p.bob]) assert(peer.view.state.doc.textContent.includes('BOB'), `${structure}: Bob survives redo and second undo`);
+      } finally { p.close(); }
+    }
+  },
+  '2': async () => {
+    for (const changed of [true, false]) {
+      const p = await pair();
+      try {
+        p.alice.edit(() => p.alice.view.dispatch(wrapTransactionForSuggestions(p.alice.view.state.tr.insertText('OWN', 9), p.alice.view.state, true)));
+        const id = [...p.alice.map.keys()][0]; assert(id);
+        if (changed) p.bob.map.set(id, { ...p.bob.map.get(id), replies: [{ by: 'human:Bob', text: 'Keep it', at: '2026-09-15T00:00:00Z' }] });
+        const snapshot = () => JSON.stringify([p.alice.view.state.doc.toJSON(), p.alice.map.toJSON(), p.bob.view.state.doc.toJSON(), p.bob.map.toJSON()]);
+        const before = snapshot();
+        if (changed) {
+          if (production) {
+            p.alice.restore();
+            console.log(`Production orphan: text=${p.alice.view.state.doc.textContent.includes('OWN')}, record=${p.alice.map.has(id)}, reply=${Boolean(p.alice.map.get(id)?.replies?.length)}`);
+            assert.equal(snapshot(), before, 'Production must refuse changed tracked typing');
+          } else assert.throws(() => p.alice.restore(), { message: "Can't undo: someone has replied to this suggestion." });
+          assert.equal(snapshot(), before, 'Refusal changes nothing on either peer');
+        } else {
+          assert(p.alice.restore());
+          for (const peer of [p.alice, p.bob]) { assert(!peer.view.state.doc.textContent.includes('OWN')); assert(!peer.map.has(id)); }
+          assert(p.alice.restore(true)); assert.equal(snapshot(), before, 'Redo restores text and exact record on both peers');
+        }
       } finally { p.close(); }
     }
   },

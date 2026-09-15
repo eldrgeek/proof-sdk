@@ -35,6 +35,7 @@ export class PlayMakerReview {
   private previousOpen = new Set<string>();
   private failedIds = new Set<string>();
   private historyMessage = '';
+  private readonly historyNotice = document.createElement('p');
   private readonly settledKey = `proof:review-settled:${location.pathname}`;
 
   constructor(private readonly bridge: ReviewBridge) {
@@ -51,7 +52,10 @@ export class PlayMakerReview {
     this.toggle.onclick = () => { this.panel.hidden = !this.panel.hidden; this.toggle.setAttribute('aria-expanded', String(!this.panel.hidden)); };
     this.control.append(this.toggle);
     this.panel.className = 'pm-review-panel'; this.panel.setAttribute('aria-label', 'Marks');
-    document.body.append(this.panel);
+    this.historyNotice.className = 'review-history-notice';
+    this.historyNotice.setAttribute('role', 'alert');
+    this.historyNotice.hidden = true;
+    document.body.append(this.panel, this.historyNotice);
     window.addEventListener(REVIEW_STYLE_EVENT, this.styleChanged);
     document.addEventListener('pointerdown', this.pointerDown, true);
     document.addEventListener('click', this.click, true);
@@ -71,6 +75,8 @@ export class PlayMakerReview {
     return this.bridge.marks().filter(isOpenReviewMark).sort((a, b) => (a.range?.from ?? Infinity) - (b.range?.from ?? Infinity));
   }
   update(): void {
+    this.historyNotice.textContent = this.historyMessage;
+    this.historyNotice.hidden = !this.historyMessage || getReviewStyle() === 'playmaker';
     if (getReviewStyle() !== 'playmaker') return;
     const marks = this.openMarks();
     const openIds = new Set(marks.map(mark => mark.id));

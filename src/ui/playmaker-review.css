@@ -33,3 +33,5 @@
 }
 
 .pm-review-row[aria-invalid="true"] { outline: 2px solid #b45309; background: #fffbeb; }
+
+.review-history-notice { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); max-width:calc(100vw - 40px); padding:12px 18px; border:1px solid #d4d4cf; border-radius:12px; background:#fffefb; color:#26303c; box-shadow:0 6px 24px #16223822; font:14px/1.5 system-ui,sans-serif; z-index:1200; }
