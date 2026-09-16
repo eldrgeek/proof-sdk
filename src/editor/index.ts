@@ -3587,9 +3587,11 @@ class ProofEditorImpl implements ProofEditor {
           const view = this.editor.ctx.get(editorViewCtx);
           const range = resolveQuoteRange(view.state.doc, proposal.quote);
           if (!range) throw new Error('This text has changed. Ask Verso for a fresh proposal.');
-          const result = proposal.kind === 'suggestion'
+          // The person's click is their decision, so it is one undo step, even though
+          // the mark is attributed to Verso. Only this click allows ai:verso.
+          const result = withHumanReviewWrite(() => proposal.kind === 'suggestion'
             ? this.markSuggestReplace(proposal.quote, 'ai:verso', proposal.replacement, range)
-            : this.markComment(proposal.quote, 'ai:verso', proposal.text);
+            : this.markComment(proposal.quote, 'ai:verso', proposal.text), { allowAuthors: ['ai:verso'] });
           if (!result?.range) throw new Error('This text has changed. Ask Verso for a fresh proposal.');
         },
         marks: () => {
