@@ -50,7 +50,7 @@ export class ReviewDecisionHistory {
     const before = transaction.meta.get(this.rangeChangesKey) as Map<StackItem, ReturnType<typeof reviewRangeState>> | undefined;
     if (transaction.local || !before) return;
     const snapshot = snapshotText(this.doc.getXmlFragment('prosemirror'));
-    const changed = transaction.changed.get(this.doc.getMap('marks'));
+    const changed = transaction.changed.get(this.doc.getMap('marks') as unknown as Y.AbstractType<Y.YEvent<any>>);
     for (const [item, previous] of before) {
       const current = reviewRangeState(this.doc, item.meta.get(this.rangeKey), snapshot);
       if (current.signature !== previous.signature

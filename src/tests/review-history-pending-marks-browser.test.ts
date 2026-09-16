@@ -33,7 +33,7 @@ await withBrowser(async ({ browser, base, create, post }) => {
           return proof.editor.ctx.get('editorView').state.doc.textContent !== text
             || proof.getAllMarks().some((m: any) => m.by === 'human:Bob' && m.kind === 'delete');
         }, aliceText);
-      } else await bob.evaluate(({ change, decision, redo }: any) => {
+      } else await bob.evaluate(({ change, decision }: any) => {
         const proof = (window as any).proof, view = proof.editor.ctx.get('editorView');
         const at = decision === 'insert' ? 21 : 4;
 
@@ -44,7 +44,7 @@ await withBrowser(async ({ browser, base, create, post }) => {
           if (!proof.markSuggestDelete(quote, 'human:Bob', { from, to: from + quote.length })) throw new Error('Fixture must create a pending deletion');
         }
         if (change === 'comment') proof.markCommentSelector({ range: { from: at, to: at + 1 } }, 'human:Bob', 'Bob comment');
-      }, { change, decision, redo });
+      }, { change, decision });
       if (!(change === 'delete' && redo)) await alice.waitForFunction((kind: string) => (window as any).proof.getAllMarks().some((m: any) => m.by === 'human:Bob' && m.kind === kind), change);
       const snapshot = async (page: any) => page.evaluate(() => {
         const proof = (window as any).proof, h = proof.getReviewDecisionHistory();
