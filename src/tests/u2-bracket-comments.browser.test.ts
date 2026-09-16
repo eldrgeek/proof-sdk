@@ -2,15 +2,16 @@ import assert from 'node:assert/strict';
 import { withBrowser, openEditor } from './u2-browser-harness';
 await withBrowser(async ({ browser, base, create }) => {
   let failures = 0;
-  for (const input of ['typing', 'paste', 'api']) {
+  for (const input of ['typing', 'typing-end', 'paste', 'api']) {
     if (process.argv[2] && process.argv[2] !== input) continue;
     const doc = await create('First sentence. Second sentence. Last sentence.');
     const page = await openEditor(browser, `${base}/d/${doc.slug}`, 'Reader');
     try {
       await page.getByRole('button', { name: /^Suggesting:/ }).click();
       await page.locator('.ProseMirror p').click();
-      await page.keyboard.press('Home');
-      for (let i = 0; i < 22; i++) await page.keyboard.press('ArrowRight');
+      // typing-end: after a space at the end of the paragraph, the most natural place.
+      if (input === 'typing-end') await page.keyboard.press('End');
+      else { await page.keyboard.press('Home'); for (let i = 0; i < 22; i++) await page.keyboard.press('ArrowRight'); }
       await page.evaluate(() => (window as any).proof.getReviewDecisionHistory().manager.clear());
       const original = await page.locator('.ProseMirror').textContent();
       await page.evaluate(() => {
@@ -23,6 +24,7 @@ await withBrowser(async ({ browser, base, create }) => {
         };
       });
       if (input === 'typing') await page.keyboard.type('[[Please explain.]]');
+      else if (input === 'typing-end') await page.keyboard.type(' [[Please explain.]]');
       else if (input === 'paste') await page.locator('.ProseMirror').evaluate((element: HTMLElement) => {
         const clipboardData = new DataTransfer(); clipboardData.setData('text/plain', '[[Please explain.]]');
         element.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }));
@@ -39,6 +41,7 @@ await withBrowser(async ({ browser, base, create }) => {
         assert.equal(await page.locator('.ProseMirror').textContent(), converted);
       } else {
         if (input === 'typing') assert.equal(comment.quote, 'Second sentence.');
+        else if (input === 'typing-end') assert.equal(comment.quote, 'Last sentence.');
         else assert(original!.includes(comment.quote), 'Paste anchors to surrounding text');
         assert.equal(comment.by, 'human:Reader');
         assert((await page.getByRole('complementary', { name: 'Marks', exact: true }).innerText()).includes('◆'));

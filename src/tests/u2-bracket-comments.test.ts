@@ -10,6 +10,12 @@ for (const mode of ['typing', 'pasting', 'API']) {
 }
 const above = extractBracketComments('The paragraph above.\n\n[[A separate note]]', 'human:Reader');
 assert.equal(above.comments[0].quote, 'The paragraph above.');
+// The natural place to type a comment: after a space at the end of a paragraph.
+for (const ending of ['Last sentence. [[Why?]]', 'Last sentence.  [[Why?]]  ', 'Last sentence. [[Why?]]\n\nNext paragraph.']) {
+  const end = extractBracketComments(`First sentence. ${ending}`, 'human:Reader');
+  assert.equal(end.comments.length, 1, `A comment at a paragraph's end anchors: ${JSON.stringify(ending)}`);
+  assert.equal(end.comments[0].quote, 'Last sentence.');
+}
 const escaped = String.raw`Literal \[[words\]] and [[real \]] comment]].`;
 const result = extractBracketComments(escaped, 'ai:Test');
 assert.equal(result.comments.length, 1); assert.equal(result.comments[0].text, 'real ]] comment');
