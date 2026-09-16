@@ -16,12 +16,12 @@ async function mustJson(response: Response): Promise<any> {
 }
 async function openEditor(browser: any, url: string, name: string): Promise<any> {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
-  // This test uses only the local server, including all browser requests.
   await context.route('**/*', (route: any) => {
     const target = new URL(route.request().url());
     return target.hostname === '127.0.0.1' || target.hostname === 'localhost' ? route.continue() : route.abort();
   });
   const page = await context.newPage();
+  page.setDefaultTimeout(5000);
   await page.addInitScript((slug: string) => sessionStorage.setItem(`proof_share_welcome_${slug}`, '1'), new URL(url).pathname.split('/').pop());
   await page.goto(url, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => document.querySelector('.ProseMirror')?.getAttribute('contenteditable') === 'true');
@@ -106,11 +106,13 @@ async function run(): Promise<void> {
       async function fetchState() { return await fetch(`${httpBase}/api/agent/${created.slug}/state`, { headers }); }
       return { alice, bob, ids, state: async () => mustJson(await fetchState()) };
     }
-    const accept = async (page: any, id: string) => { await page.locator(`[data-review-row="${id}"]`).click(); await page.getByRole('button', { name: 'Accept (A)', exact: true }).click(); await page.locator(`[data-review-row="${id}"]`).waitFor({ state: 'hidden' }); };
-    const history = async (page: any, redo = false) => { await page.getByRole('button', { name: 'Marks', exact: true }).focus(); await page.keyboard.press(redo ? 'Control+Shift+z' : 'Control+z'); };
+    const accept = async (page: any, id: string) => { await page.locator(`[data-review-row="${id}"]`).click(); await page.getByRole('button', { name: 'Accept (A)', exact: true }).click(); await page.locator(`.pm-settled[data-review-row="${id}"]`).waitFor(); };
+    const history = async (page: any, redo = false) => { await page.getByRole('button', { name: /^Marks/, exact: false }).focus(); await page.keyboard.press(redo ? 'Control+Shift+z' : 'Control+z'); };
     const routes = ['Meta+z', 'Control+z', 'Meta+Shift+z', 'Control+Shift+z', 'Meta+y', 'Control+y', 'historyUndo', 'historyRedo'];
     let failures = 0;
-    for (const style of ['playmaker', 'proof']) for (const route of routes) {
+    // Verso's chat exists only in PlayMaker style, so Proof style has one layout.
+    const layouts = { playmaker: ['open', 'collapsed'], proof: ['no chat'] } as const;
+    for (const style of ['playmaker', 'proof'] as const) for (const chatLayout of layouts[style]) for (const route of routes) {
       const { alice, bob, ids: [id] } = await fixture();
       try {
         const redo = !['Meta+z', 'Control+z', 'historyUndo'].includes(route);
@@ -123,6 +125,12 @@ async function run(): Promise<void> {
         });
         await alice.waitForFunction(() => document.querySelector('.ProseMirror')?.textContent?.includes('BOB'));
         await alice.getByLabel('Review style', { exact: true }).selectOption(style);
+        const chat = alice.getByRole('complementary', { name: 'Verso chat' });
+        const chatOpen = chatLayout === 'open';
+        if (style === 'proof') {
+          assert.equal(await alice.getByRole('button', { name: 'Verso', exact: true }).isVisible(), false, 'Proof style has no Verso button');
+        } else if (await chat.isVisible() !== chatOpen) await alice.getByRole('button', { name: 'Verso', exact: true }).click();
+        assert.equal(await chat.isVisible(), chatOpen, 'Exercise the actual requested layout');
         const snapshot = async (page: any) => page.evaluate(() => {
           const proof = (window as any).proof, h = proof.getReviewDecisionHistory();
           return JSON.stringify([proof.editor.ctx.get('editorView').state.doc.toJSON(), h.doc.getMap('marks').toJSON(), h.manager.undoStack.length, h.manager.redoStack.length, h.manager.lastChange]);
@@ -134,9 +142,13 @@ async function run(): Promise<void> {
         await alice.waitForTimeout(150);
         assert.equal(await snapshot(alice), before, 'refusal must preserve Alice document, records and both stacks');
         assert.equal(await snapshot(bob), beforeBob, 'refusal must preserve Bob');
-        assert((await alice.locator(style === 'proof' ? '.review-history-notice' : '.pm-review-panel').innerText()).includes(`Can't ${redo ? 'redo' : 'undo'}: someone has changed this text since.`));
-        console.log(`PASS ${style} ${route}`);
-      } catch (e) { failures++; console.error(`FAIL ${style} ${route}: ${(e as Error).message.split('\n')[0]}`); }
+        const expectedMessage = `Can't ${redo ? 'redo' : 'undo'}: someone has changed this text since.`;
+        const notice = alice.locator(chatOpen ? '.pm-chat-current [role="alert"]'
+          : style === 'proof' ? '.review-history-notice' : '.pm-review-panel [role="alert"]');
+        assert(await notice.isVisible(), 'Refusal must be visible, not merely present in a hidden panel');
+        assert.equal(await notice.innerText(), expectedMessage);
+        console.log(`PASS ${style} ${chatLayout} ${route}`);
+      } catch (e) { failures++; console.error(`FAIL ${style} ${chatLayout} ${route}: ${(e as Error).message.split('\n')[0]}`); }
       finally { await alice.context().close(); await bob.context().close(); }
     }
     assert.equal(failures, 0, 'R1a4 guarded input routes');

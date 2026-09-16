@@ -22,7 +22,7 @@ async function startLocalServer(): Promise<{ base: string; stop: () => Promise<v
     cwd: root,
     env: {
       PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR,
-      PORT: String(port), COLLAB_EMBEDDED_WS: '1',
+      PORT: String(port), COLLAB_EMBEDDED_WS: '1', PROOF_VERSO_CRED_FILES: '',
       DATABASE_PATH: path.join(temp, 'test.db'), SNAPSHOT_DIR: path.join(temp, 'snapshots'),
     },
     stdio: 'ignore',

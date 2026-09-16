@@ -1,0 +1,26 @@
+import assert from 'node:assert/strict';
+import { Schema } from '@milkdown/kit/prose/model';
+import { EditorState } from '@milkdown/kit/prose/state';
+import { isOwnHumanMarkChange, markApiView, withHumanReviewWrite } from '../editor/review-mark-origin';
+const schema = new Schema({ nodes: { doc: { content: 'text*' }, text: {} } });
+const state = EditorState.create({ schema });
+const tr = () => state.tr.setMeta('proofLocalMarkChange', true).setMeta('proofMarkSource', 'human');
+const record = (by: string) => ({ proposal: { kind: 'comment', by } });
+const own = (by: string) => isOwnHumanMarkChange(tr(), {}, record(by), 'human:Alice');
+assert.equal(own('ai:verso'), false);
+assert.equal(own('human:Alice'), true);
+let deferred: Promise<void>;
+withHumanReviewWrite(() => {
+  assert.equal(own('ai:verso'), true, 'The explicit click scope permits Verso');
+  assert.equal(own('ai:Other'), false, 'Other authors are never implicitly allowed');
+  withHumanReviewWrite(() => assert.equal(own('ai:verso'), false));
+  assert.equal(own('ai:verso'), true, 'Nested scopes restore the enclosing allowance');
+  assert.throws(() => withHumanReviewWrite(() => { throw new Error('test'); }, { allowAuthors: ['ai:Other'] }));
+  assert.equal(own('ai:Other'), false);
+  deferred = Promise.resolve().then(() => assert.equal(own('ai:verso'), false, 'Async delivery cannot inherit the allowance'));
+}, { allowAuthors: ['ai:verso'] });
+await deferred!;
+assert.equal(own('ai:verso'), false, 'The allowance ends with the click');
+const apiView = markApiView({ dispatch(transaction: any) { assert.equal(isOwnHumanMarkChange(transaction, {}, record('ai:verso'), 'human:Alice'), false); } } as any);
+withHumanReviewWrite(() => apiView.dispatch(tr()), { allowAuthors: ['ai:verso'] });
+console.log('PASS explicit author allowance is synchronous, exact, nested and exception safe; API provenance wins');

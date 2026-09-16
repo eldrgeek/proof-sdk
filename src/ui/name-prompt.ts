@@ -69,7 +69,7 @@ export function promptForName(): Promise<string> {
       position: fixed; inset: 0; z-index: 10000;
       background: rgba(0,0,0,0.3);
       display: flex; align-items: center; justify-content: center;
-      backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+       
     `;
 
     const dialog = document.createElement('div');

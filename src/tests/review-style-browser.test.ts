@@ -31,6 +31,8 @@ async function openEditor(browser: any, url: string, name: string): Promise<any>
     await page.getByRole('button', { name: 'Continue', exact: true }).click();
     await nameInput.waitFor({ state: 'hidden' });
   }
+  // R1a exercises the collapsed-chat dialog path; U2 covers chat cards.
+  await page.getByRole('button', { name: 'Close Verso', exact: true }).click();
   return page;
 }
 async function run(): Promise<void> {
@@ -193,6 +195,7 @@ async function run(): Promise<void> {
     await page.keyboard.press('Control+z'); await check([...ids, commentId], 'undo reply');
     await page.getByLabel('Go to the next mark after I decide').uncheck();
     await page.setViewportSize({ width: 400, height: 900 });
+    await page.getByRole('button', { name: /^Marks \(/ }).click();
     await page.locator(`[data-review-row="${ids[0]}"]`).click();
     const sheet = await dialog.boundingBox(); assert(sheet); assert.equal(sheet.x, 0); assert.equal(sheet.width, 400); assert(Math.abs(sheet.y + sheet.height - 900) < 2);
     await page.screenshot({ path: path.join(artifacts, 'review-400.png'), fullPage: true });
@@ -212,6 +215,7 @@ async function run(): Promise<void> {
     await page.waitForFunction(() => document.querySelectorAll('.pm-review-row').length === 4);
     assert.equal(await page.getByLabel('Go to the next mark after I decide').isChecked(), false, 'Walk preference survives reload');
     assert.equal(await dialog.count(), 0);
+    if (!await page.locator('.pm-review-panel').isVisible()) await page.getByRole('button', { name: /^Marks \(/ }).click();
     await page.getByRole('button', { name: 'Start review', exact: true }).click();
     assert.equal(await dialog.getAttribute('data-mark-id'), ids[0]);
     await page.keyboard.press('Escape');
@@ -244,7 +248,7 @@ async function run(): Promise<void> {
       body: JSON.stringify({ type: 'suggestion.add', kind: 'replace', quote: `Original paragraph number ${i}.`, content: `Revised paragraph number ${i}.`, by: 'ai:Izzy' }),
     }));
     const bulkPage = await openEditor(browser, `${httpBase}/d/${bulkDoc.slug}?token=${bulkDoc.accessToken}`, 'Mike');
-    await bulkPage.waitForFunction(() => document.querySelectorAll('.pm-review-row').length === 11);
+    await bulkPage.waitForFunction(() => document.querySelectorAll('.pm-review-row:not(.pm-settled)').length === 11);
     let confirmationCount = 0;
     bulkPage.on('dialog', async (confirmation: any) => { confirmationCount++; assert(confirmation.message().includes('11')); await confirmation.dismiss(); });
     await bulkPage.getByRole('button', { name: 'Accept all', exact: true }).click();
