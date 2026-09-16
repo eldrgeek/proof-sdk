@@ -3625,7 +3625,7 @@ class ProofEditorImpl implements ProofEditor {
     if (!manager) throw new Error('The editor is still loading.');
     if (this.reviewDecisionHistory?.doc !== doc || this.reviewDecisionHistory.manager !== manager) {
       this.reviewDecisionHistory?.destroy();
-      this.reviewDecisionHistory = new ReviewDecisionHistory(doc, manager, view);
+      this.reviewDecisionHistory = new ReviewDecisionHistory(doc, manager, view, state => getMarks(state));
       this.reviewDecisionIds.clear();
     }
     return this.reviewDecisionHistory;
