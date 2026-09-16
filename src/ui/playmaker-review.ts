@@ -53,6 +53,7 @@ export class PlayMakerReview {
   private failedIds = new Set<string>();
   private historyMessage = '';
   private readonly historyNotice = document.createElement('p');
+  private readonly chatHistoryNotice = document.createElement('p');
   private readonly settledKey = `proof:review-settled:${location.pathname}`;
 
   constructor(private readonly bridge: ReviewBridge) {
@@ -74,6 +75,7 @@ export class PlayMakerReview {
     this.historyNotice.className = 'review-history-notice';
     this.historyNotice.setAttribute('role', 'alert');
     this.historyNotice.hidden = true;
+    this.chatHistoryNotice.setAttribute('role', 'alert');
     this.chat.className = 'pm-chat'; this.chat.setAttribute('aria-label', 'Verso chat');
     this.chatToggle.type = 'button'; this.chatToggle.className = 'pm-review-toggle'; this.chatToggle.textContent = 'Verso';
     this.chatToggle.onclick = () => this.setPanel('chat', this.chat.hidden);
@@ -120,7 +122,12 @@ export class PlayMakerReview {
   update(): void {
     if (this.deciding) return;
     this.historyNotice.textContent = this.historyMessage;
-    this.historyNotice.hidden = !this.historyMessage || getReviewStyle() === 'playmaker';
+    this.historyNotice.hidden = !this.historyMessage || getReviewStyle() === 'playmaker' || !this.chat.hidden;
+    // Reuse one notice across refreshes and slot replacements. A successful
+    // action clears it even if no mark is currently selected.
+    this.chatHistoryNotice.remove();
+    this.chatHistoryNotice.textContent = this.historyMessage;
+    if (this.historyMessage && !this.chat.hidden) this.slot.append(this.chatHistoryNotice);
     if (getReviewStyle() !== 'playmaker') return;
     const marks = this.openMarks();
     for (const mark of this.bridge.marks()) if (['comment', 'insert', 'delete', 'replace'].includes(mark.kind)) this.known.set(mark.id, structuredClone(mark));
