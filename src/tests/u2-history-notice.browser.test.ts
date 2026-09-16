@@ -26,6 +26,7 @@ await withBrowser(async ({ browser, base, create, post }) => {
       const notice = alice.locator(open ? '.pm-chat-current [role="alert"]' : style === 'proof' ? '.review-history-notice' : '.pm-review-panel [role="alert"]');
       assert(await notice.isVisible(), `${style} ${open}: refusal must be visible`);
       assert.equal(await notice.innerText(), message);
+      assert.equal(await alice.getByRole('alert').filter({ hasText: message }).count(), 1, `${style} ${open}: the refusal shows in one place only`);
       // Repeating or refreshing the panel must not duplicate the notice.
       await alice.keyboard.press('Control+z');
       assert.equal(await notice.count(), 1);

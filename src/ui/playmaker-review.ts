@@ -183,7 +183,8 @@ export class PlayMakerReview {
       row.append(author, snippet); list.append(row);
     }
     this.panel.append(list);
-    if (this.historyMessage) {
+    // With Verso's chat open, the refusal shows in the chat instead (one place only).
+    if (this.historyMessage && this.chat.hidden) {
       const message = document.createElement('p'); message.setAttribute('role', 'alert');
       message.textContent = this.historyMessage; this.panel.append(message);
     }
