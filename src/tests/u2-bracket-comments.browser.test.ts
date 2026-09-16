@@ -60,6 +60,26 @@ await withBrowser(async ({ browser, base, create }) => {
     } catch (error) { failures++; console.error(`FAIL bracket ${input}: ${(error as Error).message}`); }
     finally { await page.context().close(); }
   }
+  // On production, suggestion typing is applied as a wrapped transaction that also carries
+  // the updated mark metadata. The conversion must still run for it.
+  if (!process.argv[2] || process.argv[2] === 'wrapped') {
+    const wrappedDoc = await create('First sentence. Last sentence.');
+    const wrapped = await openEditor(browser, `${base}/d/${wrappedDoc.slug}`, 'Reader');
+    try {
+      await wrapped.evaluate(() => {
+        const view = (window as any).proof.editor.ctx.get('editorView');
+        const marks = view.state.plugins.find((p: any) => String(p.key).startsWith('marks$'));
+        const metadata = marks.getState(view.state)?.metadata ?? {};
+        const end = view.state.doc.content.size - 1;
+        view.dispatch(view.state.tr.insertText(' [[Please explain.]]', end)
+          .setMeta('suggestions-wrapped', true).setMeta('marks$', { type: 'SET_METADATA', metadata }));
+      });
+      await wrapped.waitForFunction(() => (window as any).proof.getAllMarks().some((m: any) => m.kind === 'comment' && m.data.text === 'Please explain.'), undefined, { timeout: 5000 });
+      assert(!(await wrapped.locator('.ProseMirror').textContent())!.includes('[['), 'A wrapped suggestion transaction converts');
+      console.log('PASS bracket wrapped');
+    } catch (error) { failures++; console.error(`FAIL bracket wrapped: ${(error as Error).message.split('\n')[0]}`); }
+    finally { await wrapped.context().close(); }
+  }
   // A fresh page tests literal escapes through real typing and reload.
   const literal = await create('Literal examples: ');
   const other = await openEditor(browser, `${base}/d/${literal.slug}`, 'Reader');
