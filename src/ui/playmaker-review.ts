@@ -192,7 +192,9 @@ export class PlayMakerReview {
   private chatWasCollapsed(): boolean { try { return localStorage.getItem('proof:verso-open') === '0'; } catch { return false; } }
   private layout = (): void => {
     const desktop = innerWidth >= 1024;
-    if (desktop !== this.desktop) { this.chat.hidden = !desktop || this.chatWasCollapsed(); this.panel.hidden = !desktop; this.desktop = desktop; }
+    // Verso's chat and the marks panel belong to PlayMaker style; Proof style never shows them.
+    const playmaker = getReviewStyle() === 'playmaker';
+    if (desktop !== this.desktop) { this.chat.hidden = !playmaker || !desktop || this.chatWasCollapsed(); this.panel.hidden = !playmaker || !desktop; this.desktop = desktop; }
     document.body.style.setProperty('--pm-left', !this.chat.hidden && innerWidth >= 1024 ? '360px' : '0px');
     document.body.style.setProperty('--pm-right', !this.panel.hidden && innerWidth >= 1024 ? '18rem' : '0px');
     const bar = document.getElementById('share-banner');
