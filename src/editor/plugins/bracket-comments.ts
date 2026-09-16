@@ -57,10 +57,7 @@ export const bracketCommentsPlugin = $prose(() => new Plugin<number>({
   state: {
     init: () => 0,
     apply(tr, value) {
-      // Suggestion typing arrives wrapped, carrying the updated mark metadata. It is still
-      // the person's typing; other mark-metadata transactions are not.
-      const marksOnly = tr.getMeta(marksPluginKey) && !tr.getMeta('suggestions-wrapped');
-      return tr.docChanged && !tr.getMeta(key) && !marksOnly && !tr.getMeta('history$')
+      return tr.docChanged && !tr.getMeta(key) && !tr.getMeta(marksPluginKey) && !tr.getMeta('history$')
         && !tr.getMeta('document-load') && !tr.getMeta(ySyncPluginKey)?.isChangeOrigin && tr.getMeta('addToHistory') !== false ? value + 1 : value;
     },
   },
