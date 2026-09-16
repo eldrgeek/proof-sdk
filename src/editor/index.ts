@@ -1,4 +1,4 @@
-import { bracketCommentsPlugin } from './plugins/bracket-comments';
+import { bracketCommentsPlugin, bracketCommentTransaction } from './plugins/bracket-comments';
 import { literalBracketsSchema, remarkLiteralBracketsPlugin, literalBracketsHandler } from './schema/literal-brackets';
 import { markApiView, isOwnHumanMarkChange, withHumanReviewWrite } from './review-mark-origin';
 /**
@@ -6578,8 +6578,8 @@ class ProofEditorImpl implements ProofEditor {
       return;
     }
 
-    this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+    const write = () => this.editor!.action((ctx) => {
+      const view = markApiView(ctx.get(editorViewCtx));
       const parser = ctx.get(parserCtx);
       const { from } = view.state.selection;
       const docSizeBefore = view.state.doc.content.size;
@@ -6592,7 +6592,7 @@ class ProofEditorImpl implements ProofEditor {
       if (author) {
         tr = tr.setMeta('ai-authored', true);
       }
-      view.dispatch(tr);
+      view.dispatch(tr.setMeta('addToHistory', false).setMeta('proofMarkSource', 'api'));
 
       // Calculate actual inserted length by comparing doc sizes
       const docSizeAfter = view.state.doc.content.size;
@@ -6606,8 +6606,17 @@ class ProofEditorImpl implements ProofEditor {
 
       }
 
+      // Agent Markdown is converted synchronously, with API provenance. It must
+      // never be picked up later by the human typing plugin or its undo history.
+      if (getReviewStyle() === 'playmaker') {
+        const conversion = bracketCommentTransaction(view.state, author ?? getCurrentActor());
+        if (conversion) view.dispatch(conversion.setMeta('proofMarkSource', 'api').setMeta('addToHistory', false));
+      }
+
       console.log('[insertAtCursor] Inserted text at cursor:', from, 'actualLength:', actualInsertedLength);
     });
+    const doc = collabClient.getYDoc();
+    if (doc) doc.transact(write, 'api-content'); else write();
   }
 
   /**
@@ -6621,8 +6630,8 @@ class ProofEditorImpl implements ProofEditor {
       return;
     }
 
-    this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+    const write = () => this.editor!.action((ctx) => {
+      const view = markApiView(ctx.get(editorViewCtx));
       const parser = ctx.get(parserCtx);
       const { from, to } = view.state.selection;
       const docSizeBefore = view.state.doc.content.size;
@@ -6636,7 +6645,7 @@ class ProofEditorImpl implements ProofEditor {
       if (author) {
         tr = tr.setMeta('ai-authored', true);
       }
-      view.dispatch(tr);
+      view.dispatch(tr.setMeta('addToHistory', false).setMeta('proofMarkSource', 'api'));
 
       // Calculate actual inserted length by comparing doc sizes
       // Net change = newLength - selectionLength, so newLength = netChange + selectionLength
@@ -6651,8 +6660,17 @@ class ProofEditorImpl implements ProofEditor {
 
       }
 
+      // Agent Markdown is converted synchronously, with API provenance. It must
+      // never be picked up later by the human typing plugin or its undo history.
+      if (getReviewStyle() === 'playmaker') {
+        const conversion = bracketCommentTransaction(view.state, author ?? getCurrentActor());
+        if (conversion) view.dispatch(conversion.setMeta('proofMarkSource', 'api').setMeta('addToHistory', false));
+      }
+
       console.log('[replaceSelection] Replaced selection from', from, 'to', to, 'actualLength:', actualInsertedLength);
     });
+    const doc = collabClient.getYDoc();
+    if (doc) doc.transact(write, 'api-content'); else write();
   }
 
   /**

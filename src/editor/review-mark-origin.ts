@@ -15,7 +15,11 @@ export function markApiView(view: EditorView): EditorView {
   const source = humanAction ? 'human' : 'api';
   return new Proxy(view, {
     get(target, key) {
-      if (key === 'dispatch') return (tr: Transaction) => target.dispatch(tr.setMeta('proofMarkSource', source));
+      if (key === 'dispatch') return (tr: Transaction) => {
+        tr.setMeta('proofMarkSource', source);
+        if (source === 'api') tr.setMeta('addToHistory', false);
+        target.dispatch(tr);
+      };
       const value = Reflect.get(target, key, target);
       return typeof value === 'function' ? value.bind(target) : value;
     },

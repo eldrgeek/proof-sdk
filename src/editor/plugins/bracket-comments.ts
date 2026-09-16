@@ -7,6 +7,7 @@ import { createComment } from '../../formats/marks';
 import { getMarkMetadata, marksPluginKey } from './marks';
 import { getCurrentActor } from '../actor';
 import { getReviewStyle } from '../review-style';
+import { withHumanReviewWrite } from '../review-mark-origin';
 const key = new PluginKey<number>('bracketComments');
 
 export function bracketCommentTransaction(state: EditorState, by: string): Transaction | null {
@@ -71,7 +72,11 @@ export const bracketCommentsPlugin = $prose(() => new Plugin<number>({
           pending = false; if (destroyed || getReviewStyle() !== 'playmaker' || view.composing) return;
           const tr = bracketCommentTransaction(view.state, getCurrentActor()); if (!tr) return;
           const manager = yUndoPluginKey.getState(view.state)?.undoManager;
-          manager?.stopCapturing(); view.dispatch(tr); manager?.stopCapturing();
+          withHumanReviewWrite(() => {
+            manager?.stopCapturing();
+            view.dispatch(tr.setMeta('proofMarkSource', 'human'));
+            manager?.stopCapturing();
+          });
         });
       },
       destroy() { destroyed = true; },

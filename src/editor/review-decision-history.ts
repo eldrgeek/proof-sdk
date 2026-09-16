@@ -129,11 +129,22 @@ export class ReviewDecisionHistory {
     // Use y-prosemirror's own relative selection and restoration machinery.
     // A metadata-only dispatch may have cleared its transient selection field.
     if (binding && beforeSelection) binding.beforeTransactionSelection = beforeSelection;
+    const inverse = redo ? manager.undoStack : manager.redoStack;
+    const inverseDepth = inverse.length;
     const item = redo ? manager.redo() : manager.undo();
     if (!item) return false;
+    // Editor plugins can write while Yjs is still restoring (for example, marks
+    // re-applied to restored text). Yjs records each of those writes as its own
+    // inverse entry. They are one step for the person, so merge them.
+    if (inverse.length > inverseDepth + 1) {
+      const [first, ...rest] = inverse.splice(inverseDepth);
+      first.insertions = Y.mergeDeleteSets([first.insertions, ...rest.map(entry => entry.insertions)]);
+      first.deletions = Y.mergeDeleteSets([first.deletions, ...rest.map(entry => entry.deletions)]);
+      for (const entry of rest) entry.meta.forEach((value, key) => { if (!first.meta.has(key)) first.meta.set(key, value); });
+      inverse.push(first);
+    }
     // Yjs may skip superseded map writes. Use the item it actually popped,
     // and put the inverse range on the newly created inverse stack item.
-    const inverse = redo ? manager.undoStack : manager.redoStack;
     if (binding && afterSelection) {
       inverse[inverse.length - 1].meta.set(binding, afterSelection);
       inverse[inverse.length - 1].meta.set(this.afterSelectionKey, beforeSelection);
