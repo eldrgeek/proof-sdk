@@ -1,5 +1,3 @@
-import { bracketCommentsPlugin, bracketCommentTransaction } from './plugins/bracket-comments';
-import { literalBracketsSchema, remarkLiteralBracketsPlugin, literalBracketsHandler } from './schema/literal-brackets';
 import { markApiView, isOwnHumanMarkChange, withHumanReviewWrite } from './review-mark-origin';
 /**
  * Proof Editor
@@ -1270,9 +1268,6 @@ class ProofEditorImpl implements ProofEditor {
       .use(markPopoverPlugin)
       .use(markSelectionBarPlugin)
       .use(arrowCommentPlugin)
-      .use(literalBracketsSchema)
-      .use(remarkLiteralBracketsPlugin)
-      .use(bracketCommentsPlugin)
       .use(findHighlightsPlugin)
       .use(shareContentFilterPlugin)
       .use(taskCheckboxesPlugin)
@@ -1299,7 +1294,6 @@ class ProofEditorImpl implements ProofEditor {
           handlers: {
             ...(prev.handlers ?? {}),
             proofMark: proofMarkHandler,
-            literalBrackets: literalBracketsHandler,
           },
         }));
 
@@ -3290,7 +3284,7 @@ class ProofEditorImpl implements ProofEditor {
         background:rgba(17,24,39,0.96);border:1px solid rgba(255,255,255,0.12);
         border-radius:12px;padding:8px;z-index:1002;
         box-shadow:0 16px 40px rgba(0,0,0,0.35);
-         
+        backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
       `;
 
       const header = document.createElement('div');
@@ -3581,19 +3575,6 @@ class ProofEditorImpl implements ProofEditor {
   private createReviewStyleControl(): HTMLElement {
     if (!this.playmakerReview) {
       this.playmakerReview = new PlayMakerReview({
-        ask: (messages, mark) => shareClient.askVerso(messages, mark),
-        propose: proposal => {
-          if (!this.collabCanEdit || !this.editor) throw new Error('Connect with editing access before adding this mark.');
-          const view = this.editor.ctx.get(editorViewCtx);
-          const range = resolveQuoteRange(view.state.doc, proposal.quote);
-          if (!range) throw new Error('This text has changed. Ask Verso for a fresh proposal.');
-          // The person's click is their decision, so it is one undo step, even though
-          // the mark is attributed to Verso. Only this click allows ai:verso.
-          const result = withHumanReviewWrite(() => proposal.kind === 'suggestion'
-            ? this.markSuggestReplace(proposal.quote, 'ai:verso', proposal.replacement, range)
-            : this.markComment(proposal.quote, 'ai:verso', proposal.text), { allowAuthors: ['ai:verso'] });
-          if (!result?.range) throw new Error('This text has changed. Ask Verso for a fresh proposal.');
-        },
         marks: () => {
           let marks: Mark[] = [];
           this.editor?.action(ctx => { marks = getMarks(ctx.get(editorViewCtx).state); });
@@ -3625,7 +3606,7 @@ class ProofEditorImpl implements ProofEditor {
     if (!manager) throw new Error('The editor is still loading.');
     if (this.reviewDecisionHistory?.doc !== doc || this.reviewDecisionHistory.manager !== manager) {
       this.reviewDecisionHistory?.destroy();
-      this.reviewDecisionHistory = new ReviewDecisionHistory(doc, manager, view, state => getMarks(state));
+      this.reviewDecisionHistory = new ReviewDecisionHistory(doc, manager, view);
       this.reviewDecisionIds.clear();
     }
     return this.reviewDecisionHistory;
@@ -3814,7 +3795,7 @@ class ProofEditorImpl implements ProofEditor {
         background:rgba(17,24,39,0.96);border:1px solid rgba(255,255,255,0.12);
         border-radius:12px;padding:6px;z-index:1002;
         box-shadow:0 16px 40px rgba(0,0,0,0.35);
-         
+        backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
       `;
 
       const addActionItem = (title: string, onSelect: () => boolean) => {
@@ -4570,7 +4551,7 @@ class ProofEditorImpl implements ProofEditor {
         background:rgba(17,24,39,0.96);border:1px solid rgba(255,255,255,0.12);
         border-radius:12px;padding:6px;z-index:1002;
         box-shadow:0 16px 40px rgba(0,0,0,0.35);
-         
+        backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
       `;
 
       const addItem = (title: string, onSelect: (itemLabel: HTMLSpanElement) => Promise<boolean> | boolean, opts?: { subtle?: boolean; disabled?: boolean }) => {
@@ -4913,7 +4894,7 @@ class ProofEditorImpl implements ProofEditor {
         background:rgba(17,24,39,0.96);border:1px solid rgba(255,255,255,0.12);
         border-radius:12px;padding:8px;z-index:1002;
         box-shadow:0 16px 40px rgba(0,0,0,0.35);
-         
+        backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
       `;
 
       const addDivider = () => {
@@ -5123,8 +5104,8 @@ class ProofEditorImpl implements ProofEditor {
       left: 50%;
       transform: translateX(-50%);
       background: rgba(255,255,255,0.94);
-      
-      
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
       color: #374151;
       border: 1px solid rgba(0,0,0,0.06);
       border-radius: 28px;
@@ -6580,8 +6561,8 @@ class ProofEditorImpl implements ProofEditor {
       return;
     }
 
-    const write = () => this.editor!.action((ctx) => {
-      const view = markApiView(ctx.get(editorViewCtx));
+    this.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
       const parser = ctx.get(parserCtx);
       const { from } = view.state.selection;
       const docSizeBefore = view.state.doc.content.size;
@@ -6594,7 +6575,7 @@ class ProofEditorImpl implements ProofEditor {
       if (author) {
         tr = tr.setMeta('ai-authored', true);
       }
-      view.dispatch(tr.setMeta('addToHistory', false).setMeta('proofMarkSource', 'api'));
+      view.dispatch(tr);
 
       // Calculate actual inserted length by comparing doc sizes
       const docSizeAfter = view.state.doc.content.size;
@@ -6608,17 +6589,8 @@ class ProofEditorImpl implements ProofEditor {
 
       }
 
-      // Agent Markdown is converted synchronously, with API provenance. It must
-      // never be picked up later by the human typing plugin or its undo history.
-      if (getReviewStyle() === 'playmaker') {
-        const conversion = bracketCommentTransaction(view.state, author ?? getCurrentActor());
-        if (conversion) view.dispatch(conversion.setMeta('proofMarkSource', 'api').setMeta('addToHistory', false));
-      }
-
       console.log('[insertAtCursor] Inserted text at cursor:', from, 'actualLength:', actualInsertedLength);
     });
-    const doc = collabClient.getYDoc();
-    if (doc) doc.transact(write, 'api-content'); else write();
   }
 
   /**
@@ -6632,8 +6604,8 @@ class ProofEditorImpl implements ProofEditor {
       return;
     }
 
-    const write = () => this.editor!.action((ctx) => {
-      const view = markApiView(ctx.get(editorViewCtx));
+    this.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
       const parser = ctx.get(parserCtx);
       const { from, to } = view.state.selection;
       const docSizeBefore = view.state.doc.content.size;
@@ -6647,7 +6619,7 @@ class ProofEditorImpl implements ProofEditor {
       if (author) {
         tr = tr.setMeta('ai-authored', true);
       }
-      view.dispatch(tr.setMeta('addToHistory', false).setMeta('proofMarkSource', 'api'));
+      view.dispatch(tr);
 
       // Calculate actual inserted length by comparing doc sizes
       // Net change = newLength - selectionLength, so newLength = netChange + selectionLength
@@ -6662,17 +6634,8 @@ class ProofEditorImpl implements ProofEditor {
 
       }
 
-      // Agent Markdown is converted synchronously, with API provenance. It must
-      // never be picked up later by the human typing plugin or its undo history.
-      if (getReviewStyle() === 'playmaker') {
-        const conversion = bracketCommentTransaction(view.state, author ?? getCurrentActor());
-        if (conversion) view.dispatch(conversion.setMeta('proofMarkSource', 'api').setMeta('addToHistory', false));
-      }
-
       console.log('[replaceSelection] Replaced selection from', from, 'to', to, 'actualLength:', actualInsertedLength);
     });
-    const doc = collabClient.getYDoc();
-    if (doc) doc.transact(write, 'api-content'); else write();
   }
 
   /**

@@ -1,4 +1,3 @@
-import { initializeVerso } from './verso/runtime.js';
 import { requireAgentKeyOrigin } from './agent-key-routes.js';
 import { clientErrorRoutes } from './client-errors.js';
 import { somaFeedbackRoutes } from './soma-feedback.js';
@@ -44,7 +43,6 @@ function parseAllowedCorsOrigins(): Set<string> {
 }
 
 async function main(): Promise<void> {
-  initializeVerso();
   const app = express();
   const server = createServer(app);
   const wss = new WebSocketServer({ server, path: '/ws' });

@@ -1,4 +1,3 @@
-import { versoRoutes } from './verso/runtime.js';
 import { agentKeyRoutes } from './agent-key-routes.js';
 import { getClientIp, trustProxyHeaders } from './client-address.js';
 import { createHash, randomUUID } from 'crypto';
@@ -110,7 +109,6 @@ import {
 
 export const apiRoutes = Router();
 apiRoutes.use(agentKeyRoutes);
-apiRoutes.use(versoRoutes);
 runLegacyMarkRangeBackfillOnce();
 
 const DIRECT_SHARE_RATE_LIMIT_BUCKETS = new Map<string, { count: number; resetAt: number }>();

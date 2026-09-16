@@ -661,16 +661,6 @@ export class ShareClient {
     return payload;
   }
 
-  async askVerso(messages: { role: 'user' | 'assistant'; content: string }[], mark: unknown): Promise<{ reply: string; proposals: import('../ui/playmaker-review').VersoProposal[] }> {
-    const response = await fetch(`${this.getApiBase()}/documents/${encodeURIComponent(this.slug || '')}/verso`, {
-      method: 'POST', headers: { ...this.getShareAuthHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages, mark }),
-    });
-    if (!response.ok) throw new Error(response.status === 429
-      ? 'Verso has reached its limit. Please try again later.' : 'Verso is not available right now.');
-    return response.json();
-  }
-
   hasShareCredential(): boolean {
     return Boolean(this.shareToken?.trim());
   }

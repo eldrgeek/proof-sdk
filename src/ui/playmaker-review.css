@@ -35,38 +35,3 @@
 .pm-review-row[aria-invalid="true"] { outline: 2px solid #b45309; background: #fffbeb; }
 
 .review-history-notice { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); max-width:calc(100vw - 40px); padding:12px 18px; border:1px solid #d4d4cf; border-radius:12px; background:#fffefb; color:#26303c; box-shadow:0 6px 24px #16223822; font:14px/1.5 system-ui,sans-serif; z-index:1200; }
-/* U2: the center column owns the paper; sidebars never cover it on desktop. */
-body[data-review-style="playmaker"] { background:#ebeae5; }
-body[data-review-style="playmaker"] #editor-container { max-width:none; margin-left:var(--pm-left,360px); margin-right:var(--pm-right,18rem); }
-body[data-review-style="playmaker"] #editor { background:transparent; padding:calc(var(--pm-top,100px) + 16px) 16px 40px; }
-body[data-review-style="playmaker"] .ProseMirror { box-sizing:border-box; width:100%; max-width:52rem; margin:0 auto; padding:3.4rem 4.2rem; color:#26231c; background:#fdfcf7; border:1px solid #26231c33; border-radius:4px; box-shadow:0 2px 12px #0002; min-height:80vh; }
-body[data-review-style="playmaker"] #provenance-gutter { display:none; }
-.pm-chat,.pm-review-panel { position:fixed; top:var(--pm-top,100px); bottom:0; max-height:none; box-sizing:border-box; border:1px solid #d4d4cf; border-radius:0; padding:16px; overflow:auto; background:#fffefb; color:#26231c; box-shadow:0 2px 12px #0001; z-index:80; font:14px/1.5 system-ui,sans-serif; }
-.pm-chat { left:0; width:360px; }
-.pm-review-panel { right:0; width:18rem; }
-.pm-chat[hidden],.pm-review-panel[hidden] { display:none; }
-.pm-chat h2 { margin:0; font-size:20px; }
-.pm-chat button { min-height:44px; padding:8px 12px; border:1px solid #d4d4cf; border-radius:8px; background:#fff; color:inherit; cursor:pointer; font:600 13px/1.4 system-ui,sans-serif; }
-.pm-chat textarea { box-sizing:border-box; width:100%; min-height:88px; padding:10px; border:1px solid #949ca8; border-radius:8px; margin-top:12px; font:inherit; }
-.pm-chat-card { border:1px solid #d4d4cf; border-top:3px solid var(--review-author); border-radius:6px; padding:12px; margin:16px 0; }
-.pm-chat-card .pm-review-drag { cursor:default; }
-.pm-chat-card .pm-review-drag strong { font-variant:small-caps; letter-spacing:.06em; }
-.pm-chat-card time { font-size:11px; color:#6e675a; }
-.pm-chat-card [data-default-choice] { background:#35a888; border-color:#35a888; color:white; }
-.pm-chat-card .pm-review-change { max-height:none; }
-.pm-review-filters { display:flex; flex-wrap:wrap; gap:4px; }
-.pm-review-filters button { padding:4px 8px; font-size:11px; }
-.pm-review-filters [aria-pressed="true"] { background:#e5edfc; }
-.pm-review-row.pm-settled { text-decoration:line-through; opacity:.55; }
-.pm-review-row.pm-current,.ProseMirror .pm-current-mark { outline:2px solid #7d9fe8; outline-offset:2px; }
-.pm-mark-flash { animation:pm-flash 1.2s ease-out; }
-@keyframes pm-flash { from { box-shadow:0 0 0 5px #7d9fe8; } to { box-shadow:none; } }
-@media (min-width:768px) and (max-width:1023px) {
-  .pm-chat,.pm-review-panel { box-shadow:0 0 24px #0003; }
-}
-@media (max-width:767px) {
-  body[data-review-style="playmaker"] #editor { padding-left:0; padding-right:0; }
-  body[data-review-style="playmaker"] .ProseMirror { padding:2rem 1.7rem; font-size:16px; border-radius:0; }
-  .pm-chat { top:0; width:min(360px,100%); z-index:1300; }
-  .pm-review-panel { top:auto; bottom:0; width:100%; max-height:70dvh; border-radius:16px 16px 0 0; z-index:1300; box-shadow:0 -4px 24px #0003; }
-}

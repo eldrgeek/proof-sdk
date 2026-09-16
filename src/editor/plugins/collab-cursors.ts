@@ -59,8 +59,8 @@ export function installCollabCursorStyles(): void {
       color: rgba(255, 255, 255, 0.92);
       letter-spacing: 0.2px;
       box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
-      
-      
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
     }
 
     .proof-collab-cursor__face {

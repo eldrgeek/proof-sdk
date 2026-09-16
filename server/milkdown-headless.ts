@@ -1,4 +1,3 @@
-import { literalBracketsSchema, remarkLiteralBrackets, literalBracketsHandler } from '../src/editor/schema/literal-brackets.js';
 import { Editor, editorViewCtx, marksCtx, nodesCtx, remarkStringifyOptionsCtx } from '@milkdown/core';
 import { schema as commonmarkSchema } from '@milkdown/preset-commonmark';
 import { schema as gfmSchema } from '@milkdown/preset-gfm';
@@ -122,7 +121,6 @@ function createSerializer(schema: Schema): (doc: ProseMirrorNode) => string {
     .use(remarkStringify, {
       handlers: {
         proofMark: proofMarkHandler,
-        literalBrackets: literalBracketsHandler,
       },
     });
 
@@ -157,7 +155,6 @@ async function buildHeadless(): Promise<HeadlessMilkdown> {
     ...gfmSchema,
     // Frontmatter must be registered after commonmark so `---` parses as YAML.
     ...frontmatterSchema,
-    ...literalBracketsSchema,
     ...codeBlockExtPlugins,
     // Some schema nodes reference proof marks (e.g. code_block allows them).
     ...proofMarkPlugins,
@@ -181,7 +178,6 @@ async function buildHeadless(): Promise<HeadlessMilkdown> {
     .use(remarkParse)
     .use(remarkFrontmatter, ['yaml'])
     .use(remarkGfm)
-    .use(remarkLiteralBrackets)
     .use(remarkProofMarks);
 
   const parseMarkdown = ParserState.create(schema as any, processor as any) as unknown as (markdown: string) => ProseMirrorNode;
