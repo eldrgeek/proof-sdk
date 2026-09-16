@@ -32,7 +32,9 @@ export function sentenceAnchor(text: string, position: number): { from: number; 
     const from = previous.index! + previous[0].length - previous[0].trimStart().length;
     return { from, to: previous.index! + previous[0].trimEnd().length };
   }
-  const sentences = [...paragraph.matchAll(/[^.!?]+(?:[.!?]+["')]*|$)/g)];
+  // Trailing spaces match as an empty "sentence"; a comment typed after them belongs
+  // to the last real sentence, so never anchor to whitespace.
+  const sentences = [...paragraph.matchAll(/[^.!?]+(?:[.!?]+["')]*|$)/g)].filter(m => m[0].trim());
   const chosen = sentences.find(m => paragraphStart + m.index! + m[0].length >= position) ?? sentences.at(-1);
   if (!chosen) return null;
   const from = paragraphStart + chosen.index! + chosen[0].length - chosen[0].trimStart().length;
