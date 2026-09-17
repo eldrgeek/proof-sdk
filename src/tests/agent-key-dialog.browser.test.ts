@@ -161,11 +161,24 @@ async function testDialog(base: string, ownsServer: boolean): Promise<void> {
       assert.equal((await entryResponse).status(), 200, 'The local server must serve the editor bundle');
       await page.getByRole('button', { name: 'Continue anonymously', exact: true }).click();
       const addAgent = page.getByRole('button', { name: 'Add agent', exact: true });
-      await addAgent.waitFor({ state: 'visible' });
-      const bounds = await addAgent.boundingBox();
-      assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width, `Add agent must fit at ${width}px`);
-      assert.equal(await addAgent.isEnabled(), true);
-      await addAgent.click();
+      // Phones (700px and narrower) keep Add agent in the bar's overflow menu.
+      const phone = width <= 700;
+      const openFromOverflow = async () => {
+        await page.getByRole('button', { name: 'More options', exact: true }).click();
+        await page.getByRole('menuitem', { name: /Add agent/ }).click();
+      };
+      if (phone) {
+        await page.getByRole('button', { name: 'More options', exact: true }).waitFor({ state: 'visible' });
+        const bounds = await page.getByRole('button', { name: 'More options', exact: true }).boundingBox();
+        assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width, `More options must fit at ${width}px`);
+        await openFromOverflow();
+      } else {
+        await addAgent.waitFor({ state: 'visible' });
+        const bounds = await addAgent.boundingBox();
+        assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width, `Add agent must fit at ${width}px`);
+        assert.equal(await addAgent.isEnabled(), true);
+        await addAgent.click();
+      }
       const dialog = page.getByRole('dialog', { name: 'Add agent', exact: true });
       await dialog.waitFor();
       assert.equal(await dialog.locator('[data-keys] + [data-revocation-note]').textContent(), revocationNote);
@@ -188,7 +201,9 @@ async function testDialog(base: string, ownsServer: boolean): Promise<void> {
       const state = await fetch(`${base}/api/agent/${created.slug}/state`, { headers: { 'x-share-token': key! } });
       assert.equal(state.status, 200);
       await dialog.getByRole('button', { name: 'Close agent dialog' }).click();
-      if (embedded) {
+      if (phone) {
+        await openFromOverflow();
+      } else if (embedded) {
         const activeAgent = page.getByRole('button', {
           name: 'AI collaborator — active now. Open agent actions', exact: true,
         });

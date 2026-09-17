@@ -179,11 +179,14 @@ async function run(): Promise<void> {
     await page.clock.fastForward(900_100);
     await page.locator('[data-agent-id="ai:claude"]').waitFor({ state: 'detached' });
     await page.setViewportSize({ width: 400, height: 900 });
-    const addAgent = page.getByRole('button', { name: 'Add agent', exact: true });
-    await addAgent.waitFor();
-    const addRect = await addAgent.boundingBox();
+    // Phones (700px and narrower): with no AI present, Add agent lives in the overflow menu after Share.
+    const more = page.getByRole('button', { name: 'More options', exact: true });
+    await more.waitFor();
+    const moreRect = await more.boundingBox();
     const shareRect = await page.getByRole('button', { name: 'Share options', exact: true }).boundingBox();
-    assert(addRect && shareRect && addRect.width >= 44 && addRect.height >= 44 && addRect.x + addRect.width <= shareRect.x, 'Add agent must fit beside Share');
+    assert(moreRect && shareRect && moreRect.width >= 44 && moreRect.height >= 44 && moreRect.x >= shareRect.x + shareRect.width && moreRect.x + moreRect.width <= 400, 'More options must fit beside Share');
+    await more.click();
+    await page.getByRole('menuitem', { name: /Add agent/ }).waitFor();
     await page.screenshot({ path: path.join(artifacts, 'bar-400-add-agent.png'), fullPage: true });
     console.log('✓ 1280/400 px bar, 44 px targets, 32 px faces, mobile people list, idle tooltip, reactivation, leave and TTL');
   } finally {

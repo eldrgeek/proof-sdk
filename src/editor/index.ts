@@ -11,7 +11,7 @@ import { markApiView, isOwnHumanMarkChange, withHumanReviewWrite } from './revie
  */
 
 import { PlayMakerReview, type ReviewAction } from '../ui/playmaker-review';
-import { getReviewStyle } from './review-style';
+import { getReviewStyle, setReviewStyle } from './review-style';
 import { ReviewDecisionHistory, reconnectNativeUndoManager } from './review-decision-history';
 
 import { getAgentPresenceDisplay } from '../shared/agent-presence';
@@ -3193,6 +3193,122 @@ class ProofEditorImpl implements ProofEditor {
         #share-banner .share-pill-agent-trigger .proof-avatar-wrap > span:first-child { width: auto !important; }
         #share-banner .proof-avatar-tooltip { display: none !important; }
       }
+      #share-banner .share-pill-overflow { display: none; }
+      /* Phones: one compact, full-width row pinned to the top edge (not floating over the text).
+         Add agent, Review style and Marks move into the overflow menu. */
+      @media (max-width: 700px) {
+        #share-banner {
+          display: flex !important;
+          flex-wrap: nowrap !important;
+          top: 0 !important;
+          left: 0 !important;
+          right: 0 !important;
+          transform: none !important;
+          width: 100% !important;
+          min-width: 0 !important;
+          max-width: none !important;
+          border-radius: 0 !important;
+          border: none !important;
+          border-bottom: 1px solid rgba(0,0,0,0.08) !important;
+          box-shadow: none !important;
+          background: #fff !important;
+          backdrop-filter: none !important;
+          -webkit-backdrop-filter: none !important;
+          padding: env(safe-area-inset-top, 0px) max(8px, env(safe-area-inset-right, 0px)) 0 max(12px, env(safe-area-inset-left, 0px)) !important;
+          height: calc(52px + env(safe-area-inset-top, 0px));
+          gap: 6px !important;
+          font-size: 15px !important;
+        }
+        #share-banner > a,
+        #share-banner .share-pill-sep,
+        #share-banner .share-pill-status-sep,
+        #share-banner .share-pill-agent-slot,
+        #share-banner .review-style-control,
+        #share-banner .share-pill-suggestion-review { display: none !important; }
+        #share-banner .share-pill-title {
+          flex: 1 1 auto !important;
+          min-width: 0 !important;
+          min-height: 44px !important;
+          line-height: 44px !important;
+          font-size: 15px !important;
+          font-weight: 600 !important;
+        }
+        #share-banner .share-pill-status-inline { order: 0; }
+        #share-banner .share-pill-human-count { font-size: 13px !important; }
+        #share-banner .share-pill-title { min-width: 72px !important; }
+        /* An AI that is present stays visible in the bar; only the empty Add agent button moves to the menu. */
+        #share-banner .share-pill-agent-slot:has(.share-pill-agent-trigger.has-agents) { display: inline-flex !important; flex-shrink: 0; }
+        #share-banner .share-pill-suggest-toggle {
+          min-height: 44px !important;
+          padding: 0 10px !important;
+          font-size: 12px !important;
+          gap: 5px !important;
+        }
+        #share-banner .share-pill-share-btn > button {
+          min-height: 44px !important;
+          padding: 0 12px !important;
+          font-size: 14px !important;
+          width: auto !important;
+        }
+        #share-banner .share-pill-share-btn > button > span:last-child { display: none; }
+      }
+      /* Narrow phones: Suggesting/Editing becomes a pencil pill (green dot = suggesting); its aria-label and title keep the words. */
+      @media (max-width: 440px) {
+        #share-banner .share-pill-suggest-toggle > span:last-child { display: none; }
+        #share-banner .share-pill-suggest-toggle::after { content: '✎'; font-size: 16px; line-height: 1; }
+        #share-banner .share-pill-overflow {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-width: 44px;
+          min-height: 44px;
+          padding: 0;
+          border: none;
+          background: transparent;
+          color: #111827;
+          font-size: 22px;
+          line-height: 1;
+          cursor: pointer;
+          flex-shrink: 0;
+          font-family: inherit;
+        }
+        #editor { padding-bottom: 96px !important; }
+        .proof-share-overflow-menu {
+          position: fixed;
+          right: 8px;
+          min-width: 220px;
+          background: #fff;
+          border: 1px solid rgba(0,0,0,0.12);
+          border-radius: 12px;
+          box-shadow: 0 12px 32px rgba(0,0,0,0.18);
+          padding: 6px;
+          z-index: 10003;
+          font: 15px/1.3 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        .proof-share-overflow-menu button {
+          display: flex;
+          width: 100%;
+          min-height: 48px;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          padding: 0 12px;
+          border: none;
+          border-radius: 8px;
+          background: transparent;
+          color: #111827;
+          font: inherit;
+          text-align: left;
+          cursor: pointer;
+        }
+        .proof-share-overflow-menu button:active { background: #f3f4f6; }
+        .proof-share-overflow-menu button span:last-child { color: #6b7280; font-size: 13px; }
+        .proof-share-welcome-toast .proof-toast-content { display: flex !important; flex-direction: row !important; align-items: flex-start; gap: 8px; }
+      }
+      .proof-share-welcome-toast .proof-toast-dismiss {
+        flex-shrink: 0; min-width: 32px; min-height: 32px; margin: -6px -6px -6px 0; border: none;
+        background: transparent; color: inherit; font-size: 18px; line-height: 1; cursor: pointer;
+      }
     `;
     document.head.appendChild(style);
   }
@@ -3565,12 +3681,72 @@ class ProofEditorImpl implements ProofEditor {
       suggestionReview,
       agentSlot,
       shareBtn,
+      this.createShareOverflowButton(),
     );
     this.updateSuggestToggleDisplay();
     this.updateShareSuggestionReviewDisplay();
     this.scheduleBannerLayoutUpdate();
   }
 
+
+  private shareOverflowMenuCleanup: (() => void) | null = null;
+
+  /** Phones only (hidden by CSS above 700px): holds Add agent, Review style and Marks. */
+  private createShareOverflowButton(): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'share-pill-overflow';
+    btn.textContent = '⋯';
+    btn.setAttribute('aria-label', 'More options');
+    btn.setAttribute('aria-haspopup', 'menu');
+    btn.setAttribute('aria-expanded', 'false');
+    btn.onclick = () => {
+      if (this.shareOverflowMenuCleanup) { this.shareOverflowMenuCleanup(); return; }
+      this.closeShareMenu();
+      this.closeAgentMenu();
+      const menu = document.createElement('div');
+      menu.className = 'proof-share-overflow-menu';
+      menu.setAttribute('role', 'menu');
+      menu.style.top = `${Math.round(btn.closest('#share-banner')?.getBoundingClientRect().bottom ?? 52) + 6}px`;
+      const close = () => {
+        menu.remove();
+        document.removeEventListener('pointerdown', outside, true);
+        document.removeEventListener('keydown', onKey, true);
+        btn.setAttribute('aria-expanded', 'false');
+        this.shareOverflowMenuCleanup = null;
+      };
+      const outside = (event: Event) => {
+        if (menu.contains(event.target as Node) || btn.contains(event.target as Node)) return;
+        close();
+      };
+      const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') { close(); btn.focus(); } };
+      const item = (label: string, detail: string, action: () => void) => {
+        const entry = document.createElement('button');
+        entry.type = 'button';
+        entry.setAttribute('role', 'menuitem');
+        const main = document.createElement('span'); main.textContent = label;
+        const side = document.createElement('span'); side.textContent = detail;
+        entry.append(main, side);
+        entry.onclick = () => { close(); action(); };
+        menu.append(entry);
+      };
+      const style = getReviewStyle();
+      if (style === 'playmaker' && this.playmakerReview) {
+        item('Marks', 'review', () => this.playmakerReview?.openPanel());
+      }
+      item('Review style', style === 'playmaker' ? 'PlayMaker' : 'Proof', () => {
+        setReviewStyle(style === 'playmaker' ? 'proof' : 'playmaker');
+      });
+      item('Add agent', 'manage keys', () => { this.openAgentKeyDialog(); });
+      document.body.append(menu);
+      btn.setAttribute('aria-expanded', 'true');
+      document.addEventListener('pointerdown', outside, true);
+      document.addEventListener('keydown', onKey, true);
+      this.shareOverflowMenuCleanup = close;
+      (menu.querySelector('button') as HTMLButtonElement | null)?.focus();
+    };
+    return btn;
+  }
 
   private createReviewStyleControl(): HTMLElement {
     if (!this.playmakerReview) {
@@ -4464,8 +4640,13 @@ class ProofEditorImpl implements ProofEditor {
     toast.innerHTML = `
       <div class="proof-toast-content">
         <span class="proof-toast-message">${message}</span>
+        <button type="button" class="proof-toast-dismiss" aria-label="Dismiss">×</button>
       </div>
     `;
+    toast.querySelector('.proof-toast-dismiss')?.addEventListener('click', () => {
+      toast.remove();
+      if (this.shareWelcomeToast === toast) this.shareWelcomeToast = null;
+    });
 
     document.body.appendChild(toast);
     this.shareWelcomeToast = toast;
@@ -4484,7 +4665,7 @@ class ProofEditorImpl implements ProofEditor {
 
   private positionShareWelcomeToast(toast: HTMLElement): void {
     const banner = document.getElementById('share-banner');
-    const isMobile = window.innerWidth <= 480;
+    const isMobile = window.innerWidth <= 700;
     const pageMargin = isMobile ? 12 : 12;
     let top = 12;
     if (banner) {
@@ -4493,8 +4674,9 @@ class ProofEditorImpl implements ProofEditor {
     }
 
     if (isMobile) {
-      toast.style.top = 'auto';
-      toast.style.bottom = `${pageMargin}px`;
+      // Under the compact bar, not at the bottom where it would sit on the feedback chip and the last lines.
+      toast.style.top = `${top - 4}px`;
+      toast.style.bottom = 'auto';
       toast.style.left = `${pageMargin}px`;
       toast.style.right = `${pageMargin}px`;
       toast.style.maxWidth = 'none';
@@ -5131,6 +5313,7 @@ class ProofEditorImpl implements ProofEditor {
   }
 
   private clearShareBanner(): void {
+    this.shareOverflowMenuCleanup?.();
     this.shareBannerResizeObserver?.disconnect();
     this.shareBannerResizeObserver = null;
     this.clearShareAgentPresenceExpiryTimer();

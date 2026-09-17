@@ -753,6 +753,7 @@ class MarkPopoverController {
     this.cachedActionRangeAt = 0;
     this.renderMode = shouldUseCommentUiV2() ? 'mobile-sheet' : 'legacy-popover';
 
+    this.popover.classList.add('mark-popover-composer');
     setActiveMark(this.view, null);
     setComposeAnchorRange(this.view, range);
     this.ensureAnchorVisible();
@@ -766,6 +767,7 @@ class MarkPopoverController {
     options?: { threadFocusMode?: ThreadFocusMode },
   ): void {
     if (getReviewStyle() === 'playmaker') return;
+    this.popover.classList.remove('mark-popover-composer');
     const marks = getMarks(this.view.state);
     const mark = marks.find(item => item.id === markId);
     if (!mark) return;
@@ -801,6 +803,7 @@ class MarkPopoverController {
     }
 
     this.mode = null;
+    this.popover.classList.remove('mark-popover-composer');
     this.activeMarkId = null;
     this.composeRange = null;
     this.composeBy = null;
@@ -979,6 +982,8 @@ class MarkPopoverController {
       if (!text) return;
       const quote = this.view.state.doc.textBetween(range.from, range.to, '\n', '\n');
       const mark = addComment(this.view, quote, by, text, range);
+      // The PlayMaker style shows threads in its own dialog, so openForMark is a no-op there; close the composer.
+      if (getReviewStyle() === 'playmaker') { this.close(); return; }
       this.openForMark(mark.id);
     };
 
@@ -1428,7 +1433,10 @@ class MarkPopoverController {
   }
 
   private renderMobileStrip(): void {
-    if (getReviewStyle() === 'playmaker' || !shouldUseCommentUiV2()) {
+    // The PlayMaker style lists marks in its own panel, but a phone still needs the
+    // selection actions (Comment, Flag, Suggest): touch has no other way to start a comment.
+    const playmaker = getReviewStyle() === 'playmaker';
+    if (!shouldUseCommentUiV2()) {
       this.strip.style.display = 'none';
       this.mobileStripSignature = '';
       this.mobileStripExpanded = false;
@@ -1502,7 +1510,7 @@ class MarkPopoverController {
     const comments = this.getMobileCommentData();
     const hasActionRow = this.hasLiveSelection && isMobileTouch();
     const canShowActionRow = hasActionRow && canCommentInRuntime();
-    if (comments.totalCount === 0 && !canShowActionRow) {
+    if ((comments.totalCount === 0 || playmaker) && !canShowActionRow) {
       this.strip.style.display = 'none';
       this.mobileStripSignature = '';
       this.mobileStripExpanded = false;

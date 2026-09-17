@@ -57,6 +57,8 @@ export class PlayMakerReview {
     this.historyNotice.hidden = true;
     document.body.append(this.panel, this.historyNotice);
     window.addEventListener(REVIEW_STYLE_EVENT, this.styleChanged);
+    window.visualViewport?.addEventListener('resize', this.syncKeyboardOffset);
+    window.visualViewport?.addEventListener('scroll', this.syncKeyboardOffset);
     document.addEventListener('pointerdown', this.pointerDown, true);
     document.addEventListener('click', this.click, true);
     document.addEventListener('keydown', this.keydown, true);
@@ -68,9 +70,26 @@ export class PlayMakerReview {
     this.cancelWalk(); this.close();
     const style = getReviewStyle(); this.select.value = style;
     document.body.dataset.reviewStyle = style;
-    this.panel.hidden = style !== 'playmaker'; this.toggle.hidden = style !== 'playmaker';
+    // The panel is a sidebar only where the page reserves a gutter for it (1100px and wider).
+    // Narrower, it would cover the text, so it starts closed and opens on request.
+    this.panel.hidden = style !== 'playmaker' || !matchMedia('(min-width: 1100px)').matches;
+    this.toggle.hidden = style !== 'playmaker';
     this.toggle.setAttribute('aria-expanded', String(!this.panel.hidden));
     this.bridge.changed(); this.update();
+  };
+  openPanel(): void {
+    if (getReviewStyle() !== 'playmaker') return;
+    this.panel.hidden = false; this.toggle.setAttribute('aria-expanded', 'true');
+    this.update(); this.panel.querySelector<HTMLElement>('.pm-review-panel-close')?.focus({ preventScroll: true });
+  }
+  closePanel(): void {
+    this.panel.hidden = true; this.toggle.setAttribute('aria-expanded', 'false');
+  }
+  /** Keeps phone bottom sheets above the on-screen keyboard (visual viewport shrinks, layout viewport does not). */
+  private syncKeyboardOffset = (): void => {
+    const vv = window.visualViewport;
+    const offset = vv ? Math.max(0, Math.round(innerHeight - vv.height - vv.offsetTop)) : 0;
+    document.documentElement.style.setProperty('--proof-keyboard-offset', `${offset}px`);
   };
   private openMarks(): Mark[] {
     return this.bridge.marks().filter(isOpenReviewMark).sort((a, b) => (a.range?.from ?? Infinity) - (b.range?.from ?? Infinity));
@@ -97,6 +116,9 @@ export class PlayMakerReview {
     const focusId = (document.activeElement as HTMLElement)?.dataset.reviewRow;
     this.panel.replaceChildren();
     const heading = document.createElement('h2'); heading.textContent = 'Marks';
+    const closeMarks = this.button('×', () => this.closePanel()); closeMarks.className = 'pm-review-panel-close';
+    closeMarks.setAttribute('aria-label', 'Close marks');
+    this.panel.append(closeMarks);
     const counts = document.createElement('p'); counts.className = 'pm-review-counts'; counts.setAttribute('aria-live', 'polite');
     counts.textContent = `${marks.length} open · ${this.settled.size} settled`;
     this.panel.append(heading, counts, this.button('Start review', () => { if (marks[0]) this.open(marks[0].id); }, !marks.length));

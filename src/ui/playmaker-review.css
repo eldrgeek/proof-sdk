@@ -3,6 +3,7 @@
 .pm-review-panel,.pm-review-dialog { box-sizing:border-box; color:#26303c; background:#fffefb; border:1px solid #d4d4cf; border-radius:14px; box-shadow:0 12px 40px #16223822; font:14px/1.5 system-ui,sans-serif; }
 .pm-review-panel { position:fixed; right:16px; top:108px; width:280px; max-height:calc(100dvh - 124px); overflow:auto; padding:18px; z-index:80; }
 .pm-review-panel h2 { margin:0; font-size:19px; }
+.pm-review-panel-close { display:none; }
 .pm-review-counts { margin:4px 0 12px; color:#646b73; font-variant-numeric:tabular-nums; }
 .pm-review-panel button,.pm-review-dialog button { min-height:44px; min-width:44px; padding:8px 12px; border:1px solid #d4d4cf; border-radius:8px; background:#fff; color:inherit; font:600 13px/1.4 system-ui,sans-serif; cursor:pointer; }
 .pm-review-panel button:hover,.pm-review-dialog button:hover { background:#f0f2f5; }
@@ -23,6 +24,9 @@
 .pm-review-dialog textarea { box-sizing:border-box; width:100%; min-height:88px; margin:14px 0 8px; padding:10px; border:1px solid #949ca8; border-radius:8px; font:inherit; }
 [data-review-style="playmaker"] .ProseMirror [data-mark-id] { color:var(--review-author,inherit)!important; border-color:var(--review-author)!important; background-color:color-mix(in srgb,var(--review-author) 15%,transparent)!important; }
 [data-review-style="playmaker"] .mark-popover,[data-review-style="playmaker"] .proof-mobile-comment-strip { display:none!important; }
+/* Phones: the new-comment composer is the one popover the PlayMaker style keeps, because
+   touch has no other way to start a comment. Threads still open in the PlayMaker dialog. */
+@media (max-width:700px) { [data-review-style="playmaker"] .mark-popover.mark-popover-composer { display:block!important; } }
 @media (min-width:1100px) { body[data-review-style="playmaker"] #editor { padding-right:290px; } }
 @media (max-width:600px) { .review-style-control { font-size:11px; } .pm-review-panel { top:150px; right:8px; width:260px; max-height:calc(100dvh - 164px); } }
 @media (max-width:480px) { .pm-review-dialog { left:0!important; top:auto!important; bottom:0; width:100%; max-width:100%; max-height:75dvh; padding:14px 16px max(18px,env(safe-area-inset-bottom)); border-radius:16px 16px 0 0; } }
@@ -35,3 +39,13 @@
 .pm-review-row[aria-invalid="true"] { outline: 2px solid #b45309; background: #fffbeb; }
 
 .review-history-notice { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); max-width:calc(100vw - 40px); padding:12px 18px; border:1px solid #d4d4cf; border-radius:12px; background:#fffefb; color:#26303c; box-shadow:0 6px 24px #16223822; font:14px/1.5 system-ui,sans-serif; z-index:1200; }
+
+/* Phones: Marks and a mark's thread are bottom sheets above the feedback chip (z 9999) and the keyboard. */
+@media (max-width:700px) {
+  .pm-review-panel { top:auto!important; left:0!important; right:0!important; bottom:var(--proof-keyboard-offset,0px)!important; width:100%!important; max-height:min(75dvh,560px)!important; border-radius:16px 16px 0 0; padding:14px 16px max(18px,env(safe-area-inset-bottom)); z-index:10001; box-shadow:0 -8px 32px #16223833; }
+  .pm-review-panel .pm-review-panel-close { display:inline-flex; align-items:center; justify-content:center; float:right; width:44px; height:44px; padding:0; margin:-6px -8px 0 0; font-size:24px; font-weight:400; border:none; background:transparent; }
+  .pm-review-dialog { left:0!important; top:auto!important; bottom:var(--proof-keyboard-offset,0px)!important; width:100%; max-width:100%; max-height:75dvh; padding:14px 16px max(18px,env(safe-area-inset-bottom)); border-radius:16px 16px 0 0; z-index:10001; }
+  .pm-review-dialog textarea { font-size:16px; }
+  .mark-popover.mark-popover-sheet { z-index:10001!important; }
+  .ProseMirror { font-size:17px; }
+}
