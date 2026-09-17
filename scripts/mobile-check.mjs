@@ -159,7 +159,8 @@ async function phone(browser, base, name, viewport) {
     assert.equal(await toast.count(), 0);
   });
 
-  await check(`${tag}: overflow menu opens Marks as a bottom sheet with a close button`, async () => {
+  // Marks is a PlayMaker-style panel; the Proof style lists comments in its own popover.
+  if (style === 'playmaker') await check(`${tag}: overflow menu opens Marks as a bottom sheet with a close button`, async () => {
     await page.getByRole('button', { name: 'More options', exact: true }).click();
     await page.getByRole('menuitem', { name: /Marks/ }).click();
     await page.waitForTimeout(200);
@@ -216,9 +217,12 @@ async function phone(browser, base, name, viewport) {
     await sheet.waitFor({ state: 'visible', timeout: 3000 });
     const text = await sheet.innerText();
     assert.ok(text.includes(commentText), 'thread does not show the comment');
-    await sheet.getByRole('button', { name: /^Reply/ }).first().click();
+    // PlayMaker's dialog opens a reply box from its Reply button; the Proof thread shows the box
+    // at once and keeps Reply disabled until there is text.
+    if (style === 'playmaker') await sheet.getByRole('button', { name: /^Reply/ }).first().click();
     const reply = sheet.locator('textarea').first();
     await reply.fill('Reply from the phone');
+    if (style !== 'playmaker') assert.equal(await sheet.getByRole('button', { name: 'Reply', exact: true }).isEnabled(), true, 'Reply stays disabled');
     await page.screenshot({ path: path.join(shots, `${tag}-6-thread.png`) });
     const r = await sheet.evaluate(el => ({ ...el.getBoundingClientRect().toJSON(), vh: innerHeight, vw: innerWidth }));
     assert.ok(r.bottom >= r.vh - 2 && r.width >= r.vw - 2, `thread rect ${JSON.stringify(r)}`);
