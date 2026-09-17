@@ -3303,8 +3303,8 @@ class ProofEditorImpl implements ProofEditor {
         }
         .proof-share-overflow-menu button:active { background: #f3f4f6; }
         .proof-share-overflow-menu button span:last-child { color: #6b7280; font-size: 13px; }
-        .proof-share-welcome-toast .proof-toast-content { display: flex !important; flex-direction: row !important; align-items: flex-start; gap: 8px; }
       }
+      .proof-share-welcome-toast .proof-toast-content { display: flex !important; flex-direction: row !important; align-items: flex-start; gap: 8px; }
       .proof-share-welcome-toast .proof-toast-dismiss {
         flex-shrink: 0; min-width: 32px; min-height: 32px; margin: -6px -6px -6px 0; border: none;
         background: transparent; color: inherit; font-size: 18px; line-height: 1; cursor: pointer;
