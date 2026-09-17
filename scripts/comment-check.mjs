@@ -151,6 +151,17 @@ async function run(browser, base, style, viewport) {
   const bar = page.locator('.mark-selection-bar');
   const commentButton = bar.getByRole('button', { name: 'Comment', exact: true });
 
+  // Rect of one element, or null when it is not on screen.
+  const rectOf = selector => page.evaluate(sel => {
+    const el = document.querySelector(sel);
+    if (!el) return null;
+    const st = getComputedStyle(el);
+    if (el.hidden || st.display === 'none' || st.visibility === 'hidden') return null;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 ? { top: r.top, bottom: r.bottom, left: r.left, right: r.right } : null;
+  }, selector);
+  const intersects = (a, b) => !!a && !!b && a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+
   const selected = await check(`${tag}: selecting text shows a visible Comment control`, async () => {
     await dragSelect(page, 'first ask is whether');
     await commentButton.waitFor({ state: 'visible', timeout: 3000 });
@@ -158,6 +169,29 @@ async function run(browser, base, style, viewport) {
     await page.screenshot({ path: path.join(shots, `${tag}-1-selection.png`) });
   });
   if (!selected) { await context.close(); return; }
+
+  await check(`${tag}: the selection bar clears the Marks panel, the top bar, the chip and the selected words`, async () => {
+    const barRect = await rectOf('.mark-selection-bar');
+    assert.ok(barRect, 'selection bar has no rect');
+    for (const [name, selector] of [['Marks panel', '.pm-review-panel'], ['top bar', '#share-banner'], ['feedback chip', '.soma-feedback-root']]) {
+      const other = await rectOf(selector);
+      if (!other) continue;
+      assert.equal(intersects(barRect, other), false, `selection bar overlaps the ${name}`);
+    }
+    const anchor = await page.evaluate(() => {
+      const r = getSelection().getRangeAt(0).getBoundingClientRect();
+      return { top: r.top, bottom: r.bottom, left: r.left, right: r.right };
+    });
+    assert.equal(intersects(barRect, anchor), false, 'selection bar covers the selected words');
+    const view = await page.evaluate(() => ({ w: innerWidth, h: innerHeight }));
+    assert.ok(barRect.left >= 0 && barRect.right <= view.w && barRect.top >= 0 && barRect.bottom <= view.h, `selection bar off screen ${JSON.stringify(barRect)}`);
+  });
+
+  if (style === 'playmaker') await check(`${tag}: Start review stays clickable while text is selected`, async () => {
+    const startReview = page.getByRole('button', { name: 'Start review', exact: true });
+    await startReview.waitFor({ state: 'visible', timeout: 3000 });
+    assert.equal(await reallyVisible(startReview), true, 'Start review is covered');
+  });
 
   const composer = page.locator('.mark-popover textarea').first();
   const opened = await check(`${tag}: Comment opens a visible composer`, async () => {
@@ -179,7 +213,24 @@ async function run(browser, base, style, viewport) {
     await waitForServer(base, created, s => s.includes(commentText), 'the comment');
     assert.ok(await localComment(page, commentText), 'comment not in the page marks');
   });
+  await check(`${tag}: the selection bar is gone once the comment is posted`, async () => {
+    await page.waitForTimeout(300);
+    assert.equal(await rectOf('.mark-selection-bar'), null, 'selection bar is still on screen');
+  });
   if (!posted) { await context.close(); return; }
+
+  await check(`${tag}: the selection bar goes away when the selection is cleared`, async () => {
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(200);
+    await dragSelect(page, 'second paragraph');
+    await page.locator('.mark-selection-bar').waitFor({ state: 'visible', timeout: 3000 });
+    await page.evaluate(() => getSelection().removeAllRanges());
+    await page.mouse.click(8, Math.round(await page.evaluate(() => innerHeight / 2)));
+    await page.waitForFunction(() => {
+      const el = document.querySelector('.mark-selection-bar');
+      return !el || getComputedStyle(el).display === 'none';
+    }, null, { timeout: 14_000 });
+  });
 
   await check(`${tag}: the comment is visible in the document${style === 'playmaker' ? ' and in the Marks panel' : ''}`, async () => {
     const mark = await localComment(page, commentText);

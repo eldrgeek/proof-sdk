@@ -31,6 +31,36 @@ function clamp(value: number, min: number, max: number): number {
 
 const TOP_FIXED_OVERLAY_IDS = ['share-banner', 'readonly-banner', 'review-lock-banner', 'error-banner'] as const;
 
+// Overlays the bar must never sit on top of: the top bars, the PlayMaker Marks panel (it owns the
+// right-hand gutter) and the feedback chip.
+const BLOCKING_OVERLAY_SELECTORS = [
+  '#share-banner', '#readonly-banner', '#review-lock-banner', '#error-banner',
+  '.pm-review-panel', '.soma-feedback-root',
+] as const;
+
+type Box = { top: number; bottom: number; left: number; right: number };
+
+function getBlockingBoxes(): Box[] {
+  const boxes: Box[] = [];
+  for (const selector of BLOCKING_OVERLAY_SELECTORS) {
+    for (const element of document.querySelectorAll(selector)) {
+      if (!(element instanceof HTMLElement)) continue;
+      if (element.hidden || element.closest('[hidden]')) continue;
+      if (typeof element.getBoundingClientRect !== 'function') continue;
+      const style = window.getComputedStyle(element);
+      if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) continue;
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      boxes.push({ top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right });
+    }
+  }
+  return boxes;
+}
+
+function overlaps(a: Box, b: Box): boolean {
+  return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+}
+
 function getTopViewportInset(margin: number): number {
   let inset = margin;
   for (const id of TOP_FIXED_OVERLAY_IDS) {
@@ -66,39 +96,46 @@ function positionBar(bar: HTMLElement, view: EditorView, range: MarkRange): void
     const barRect = bar.getBoundingClientRect();
     const margin = 12;
     const dockGap = 16;
+    const gap = 8;
     const viewportW = window.innerWidth;
     const viewportH = window.innerHeight;
     const safeTop = getTopViewportInset(margin);
     const maxTop = Math.max(safeTop, viewportH - barRect.height - margin);
-    const spaceRight = viewportW - editorRect.right;
-    const spaceLeft = editorRect.left;
-    const canDockRight = spaceRight >= barRect.width + dockGap;
-    const canDockLeft = spaceLeft >= barRect.width + dockGap;
+    const width = barRect.width;
+    const height = barRect.height;
+    const blocked = getBlockingBoxes();
 
-    if (canDockRight || canDockLeft) {
-      const dockRight = canDockRight || !canDockLeft;
-      const left = dockRight
-        ? clamp(editorRect.right + dockGap, margin, viewportW - barRect.width - margin)
-        : clamp(editorRect.left - dockGap - barRect.width, margin, viewportW - barRect.width - margin);
-      const top = clamp(anchorBox.top - 6, safeTop, maxTop);
-      bar.style.left = `${left}px`;
-      bar.style.top = `${top}px`;
-      return;
-    }
+    const place = (left: number, top: number) => ({
+      left: clamp(left, margin, Math.max(margin, viewportW - width - margin)),
+      top: clamp(top, safeTop, maxTop),
+    });
+    // A placement is usable when it stays in the viewport, keeps clear of the overlays, and
+    // leaves the selected words themselves visible.
+    const usable = (spot: { left: number; top: number }) => {
+      const box = { left: spot.left, right: spot.left + width, top: spot.top, bottom: spot.top + height };
+      if (box.top < safeTop - 1 || box.bottom > viewportH - margin + 1) return false;
+      if (overlaps(box, { ...anchorBox })) return false;
+      return !blocked.some(other => overlaps(box, other));
+    };
 
-    const aboveTop = anchorBox.top - barRect.height - margin;
-    const belowTop = anchorBox.bottom + margin;
-    const hasRoomAbove = aboveTop >= safeTop;
-    const hasRoomBelow = belowTop + barRect.height <= viewportH - margin;
-    const top = hasRoomAbove
-      ? aboveTop
-      : (hasRoomBelow
-        ? belowTop
-        : clamp(anchorBox.top, safeTop, maxTop));
     const center = (anchorBox.left + anchorBox.right) / 2;
-    const left = clamp(center - barRect.width / 2, margin, viewportW - barRect.width - margin);
-    bar.style.left = `${left}px`;
-    bar.style.top = `${top}px`;
+    // Above the selection first, then below it, then the side gutters, all near the selection.
+    const candidates = [
+      place(center - width / 2, anchorBox.top - height - gap),
+      place(center - width / 2, anchorBox.bottom + gap),
+      place(editorRect.right + dockGap, anchorBox.top - 6),
+      place(editorRect.left - dockGap - width, anchorBox.top - 6),
+    ];
+    const cost = (spot: { left: number; top: number }) => {
+      const box = { left: spot.left, right: spot.left + width, top: spot.top, bottom: spot.top + height };
+      return [...blocked, { ...anchorBox }].reduce((sum, other) => sum
+        + Math.max(0, Math.min(box.right, other.right) - Math.max(box.left, other.left))
+        * Math.max(0, Math.min(box.bottom, other.bottom) - Math.max(box.top, other.top)), 0);
+    };
+    // Nothing fits cleanly on a very small window: take the placement that hides the least.
+    const spot = candidates.find(usable) ?? [...candidates].sort((a, b) => cost(a) - cost(b))[0];
+    bar.style.left = `${spot.left}px`;
+    bar.style.top = `${spot.top}px`;
   } catch {
     // Ignore positioning errors for invalid positions.
   }
@@ -118,6 +155,8 @@ class MarkSelectionBarController {
   private cachedAt = 0;
   private preserveCollapsedUntil = 0;
   private hintTimer: number | null = null;
+  // The range whose bar was used already: it stays hidden until a different selection is made.
+  private dismissedRange: MarkRange | null = null;
 
   private handleScroll = () => {
     if (this.lastRange) {
@@ -125,8 +164,19 @@ class MarkSelectionBarController {
     }
   };
 
+  /** True when the browser itself is holding selected text inside the editor. */
+  private hasLiveDomSelection(): boolean {
+    const selection = document.getSelection();
+    if (!selection || selection.isCollapsed || !selection.toString().trim()) return false;
+    const node = selection.anchorNode;
+    return Boolean(node && typeof this.view.dom.contains === 'function' && this.view.dom.contains(node));
+  }
+
+  // ProseMirror keeps its state selection when the page is clicked outside the editor, so the
+  // browser's own selection decides when the bar goes away.
   private handleSelectionChange = () => {
     this.cacheLiveSelection();
+    this.update(this.view);
   };
 
   private handlePointerUp = () => {
@@ -189,6 +239,22 @@ class MarkSelectionBarController {
     this.bar.remove();
   }
 
+  /** Hides the bar after Comment, Flag or Suggest, so it does not linger over the page. */
+  private dismissAfterAction(): void {
+    this.dismissedRange = this.lastRange ?? this.cachedRange;
+    this.lastRange = null;
+    this.cachedRange = null;
+    this.cachedAt = 0;
+    this.preserveCollapsedUntil = 0;
+    this.bar.style.display = 'none';
+    this.hintEl.style.display = 'none';
+  }
+
+  private isDismissed(range: MarkRange | null): boolean {
+    if (!range || !this.dismissedRange) return false;
+    return range.from === this.dismissedRange.from && range.to === this.dismissedRange.to;
+  }
+
   update(view: EditorView): void {
     this.view = view;
     if (!canCommentInRuntime()) {
@@ -202,7 +268,21 @@ class MarkSelectionBarController {
       return;
     }
     const range = getSelectionRange(view);
+    if (range && !this.hasLiveDomSelection() && !this.shouldPreserveCollapsedVisibility()) {
+      this.bar.style.display = 'none';
+      this.hintEl.style.display = 'none';
+      return;
+    }
+    if (this.isDismissed(range)) {
+      this.bar.style.display = 'none';
+      return;
+    }
+    if (range) this.dismissedRange = null;
     if (!range) {
+      if (this.dismissedRange) {
+        this.bar.style.display = 'none';
+        return;
+      }
       const cachedRange = this.getCachedRange();
       if (
         shouldKeepCollapsedSelectionBarVisible({
@@ -318,6 +398,7 @@ class MarkSelectionBarController {
       const range = this.getActionRange();
       if (!range) return;
       openCommentComposer(this.view, range, getCurrentActor());
+      this.dismissAfterAction();
     });
 
     const flagButton = makeButton('Flag', () => {
@@ -326,6 +407,7 @@ class MarkSelectionBarController {
       if (!range) return;
       const quote = quoteForRange(this.view, range);
       flag(this.view, quote, getCurrentActor(), undefined, range);
+      this.dismissAfterAction();
     });
 
     const suggestButton = makeButton('Suggest', () => {
@@ -337,6 +419,7 @@ class MarkSelectionBarController {
       if (replacement === null || replacement === original) return;
       const quote = quoteForRange(this.view, range);
       suggestReplace(this.view, quote, getCurrentActor(), replacement, range);
+      this.dismissAfterAction();
     });
 
     this.bar.appendChild(commentButton);
