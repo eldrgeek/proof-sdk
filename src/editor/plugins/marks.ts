@@ -3547,6 +3547,7 @@ export function createDecorations(
 ): DecorationSet {
   const decorations: Decoration[] = [];
   const resolved = resolveMarks(state.doc, marks);
+  const markMetadata = getMarkMetadata(state);
   const primaryReplaceMarkIds = new Set<string>();
   const overlappingReplaceGroups = new Map<string, Mark[]>();
 
@@ -3612,10 +3613,19 @@ export function createDecorations(
           style = STYLES.insert;
           cssClass = 'mark-insert';
           const content = data.content ?? '';
+          // Server-created inserts (agent API suggest-insert) are materialized in
+          // the document and record insertStructure; their stored content keeps
+          // markdown source ("\n\n", escapes), so it never equals the rendered
+          // text. Only a quote-anchored insert whose content is NOT in the doc
+          // needs the widget, or the text shows twice (once raw).
+          const insertStructure = markMetadata[mark.id]?.insertStructure;
+          const isMaterializedInsert = insertStructure === 'inline'
+            || insertStructure === 'block'
+            || insertStructure === 'table_row';
           const coversOwnContent = ranges.every(
             range => getTextForRange(state.doc, range) === content,
           );
-          if (!coversOwnContent) suggestedInsertContent = content;
+          if (!isMaterializedInsert && !coversOwnContent) suggestedInsertContent = content;
         }
         break;
       }

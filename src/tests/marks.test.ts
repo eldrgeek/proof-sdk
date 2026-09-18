@@ -613,6 +613,44 @@ test('quote-anchored insert draws proposed content in an insert widget', () => {
   assertEqual(widget?.from, widget?.to, 'Expected proposed content to use a widget decoration');
 });
 
+test('server-materialized block insert does not also draw its raw content in a widget', () => {
+  // The agent API (suggest-insert with content "\n\n<paragraph>") materializes the
+  // new paragraph in the document and stores insertStructure 'block'. The stored
+  // content keeps its leading "\n\n" and markdown escapes, so it never equals the
+  // rendered text; the page must not draw it a second time as a raw widget.
+  const markId = 's-materialized-block-insert';
+  const insertMark = marksSchema.marks.proofSuggestion.create({ id: markId, kind: 'insert', by: 'ai:claude' });
+  const doc = marksSchema.node('doc', null, [
+    marksSchema.node('paragraph', null, [marksSchema.text('Anchor paragraph.')]),
+    marksSchema.node('paragraph', null, [marksSchema.text('New [bracketed] paragraph.', [insertMark])]),
+  ]);
+  const state = EditorState.create({
+    schema: marksSchema,
+    doc,
+    plugins: [createMarksStatePlugin({
+      [markId]: {
+        kind: 'insert',
+        by: 'ai:claude',
+        createdAt: new Date('2026-09-18T00:00:00.000Z').toISOString(),
+        quote: 'New [bracketed] paragraph.',
+        content: '\n\nNew \\[bracketed\\] paragraph.',
+        status: 'pending',
+        insertStructure: 'block',
+      },
+    })],
+  });
+
+  const decorations = createDecorations(state, getMarks(state), null, null).find();
+  const widget = decorations.find(
+    decoration => (decoration.type as any).spec?.key === `insert-insert-${markId}`,
+  );
+  assert(widget === undefined, 'Materialized insert must not render a duplicate raw-content widget');
+  const inline = decorations.find(
+    decoration => decoration.from !== decoration.to && (decoration.type as any).attrs?.['data-mark-id'] === markId,
+  );
+  assert(inline !== undefined, 'Materialized insert should still be highlighted inline');
+});
+
 test('reject removes inserted text for insert suggestions', () => {
   const markId = 's-reject-insert';
   const insertMark = marksSchema.marks.proofSuggestion.create({ id: markId, kind: 'insert', by: 'ai:test' });
