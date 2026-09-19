@@ -107,6 +107,9 @@ import { answerAsk, listCanonicalAsks, reaskAsk, withdrawAsk } from './asks.js';
 import { approveDo, revokeDo, runDo } from './do.js';
 import { listDos } from './do-store.js';
 import { DO_POLICY, doTeamActors } from '../src/shared/do.js';
+import { TIER_POLICY, isLineTier } from '../src/shared/line-tiers.js';
+import { evaluateDocumentTiers, listTierRecords, tierSignals, writeTiers } from './line-tiers.js';
+import { isLineAnchor, resolveLineAnchor, type DocLine } from '../src/shared/line-marks.js';
 import { buildSinceYou, checkAlignment, currentDocumentState, latestSnapshotInfo, listSnapshotInfos, scheduleAlignmentCheck, sendSnapshotFile } from './alignment.js';
 import { bindFamiliar, familiarOf, listFamiliars, listProxyMarks, ratifyProxies, undoableRatifications, undoRatification } from './proxy-marks.js';
 import { EVIDENCE_POLICY, PROXY_POLICY } from '../src/shared/proxy-marks.js';
@@ -2011,6 +2014,12 @@ apiRoutes.get('/documents/:slug/line-marks', async (req: Request, res: Response)
     proxies,
     ratifications: binding ? undoableRatifications(slug, me.actor) : [],
     proxyPolicy: { ratifyThreshold: PROXY_POLICY.ratifyThreshold, hold: PROXY_POLICY.hold, evidence: EVIDENCE_POLICY },
+    // Line tiers: every tag (the page evaluates them against its own lines), and what covers a
+    // context line: AI reads with evidence and Familiars' proxies, from the unredacted marks (so a
+    // blind placeholder does not hide a read; only that an AI read the line is revealed).
+    tiers: listTierRecords(slug),
+    tierSignals: tierSignals(slug, lineMarks),
+    tierPolicy: TIER_POLICY,
     // Steps B4e + B4f: bundles, alternatives (open, plus recent history) and picks, settings,
     // Explain threads and times-to-live. The page evaluates them against its own lines; expiry
     // is judged at `serverNow` (lazy, no timer).
@@ -2077,6 +2086,26 @@ function pageAidRoute(path: string, run: (ctx: { req: Request; slug: string; by:
     res.status(result.status).json({ ...result.body, actor: actor.actor, trust: actor.trust });
   });
 }
+
+// Line tiers. Body: { by, tier: "decision" | "context", anchors: [anchor, ...] (or anchor), reason? }.
+// Anyone with comment access may tag or flip (TIER_POLICY.whoMayTag); every flip is recorded.
+pageAidRoute('/documents/:slug/tiers', async ({ slug, by, body }) => {
+  if (!isLineTier(body.tier)) return { status: 400, body: { success: false, code: 'INVALID_TIER', error: '"tier" must be "decision" or "context"' } };
+  const anchors = Array.isArray(body.anchors) ? body.anchors : [body.anchor];
+  if (anchors.length === 0 || anchors.length > TIER_POLICY.maxLinesPerRequest) return { status: 400, body: { success: false, code: 'INVALID_LINES', error: 'Give 1 to ' + TIER_POLICY.maxLinesPerRequest + ' anchors' } };
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  const lines = await computeServerLines(state.markdown);
+  const resolved: DocLine[] = [];
+  for (let i = 0; i < anchors.length; i += 1) {
+    if (!isLineAnchor(anchors[i])) return { status: 400, body: { success: false, code: 'INVALID_ANCHOR', error: `anchors[${i}] is not a line anchor`, index: i } };
+    const hit = resolveLineAnchor(lines, anchors[i]);
+    if (!hit || !hit.current) return { status: 409, body: { success: false, code: 'LINE_CHANGED', error: 'That line changed; try again', index: i } };
+    resolved.push(lines[hit.lineIndex]);
+  }
+  const before = evaluateDocumentTiers(slug, lines, listCanonicalLineMarks(slug));
+  return writeTiers(slug, { by, tier: body.tier, reason: body.reason, lines: resolved, before, markdown: state.markdown, rawMarks: state.marks, source: 'page' });
+});
 
 // Body: { by, anchor, note? }: flag a line uncertain (or update your note on your flag there).
 pageAidRoute('/documents/:slug/flags', ({ slug, by, body }) => writeFlag(slug, { by, anchor: body.anchor, note: body.note, source: 'page' }));

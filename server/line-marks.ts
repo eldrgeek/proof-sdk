@@ -69,6 +69,8 @@ import { getProofSettings } from './proof-extras-store.js';
 import { buildDoReport } from './do-report.js';
 import { doTeamActors } from '../src/shared/do.js';
 import { listDos } from './do-store.js';
+import { evaluateDocumentTiers, serializeTierViews } from './line-tiers.js';
+import { tierIssueInput, type TierEvaluation } from '../src/shared/line-tiers.js';
 
 export type LineMarkResult = { status: number; body: Record<string, unknown> };
 
@@ -239,6 +241,10 @@ export interface IssueReport extends IssueSummary {
   settings: { blind: boolean; blindSetBy: string | null; blindSetAt: string | null };
   /** Lines whose marks disagree (only while BLIND_POLICY.disagreementPriority applies). */
   disagreementLines: number[];
+  /** Line tiers: every tagged or context line (untagged lines are decision lines). */
+  tiers: Array<Record<string, unknown>>;
+  /** Line tiers, raw evaluation (not serialized). */
+  tierEvaluation?: TierEvaluation;
   evaluatedAt: string;
   /** Raw evaluation, for the per-viewer blind view (not serialized). */
   extras?: ExtrasEvaluation;
@@ -268,10 +274,14 @@ export async function buildIssueReport(slug: string, markdown: string, rawMarks:
   const states = buildLineStates(lines, lineMarks);
   const now = Date.now();
   const extras = evaluateExtras(slug, extrasPre, { lines, states, team, rawMarks, now });
+  // Line tiers: a context line an AI read (and nothing open on it) is not an Issue for people.
+  let tierEvaluation: TierEvaluation | undefined;
+  try { tierEvaluation = evaluateDocumentTiers(slug, lines, lineMarks); } catch { tierEvaluation = undefined; }
   const computed = computeIssues({
     lines, lineMarks, team, reviewMarks, asks, uncertain: uncertainInputs(aids, states, team), objections: objectionInputs(aids),
     alternatives: alternativeInputs(extras, team), ttl: ttlInputs(extras), dos: doReport.issueInputs,
     disagreementLines: extras.disagreement, disagreementAlternatives: extras.countsDisagreement,
+    tiers: tierIssueInput(tierEvaluation),
   });
   // Step B4c: each Issue carries its team-neutral priority (rules + explicit AI priorities).
   const summary = { ...computed, issues: annotateIssues(computed.issues, aids.notes, lines) as typeof computed.issues };
@@ -310,6 +320,8 @@ export async function buildIssueReport(slug: string, markdown: string, rawMarks:
     terms: termsReport(lines),
     settings: extrasPre.settings,
     disagreementLines: [...extras.disagreement],
+    tiers: tierEvaluation ? serializeTierViews(tierEvaluation, lines) : [],
+    tierEvaluation,
     evaluatedAt: new Date(now).toISOString(),
     extras,
     docLines: lines,

@@ -853,6 +853,57 @@ in A or F. A proxy on a line the person already marked is moot and not shown.
 Evidence on every AI mark: `/marks/line` also takes `evidence` (kept for AI actors). An AI mark
 without it is listed with `claimed: true` in `/state` and shown as "claimed" in the page.
 
+## Line tiers: decision lines and context lines
+
+_Added 2026-09-19 by Claude Opus 5 (worker proof-tiers) for Mike Wolf, who ruled Yes: "Most lines
+are setup, not claims; this cuts the lines you must touch to the number of decisions. The author (or
+the Familiar) tags lines; you can flip any tag." Idea from Anthropic Fable. Rules in `TIER_POLICY`
+(`src/shared/line-tiers.ts`); `/state` returns them in `tierPolicy`._
+
+Every line has a **tier**. A `decision` line needs each person's own mark (every line did before). A
+`context` line is setup: an AI's read is enough for the people on the team. A line nobody tagged is a
+`decision` line (`TIER_POLICY.defaultTier`), so untagged documents behave exactly as before.
+
+Tag (any AI collaborator, or the owner credential):
+
+  POST /api/agent/<slug>/tiers
+  Body: { tier: "decision" | "context", reason?, lines: [target, ...] }   or   { tier, reason?, ...target }
+  (target = { quote | lineIndex | ref | hash[, occurrence] }, as for /marks/line)
+
+- Tiers are per document (shared by the team). Anyone with comment access may tag or flip. Every tag
+  is kept with who set it and when (`GET /api/agent/<slug>/tiers` returns `history`). The newest tag
+  still on a line wins.
+- An AI's `context` tag is **"AI proposed context"** (`proposed: true`) until a person confirms it by
+  tagging the line context themselves. The exception is a line that AI wrote (`byAuthor: true`). A
+  proposal counts as context meanwhile (`TIER_POLICY.aiProposalActsAsContext`).
+- A tag follows its line over a cosmetic edit (`carried: true`). A meaning change drops the tag, so
+  the line becomes a decision line again.
+- Events: `tier.set` (tier, count, reason, how many were proposals, each line's previous tier).
+
+Issues: a context line is an Issue for a person only when one of these holds:
+
+1. No AI has read it. A read is a current AI Seen, Agreed or Approved **with evidence**, or a
+   Familiar's proxy Seen or Agreed. "Claimed" marks do not count.
+2. Someone rejected it.
+3. Something open sits on it: an ask, an objection, a pending suggestion, an open comment, an
+   uncertain flag, open alternatives, an expired time-to-live, or a `{do}`.
+4. That person's Familiar recommends rejecting it (a `rejected-suggested` proxy).
+
+AI members still have their own unread context lines as Issues. A context line Issue carries
+`tier: "context"`, `readBy`, and `coveredFor` (the people excused). Decision lines behave as before.
+
+Read: `/state` has `tiers` (every tagged or context line: `lineIndex, ref, text, tier, tagged,
+proposed, carried, by, at, reason, byAuthor, readBy, flaggedFor`). `alignment.counts` adds
+`decision: {lines, issues}` and `context: {lines, issues, readForPeople, proposed}`.
+
+The page: context lines are quieter (dimmed, with a faint left rule; lavender while proposed). Once a
+document has any tag, decision lines get a ◆ in the margin. The line's rail box says "Context — read
+for you by <AI>" or "Decision line — it needs your mark", with **Make context / Make decision**
+(key **D**) and, on a proposal, **Confirm context**. A flip is an explicit action: it commits the
+scroll-accepts above the line. The rail shows the counts and **Show only decisions**. That control
+folds the context lines that are not Issues for you; it is view only and marks nothing. J / K and Next
+issue skip those lines, but scrolling still reads them.
+
 ## Presence And Event Polling
 
 Poll for changes:

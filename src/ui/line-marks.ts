@@ -97,6 +97,21 @@ import {
   type ProxyItem,
   type ProxyMark,
 } from '../shared/proxy-marks';
+import {
+  TIER_POLICY,
+  aiReadsFromMarks,
+  evaluateTiers,
+  flippedTier,
+  tierIssueInput,
+  type LineTier,
+  type TierEvaluation,
+  type TierFlag,
+  type TierRead,
+  type TierRecord,
+  type TierView,
+} from '../shared/line-tiers';
+import { tierViewKey, setTierDecorations, tierDecorationCount, type TierLineSpec } from '../editor/plugins/tier-view';
+import { buildTierRow, loadOnlyDecisions, renderTierControl, saveOnlyDecisions } from './line-tiers';
 import './line-marks.css';
 
 export interface LineMarksHost {
@@ -141,7 +156,7 @@ export interface MarkBoxOptions {
   /** Called after the viewer chose a mark (the popover closes itself; the rail stays). */
   onChosen?(status: StatusChoice): void;
   /** Called with the chosen status before it is written (the reading walk commits scroll-accepts). */
-  onExplicit?(status: StatusChoice): void;
+  onExplicit?(status: StatusChoice | 'tier'): void;
 }
 
 export interface MarkBox {
@@ -154,6 +169,8 @@ export interface MarkBox {
   ask?: AskControl;
   /** Step B4d: the lines a Reject from this box covers (the selection, or the line). */
   scope?: number[];
+  /** Line tiers: flips the line's tier (D). Returns false when tagging is not allowed. */
+  flipTier?(): boolean;
 }
 
 export type StatusChoice = LineMarkStatus | 'unseen';
@@ -282,6 +299,21 @@ export class LineMarksUI {
   private walkOnly: { lines: number[]; visited: number[] } | null = null;
   /** Test hook: familiar / ratify / undo requests this page made. */
   private proxyWrites: Array<{ kind: string; ok: boolean; status: number }> = [];
+  /** Line tiers: every tag (history; newest wins), the AI reads and Familiar flags that cover context lines. */
+  private serverTiers: TierRecord[] = [];
+  private serverTierSignals: { reads: TierRead[]; flags: TierFlag[] } = { reads: [], flags: [] };
+  private tierEval: TierEvaluation | null = null;
+  /** Lines with an Issue that concerns this viewer (a context line outside this set is skippable). */
+  private myIssueLines = new Set<number>();
+  /** "Show only decisions" (per browser, view only). */
+  private onlyDecisions = loadOnlyDecisions();
+  private tierFolded = new Set<number>();
+  private tierDecoSig = '';
+  private tierDecoQueued = false;
+  /** Test hook: tier requests this page made. */
+  private tierWrites: Array<{ tier: LineTier; lines: number[]; ok: boolean }> = [];
+  /** Line tiers: the rail control (counts and "Show only decisions"). */
+  readonly tierEl = document.createElement('div');
   /** Step B6: who the server says this viewer is, and the directory that reads names. */
   private serverMe: ViewerIdentity | null = null;
   private directory: IdentityDirectory = EMPTY_DIRECTORY;
@@ -390,6 +422,7 @@ export class LineMarksUI {
         alignedSnapshot?: { id: string; createdAt: string } | null;
         familiar?: FamiliarBinding | null; proxies?: ProxyMark[]; ratifications?: LineMarksUI['serverRatifications'];
         agentKeyLabels?: Record<string, string>;
+        tiers?: TierRecord[]; tierSignals?: { reads?: TierRead[]; flags?: TierFlag[] };
       };
       // A newer fetch or a local write superseded this answer.
       if (seq !== this.fetchSeq || this.writesInFlight > 0) return;
@@ -423,6 +456,11 @@ export class LineMarksUI {
       this.serverProxies = Array.isArray(body.proxies) ? body.proxies : [];
       this.serverRatifications = Array.isArray(body.ratifications) ? body.ratifications : [];
       this.agentKeyLabels = body.agentKeyLabels && typeof body.agentKeyLabels === 'object' ? body.agentKeyLabels : {};
+      this.serverTiers = Array.isArray(body.tiers) ? body.tiers : [];
+      this.serverTierSignals = {
+        reads: Array.isArray(body.tierSignals?.reads) ? body.tierSignals!.reads! : [],
+        flags: Array.isArray(body.tierSignals?.flags) ? body.tierSignals!.flags! : [],
+      };
       this.snapshot = body.alignedSnapshot && typeof body.alignedSnapshot.id === 'string' ? body.alignedSnapshot : null;
       this.loaded = true;
       this.recompute();
@@ -569,6 +607,14 @@ export class LineMarksUI {
       this.flagsByLine = flaggedLines(this.flagViews);
       this.objectionViews = evaluateObjections(this.serverObjections, this.lines, index => this.suggestionsOnLine(index));
       this.objectionsByLine = objectedLines(this.objectionViews);
+      // Line tiers: the server's reads (unredacted, with Familiars' proxies) plus any AI marks this
+      // page knows (an AI viewer's own marks show before the next poll).
+      this.tierEval = evaluateTiers({
+        lines: this.lines,
+        records: this.serverTiers,
+        reads: [...this.serverTierSignals.reads, ...aiReadsFromMarks(this.serverMarks)],
+        flags: this.serverTierSignals.flags,
+      });
       this.summary = computeIssues({
         lines: this.lines, lineMarks: this.serverMarks, team, reviewMarks, asks: askIssueInputs(this.askViews),
         uncertain: uncertainIssueInputs(this.flagViews, this.states, team),
@@ -578,15 +624,19 @@ export class LineMarksUI {
         dos: doIssueInputs(this.doViews),
         disagreementLines: this.disagreement,
         disagreementAlternatives: disagreementCounts(this.blind),
+        tiers: tierIssueInput(this.tierEval),
       });
+      this.computeTierFold();
       this.ranked = rankIssues(this.summary.issues, { viewer: this.me(), explicitFor: explicitPriorityLookup(this.serverNotes, this.lines) });
       this.computeBrief(reviewMarks);
       this.selection = this.selection.filter(index => index < this.lines.length);
       this.queueAskDecorations();
       this.queueDoDecorations();
       this.queueExtrasDecorations();
+      this.queueTierDecorations();
       this.maybeCheckAlignment();
     }
+    this.renderTierControl();
     this.renderBanner();
     this.renderBudget();
     this.renderBlind();
@@ -1216,6 +1266,11 @@ export class LineMarksUI {
       // not marked. It is not my mark (the glyph stays mine).
       const proxyItem = this.briefByLine.get(line.index);
       if (proxyItem) { dot.dataset.proxy = proxyItem.proxy.status; dot.dataset.proxyBucket = proxyItem.bucket; } else { delete dot.dataset.proxy; delete dot.dataset.proxyBucket; }
+      // Line tiers: a diamond beside a decision line (once the document has tags); context dots are fainter.
+      const tierView = this.tierEval?.views[line.index];
+      const showTier = Boolean(tierView) && (tierView!.tier === 'context' || this.tierEval!.anyTagged || !TIER_POLICY.diamondOnlyWhenTagged);
+      if (showTier) dot.dataset.tier = tierView!.tier; else delete dot.dataset.tier;
+      if (tierView?.proposed) dot.dataset.tierProposed = 'true'; else delete dot.dataset.tierProposed;
       const lineHeight = parseFloat(getComputedStyle(dom).lineHeight) || 24;
       const top = rect.top - containerRect.top + Math.max(0, (Math.min(lineHeight, rect.height) - dotSize) / 2);
       dot.style.top = `${Math.round(top)}px`;
@@ -1227,7 +1282,8 @@ export class LineMarksUI {
       // Rebuild the dot's children only when they change: a click whose target was replaced
       // between pointerdown and pointerup would be lost.
       const proxyInitial = proxyItem ? familiarInitial(this.aiName(proxyItem.proxy.familiar)) : '';
-      const sig = `${myStatus}|${pipStatuses.join(',')}|${proxyInitial}`;
+      const tierGlyph = showTier && tierView!.tier === 'decision' ? '◆' : '';
+      const sig = `${myStatus}|${pipStatuses.join(',')}|${proxyInitial}|${tierGlyph}`;
       if (dot.dataset.sig !== sig) {
         dot.dataset.sig = sig;
         const glyph = document.createElement('span');
@@ -1248,6 +1304,13 @@ export class LineMarksUI {
           badge.setAttribute('aria-hidden', 'true');
           dot.append(badge);
         }
+        if (tierGlyph) {
+          const diamond = document.createElement('span');
+          diamond.className = 'plm-tier';
+          diamond.textContent = tierGlyph;
+          diamond.setAttribute('aria-hidden', 'true');
+          dot.append(diamond);
+        }
       }
       const othersText = others.map(([, e]) => `${actorLabel(e.mark.by)}: ${shownLabel(shownStatus(e))}`).join('; ');
       const carriedText = (mine?.carried ? ' (carried over a small edit)' : '')
@@ -1256,7 +1319,8 @@ export class LineMarksUI {
       const extraText = (proxyItem ? `. Your Familiar ${this.aiName(proxyItem.proxy.familiar)} ${proxyItem.proxy.status === 'rejected-suggested' ? 'recommends rejecting it' : proxyItem.proxy.status === 'seen' ? 'read it' : `agrees (${proxyItem.proxy.confidence})`}, not yet yours` : '')
         + (this.disagreement.has(line.index) ? '. The team disagrees on this line' : '')
         + (this.altsByLine.has(line.index) ? '. Has competing wordings' : '')
-        + (ttlView ? `. ${describeTtl(ttlView, Date.now() + this.clockSkewMs)}` : '');
+        + (ttlView ? `. ${describeTtl(ttlView, Date.now() + this.clockSkewMs)}` : '')
+        + (showTier ? (tierView!.tier === 'context' ? `. Context line${tierView!.proposed ? ' (AI proposed)' : ''}${tierView!.readBy.length ? `, read for you by ${tierView!.readBy.map(a => this.aiName(a)).join(', ')}` : ''}` : '. Decision line') : '');
       dot.setAttribute('aria-label', `Line ${line.index + 1}: your mark ${myStatus === 'changed' ? 'is out of date (the line changed)' : shownLabel(myStatus)}${carriedText}${extraText}${othersText ? `. ${othersText}` : ''}. Mark this line`);
       dot.title = othersText ? `You: ${myStatus === 'changed' ? 'changed since you marked it' : shownLabel(myStatus)}\n${othersText.replace(/; /g, '\n')}` : 'Mark this line';
     }
@@ -1309,6 +1373,26 @@ export class LineMarksUI {
     excerpt.className = 'plm-excerpt';
     excerpt.textContent = line.text.length > 140 ? `${line.text.slice(0, 140)}…` : line.text;
     root.append(excerpt);
+    // Line tiers: what the line asks of you (decision / context: read for you by ...), and the flip.
+    const tierView = this.tierEval?.views[line.index];
+    const setTier = (tier: LineTier): boolean => {
+      if (!this.canMark) return false;
+      options.onExplicit?.('tier');
+      const fresh = this.lines[line.index] ?? line;
+      void this.setTiers([fresh.index], tier);
+      return true;
+    };
+    if (tierView) {
+      root.append(buildTierRow({
+        view: tierView,
+        anyTagged: this.tierEval?.anyTagged ?? false,
+        canTag: this.canMark,
+        viewerIsPerson: !isAiActor(this.me()),
+        name: actor => (isAiActor(actor) ? this.aiName(actor) : actorLabel(actor)),
+        when: formatWhen,
+        set: tier => { setTier(tier); },
+      }));
+    }
 
     // Step B3: the line's ask comes first: it is the decision the line carries.
     const askView = this.askForLine(line.index);
@@ -1596,7 +1680,10 @@ export class LineMarksUI {
       list.append(li);
     }
     root.append(list);
-    return { root, openReason, scope: coverage, choose: (status, via) => choose(status, undefined, via ?? 'click'), ...(askControl ? { ask: askControl } : {}) };
+    return {
+      root, openReason, scope: coverage, choose: (status, via) => choose(status, undefined, via ?? 'click'), ...(askControl ? { ask: askControl } : {}),
+      flipTier: () => setTier(flippedTier(tierView?.tier ?? TIER_POLICY.defaultTier)),
+    };
   }
 
   private openMenu(line: DocLine, dot: HTMLElement): void {
@@ -2091,7 +2178,7 @@ export class LineMarksUI {
     const ttl = this.ttlByLine.get(index);
     const ttlSig = ttl ? `${ttl.ttl.id}:${ttl.expired}:${ttl.notTrue}:${ttl.decayed.length}:${ttl.ttl.checks.length}` : '';
     const extras = `${alts}|${ttlSig}|${this.disagreement.has(index)}|${this.hiddenOnLine(index)}|${this.altHistoryFor(index).length}|${this.blind}`;
-    return `${flags}|${objections}|${chips}|${this.selection.join(',')}|${this.canApprove}|${extras}`;
+    return `${flags}|${objections}|${chips}|${this.selection.join(',')}|${this.canApprove}|${extras}|${this.tierSignature(index)}`;
   }
 
   selectionLines(): number[] { return [...this.selection]; }
@@ -2875,8 +2962,126 @@ export class LineMarksUI {
   private aidWrites = 0;
 
   /** Test and agent hook: the numbers the UI shows. */
-  debugState(): { proxy: Record<string, unknown>; extras: Record<string, unknown>; aids: Record<string, unknown>; loaded: boolean; issues: number; aligned: boolean; team: string[]; lines: number; marks: LineMark[]; sectionWrites: number; askIssues: number; askAnswers: number; asks: Array<Record<string, unknown>>; doIssues: number; doWrites: number; dos: Array<Record<string, unknown>>; skimWrites: number; snapshot: { id: string; createdAt: string } | null; carried: Array<{ line: number; by: string; from: string | null }> } {
+  // --------------------------------------------------------------------------
+  // Line tiers
+  // --------------------------------------------------------------------------
+
+  tierView(index: number): TierView | null { return this.tierEval?.views[index] ?? null; }
+  tiersTagged(): boolean { return this.tierEval?.anyTagged ?? false; }
+
+  tierSignature(index: number): string {
+    const v = this.tierEval?.views[index];
+    return v ? `${v.tier}:${v.proposed}:${v.record?.id ?? ''}:${v.readBy.join(',')}:${this.canMark}` : '';
+  }
+
+  /** A context line that is not an Issue for this viewer: J / K and Next issue skip it (scrolling still reads it). */
+  tierSkippable(index: number): boolean {
+    const v = this.tierEval?.views[index];
+    return Boolean(v?.actsAsContext) && !this.myIssueLines.has(index);
+  }
+
+  /** Lines "Show only decisions" folds away now. */
+  tierFoldedLines(): ReadonlySet<number> { return this.tierFolded; }
+  onlyDecisionsOn(): boolean { return this.onlyDecisions; }
+
+  setOnlyDecisions(on: boolean): void {
+    if (this.onlyDecisions === on) return;
+    this.onlyDecisions = on;
+    saveOnlyDecisions(on);
+    this.recompute();
+  }
+
+  private computeTierFold(): void {
+    const me = actorKey(this.me());
+    const mine = new Set<number>();
+    for (const issue of this.summary?.issues ?? []) {
+      if (!('lineIndex' in issue)) continue;
+      if (issue.type === 'objection') { for (const index of issue.lineIndices) mine.add(index); continue; }
+      if (issue.lineIndex === null) continue;
+      if (issue.type === 'line' && !issue.unseenBy.some(m => actorKey(m) === me) && issue.rejectedBy.length === 0) continue;
+      mine.add(issue.lineIndex);
+    }
+    for (const mark of this.reviewMarkCache) {
+      if (!mark.open || typeof mark.pos !== 'number') continue;
+      const index = this.lineAtPos(mark.pos);
+      if (index >= 0) mine.add(index);
+    }
+    this.myIssueLines = mine;
+    const folded = new Set<number>();
+    if (this.onlyDecisions && this.tierEval?.anyTagged) {
+      for (const view of this.tierEval.views) {
+        if (!view.actsAsContext || mine.has(view.lineIndex)) continue;
+        const line = this.lines[view.lineIndex];
+        if (!line || (TIER_POLICY.foldKeepsHeadings && line.kind === 'heading')) continue;
+        folded.add(view.lineIndex);
+      }
+    }
+    this.tierFolded = folded;
+  }
+
+  /** Tags lines with a tier (anyone with comment access; every flip is recorded with who and when). */
+  async setTiers(indices: number[], tier: LineTier, reason?: string): Promise<boolean> {
+    const lines = indices.map(i => this.lines[i]).filter((l): l is DocLine => Boolean(l));
+    if (lines.length === 0 || !this.canMark) return false;
+    // Optimistic: the new tag shows at once.
+    const previous = this.serverTiers;
+    const at = new Date().toISOString();
+    this.serverTiers = [...this.serverTiers, ...lines.map((line, i) => ({ id: `local-${Date.now()}-${i}`, tier, by: this.me(), at, reason: reason ?? null, anchor: anchorForLine(line) }))];
+    this.recompute();
+    const result = await this.postAid('/tiers', { tier, anchors: lines.map(anchorForLine), ...(reason ? { reason } : {}) });
+    this.tierWrites.push({ tier, lines: lines.map(l => l.index), ok: result.ok });
+    if (!result.ok) { this.serverTiers = previous; this.recompute(); }
+    return result.ok;
+  }
+
+  private renderTierControl(): void {
+    renderTierControl(this.tierEl, {
+      counts: this.summary ? { decision: this.summary.counts.decision, context: this.summary.counts.context } : null,
+      anyTagged: this.tierEval?.anyTagged ?? false,
+      onlyDecisions: this.onlyDecisions,
+      toggle: on => this.setOnlyDecisions(on),
+    });
+  }
+
+  /** Context lines quieter, folded ones hidden (view-only node decorations). */
+  private queueTierDecorations(): void {
+    if (this.tierDecoQueued) return;
+    this.tierDecoQueued = true;
+    requestAnimationFrame(() => {
+      this.tierDecoQueued = false;
+      const view = this.view;
+      if (!view || !this.tierEval) return;
+      const specs: TierLineSpec[] = [];
+      for (const v of this.tierEval.views) {
+        const line = this.lines[v.lineIndex];
+        if (!line) continue;
+        const folded = this.tierFolded.has(v.lineIndex);
+        if (v.tier !== 'context' && !folded) continue;
+        specs.push({ lineIndex: v.lineIndex, pos: line.pos, nodeSize: line.nodeSize, context: v.tier === 'context', proposed: v.proposed, folded });
+      }
+      const signature = specs.map(s => `${s.lineIndex}@${s.pos}:${s.nodeSize}:${s.proposed ? 'p' : ''}${s.folded ? 'f' : ''}`).join('|');
+      // A remote Yjs update replaces the whole document and drops mapped decorations: rebuild then.
+      const present = tierViewKey.getState(view.state)?.find().length ?? 0;
+      if (signature === this.tierDecoSig && present >= specs.length) return;
+      this.tierDecoSig = signature;
+      try { setTierDecorations(view, specs); } catch (error) { console.warn('[plm] tier decorations failed', error); }
+      this.queueRender();
+    });
+  }
+
+  debugState(): { tiers: Record<string, unknown>; proxy: Record<string, unknown>; extras: Record<string, unknown>; aids: Record<string, unknown>; loaded: boolean; issues: number; aligned: boolean; team: string[]; lines: number; marks: LineMark[]; sectionWrites: number; askIssues: number; askAnswers: number; asks: Array<Record<string, unknown>>; doIssues: number; doWrites: number; dos: Array<Record<string, unknown>>; skimWrites: number; snapshot: { id: string; createdAt: string } | null; carried: Array<{ line: number; by: string; from: string | null }> } {
     return {
+      tiers: {
+        anyTagged: this.tierEval?.anyTagged ?? false,
+        views: (this.tierEval?.views ?? []).filter(v => v.tagged || v.tier === 'context').map(v => ({ line: v.lineIndex, tier: v.tier, proposed: v.proposed, readBy: v.readBy, by: v.record?.by ?? null })),
+        counts: { decision: this.summary?.counts.decision ?? null, context: this.summary?.counts.context ?? null },
+        onlyDecisions: this.onlyDecisions,
+        folded: [...this.tierFolded],
+        skippable: this.lines.map(l => l.index).filter(i => this.tierSkippable(i)),
+        myIssueLines: [...this.myIssueLines],
+        writes: this.tierWrites,
+        decorations: this.view ? tierDecorationCount(this.view) : null,
+      },
       proxy: {
         familiar: this.serverFamiliar?.familiar ?? null,
         proxies: this.serverProxies.length,

@@ -1323,6 +1323,28 @@ function initDatabase(): void {
   `);
   d.exec(`CREATE INDEX IF NOT EXISTS idx_document_proxy_ratifications_slug ON document_proxy_ratifications(document_slug, human_key, at)`);
 
+  // Proof Documents, line tiers (Mike, 2026-09-19): decision / context tags per line. Append-only
+  // (every flip is kept with who and when); the newest tag still on a line is its tier. Beside the
+  // document like line marks, never in its text.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_line_tiers (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      tier TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      reason TEXT,
+      by_author INTEGER NOT NULL DEFAULT 0,
+      line_hash TEXT NOT NULL,
+      line_occurrence INTEGER NOT NULL,
+      line_ordinal INTEGER NOT NULL,
+      line_kind TEXT NOT NULL,
+      line_excerpt TEXT NOT NULL DEFAULT '',
+      line_text TEXT,
+      at TEXT NOT NULL
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_line_tiers_slug ON document_line_tiers(document_slug, at)`);
+
   // Proof Documents Step B4c: review notes (an AI's why / reject hints / explicit priority on a
   // suggestion or a line) and uncertain flags. Beside the document like line marks.
   d.exec(`

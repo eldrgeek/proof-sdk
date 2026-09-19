@@ -41,6 +41,8 @@ import {
 } from './collab.js';
 import { canonicalizeStoredMarks, type StoredMark } from '../src/formats/marks.js';
 import { buildIssueReport, computeServerLines, listCanonicalLineMarks, resolveAgentLineTarget, writeAgentLineMark } from './line-marks.js';
+import { TIER_POLICY } from '../src/shared/line-tiers.js';
+import { evaluateDocumentTiers, listTierRecords, serializeTierViews, writeTiers } from './line-tiers.js';
 import { bindFamiliar, briefFor, issueReportFor, listFamiliars, proxyStateReport, resolveHuman, serializeBrief, writeAgentProxyMarks } from './proxy-marks.js';
 import { EVIDENCE_POLICY, PROXY_POLICY, isClaimedMark } from '../src/shared/proxy-marks.js';
 import { buildSinceYou, freezeIfAligned, listSnapshotInfos, scheduleAlignmentCheck, sendSnapshotFile } from './alignment.js';
@@ -2230,6 +2232,11 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
       body.settings = report.settings;
       body.evaluatedAt = report.evaluatedAt;
       body.disagreementLines = report.disagreementLines;
+      // Line tiers: decision lines need each person's mark; a context line an AI read is enough.
+      body.tiers = report.tiers;
+      body.tierPolicy = TIER_POLICY;
+      links.tiers = { method: 'GET', href: `/api/agent/${slug}/tiers` };
+      links.setTiers = { method: 'POST', href: `/api/agent/${slug}/tiers` };
       body.proofExtrasPolicy = { bundles: BUNDLE_POLICY, alternatives: ALT_POLICY, blind: BLIND_POLICY, explain: EXPLAIN_POLICY, terms: { ...TERM_POLICY, sectionPattern: String(TERM_POLICY.sectionPattern), linePatterns: TERM_POLICY.linePatterns.map(String) }, ttl: TTL_POLICY };
       links.bundles = { method: 'GET', href: `/api/agent/${slug}/bundles` };
       links.alternatives = { method: 'GET', href: `/api/agent/${slug}/alternatives` };
@@ -3663,6 +3670,62 @@ agentRoutes.post('/:slug/marks/line', async (req: Request, res: Response) => {
     notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'line_mark.set' }), { apply: false });
   }
   sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+});
+
+// ============================================================================
+// Line tiers (Mike, 2026-09-19): decision lines and context lines
+// ============================================================================
+
+// Body: { tier: "decision" | "context", reason?, lines: [target, ...] } or { tier, ...target } for one
+// line (target = { lineIndex | hash[, occurrence] | ref | quote }). Any AI collaborator (or the owner
+// credential) may tag; an AI's context tag shows as "AI proposed context" until a person confirms it.
+agentRoutes.post('/:slug/tiers', async (req: Request, res: Response) => {
+  const route = 'POST /tiers';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route }); return; }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body);
+  const actor = resolveAgentActor(req, slug, payload, role);
+  if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route, slug }); return; }
+  const state = await currentAgentState(slug);
+  const lines = await computeServerLines(state.markdown);
+  const targets = Array.isArray(payload.lines) ? payload.lines : [payload];
+  if (targets.length === 0) { sendMutationResponse(res, 400, { success: false, code: 'INVALID_LINES', error: '"lines" must be a non-empty array' }, { route, slug }); return; }
+  if (targets.length > TIER_POLICY.maxLinesPerRequest) { sendMutationResponse(res, 400, { success: false, code: 'BATCH_TOO_LARGE', error: `At most ${TIER_POLICY.maxLinesPerRequest} lines per request` }, { route, slug }); return; }
+  const resolved = [];
+  for (let i = 0; i < targets.length; i += 1) {
+    const raw = targets[i];
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { sendMutationResponse(res, 400, { success: false, code: 'INVALID_LINES', error: `lines[${i}] is not a target object`, index: i }, { route, slug }); return; }
+    const item = raw as Record<string, unknown>;
+    const target = resolveAgentLineTarget(lines, item.target && typeof item.target === 'object' ? item.target as Record<string, unknown> : item);
+    if (!target.ok) {
+      sendMutationResponse(res, target.status, { success: false, code: target.code, error: Array.isArray(payload.lines) ? `lines[${i}]: ${target.error}` : target.error, index: i, ...(target.candidates ? { candidates: target.candidates } : {}) }, { route, slug });
+      return;
+    }
+    resolved.push(target.line);
+  }
+  const before = evaluateDocumentTiers(slug, lines, listCanonicalLineMarks(slug));
+  const result = writeTiers(slug, { by: actor.by, tier: payload.tier, reason: payload.reason, lines: resolved, before, markdown: state.markdown, rawMarks: state.marks, source: 'agent' });
+  if (result.status === 200) scheduleAlignmentCheck(slug);
+  sendMutationResponse(res, result.status, result.body, { route, slug });
+});
+
+// The document's tiers now (every tagged or context line) and the full history of tags.
+agentRoutes.get('/:slug/tiers', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  const state = await currentAgentState(slug);
+  const lines = await computeServerLines(state.markdown);
+  const evaluation = evaluateDocumentTiers(slug, lines, listCanonicalLineMarks(slug));
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    success: true,
+    tiers: serializeTierViews(evaluation, lines),
+    history: listTierRecords(slug).map(record => ({ id: record.id, tier: record.tier, by: record.by, at: record.at, reason: record.reason ?? null, byAuthor: record.byAuthor === true, excerpt: record.anchor.excerpt })),
+    policy: TIER_POLICY,
+  });
 });
 
 // ============================================================================

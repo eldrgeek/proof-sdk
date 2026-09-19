@@ -547,6 +547,12 @@ export type ProofIssue =
      * Reject). Set only while it counts for priority (BLIND_POLICY in src/shared/blind.ts).
      */
     disagreement?: boolean;
+    /** Line tiers: the line is a context line (absent on decision lines). */
+    tier?: 'context';
+    /** Line tiers: the AIs that read this context line with evidence. */
+    readBy?: string[];
+    /** Line tiers: people this line would be unseen for, excused because an AI read it. */
+    coveredFor?: string[];
   }
   | {
     /**
@@ -659,7 +665,9 @@ export interface IssueSummary {
   team: string[];
   issues: ProofIssue[];
   aligned: boolean;
-  counts: { lines: number; lineIssues: number; reviewMarkIssues: number; askIssues: number; uncertainIssues: number; objectionIssues: number; alternativeIssues: number; ttlIssues: number; doIssues: number; total: number };
+  counts: { lines: number; lineIssues: number; reviewMarkIssues: number; askIssues: number; uncertainIssues: number; objectionIssues: number; alternativeIssues: number; ttlIssues: number; doIssues: number; total: number }
+    /** Line tiers: present when the caller applied tiers (decision vs context lines and their line Issues). */
+    & Partial<TierCounts>;
 }
 
 /** A `{do}` not yet done (src/shared/do.ts doIssueInputs; declared here to avoid an import cycle). */
@@ -720,6 +728,49 @@ export interface AskIssueInput {
   snoozedFor: string[];
 }
 
+/**
+ * Line tiers (src/shared/line-tiers.ts): one view per line, declared here to avoid an import cycle.
+ * A line whose view `actsAsContext` is covered for people when an AI read it (readBy), nobody
+ * rejected it and nothing open (per `openItems`) sits on it; then people's silence is not an Issue.
+ */
+export interface TierIssueView {
+  lineIndex: number;
+  tier: 'decision' | 'context';
+  actsAsContext: boolean;
+  /** An AI's context tag no person confirmed yet ("AI proposed context"). */
+  proposed?: boolean;
+  readBy: string[];
+  /** People whose Familiar recommends rejecting the line: it stays their Issue. */
+  flaggedFor: string[];
+}
+
+export interface TierIssueInput {
+  views: TierIssueView[];
+  openItems: {
+    rejection: boolean; objection: boolean; ask: boolean; suggestion: boolean; comment: boolean;
+    uncertainFlag: boolean; alternatives: boolean; expiredTtl: boolean; doAction: boolean;
+  };
+}
+
+/** The line a review mark sits on: by position when the caller has one, else the first line holding its quote. */
+export function lineOfReviewMark(lines: DocLine[], mark: Pick<ReviewMarkLike, 'pos' | 'quote'>): number | null {
+  if (typeof mark.pos === 'number') {
+    for (const line of lines) {
+      if (mark.pos >= line.pos && mark.pos <= line.pos + line.nodeSize) return line.index;
+    }
+  }
+  const quote = normalizeLineText(String(mark.quote ?? ''));
+  if (!quote) return null;
+  const found = lines.find(line => line.text.includes(quote));
+  return found ? found.index : null;
+}
+
+/** Tier counts for alignment: lines of each tier, and the line Issues on each. */
+export interface TierCounts {
+  decision: { lines: number; issues: number };
+  context: { lines: number; issues: number; readForPeople: number; proposed: number };
+}
+
 export function computeIssues(input: {
   lines: DocLine[];
   lineMarks: LineMark[];
@@ -740,13 +791,35 @@ export function computeIssues(input: {
   disagreementLines?: ReadonlySet<number>;
   /** Step B4f: alternatives whose open-for list disagrees get `disagreement` too (blind on). */
   disagreementAlternatives?: boolean;
+  /** Line tiers (src/shared/line-tiers.ts tierIssueInput). Absent: every line is a decision line. */
+  tiers?: TierIssueInput;
 }): IssueSummary {
   const states = buildLineStates(input.lines, input.lineMarks);
   const issues: ProofIssue[] = [];
+  const tierView = new Map<number, TierIssueView>();
+  for (const view of input.tiers?.views ?? []) tierView.set(view.lineIndex, view);
+  // Line tiers: the lines something open sits on (a context line with one still needs people).
+  const openLines = new Set<number>();
+  if (input.tiers) {
+    const open = input.tiers.openItems;
+    if (open.ask) for (const ask of input.asks ?? []) if (ask.openFor.length > 0) openLines.add(ask.lineIndex);
+    if (open.uncertainFlag) for (const flag of input.uncertain ?? []) if (flag.openFor.length > 0) openLines.add(flag.lineIndex);
+    if (open.objection) for (const objection of input.objections ?? []) for (const index of objection.lineIndices) openLines.add(index);
+    if (open.alternatives) for (const alt of input.alternatives ?? []) if (alt.openFor.length > 0) openLines.add(alt.lineIndex);
+    if (open.expiredTtl) for (const ttl of input.ttl ?? []) if (ttl.openFor.length > 0) openLines.add(ttl.lineIndex);
+    if (open.doAction) for (const item of input.dos ?? []) openLines.add(item.lineIndex);
+    for (const mark of input.reviewMarks ?? []) {
+      if (!mark.open || mark.explain) continue;
+      if (mark.kind === 'comment' ? !open.comment : !open.suggestion) continue;
+      const index = lineOfReviewMark(input.lines, mark);
+      if (index !== null) openLines.add(index);
+    }
+  }
+  const tierCounts: TierCounts = { decision: { lines: 0, issues: 0 }, context: { lines: 0, issues: 0, readForPeople: 0, proposed: 0 } };
   for (const state of states) {
-    const unseenBy: string[] = [];
-    const changedFor: string[] = [];
-    const skimmedBy: string[] = [];
+    let unseenBy: string[] = [];
+    let changedFor: string[] = [];
+    let skimmedBy: string[] = [];
     for (const member of input.team) {
       const entry = state.marks.get(actorKey(member));
       if (!entry || !entry.current || !countsAsSeen(entry.mark.status)) unseenBy.push(member);
@@ -759,11 +832,36 @@ export function computeIssues(input: {
         rejectedBy.push({ by: entry.mark.by, reason: entry.mark.reason ?? null });
       }
     }
+    // Line tiers: a covered context line is not an Issue for people (only for AIs that have not
+    // read it, and for a person whose Familiar recommends rejecting it).
+    const view = tierView.get(state.line.index);
+    const context = Boolean(view?.actsAsContext);
+    let coveredFor: string[] = [];
+    if (context && view && input.tiers) {
+      const rejected = rejectedBy.length > 0 && input.tiers.openItems.rejection;
+      const covered = view.readBy.length > 0 && !rejected && !openLines.has(state.line.index);
+      if (covered) {
+        const flagged = new Set(view.flaggedFor.map(actorKey));
+        const excused = (member: string) => !isAiActor(member) && !flagged.has(actorKey(member));
+        coveredFor = unseenBy.filter(excused);
+        unseenBy = unseenBy.filter(member => !excused(member));
+        changedFor = changedFor.filter(member => !excused(member));
+        skimmedBy = skimmedBy.filter(member => !excused(member));
+        tierCounts.context.readForPeople += 1;
+      }
+    }
+    if (input.tiers) {
+      if (context) tierCounts.context.lines += 1; else tierCounts.decision.lines += 1;
+      if (context && view?.proposed) tierCounts.context.proposed += 1;
+    }
     const reasons: LineIssueReason[] = [];
     if (unseenBy.length > 0) reasons.push('unseen');
     if (changedFor.length > 0) reasons.push('changed');
     if (rejectedBy.length > 0) reasons.push('rejected');
     if (unseenBy.length === 0 && rejectedBy.length === 0) continue;
+    if (input.tiers) {
+      if (context) tierCounts.context.issues += 1; else tierCounts.decision.issues += 1;
+    }
     issues.push({
       type: 'line',
       lineIndex: state.line.index,
@@ -777,6 +875,7 @@ export function computeIssues(input: {
       rejectedBy,
       skimmedBy,
       ...(input.disagreementLines?.has(state.line.index) ? { disagreement: true } : {}),
+      ...(context ? { tier: 'context' as const, readBy: view?.readBy ?? [], ...(coveredFor.length ? { coveredFor } : {}) } : {}),
     });
   }
   let reviewMarkIssues = 0;
@@ -914,7 +1013,10 @@ export function computeIssues(input: {
     team: input.team,
     issues,
     aligned: issues.length === 0,
-    counts: { lines: input.lines.length, lineIssues, reviewMarkIssues, askIssues, uncertainIssues, objectionIssues, alternativeIssues, ttlIssues, doIssues, total: issues.length },
+    counts: {
+      lines: input.lines.length, lineIssues, reviewMarkIssues, askIssues, uncertainIssues, objectionIssues, alternativeIssues, ttlIssues, doIssues, total: issues.length,
+      ...(input.tiers ? tierCounts : {}),
+    },
   };
 }
 

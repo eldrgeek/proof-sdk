@@ -66,6 +66,11 @@ export interface WalkLine {
    * is hidden).
    */
   hidden?: boolean;
+  /**
+   * Line tiers: a context line that is not an Issue for the reader. J / K step over it (Next issue
+   * never lands on it); scrolling still reads it like any line.
+   */
+  skipStep?: boolean;
 }
 
 export type WalkEvent =
@@ -298,6 +303,19 @@ export class ReadingWalk {
   }
 
   isHidden(line: number): boolean { return Boolean(this.lines[line]?.hidden); }
+
+  /**
+   * Line tiers: the nearest line after (dir 1) or before (dir -1) that a step (J / K) stops on: not
+   * hidden and not a skippable context line. Null when none is left (the caller may fall back to
+   * nextVisible so the last lines stay reachable).
+   */
+  nextStop(dir: 1 | -1, from = this.focusLine): number | null {
+    for (let line = from + dir; line >= 0 && line < this.lines.length; line += dir) {
+      const l = this.lines[line];
+      if (!l?.hidden && !l?.skipStep) return line;
+    }
+    return null;
+  }
 
   /** Called on a timer: the focus line becomes read once it has held the focus long enough. */
   tick(now: number): void {

@@ -31,6 +31,7 @@ import type { LineMarksUI, MarkBox } from './line-marks';
 import { isOpenReviewMark, type PlayMakerReview, type ReviewAction } from './playmaker-review';
 import { editingRemainingMs, installEditingGuard, isEditing, onEditingActivity } from '../editor/editing-guard';
 import { ProxyMarksUI } from './proxy-marks';
+import { TIER_POLICY } from '../shared/line-tiers';
 import './reading-walk.css';
 
 /**
@@ -216,6 +217,9 @@ export class ReadingWalkUI {
     // Step B4f: blind marking (an Owner's switch) sits under "This sitting".
     const blind = this.host.lineMarks().blindEl;
     if (blind.parentElement !== this.rightBody) this.rightBody.insertBefore(blind, this.sinceHost);
+    // Line tiers: decision / context counts and "Show only decisions".
+    const tiers = this.host.lineMarks().tierEl;
+    if (tiers.parentElement !== this.rightBody) this.rightBody.insertBefore(tiers, budget);
     // Familiar proxy marks: the brief is the first thing in the rail.
     this.rightBody.prepend(this.proxy.briefEl);
     this.proxy.start();
@@ -310,6 +314,8 @@ export class ReadingWalkUI {
       marks: [] as WalkMark[],
       ...(hidden.has(line.index) ? { hidden: true } : {}),
       ...(flagged.has(line.index) ? { dwellFactor: UNCERTAIN_POLICY.dwellFactor } : {}),
+      // Line tiers: J / K step over context lines that are not Issues for this reader.
+      ...(lm.tierSkippable(line.index) ? { skipStep: true } : {}),
     }));
     for (const mark of pending) {
       const index = lm.lineAtPos(mark.range!.from);
@@ -528,6 +534,8 @@ export class ReadingWalkUI {
     if (key === 'r' || key === 'R') { event.preventDefault(); this.openReason(); return; }
     if (key === 'j' || key === 'J' || key === 'ArrowDown') { event.preventDefault(); this.next(); return; }
     if (key === 'k' || key === 'K' || key === 'ArrowUp') { event.preventDefault(); this.previous(); return; }
+    // Line tiers: D flips the focus line between decision and context (an explicit action).
+    if (key.toLowerCase() === TIER_POLICY.flipKey) { event.preventDefault(); this.flipFocusTier(); return; }
     // Step B4f: E asks the AI collaborators to explain the focus line (never a rejection).
     if (key.toLowerCase() === EXPLAIN_POLICY.key) { event.preventDefault(); this.explainFocus(); return; }
     // Step B4f: 1-9 pick among the focus line's competing wordings (1 is the original).
@@ -544,6 +552,12 @@ export class ReadingWalkUI {
       this.answerFocus(choice);
     }
   };
+
+  /** Line tiers: D on the focus line. */
+  private flipFocusTier(): void {
+    this.renderNow();
+    this.box?.flipTier?.();
+  }
 
   /** Step B3: Y / N / T on the focus line's ask. */
   private answerFocus(choice: AskChoice): void {
@@ -612,8 +626,8 @@ export class ReadingWalkUI {
     const walk = this.walk;
     if (!walk) return;
     if (walk.stepForward()) { this.afterChange(true); return; }
-    // Step B2: a folded section is one step.
-    const to = walk.nextVisible(1);
+    // Step B2: a folded section is one step. Line tiers: skippable context lines are passed over.
+    const to = walk.nextStop(1) ?? walk.nextVisible(1);
     if (to === null) return;
     walk.moveTo(to, performance.now(), 'scroll', this.heights);
     this.scrollToLine(walk.focus);
@@ -625,7 +639,7 @@ export class ReadingWalkUI {
     const walk = this.walk;
     if (!walk) return;
     if (walk.stepBack()) { this.afterChange(true); return; }
-    const to = walk.nextVisible(-1);
+    const to = walk.nextStop(-1) ?? walk.nextVisible(-1);
     if (to === null) return;
     walk.moveTo(to, performance.now(), 'scroll', this.heights);
     this.scrollToLine(walk.focus);
@@ -1116,7 +1130,7 @@ export class ReadingWalkUI {
     const hasAsk = Boolean(lm.askForLine(walk.focus));
     const alts = lm.altSetFor(walk.focus);
     head.append(el('strong', undefined, 'Mark this line'),
-      el('span', 'prw-keys', hasAsk ? 'Y yes · N no · T not yet' : alts ? `1–${alts.options.length} pick · A agree · E explain` : 'A agree · R reject · E explain · J/K move'));
+      el('span', 'prw-keys', hasAsk ? 'Y yes · N no · T not yet' : alts ? `1–${alts.options.length} pick · A agree · E explain` : 'A agree · R reject · E explain · D tier · J/K move'));
     // Editing first (2026-09-19): who changed this line, and whether the meaning changed.
     const note = lm.editNoteFor(walk.focus);
     if (note) {

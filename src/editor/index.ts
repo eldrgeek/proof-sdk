@@ -20,6 +20,7 @@ import { foldViewPlugin } from './plugins/fold-view';
 import { askViewPlugin } from './plugins/ask-view';
 import { doViewPlugin } from './plugins/do-view';
 import { proofExtrasViewPlugin } from './plugins/proof-extras-view';
+import { tierViewPlugin } from './plugins/tier-view';
 import { getReviewStyle, setReviewStyle, REVIEW_STYLE_POLICY } from './review-style';
 import { isEditing } from './editing-guard';
 import { ReviewDecisionHistory, reconnectNativeUndoManager } from './review-decision-history';
@@ -1305,6 +1306,8 @@ class ProofEditorImpl implements ProofEditor {
       .use(doViewPlugin)
       // Proof Documents Step B4f: alternatives stacks and term links (view-only decorations)
       .use(proofExtrasViewPlugin)
+      // Line tiers: context lines quieter, "Show only decisions" folds them (view-only decorations)
+      .use(tierViewPlugin)
       .use(marksSyncPlugin((actionMarks, view, actionMetadata) => {
         this.handleMarksChange(actionMarks, view, actionMetadata);
       }))
@@ -3823,8 +3826,18 @@ class ProofEditorImpl implements ProofEditor {
         },
         playmaker: () => this.playmakerReview,
         reviewStyle: () => getReviewStyle(),
-        hiddenLines: () => this.folding?.hiddenLines() ?? new Set<number>(),
-        visibleLineFor: (lineIndex) => this.folding?.visibleLineFor(lineIndex) ?? lineIndex,
+        // Step B2 folded sections, plus line tiers' "Show only decisions" (folded context lines).
+        hiddenLines: () => {
+          const hidden = new Set<number>(this.folding?.hiddenLines() ?? []);
+          for (const index of this.lineMarks?.tierFoldedLines() ?? []) hidden.add(index);
+          return hidden;
+        },
+        visibleLineFor: (lineIndex) => {
+          let visible = this.folding?.visibleLineFor(lineIndex) ?? lineIndex;
+          const tierFolded = this.lineMarks?.tierFoldedLines() ?? new Set<number>();
+          while (visible > 0 && tierFolded.has(visible)) visible -= 1;
+          return visible;
+        },
       });
       (window as unknown as { __proofReadingWalk?: ReadingWalkUI }).__proofReadingWalk = this.readingWalk;
       const walkUi = this.readingWalk;

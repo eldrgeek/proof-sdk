@@ -1,0 +1,39 @@
+/* Proof Documents — line tiers (Claude Opus 5, 2026-09-19). Context lines are quieter; decision lines get a ◆. */
+
+/* Context lines in the text: slightly dimmed, with a faint left rule. */
+.ProseMirror .ptier-context { color: rgba(55, 65, 81, 0.72); box-shadow: inset 2px 0 0 rgba(148, 163, 184, 0.45); padding-left: 8px; }
+.ProseMirror tr.ptier-context { box-shadow: inset 2px 0 0 rgba(148, 163, 184, 0.45); padding-left: 0; }
+.ProseMirror .ptier-context.ptier-proposed { box-shadow: inset 2px 0 0 rgba(167, 139, 250, 0.55); }
+/* "Show only decisions": context lines that are not Issues fold away (view only). */
+.ProseMirror .ptier-folded { display: none !important; }
+.ProseMirror li:has(> .ptier-folded:only-child) { display: none !important; }
+
+/* The margin: ◆ on decision lines (once the document has tags); context dots are fainter. */
+.plm-dot .plm-tier { position: absolute; left: -9px; top: 50%; transform: translateY(-50%); font: 700 9px/1 system-ui, -apple-system, sans-serif; color: #1d4ed8; pointer-events: none; }
+.plm-dot[data-tier="context"] .plm-glyph { opacity: 0.55; }
+
+/* The tier row in a line's mark box. */
+.plm-tier-row { margin: 4px 0 6px; padding: 6px 8px; border-radius: 8px; background: #eff6ff; border: 1px solid #bfdbfe; font-size: 12px; }
+.plm-tier-row[data-tier="context"] { background: #f8fafc; border-color: #e2e8f0; color: #475569; }
+.plm-tier-row[data-proposed="true"] { background: #faf5ff; border-color: #ddd6fe; }
+.plm-tier-row p { margin: 2px 0; }
+.plm-tier-label { font-weight: 600; }
+.plm-tier-diamond { color: #1d4ed8; margin-right: 4px; }
+.plm-tier-who { color: #6b7280; font-size: 11px; }
+.plm-tier-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.plm-tier-btn { min-height: 28px; padding: 2px 10px; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; color: #1f2937; font: 12px system-ui, sans-serif; cursor: pointer; }
+.plm-tier-btn:disabled { opacity: 0.5; cursor: default; }
+.plm-tier-confirm { border-color: #a78bfa; color: #5b21b6; }
+
+/* The rail control. */
+.plm-tiers { margin: 6px 0 8px; padding: 6px 8px; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 12px; color: #374151; }
+.plm-tiers-counts { margin: 0 0 4px; }
+.plm-tiers-decision { color: #1d4ed8; }
+.plm-tiers-only { display: flex; align-items: center; gap: 6px; min-height: 28px; cursor: pointer; }
+
+@media (max-width: 700px) {
+  .plm-tier-btn { min-height: 44px; padding: 4px 14px; font-size: 14px; }
+  .plm-tiers-only { min-height: 44px; }
+  .plm-tier-key { display: none; }
+  .plm-dot .plm-tier { left: -7px; }
+}
