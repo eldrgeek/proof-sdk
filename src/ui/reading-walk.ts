@@ -49,6 +49,43 @@ export const READING_EDIT_POLICY = {
   textClickIsExplicitAction: false,
 } as const;
 
+/**
+ * Hover focus (Mike, 2026-09-19): "Hovering over a line puts its decision mark in the chat; having
+ * to click is extra work." On a desktop pointer, resting the mouse on a line for `delayMs` makes it
+ * the focus line: the right rail (mark box, changes, ask, proxy, chat pointer) and the keys act on
+ * it. Hover is not reading: the walk's reading position, dwell (Seen / Agreed) and scroll are
+ * untouched. While the person edits, the caret owns the focus.
+ */
+export const HOVER_FOCUS_POLICY = {
+  enabled: true,
+  /** Rest this long on a line before it becomes the focus (passing the mouse across does not thrash). */
+  delayMs: 150,
+  /** Pointers that hover precisely (a mouse or trackpad). */
+  query: '(hover: hover) and (pointer: fine)',
+  /** A move of the reading position (scroll, J / K, Next issue, a jump) hands the focus back to it. */
+  walkMoveClearsHover: true,
+} as const;
+
+/**
+ * Touch focus (Mike, 2026-09-19): "On a touch surface, there should be some other way to indicate
+ * what the current mark or the current item being looked at is." The focus line is the reading
+ * line; it gets a strong band and a left bar, and a strip docked at the bottom shows its mark and
+ * three big buttons (Agree / Reject / More…). Tapping text still edits (editing first).
+ */
+export const TOUCH_FOCUS_POLICY = {
+  enabled: true,
+  query: '(pointer: coarse)',
+  /** Height the page reserves for the strip (px, plus the safe area). */
+  stripHeightPx: 64,
+  /** While the caret is in the text (keyboard up), the strip steps aside so it never covers the text being edited. */
+  hideWhileEditing: true,
+} as const;
+
+const STATUS_WORDS: Record<string, string> = {
+  unseen: 'Not marked yet', seen: 'Seen', agreed: 'Agreed', approved: 'Approved', rejected: 'Rejected',
+  skimmed: 'Skimmed', changed: 'Changed since you marked it', stale: 'Marked long ago',
+};
+
 export interface ReadingWalkHost {
   slug(): string | null;
   actor(): string;
@@ -65,6 +102,8 @@ export interface ReadingWalkHost {
   hiddenLines?(): ReadonlySet<number>;
   /** Step B2: the visible line that stands for a hidden one (its folded heading). */
   visibleLineFor?(lineIndex: number): number;
+  /** The focus line changed (closed-Issue folding waits until the reader leaves a line). */
+  focusChanged?(lineIndex: number): void;
 }
 
 const PHONE_QUERY = '(max-width: 700px)';
@@ -172,6 +211,17 @@ export class ReadingWalkUI {
   private bundleErrorId: string | null = null;
   private readonly bundleDecisions: Array<{ id: string; action: string; ok: boolean; error?: string }> = [];
 
+  /** Hover focus: the line the mouse rests on (null: the reading line is the focus). */
+  private hoverLine: number | null = null;
+  private hoverCandidate: number | null = null;
+  private hoverTimer: ReturnType<typeof setTimeout> | null = null;
+  private hoverFrame = 0;
+  private lastPointer: { x: number; y: number } | null = null;
+  private lastWalkFocus = -1;
+  /** Touch focus: the strip docked at the bottom. */
+  private readonly strip = el('div', 'prw-strip');
+  private stripSig = '';
+
   /** Familiar proxy marks: My Familiar (header), the brief (top of the rail), the phone pill. */
   readonly proxy: ProxyMarksUI;
 
@@ -210,7 +260,12 @@ export class ReadingWalkUI {
     document.addEventListener('keydown', this.onKeyDown);
     document.addEventListener('click', this.onDocClick, true);
     document.addEventListener('visibilitychange', this.onVisibility);
+    document.addEventListener('pointermove', this.onPointerMove, { passive: true });
+    document.addEventListener('focusin', this.onFocusChange);
+    document.addEventListener('focusout', this.onFocusChange);
+    document.body.append(this.strip);
     try { window.matchMedia(PHONE_QUERY).addEventListener('change', this.onResize); } catch { /* old browsers */ }
+    try { window.matchMedia(TOUCH_FOCUS_POLICY.query).addEventListener('change', this.onResize); } catch { /* old browsers */ }
     // Step B4c: "This sitting" (the budget setting and its status) sits under the reading speed.
     const budget = this.host.lineMarks().budgetEl;
     if (budget.parentElement !== this.rightBody) this.rightBody.insertBefore(budget, this.sinceHost);
@@ -228,7 +283,7 @@ export class ReadingWalkUI {
     installEditingGuard();
     this.unsubscribeEditing = onEditingActivity(() => {
       // The press that places the caret lands before focus moves: check on the next frame.
-      requestAnimationFrame(() => { if (isEditing()) { this.rebaseAfterEdit = true; this.queueFollowCaret(); } });
+      requestAnimationFrame(() => { if (isEditing()) { this.rebaseAfterEdit = true; this.clearHover(); this.queueFollowCaret(); } });
     });
     this.sync();
     void this.loadDocuments();
@@ -247,6 +302,12 @@ export class ReadingWalkUI {
     document.removeEventListener('keydown', this.onKeyDown);
     document.removeEventListener('click', this.onDocClick, true);
     document.removeEventListener('visibilitychange', this.onVisibility);
+    document.removeEventListener('pointermove', this.onPointerMove);
+    document.removeEventListener('focusin', this.onFocusChange);
+    document.removeEventListener('focusout', this.onFocusChange);
+    if (this.hoverTimer) clearTimeout(this.hoverTimer);
+    this.strip.remove();
+    document.body.classList.remove('prw-touch', 'prw-strip-on');
     this.unsubscribe?.();
     this.proxy.stop();
     this.unsubscribeEditing?.();
@@ -539,15 +600,16 @@ export class ReadingWalkUI {
     // Step B4f: E asks the AI collaborators to explain the focus line (never a rejection).
     if (key.toLowerCase() === EXPLAIN_POLICY.key) { event.preventDefault(); this.explainFocus(); return; }
     // Step B4f: 1-9 pick among the focus line's competing wordings (1 is the original).
-    if (/^[1-9]$/.test(key) && this.host.lineMarks().altSetFor(this.walk.focus)) {
+    const focus = this.targetLine();
+    if (/^[1-9]$/.test(key) && this.host.lineMarks().altSetFor(focus)) {
       event.preventDefault();
-      this.explicit(this.walk.focus);
-      void this.host.lineMarks().pickAlternative(this.walk.focus, key);
+      this.explicit(focus);
+      void this.host.lineMarks().pickAlternative(focus, key);
       return;
     }
     // Step B3: Y / N / T answer the ask on the focus line (only when the line carries one).
     const choice = (Object.keys(ASK_POLICY.keys) as AskChoice[]).find(c => ASK_POLICY.keys[c] === key.toLowerCase());
-    if (choice && this.host.lineMarks().askForLine(this.walk.focus)) {
+    if (choice && this.host.lineMarks().askForLine(focus)) {
       event.preventDefault();
       this.answerFocus(choice);
     }
@@ -573,12 +635,13 @@ export class ReadingWalkUI {
   private explainFocus(): void {
     const walk = this.walk;
     if (!walk) return;
-    this.explained.push(walk.focus);
-    void this.host.lineMarks().explainLine(walk.focus);
+    const focus = this.targetLine();
+    this.explained.push(focus);
+    void this.host.lineMarks().explainLine(focus);
   }
 
   /** Step B4d: the focus line (shift-click ranges in the margin start here). */
-  focusIndex(): number { return this.walk?.focus ?? 0; }
+  focusIndex(): number { return this.targetLine(); }
 
   /** Step B4c: Next issue hit the sitting budget: show the rail's "This sitting" status. */
   budgetReached(): void {
@@ -616,6 +679,155 @@ export class ReadingWalkUI {
   private onVisibility = (): void => {
     if (document.visibilityState === 'visible') this.scheduleTick();
   };
+
+  // --------------------------------------------------------------------------
+  // Hover focus (desktop) and touch focus (phones, tablets)
+  // --------------------------------------------------------------------------
+
+  private hoverCapable(): boolean {
+    if (!HOVER_FOCUS_POLICY.enabled) return false;
+    try { return window.matchMedia(HOVER_FOCUS_POLICY.query).matches; } catch { return false; }
+  }
+
+  private touchMode(): boolean {
+    if (!TOUCH_FOCUS_POLICY.enabled) return false;
+    try { return window.matchMedia(TOUCH_FOCUS_POLICY.query).matches; } catch { return false; }
+  }
+
+  /**
+   * The focus line: what the right rail shows and the keys act on. The caret's line while
+   * editing; else the line the mouse rests on (hover focus); else the reading line.
+   */
+  targetLine(): number {
+    const walk = this.walk;
+    if (!walk) return 0;
+    const hover = this.hoverLine;
+    if (hover === null || isEditing() || hover >= walk.lineCount || walk.isHidden(hover)) return walk.focus;
+    return hover;
+  }
+
+  private clearHover(): void {
+    if (this.hoverTimer) clearTimeout(this.hoverTimer);
+    this.hoverTimer = null;
+    this.hoverCandidate = null;
+    if (this.hoverLine === null) return;
+    this.hoverLine = null;
+    this.queueRender();
+  }
+
+  private onPointerMove = (event: PointerEvent): void => {
+    if (!this.walk || event.pointerType !== 'mouse' || !this.hoverCapable()) return;
+    // A scroll makes the browser send a pointer event at the same place: not a hover.
+    const last = this.lastPointer;
+    if (last && last.x === event.clientX && last.y === event.clientY) return;
+    this.lastPointer = { x: event.clientX, y: event.clientY };
+    if (this.hoverFrame) return;
+    this.hoverFrame = requestAnimationFrame(() => {
+      this.hoverFrame = 0;
+      const at = this.lastPointer;
+      if (at) this.hoverAt(at.x, at.y);
+    });
+  };
+
+  /** The line under a viewport point: the text, its margin dot, or a folded closed line; else null. */
+  private lineAtPoint(x: number, y: number): number | null {
+    const hit = document.elementFromPoint(x, y) as HTMLElement | null;
+    if (!hit) return null;
+    const dot = hit.closest?.('.plm-dot[data-line]') as HTMLElement | null;
+    if (dot) return Number(dot.dataset.line);
+    const folded = hit.closest?.('.ProseMirror .pclose-folded[data-pclose-line]') as HTMLElement | null;
+    if (folded) return Number(folded.dataset.pcloseLine);
+    const view = this.view();
+    if (!view || !view.dom.contains(hit)) return null;
+    const pos = view.posAtCoords({ left: x, top: y });
+    if (!pos) return null;
+    const line = this.host.lineMarks().lineAtPos(pos.inside >= 0 ? pos.inside + 1 : pos.pos);
+    return line >= 0 ? line : null;
+  }
+
+  private hoverAt(x: number, y: number): void {
+    const walk = this.walk;
+    if (!walk) return;
+    if (isEditing()) { this.clearHover(); return; }
+    // Typing a reason or a reply in the rail: the focus stays on that line.
+    const active = document.activeElement as HTMLElement | null;
+    if (active && ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName) && this.right.contains(active)) return;
+    const line = this.lineAtPoint(x, y);
+    // Off the text: the focus stays where it is (the mouse can travel to the rail).
+    if (line === null || !Number.isFinite(line)) {
+      if (this.hoverTimer) clearTimeout(this.hoverTimer);
+      this.hoverTimer = null;
+      this.hoverCandidate = null;
+      return;
+    }
+    if (line === this.hoverCandidate) return;
+    this.hoverCandidate = line;
+    if (this.hoverTimer) clearTimeout(this.hoverTimer);
+    this.hoverTimer = null;
+    if (line === this.targetLine()) return;
+    this.hoverTimer = setTimeout(() => {
+      this.hoverTimer = null;
+      if (!this.walk || isEditing() || this.hoverCandidate !== line) return;
+      this.setHoverFocus(line);
+    }, HOVER_FOCUS_POLICY.delayMs);
+  }
+
+  /** Makes `line` the focus line without reading, scrolling or moving the reading position. */
+  setHoverFocus(line: number): void {
+    const walk = this.walk;
+    if (!walk || line < 0 || line >= walk.lineCount || walk.isHidden(line)) return;
+    this.hoverLine = line === walk.focus ? null : line;
+    this.hoverWrites += 1;
+    this.renderNow();
+  }
+
+  /** Test hook: hover focus changes. */
+  private hoverWrites = 0;
+
+  private onFocusChange = (): void => { this.queueRender(); };
+
+  /** The touch strip: the focus line's own mark and Agree / Reject / More…. */
+  private renderStrip(): void {
+    const touch = this.touchMode();
+    const lm = this.host.lineMarks();
+    const active = document.activeElement as HTMLElement | null;
+    const editingText = Boolean(active?.isContentEditable && active.closest?.('.ProseMirror'));
+    const show = touch && lm.isLoaded() && !(TOUCH_FOCUS_POLICY.hideWhileEditing && editingText);
+    document.body.classList.toggle('prw-touch', touch);
+    document.body.classList.toggle('prw-strip-on', show);
+    document.body.style.setProperty('--prw-strip-h', `${TOUCH_FOCUS_POLICY.stripHeightPx}px`);
+    this.strip.hidden = !show;
+    if (!show) return;
+    const index = this.targetLine();
+    const line = this.lines[index];
+    const status = lm.myStatus(index);
+    const sig = `${index}|${line?.hash ?? ''}|${status}|${Boolean(lm.askForLine(index))}`;
+    if (sig === this.stripSig) return;
+    this.stripSig = sig;
+    this.strip.dataset.line = String(index);
+    this.strip.dataset.status = status;
+    this.strip.setAttribute('role', 'region');
+    this.strip.setAttribute('aria-label', `Current line ${index + 1}`);
+    const info = el('div', 'prw-strip-info');
+    const where = el('span', 'prw-strip-where', `Line ${index + 1}`);
+    const state = el('span', 'prw-strip-status', STATUS_WORDS[status] ?? status);
+    state.dataset.status = status;
+    const text = el('span', 'prw-strip-text', line?.text ?? '');
+    info.append(where, state, text);
+    const buttons = el('div', 'prw-strip-actions');
+    const agree = el('button', 'prw-strip-agree', status === 'agreed' ? 'Agreed ✓' : 'Agree');
+    agree.type = 'button';
+    agree.onclick = () => { this.renderNow(); this.box?.choose('agreed', 'click'); };
+    const reject = el('button', 'prw-strip-reject', 'Reject');
+    reject.type = 'button';
+    reject.onclick = () => this.openReason();
+    const more = el('button', 'prw-strip-more', 'More…');
+    more.type = 'button';
+    more.setAttribute('aria-label', `More marks for line ${index + 1}`);
+    more.onclick = () => { lm.openLineSheet(this.targetLine(), more); };
+    buttons.append(agree, reject, more);
+    this.strip.replaceChildren(info, buttons);
+  }
 
   // --------------------------------------------------------------------------
   // Actions
@@ -707,7 +919,8 @@ export class ReadingWalkUI {
       if (ids.length === 0) { this.afterChange(); return; }
     }
     try {
-      this.host.decide(ids, 'accept');
+      // Scroll-accepts are passive: committing them never folds their lines (closed-fold policy).
+      lm.withoutClosures(() => this.host.decide(ids, 'accept'));
       this.lastError = '';
     } catch (error) {
       walk.restoreProvisional(ids);
@@ -723,7 +936,7 @@ export class ReadingWalkUI {
     // Explicit on this line: first commit the provisional accepts at or above it.
     const ids = walk.explicitAction(line).filter(id => id !== mark.id);
     try {
-      if (ids.length) this.host.decide(ids, 'accept');
+      if (ids.length) this.host.lineMarks().withoutClosures(() => this.host.decide(ids, 'accept'));
       this.host.decide([mark.id], action, text);
       if (action === 'accept' || action === 'reject') walk.decided(mark.id);
       this.lastError = '';
@@ -741,6 +954,10 @@ export class ReadingWalkUI {
   private afterChange(stepped = false): void {
     const walk = this.walk;
     if (!walk) return;
+    if (walk.focus !== this.lastWalkFocus) {
+      if (this.lastWalkFocus !== -1 && HOVER_FOCUS_POLICY.walkMoveClearsHover) this.clearHover();
+      this.lastWalkFocus = walk.focus;
+    }
     for (const event of walk.drain()) {
       if (event.type === 'seen') this.enqueueSeen(event.line);
       else if (event.type === 'skimmed') this.enqueueSkim(event.line);
@@ -1006,6 +1223,8 @@ export class ReadingWalkUI {
     this.renderChanges();
     this.renderDocuments();
     this.renderRate();
+    this.renderStrip();
+    this.host.focusChanged?.(this.targetLine());
   }
 
   private dockPanel(): void {
@@ -1017,7 +1236,8 @@ export class ReadingWalkUI {
   private renderFocus(): void {
     const walk = this.walk!;
     const view = this.view();
-    const line = this.lines[walk.focus];
+    const focus = this.targetLine();
+    const line = this.lines[focus];
     const container = this.focusEl.parentElement;
     if (!view || !line || !container) { this.focusEl.hidden = true; return; }
     const dom = view.nodeDOM(line.pos) as HTMLElement | null;
@@ -1026,7 +1246,8 @@ export class ReadingWalkUI {
     const r = dom.getBoundingClientRect();
     const text = view.dom.getBoundingClientRect();
     this.focusEl.hidden = false;
-    this.focusEl.dataset.line = String(walk.focus);
+    this.focusEl.dataset.line = String(focus);
+    this.focusEl.dataset.source = focus === walk.focus ? (isEditing() ? 'caret' : 'reading') : 'hover';
     this.focusEl.style.top = `${Math.round(r.top - c.top - 3)}px`;
     this.focusEl.style.height = `${Math.round(r.height + 6)}px`;
     this.focusEl.style.left = `${Math.round(text.left - c.left - 10)}px`;
@@ -1088,7 +1309,7 @@ export class ReadingWalkUI {
 
   private renderStatus(): void {
     const walk = this.walk!;
-    this.statusEl.textContent = `Line ${walk.focus + 1} of ${walk.lineCount}`;
+    this.statusEl.textContent = `Line ${this.targetLine() + 1} of ${walk.lineCount}`;
     const n = walk.provisionalCount;
     this.provisionalEl.hidden = n === 0 && !this.lastError;
     const sig = `${n}|${this.lastError}`;
@@ -1110,29 +1331,29 @@ export class ReadingWalkUI {
   }
 
   private renderBox(): void {
-    const walk = this.walk!;
     const lm = this.host.lineMarks();
-    const line = this.lines[walk.focus];
+    const focus = this.targetLine();
+    const line = this.lines[focus];
     if (!line) { this.boxHost.replaceChildren(); this.box = null; this.boxSig = ''; return; }
-    const state = lm.lineState(walk.focus);
+    const state = lm.lineState(focus);
     const summary = lm.issueSummary();
     const marks = state ? [...state.marks.values()].map(e => `${e.mark.id}:${e.mark.status}:${e.current}:${e.mark.reason ?? ''}`).join(',') : '';
-    const sig = `${walk.focus}|${line.hash}|${line.occurrence}|${marks}|${summary?.team.join(',') ?? ''}|${lm.isLoaded()}|${lm.askSignature(walk.focus)}|${lm.aidsSignature(walk.focus)}`;
+    const sig = `${focus}|${line.hash}|${line.occurrence}|${marks}|${summary?.team.join(',') ?? ''}|${lm.isLoaded()}|${lm.askSignature(focus)}|${lm.aidsSignature(focus)}`;
     if (sig === this.boxSig && this.box) return;
     // Keep the box while the reader types a reason for this same line.
     const active = document.activeElement;
-    if (this.box && this.boxHost.contains(active) && active instanceof HTMLInputElement && this.boxHost.querySelector('.plm-box')?.getAttribute('data-line') === String(walk.focus)) return;
+    if (this.box && this.boxHost.contains(active) && (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement)) return;
     this.boxSig = sig;
     const box = lm.buildMarkBox(line, {
-      onExplicit: () => this.explicit(walk.focus),
+      onExplicit: () => this.explicit(focus),
     });
     const head = el('div', 'prw-box-head');
-    const hasAsk = Boolean(lm.askForLine(walk.focus));
-    const alts = lm.altSetFor(walk.focus);
+    const hasAsk = Boolean(lm.askForLine(focus));
+    const alts = lm.altSetFor(focus);
     head.append(el('strong', undefined, 'Mark this line'),
       el('span', 'prw-keys', hasAsk ? 'Y yes · N no · T not yet' : alts ? `1–${alts.options.length} pick · A agree · E explain` : 'A agree · R reject · E explain · D tier · J/K move'));
     // Editing first (2026-09-19): who changed this line, and whether the meaning changed.
-    const note = lm.editNoteFor(walk.focus);
+    const note = lm.editNoteFor(focus);
     if (note) {
       const edited = el('p', 'prw-edit-note', note.text);
       edited.dataset.kind = note.kind;
@@ -1145,11 +1366,14 @@ export class ReadingWalkUI {
 
   private renderChanges(): void {
     const walk = this.walk!;
-    const onLine = walk.marksOn(walk.focus);
+    const focus = this.targetLine();
+    // Hover focus: another line's changes show without the walk's stepping (that is the reading line's).
+    const onFocus = focus === walk.focus;
+    const onLine = walk.marksOn(focus);
     const all = new Map(this.pendingMarks().map(mark => [mark.id, mark]));
-    const current = walk.currentMark();
+    const current = onFocus ? walk.currentMark() : null;
     const lm = this.host.lineMarks();
-    const sig = JSON.stringify([walk.focus, onLine.map(m => [m.id, walk.isPassed(m.id), walk.isProvisional(m.id)]), current?.id,
+    const sig = JSON.stringify([focus, onFocus, onLine.map(m => [m.id, walk.isPassed(m.id), walk.isProvisional(m.id)]), current?.id,
       onLine.map(m => { const mk = all.get(m.id); return mk ? [mk.at, mk.data] : null; }),
       onLine.map(m => lm.notesForMark(m.id).map(n => n.why)),
       onLine.map(m => { const b = lm.bundleForMark(m.id); return b ? [b.bundle.id, b.pending.length, b.stale.join(','), b.status] : null; }),
@@ -1159,10 +1383,10 @@ export class ReadingWalkUI {
     this.changesHost.replaceChildren();
     this.changesHost.hidden = onLine.length === 0;
     if (onLine.length === 0) return;
-    const index = walk.stepIndex();
+    const index = onFocus ? walk.stepIndex() : -1;
     const head = el('div', 'prw-changes-head');
     head.append(el('strong', undefined, `Changes on this line`),
-      el('span', 'prw-step', index < onLine.length ? `${index + 1} of ${onLine.length}` : `all ${onLine.length} passed`));
+      el('span', 'prw-step', !onFocus ? `${onLine.length}` : index < onLine.length ? `${index + 1} of ${onLine.length}` : `all ${onLine.length} passed`));
     this.changesHost.append(head);
     // Step B4e: a bundle on this line shows as one card (title, why, every passage, one decision).
     const shownBundles = new Set<string>();
@@ -1172,13 +1396,15 @@ export class ReadingWalkUI {
       shownBundles.add(bundle.bundle.id);
       this.changesHost.append(this.bundleCard(bundle, all));
     }
-    const nav = el('div', 'prw-step-nav');
-    const back = el('button', undefined, '‹ Back'); back.type = 'button'; back.disabled = !walk.canStepBack();
-    back.onclick = () => this.previous();
-    const fwd = el('button', undefined, index < onLine.length ? 'Next ›' : 'Next line ›'); fwd.type = 'button';
-    fwd.onclick = () => this.next();
-    nav.append(back, fwd);
-    this.changesHost.append(nav);
+    if (onFocus) {
+      const nav = el('div', 'prw-step-nav');
+      const back = el('button', undefined, '‹ Back'); back.type = 'button'; back.disabled = !walk.canStepBack();
+      back.onclick = () => this.previous();
+      const fwd = el('button', undefined, index < onLine.length ? 'Next ›' : 'Next line ›'); fwd.type = 'button';
+      fwd.onclick = () => this.next();
+      nav.append(back, fwd);
+      this.changesHost.append(nav);
+    }
     for (const item of onLine) {
       const mark = all.get(item.id);
       if (!mark) continue;
@@ -1191,8 +1417,10 @@ export class ReadingWalkUI {
         passed: walk.isPassed(mark.id),
       }));
     }
-    const hint = el('p', 'prw-hint', 'Scroll down to step through the changes; scrolling past a change accepts it until you scroll back up.');
-    this.changesHost.append(hint);
+    if (onFocus) {
+      const hint = el('p', 'prw-hint', 'Scroll down to step through the changes; scrolling past a change accepts it until you scroll back up.');
+      this.changesHost.append(hint);
+    }
   }
 
   /** Step B4e: one card for a review bundle (title, why, every passage with its result, one decision). */
@@ -1298,7 +1526,7 @@ export class ReadingWalkUI {
     // An explicit action: first commit the provisional accepts at or above it (not this bundle's).
     const earlier = walk.explicitAction(Math.max(line, walk.focus)).filter(markId => !ids.includes(markId));
     try {
-      if (earlier.length) this.host.decide(earlier, 'accept');
+      if (earlier.length) lm.withoutClosures(() => this.host.decide(earlier, 'accept'));
       this.host.decide(ids, action);
       for (const markId of ids) walk.decided(markId);
       this.lastError = '';
@@ -1592,6 +1820,11 @@ export class ReadingWalkUI {
     return {
       ready: Boolean(walk && this.tops.length),
       focus: walk?.focus ?? -1,
+      target: walk ? this.targetLine() : -1,
+      hover: this.hoverLine,
+      hoverWrites: this.hoverWrites,
+      touch: this.touchMode(),
+      strip: this.strip.hidden ? null : { line: Number(this.strip.dataset.line), status: this.strip.dataset.status ?? '' },
       lines: walk?.lineCount ?? 0,
       step: walk?.stepIndex() ?? 0,
       current: walk?.currentMark()?.id ?? null,

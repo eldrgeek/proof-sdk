@@ -15,12 +15,14 @@ import { LineMarksUI } from '../ui/line-marks';
 import { ReadingWalkUI } from '../ui/reading-walk';
 import { ChatUI } from '../ui/chat';
 import { FoldingUI } from '../ui/folding';
+import { ClosedFoldUI } from '../ui/closed-fold';
 import { lineMarksViewPlugin } from './plugins/line-marks-view';
 import { foldViewPlugin } from './plugins/fold-view';
 import { askViewPlugin } from './plugins/ask-view';
 import { doViewPlugin } from './plugins/do-view';
 import { proofExtrasViewPlugin } from './plugins/proof-extras-view';
 import { tierViewPlugin } from './plugins/tier-view';
+import { closedFoldViewPlugin } from './plugins/closed-fold-view';
 import { getReviewStyle, setReviewStyle, REVIEW_STYLE_POLICY } from './review-style';
 import { isEditing } from './editing-guard';
 import { ReviewDecisionHistory, reconnectNativeUndoManager } from './review-decision-history';
@@ -1132,6 +1134,7 @@ class ProofEditorImpl implements ProofEditor {
   private chat: ChatUI | null = null;
   private chatUnread = 0;
   private folding: FoldingUI | null = null;
+  private closedFold: ClosedFoldUI | null = null;
   private reviewDecisionHistory: ReviewDecisionHistory | null = null;
   private reviewDecisionIds = new Set<string>();
   private capturingReviewDecision = false;
@@ -1308,6 +1311,8 @@ class ProofEditorImpl implements ProofEditor {
       .use(proofExtrasViewPlugin)
       // Line tiers: context lines quieter, "Show only decisions" folds them (view-only decorations)
       .use(tierViewPlugin)
+      // Closed Issues fold for the person who closed them (view-only decorations)
+      .use(closedFoldViewPlugin)
       .use(marksSyncPlugin((actionMarks, view, actionMetadata) => {
         this.handleMarksChange(actionMarks, view, actionMetadata);
       }))
@@ -3832,6 +3837,7 @@ class ProofEditorImpl implements ProofEditor {
           for (const index of this.lineMarks?.tierFoldedLines() ?? []) hidden.add(index);
           return hidden;
         },
+        focusChanged: (lineIndex) => this.closedFold?.setFocusLine(lineIndex),
         visibleLineFor: (lineIndex) => {
           let visible = this.folding?.visibleLineFor(lineIndex) ?? lineIndex;
           const tierFolded = this.lineMarks?.tierFoldedLines() ?? new Set<number>();
@@ -3843,6 +3849,10 @@ class ProofEditorImpl implements ProofEditor {
       const walkUi = this.readingWalk;
       this.folding.subscribe(() => walkUi.onFoldChange());
       walkUi.mountTool(this.folding.controlsEl);
+      // Closed Issues fold for the viewer who closed them ("Unfold closed" in the rail).
+      this.closedFold = new ClosedFoldUI({ slug: () => shareClient.getSlug(), lineMarks: () => lineMarks, onApplied: () => walkUi.onFoldChange() });
+      (window as unknown as { __proofClosedFold?: ClosedFoldUI }).__proofClosedFold = this.closedFold;
+      walkUi.mountTool(this.closedFold.controlsEl);
       // Proof Documents Step B7: chat beside the document (its own table; never the text or Yjs).
       this.chat = new ChatUI({
         slug: () => shareClient.getSlug(),
@@ -3870,6 +3880,7 @@ class ProofEditorImpl implements ProofEditor {
     }
     this.lineMarks.start();
     this.folding?.start();
+    this.closedFold?.start();
     this.readingWalk?.start();
     this.chat?.start();
     return this.lineMarks;
@@ -4015,6 +4026,19 @@ class ProofEditorImpl implements ProofEditor {
   private performReviewDecision(ids: string[], action: ReviewAction, text?: string): void {
     const history = this.getReviewDecisionHistory();
     if (!this.editor) throw new Error('The editor is still loading.');
+    // Closed Issues fold: an accept, reject or resolve closes the viewer's Issue on each line.
+    const closureLines: Array<[number, 'accepted' | 'suggestion-rejected' | 'resolved']> = [];
+    if (action === 'accept' || action === 'reject' || action === 'resolve') {
+      const kind = action === 'accept' ? 'accepted' : action === 'reject' ? 'suggestion-rejected' : 'resolved';
+      this.editor.action(ctx => {
+        const byId = new Map(getMarks(ctx.get(editorViewCtx).state).map(mark => [mark.id, mark]));
+        for (const id of ids) {
+          const from = byId.get(id)?.range?.from;
+          const line = typeof from === 'number' ? this.lineMarks?.lineAtPos(from) ?? -1 : -1;
+          if (line >= 0 && !closureLines.some(([l]) => l === line)) closureLines.push([line, kind]);
+        }
+      });
+    }
     this.editor.action(ctx => {
       const view = ctx.get(editorViewCtx);
       const parser = ctx.get(parserCtx);
@@ -4050,6 +4074,7 @@ class ProofEditorImpl implements ProofEditor {
         this.scheduleShareSuggestionReviewDisplay(view);
       }
     });
+    for (const [line, kind] of closureLines) this.lineMarks?.noteClosure(line, kind);
   }
 
   private restoreReviewDecision(redo: boolean): boolean {

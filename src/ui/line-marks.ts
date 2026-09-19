@@ -24,6 +24,7 @@ import {
   computeStep1Team,
   extractLines,
   isAiActor,
+  PASSIVE_VIAS,
   registerActorLabels,
   type DocLine,
   type IssueSummary,
@@ -36,9 +37,10 @@ import {
   type ReviewMarkLike,
 } from '../shared/line-marks';
 import { classifyLineChange } from '../shared/line-change';
+import { CLOSED_FOLD_POLICY, type ClosureKind } from '../shared/closed-fold';
 import type { SinceYouReport } from '../shared/alignment';
 import { FOLDING, planSectionMark } from '../shared/folding';
-import { askIssueInputs, askTeamActors, evaluateAsks, type AskChoice, type AskView, type ProofAsk } from '../shared/asks';
+import { ANYONE, askIssueInputs, askTeamActors, evaluateAsks, type AskChoice, type AskView, type ProofAsk } from '../shared/asks';
 import { askViewKey, setAskDecorations, type AskDecorationSpec } from '../editor/plugins/ask-view';
 import { askControlSignature, buildAskControl, buildAskTag, type AskControl } from './asks';
 import { doIssueInputs, doTeamActors, evaluateDos, type DoView, type ProofDo } from '../shared/do';
@@ -486,6 +488,11 @@ export class LineMarksUI {
   private async writeMark(line: DocLine, status: StatusChoice, reason?: string, via: MarkVia = 'click'): Promise<boolean> {
     const slug = this.host.slug();
     if (!slug) return false;
+    // Closed Issues fold (src/shared/closed-fold.ts): an explicit Agree / Approve / Reject closes the line for me.
+    if (CLOSED_FOLD_POLICY.closingStatuses.includes(status) && via !== 'edit' && via !== 'correct'
+      && (CLOSED_FOLD_POLICY.passiveReadsFold || !PASSIVE_VIAS.has(via))) {
+      this.noteClosure(line.index, status as ClosureKind);
+    }
     const by = this.me();
     const me = actorKey(by);
     const state = this.states[line.index];
@@ -871,6 +878,7 @@ export class LineMarksUI {
     this.host.onAskAnswered?.(view.lineIndex);
     const line = this.lines[view.lineIndex] ?? null;
     if (!line) return false;
+    if (choice !== 'not_yet') this.noteClosure(view.lineIndex, 'answered');
     const by = this.me();
     const anchor = anchorForLine(line);
     // Optimistic: the answer shows at once.
@@ -2138,6 +2146,58 @@ export class LineMarksUI {
   // --------------------------------------------------------------------------
 
   /** Pending suggestions (ids) whose start sits on this line. */
+  // --------------------------------------------------------------------------
+  // Closed Issues fold (src/shared/closed-fold.ts, src/ui/closed-fold.ts)
+  // --------------------------------------------------------------------------
+
+  private readonly closureListeners = new Set<(index: number, kind: ClosureKind) => void>();
+  private closuresMuted = 0;
+
+  /** Runs `fn` without recording closures (committing scroll-accepts: passive, never folds). */
+  withoutClosures<T>(fn: () => T): T {
+    this.closuresMuted += 1;
+    try { return fn(); } finally { this.closuresMuted -= 1; }
+  }
+
+  /** Called when the viewer explicitly closes their Issue on a line. */
+  onClosure(listener: (index: number, kind: ClosureKind) => void): () => void {
+    this.closureListeners.add(listener);
+    return () => { this.closureListeners.delete(listener); };
+  }
+
+  /** The viewer explicitly closed their Issue on `index` (any control: rail, sheet, key, editor). */
+  noteClosure(index: number, kind: ClosureKind): void {
+    if (this.closuresMuted > 0 || index < 0 || !this.lines[index]) return;
+    for (const listener of this.closureListeners) {
+      try { listener(index, kind); } catch (error) { console.warn('[plm] closure listener failed', error); }
+    }
+  }
+
+  /**
+   * What is open for the viewer on a line: open suggestions and comments (with their reply
+   * counts), asks still owed by the viewer, and open objections. A change here reopens a folded line.
+   */
+  openItemsOnLine(index: number): string[] {
+    const out: string[] = [];
+    for (const mark of this.reviewMarkCache) {
+      if (!mark.open || typeof mark.pos !== 'number' || this.lineAtPos(mark.pos) !== index) continue;
+      out.push(`${mark.kind === 'comment' ? 'c' : 's'}:${mark.id}:${mark.replies?.length ?? 0}`);
+    }
+    const me = actorKey(this.me());
+    const ask = this.askViews.find(v => v.lineIndex === index);
+    if (ask && ask.openFor.some(a => actorKey(a) === me || a === ANYONE)) out.push(`a:${ask.ask.id}`);
+    for (const o of this.objectionsByLine.get(index) ?? []) out.push(`o:${o.objection.id}`);
+    return out;
+  }
+
+  /** Opens the line's mark sheet (phones) or popover (desktop) anchored at `anchor`. */
+  openLineSheet(index: number, anchor: HTMLElement): boolean {
+    const line = this.lines[index];
+    if (!line) return false;
+    this.openMenu(line, anchor);
+    return true;
+  }
+
   suggestionsOnLine(index: number): string[] {
     return this.reviewMarkCache
       .filter(mark => mark.open && mark.kind !== 'comment' && typeof mark.pos === 'number' && this.lineAtPos(mark.pos) === index)
@@ -2266,8 +2326,12 @@ export class LineMarksUI {
   }
 
   async clearObjection(id: string, reason?: string): Promise<boolean> {
+    const lines = this.objectionViews.find(v => v.objection.id === id)?.lineIndices ?? [];
     const result = await this.postAid(`/objections/${encodeURIComponent(id)}/clear`, reason ? { reason } : {});
-    if (result.ok) this.aidWrites += 1;
+    if (result.ok) {
+      this.aidWrites += 1;
+      for (const index of lines) if (index !== null) this.noteClosure(index, 'objection-cleared');
+    }
     return result.ok;
   }
 
@@ -2457,6 +2521,7 @@ export class LineMarksUI {
     this.serverPicks = [...this.serverPicks.filter(p => !(actorKey(p.by) === actorKey(by) && p.lineHash === line.hash)),
       { by, choice: option.id, lineHash: line.hash, at: new Date().toISOString() }];
     this.recompute();
+    this.noteClosure(index, 'picked');
     const result = await this.postAid('/alternatives/pick', { anchor: anchorForLine(line), choice: option.id });
     if (result.ok) {
       this.extrasWrites += 1;

@@ -207,3 +207,37 @@ body.prw-right-collapsed .prw-right .prw-chat { display: none; }
 /* Editing first (2026-09-19): "changed by <name> — meaning changed" above the line's marks. */
 .prw-edit-note { margin: 4px 0 6px; font-size: 12px; color: #92400e; }
 .prw-edit-note[data-kind="correct"] { color: #4b5563; }
+
+/* Hover focus (desktop): the band follows the line the mouse rests on. */
+.prw-focus[data-source="hover"] { background: rgba(37, 99, 235, 0.05); box-shadow: inset 3px 0 0 #60a5fa; }
+
+/* Touch focus (Claude Opus 5, 2026-09-19): the current line is unmistakable without hover. */
+.prw-strip { display: none; }
+body.prw-touch .prw-focus {
+  background: rgba(37, 99, 235, 0.11); box-shadow: inset 6px 0 0 #2563eb, 0 0 0 1px rgba(37, 99, 235, .25);
+}
+body.prw-strip-on .prw-strip:not([hidden]) {
+  display: flex; align-items: center; gap: 8px; position: fixed; z-index: 9000; left: 0; right: 0;
+  bottom: var(--proof-keyboard-offset, 0px); box-sizing: border-box;
+  min-height: var(--prw-strip-h, 64px); padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px)) 12px;
+  background: #fffefb; border-top: 1px solid #d9dde3; box-shadow: 0 -6px 20px #16223822;
+  border-left: 6px solid #2563eb; font: 13px/1.3 system-ui, -apple-system, sans-serif; color: #26303c;
+}
+.prw-strip-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.prw-strip-where { font-weight: 600; font-size: 12px; color: #1d4ed8; }
+.prw-strip-status { font-size: 12px; color: #4b5563; }
+.prw-strip-status[data-status="agreed"], .prw-strip-status[data-status="approved"] { color: #15803d; font-weight: 600; }
+.prw-strip-status[data-status="rejected"] { color: #b91c1c; font-weight: 600; }
+.prw-strip-status[data-status="changed"] { color: #b45309; font-weight: 600; }
+.prw-strip-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #6b7280; font-size: 12px; }
+.prw-strip-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.prw-strip-actions button {
+  min-width: 56px; min-height: 48px; padding: 0 10px; border-radius: 12px; border: 1px solid #d4d4cf;
+  background: #fff; color: #26303c; font: 600 14px system-ui, sans-serif; cursor: pointer;
+}
+.prw-strip-actions .prw-strip-agree { background: #16a34a; border-color: #15803d; color: #fff; }
+.prw-strip-actions .prw-strip-reject { color: #b91c1c; border-color: #fca5a5; }
+/* Reserve the strip's height so it never covers the end of the text; lift the feedback chip above it. */
+body.prw-strip-on #app #editor { padding-bottom: calc(100vh - 80px + var(--prw-strip-h, 64px)) !important; }
+body.prw-strip-on .soma-feedback-root { bottom: calc(var(--prw-strip-h, 64px) + 12px + env(safe-area-inset-bottom, 0px)); }
+body.prw-strip-on .plm-toast { bottom: calc(var(--prw-strip-h, 64px) + 16px); }
