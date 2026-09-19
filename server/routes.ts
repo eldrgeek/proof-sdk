@@ -121,7 +121,8 @@ import { blindViewFor } from './proof-extras-eval.js';
 import { lineEditor } from './agent-routes.js';
 import { ASK_POLICY, evaluateAsks } from '../src/shared/asks.js';
 import { isGuestActor, normalizeActorString } from '../src/shared/identity.js';
-import { buildDirectory, clientDirectory, decideActor, sessionIdentity } from './identity.js';
+import { buildDirectory, clientDirectory, decideActor, sessionIdentity, type ActorDecision } from './identity.js';
+import { documentSession, getGuestAccessMode, guestMarksCount, resolveTokenlessAccess } from './document-team.js';
 import { IDENTITY_POLICY, actorsIn, isEmailAddress, verifiedHumanActor, type IdentityDirectory, type ViewerIdentity } from '../src/shared/identity.js';
 import { actorKey, agentKeyActor } from '../src/shared/line-marks.js';
 import { chatAuthors, listChatMessages, mentionCandidates, postChatMessage } from './chat.js';
@@ -731,8 +732,9 @@ function getPresentedBearerToken(req: Request): string | null {
 function getAccessRole(req: Request, slug: string): ShareRole | null {
   const secret = getPresentedSecret(req);
   if (secret) return resolveDocumentAccessRole(slug, secret);
-  // Product decision: tokenless shared docs default to editable access (slug is the secret).
-  return 'editor';
+  // Invite person (2026-09-19): without a share token, library members and people invited to
+  // this document edit; everyone else gets the document's guest setting (server/document-team.ts).
+  return resolveTokenlessAccess(req, slug).role;
 }
 
 function canOwnerMutate(req: Request, doc: { owner_secret: string | null; owner_secret_hash: string | null; owner_id: string | null }): boolean {
@@ -800,8 +802,13 @@ async function resolveOpenContextAccess(
     return { role: resolved.role, tokenId: resolved.tokenId, ownerAuthorized: false };
   }
 
-  // Omitting credentials still yields editor rights until A2 requires sign-in.
-  return { role: 'editor', tokenId: null, ownerAuthorized: false };
+  // Invite person (2026-09-19): no credential means the tokenless access of server/document-team.ts.
+  const tokenless = resolveTokenlessAccess(req, slug);
+  if (!tokenless.role) {
+    res.status(401).json({ error: 'Sign in to open this document', code: 'SIGN_IN_REQUIRED', signInUrl: isLibraryEnabled() ? '/' : null });
+    return null;
+  }
+  return { role: tokenless.role, tokenId: tokenless.collabTokenId, ownerAuthorized: false };
 }
 
 function deriveShareCapabilities(role: ShareRole, shareState: string): {
@@ -1342,6 +1349,10 @@ apiRoutes.get('/documents/:slug', (req: Request, res: Response) => {
   }
   if (doc.share_state === 'PAUSED' && !ownerOverride) {
     res.status(403).json({ error: 'Document is not currently accessible' });
+    return;
+  }
+  if (!ownerOverride && !getPresentedSecret(req) && resolveTokenlessAccess(req, slug).role === null) {
+    res.status(401).json({ error: 'Sign in to open this document', code: 'SIGN_IN_REQUIRED' });
     return;
   }
 
@@ -1954,15 +1965,31 @@ apiRoutes.post('/documents/:slug/ops', opsRateLimiter, async (req: Request, res:
 function resolveLineMarkAccess(req: Request, slug: string, doc: NonNullable<ReturnType<typeof getDocumentBySlug>>) {
   const role = getAccessRole(req, slug);
   const ownerAuthorized = role === 'owner_bot' || canOwnerMutate(req, doc);
-  let library: ReturnType<typeof getLibrarySession> = null;
-  try { library = isLibraryEnabled() ? getLibrarySession(req) : null; } catch { library = null; }
+  // Invite person: the session counts on this document only for a library member or a person
+  // invited to it; an invited person elsewhere is a guest.
+  const docSession = documentSession(req, slug);
+  const library: ReturnType<typeof getLibrarySession> = docSession?.session ?? null;
   const canApprove = ownerAuthorized
-    || Boolean(IDENTITY_POLICY.adminsHaveOwnerRights && library?.member.isOwner)
-    || Boolean(library && isLibraryDocumentCreator(slug, library.member.id));
+    || Boolean(IDENTITY_POLICY.adminsHaveOwnerRights && library?.member.isOwner && docSession?.via === 'library')
+    || Boolean(library && docSession?.via === 'library' && isLibraryDocumentCreator(slug, library.member.id));
   const active = doc.share_state === 'ACTIVE';
   const canRead = doc.share_state !== 'DELETED' && (ownerAuthorized || (active && role !== null));
-  const canMark = ownerAuthorized || (active && (role === 'commenter' || role === 'editor'));
-  return { role, canRead, canMark, canApprove, ownerAuthorized, library };
+  const canComment = ownerAuthorized || (active && (role === 'commenter' || role === 'editor'));
+  // A guest (no session, no key, no share token) marks only where the guest setting lets marks count.
+  const isPlainGuest = !ownerAuthorized && !library && !getPresentedSecret(req);
+  const guestMustSignIn = isPlainGuest && !guestMarksCount(slug);
+  const canMark = canComment && !guestMustSignIn;
+  return { role, canRead, canComment, canMark, canApprove, ownerAuthorized, library, guestMustSignIn };
+}
+
+/** Invite person: what a guest is told when a mark, answer, pick or approval needs sign-in. */
+function signInToMarkBody(): Record<string, unknown> {
+  return {
+    success: false,
+    code: 'SIGN_IN_TO_MARK',
+    error: 'Sign in to mark. Without signing in you can read, comment and chat; marks, answers, picks and approvals need a signed-in person.',
+    signInUrl: isLibraryEnabled() ? '/' : null,
+  };
 }
 
 /** Step B6: the label of the agent key this request presents, if it presents one. */
@@ -1980,9 +2007,9 @@ function presentedAgentKeyLabel(req: Request, slug: string): string | null {
  * only a guest's typed name: a signed-in session always wins, and an agent key always acts as
  * its own AI.
  */
-function resolvePageActor(req: Request, slug: string, access: ReturnType<typeof resolveLineMarkAccess>, typedBy: unknown) {
+function resolvePageActor(req: Request, slug: string, access: ReturnType<typeof resolveLineMarkAccess>, typedBy: unknown, kind: 'mark' | 'talk' = 'mark'): ActorDecision {
   const origin = req.header('origin');
-  return decideActor({
+  const decision = decideActor({
     mode: 'page',
     typedBy,
     agentKeyLabel: presentedAgentKeyLabel(req, slug),
@@ -1990,6 +2017,10 @@ function resolvePageActor(req: Request, slug: string, access: ReturnType<typeof 
     sessionOriginOk: !origin || origin === getPublicOrigin(req),
     ownerCredential: access.ownerAuthorized,
   });
+  if (kind === 'mark' && decision.ok && decision.source === 'guest' && access.guestMustSignIn) {
+    return { ok: false, status: 403, body: signInToMarkBody() };
+  }
+  return decision;
 }
 
 /** Step B6: who the page viewer is, for the right rail header and for every new mark. */
@@ -2005,8 +2036,9 @@ function viewerIdentity(req: Request, slug: string, access: ReturnType<typeof re
     const actor = verifiedHumanActor(member.email);
     return { actor, trust: 'verified', name: member.name || dir.labels[actorKey(actor)] || member.email, email: member.email.toLowerCase(), signInUrl: null };
   }
-  // A guest: the page supplies the typed name (guest:<name>).
-  return { actor: '', trust: 'guest', name: '', signInUrl };
+  // A guest: the page supplies the typed name (guest:<name>). Invite person: where the guest
+  // setting keeps guests' marks from counting, the page says "Sign in to mark".
+  return { actor: '', trust: 'guest', name: '', signInUrl, ...(access.guestMustSignIn ? { markNeedsSignIn: true } : {}) };
 }
 
 // Proof dialect export for the page ("Download as Proof Document (.md)"): same output as
@@ -2091,7 +2123,9 @@ apiRoutes.get('/documents/:slug/line-marks', async (req: Request, res: Response)
     doPolicy: { executionEnabled: DO_POLICY.executionEnabled, executionDisabledLabel: DO_POLICY.executionDisabledLabel },
     owners,
     agentKeyActors,
-    viewer: { canMark: access.canMark, canApprove: access.canApprove },
+    viewer: { canMark: access.canMark, canApprove: access.canApprove, canComment: access.canComment },
+    // Invite person: whether this viewer may invite people and change the guest setting.
+    team: { canManage: isLibraryEnabled() && access.canApprove, guestAccess: getGuestAccessMode(slug) },
     // Step B6: who this viewer is (a guest's actor is filled in by the page from the typed name).
     identity: { me, directory },
     // Step B3c: the latest aligned snapshot (the top bar's "Aligned as of").
@@ -2163,15 +2197,19 @@ async function pageExtras(req: Request, slug: string, doc: NonNullable<ReturnTyp
 
 // Proof Documents Steps B4c + B4d: flags and objections from the page. Writes need comment
 // access; the actor is decided as for line marks (a signed-in session wins over a typed name).
+const PAGE_TALK_ROUTES = ['/explain', '/why-asked'];
 function pageAidRoute(path: string, run: (ctx: { req: Request; slug: string; by: string; access: ReturnType<typeof resolveLineMarkAccess>; body: Record<string, unknown> }) => Promise<{ status: number; body: Record<string, unknown> }> | { status: number; body: Record<string, unknown> }): void {
   apiRoutes.post(path, opsRateLimiter, async (req: Request, res: Response) => {
     const slug = getSlugParam(req);
     const doc = slug ? getDocumentBySlug(slug) : undefined;
     if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
     const access = resolveLineMarkAccess(req, slug, doc);
-    if (!access.canMark) { res.status(403).json({ success: false, error: 'This needs comment access' }); return; }
+    if (!access.canComment) { res.status(403).json({ success: false, error: 'This needs comment access' }); return; }
     const body = isRecord(req.body) ? req.body : {};
-    const actor = resolvePageActor(req, slug, access, body.by);
+    // Invite person: asking for an explanation is conversation (guests may); everything else here
+    // is a mark that counts, which a guest makes only where the guest setting allows it.
+    const kind = PAGE_TALK_ROUTES.some(suffix => path.endsWith(suffix)) ? 'talk' : 'mark';
+    const actor = resolvePageActor(req, slug, access, body.by, kind);
     if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
     const result = await run({ req, slug, by: actor.actor, access, body });
     if (result.status === 200) scheduleAlignmentCheck(slug);
@@ -2234,7 +2272,7 @@ function pagePersonRoute(path: string, run: (ctx: { req: Request; slug: string; 
     const doc = slug ? getDocumentBySlug(slug) : undefined;
     if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
     const access = resolveLineMarkAccess(req, slug, doc);
-    if (!access.canMark) { res.status(403).json({ success: false, error: 'This needs comment access' }); return; }
+    if (!access.canComment) { res.status(403).json({ success: false, error: 'This needs comment access' }); return; }
     const body = isRecord(req.body) ? req.body : {};
     const actor = resolvePageActor(req, slug, access, body.by);
     if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
@@ -2370,7 +2408,7 @@ apiRoutes.get('/documents/:slug/chat', (req: Request, res: Response) => {
     candidates,
     labels: directory.labels,
     policy: { maxText: CHAT_POLICY.maxText, maxLines: CHAT_POLICY.maxLines, pollMs: CHAT_POLICY.pollMs },
-    canPost: access.canMark,
+    canPost: access.canComment,
   });
 });
 
@@ -2381,9 +2419,9 @@ apiRoutes.post('/documents/:slug/chat', opsRateLimiter, (req: Request, res: Resp
   const doc = slug ? getDocumentBySlug(slug) : undefined;
   if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
   const access = resolveLineMarkAccess(req, slug, doc);
-  if (!access.canMark) { res.status(403).json({ success: false, error: 'This needs comment access' }); return; }
+  if (!access.canComment) { res.status(403).json({ success: false, error: 'This needs comment access' }); return; }
   const body = isRecord(req.body) ? req.body : {};
-  const actor = resolvePageActor(req, slug, access, body.by);
+  const actor = resolvePageActor(req, slug, access, body.by, 'talk');
   if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
   const result = postChatMessage(slug, {
     by: actor.actor, text: body.text, anchors: body.lines, mentions: body.mentions, replyTo: body.replyTo, source: 'page',
@@ -2399,7 +2437,7 @@ apiRoutes.get('/documents/:slug/since-you', async (req: Request, res: Response) 
   if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
   const access = resolveLineMarkAccess(req, slug, doc);
   if (!access.canRead) { res.status(403).json({ success: false, error: 'No read access' }); return; }
-  const actor = resolvePageActor(req, slug, access, typeof req.query.by === 'string' ? req.query.by : undefined);
+  const actor = resolvePageActor(req, slug, access, typeof req.query.by === 'string' ? req.query.by : undefined, 'talk');
   if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
   const report = await buildSinceYou(slug, actor.actor);
   res.setHeader('Cache-Control', 'no-store');
@@ -2448,7 +2486,7 @@ apiRoutes.post('/documents/:slug/line-marks', opsRateLimiter, (req: Request, res
     return;
   }
   const access = resolveLineMarkAccess(req, slug, doc);
-  if (!access.canMark) {
+  if (!access.canComment) {
     res.status(403).json({ success: false, error: 'Marking lines needs comment access' });
     return;
   }
@@ -2520,7 +2558,7 @@ apiRoutes.post('/documents/:slug/asks/:askId/answer', opsRateLimiter, (req: Requ
     return;
   }
   const access = resolveLineMarkAccess(req, slug, doc);
-  if (!access.canMark) {
+  if (!access.canComment) {
     res.status(403).json({ success: false, error: 'Answering needs comment access' });
     return;
   }
@@ -2550,7 +2588,7 @@ apiRoutes.post('/documents/:slug/asks/:askId/reask', opsRateLimiter, (req: Reque
   const doc = slug ? getDocumentBySlug(slug) : undefined;
   if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
   const access = resolveLineMarkAccess(req, slug, doc);
-  if (!access.canMark) { res.status(403).json({ success: false, error: 'Re-asking needs comment access' }); return; }
+  if (!access.canComment) { res.status(403).json({ success: false, error: 'Re-asking needs comment access' }); return; }
   const body = isRecord(req.body) ? req.body : {};
   const actor = resolvePageActor(req, slug, access, body.by);
   if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
@@ -2563,7 +2601,7 @@ apiRoutes.delete('/documents/:slug/asks/:askId', opsRateLimiter, (req: Request, 
   const doc = slug ? getDocumentBySlug(slug) : undefined;
   if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
   const access = resolveLineMarkAccess(req, slug, doc);
-  if (!access.canMark) { res.status(403).json({ success: false, error: 'Withdrawing needs comment access' }); return; }
+  if (!access.canComment) { res.status(403).json({ success: false, error: 'Withdrawing needs comment access' }); return; }
   const body = isRecord(req.body) ? req.body : {};
   const actor = resolvePageActor(req, slug, access, body.by);
   if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
@@ -2762,8 +2800,9 @@ apiRoutes.get('/documents/:slug/info', (req: Request, res: Response) => {
     return;
   }
 
+  const hidden = !getPresentedSecret(req) && resolveTokenlessAccess(req, slug).role === null;
   res.json({
-    title: doc.share_state === 'ACTIVE' ? doc.title : null,
+    title: doc.share_state === 'ACTIVE' && !hidden ? doc.title : null,
     shareState: doc.share_state,
   });
 });

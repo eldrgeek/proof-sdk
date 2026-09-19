@@ -9,6 +9,7 @@ import {
   createLibrarySigninLink,
   getLibraryMemberByEmail,
   getLibrarySession,
+  promoteLibraryMember,
   isLibraryEnabled,
   isSomaAuthEnabled,
   exchangeSomaSession,
@@ -20,6 +21,7 @@ import {
   revokeLibrarySession,
   setLibrarySessionCookie,
 } from './auth.js';
+import { invitedSlugsFor } from '../document-team.js';
 import {
   allowLibraryDocumentCreation,
   archiveLibraryDocument,
@@ -76,7 +78,11 @@ libraryRoutes.get('/library/signin', (_req: Request, res: Response) => {
     (async function () {
       const title = document.getElementById('title');
       const message = document.getElementById('message');
-      const token = new URLSearchParams(location.hash.slice(1)).get('t') || '';
+      const hashParams = new URLSearchParams(location.hash.slice(1));
+      const token = hashParams.get('t') || '';
+      // Invite person: an invite's sign-in link opens its document afterwards (same-site /d/ paths only).
+      const nextPath = hashParams.get('next') || '';
+      const next = /^[/]d[/][A-Za-z0-9_-]+$/.test(nextPath) ? nextPath : '/';
       history.replaceState(null, '', '/library/signin');
       if (!token) {
         title.textContent = 'This link cannot sign you in';
@@ -90,7 +96,7 @@ libraryRoutes.get('/library/signin', (_req: Request, res: Response) => {
           body: JSON.stringify({token})
         });
         if (!response.ok) throw new Error('invalid');
-        location.replace('/');
+        location.replace(next);
       } catch {
         title.textContent = 'This link cannot sign you in';
         message.textContent = 'This sign-in link has already been used or has expired. Ask a teammate for a new one.';
@@ -148,6 +154,7 @@ libraryRoutes.get('/library/api/me', requireLibrarySession, (_req: Request, res:
     id: session.member.id,
     name: session.member.name,
     isOwner: session.member.isOwner,
+    scope: session.member.scope,
   });
 });
 
@@ -164,6 +171,13 @@ libraryRoutes.post(
 
 function librarySessionFromResponse(res: Response): NonNullable<ReturnType<typeof getLibrarySession>> {
   return res.locals.librarySession as NonNullable<ReturnType<typeof getLibrarySession>>;
+}
+
+/** Invite person: an invited person opens their documents but does not manage the library. */
+function refuseInvitedPerson(res: Response): boolean {
+  if (librarySessionFromResponse(res).member.scope !== 'invited') return false;
+  res.status(403).json({ code: 'LIBRARY_MEMBER_REQUIRED', message: 'You were invited to specific documents; this needs a library member.' });
+  return true;
 }
 
 function stringParam(value: string | string[] | undefined): string {
@@ -183,8 +197,10 @@ libraryRoutes.get(
     const sort: LibraryDocumentSort = ['edited', 'title', 'created'].includes(sortValue)
       ? sortValue as LibraryDocumentSort
       : 'edited';
+    const member = librarySessionFromResponse(res).member;
     const result = listLibraryDocuments({
-      memberId: librarySessionFromResponse(res).member.id,
+      memberId: member.id,
+      onlySlugs: member.scope === 'invited' ? invitedSlugsFor(member.id) : null,
       query: typeof req.query.q === 'string' ? req.query.q : '',
       filter,
       sort,
@@ -198,6 +214,7 @@ libraryRoutes.post(
   requireLibrarySession,
   requireLibraryJsonOrigin,
   async (req: Request, res: Response) => {
+    if (refuseInvitedPerson(res)) return;
     const session = librarySessionFromResponse(res);
     if (!allowLibraryDocumentCreation(session.member.id)) {
       res.status(429).json({
@@ -227,6 +244,7 @@ libraryRoutes.patch(
   requireLibrarySession,
   requireLibraryJsonOrigin,
   (req: Request, res: Response) => {
+    if (refuseInvitedPerson(res)) return;
     const slug = stringParam(req.params.slug);
     let changed = false;
     try {
@@ -273,8 +291,13 @@ libraryRoutes.post(
       res.status(400).json({ code: 'INVALID_EVENT', message: 'Event must be open or leave.' });
       return;
     }
+    const visitor = librarySessionFromResponse(res).member;
+    if (visitor.scope === 'invited' && !invitedSlugsFor(visitor.id).includes(stringParam(req.params.slug))) {
+      res.status(404).json({ code: 'NOT_FOUND', message: 'Document not found.' });
+      return;
+    }
     const recorded = recordLibraryVisit(
-      librarySessionFromResponse(res).member.id,
+      visitor.id,
       stringParam(req.params.slug),
       event,
     );
@@ -290,6 +313,7 @@ libraryRoutes.get(
   '/library/api/people',
   requireLibrarySession,
   (_req: Request, res: Response) => {
+    if (refuseInvitedPerson(res)) return;
     res.json({ people: listLibraryPeople() });
   },
 );
@@ -299,13 +323,21 @@ libraryRoutes.post(
   requireLibrarySession,
   requireLibraryJsonOrigin,
   (req: Request, res: Response) => {
+    if (refuseInvitedPerson(res)) return;
     if (isSomaAuthEnabled() && !librarySessionFromResponse(res).member.isOwner) {
       res.status(403).json({ message: 'Only an admin can add a member.' });
       return;
     }
     const name = typeof req.body?.name === 'string' ? req.body.name : '';
     const email = typeof req.body?.email === 'string' ? req.body.email : '';
-    if (getLibraryMemberByEmail(email)) {
+    const existingMember = getLibraryMemberByEmail(email);
+    if (existingMember && existingMember.scope === 'invited' && !existingMember.removedAt) {
+      // Invite person: someone invited to a document becomes a full library member.
+      promoteLibraryMember(existingMember.id);
+      res.status(201).json({ member: getLibraryMemberByEmail(email), promoted: true });
+      return;
+    }
+    if (existingMember) {
       res.status(409).json({ code: 'EMAIL_EXISTS', message: 'A member already uses that email.' });
       return;
     }

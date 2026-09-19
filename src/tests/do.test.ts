@@ -453,9 +453,10 @@ try {
   await test('approve: guests, forged cookies, agent keys, share tokens and the owner credential are refused', async () => {
     // An agent key naming someone else is refused as ACTOR_MISMATCH before anything else; either way 403.
     const cases: Array<[string, Record<string, string>, string]> = [
-      ['guest', { ...ORIGIN }, 'SIGNED_IN_PERSON_REQUIRED'],
-      ['guest typing Mike\'s email', { ...ORIGIN }, 'SIGNED_IN_PERSON_REQUIRED'],
-      ['forged session cookie', { ...ORIGIN, Cookie: `${auth.LIBRARY_SESSION_COOKIE}=forged-session-value` }, 'SIGNED_IN_PERSON_REQUIRED'],
+      // Invite person (2026-09-19): under the default guest setting a guest is refused earlier.
+      ['guest', { ...ORIGIN }, 'SIGNED_IN_PERSON_REQUIRED|SIGN_IN_TO_MARK'],
+      ['guest typing Mike\'s email', { ...ORIGIN }, 'SIGNED_IN_PERSON_REQUIRED|SIGN_IN_TO_MARK'],
+      ['forged session cookie', { ...ORIGIN, Cookie: `${auth.LIBRARY_SESSION_COOKIE}=forged-session-value` }, 'SIGNED_IN_PERSON_REQUIRED|SIGN_IN_TO_MARK'],
       ['agent key', { ...ORIGIN, ...KEY }, 'SIGNED_IN_PERSON_REQUIRED|ACTOR_MISMATCH'],
       ['agent key with Mike\'s cookie', { ...ORIGIN, ...KEY, ...MIKE }, 'SIGNED_IN_PERSON_REQUIRED|ACTOR_MISMATCH'],
       ['owner credential (script)', { ...ORIGIN, ...OWNER }, 'SIGNED_IN_PERSON_REQUIRED'],
@@ -466,7 +467,7 @@ try {
       assert.match(r.body.code, new RegExp(`^(${want})$`), name);
       const bare = await approve(headers, { digest });
       assert.ok(bare.status === 403 || bare.status === 400, `${name} without "by": ${JSON.stringify(bare.body)}`);
-      assert.match(bare.body.code, /^(SIGNED_IN_PERSON_REQUIRED|INVALID_ACTOR)$/, `${name} without "by"`);
+      assert.match(bare.body.code, /^(SIGNED_IN_PERSON_REQUIRED|INVALID_ACTOR|SIGN_IN_TO_MARK)$/, `${name} without "by"`);
     }
     const agentApi = await call(`/api/agent/${slug}/dos/${doId}/approve`, 'POST', { by: MIKE_ACTOR }, OWNER);
     assert.equal(agentApi.status, 403);

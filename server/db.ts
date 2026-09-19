@@ -1838,6 +1838,41 @@ function initDatabase(): void {
     )
   `);
   d.exec('CREATE INDEX IF NOT EXISTS idx_library_visits_slug ON library_visits(slug)');
+
+  // Invite person (2026-09-19): a member is either a library member ('library', sees every
+  // document) or an invited person ('invited', sees only the documents they were invited to).
+  const libraryMemberColumns = d.prepare('PRAGMA table_info(library_members)').all() as Array<{ name: string }>;
+  if (!libraryMemberColumns.some((column) => column.name === 'scope')) {
+    d.exec(`ALTER TABLE library_members ADD COLUMN scope TEXT NOT NULL DEFAULT 'library'`);
+  }
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_invites (
+      id TEXT PRIMARY KEY,
+      slug TEXT NOT NULL,
+      member_id TEXT NOT NULL,
+      email TEXT NOT NULL,
+      name TEXT,
+      invited_by_member_id TEXT,
+      invited_by_actor TEXT,
+      created_at TEXT NOT NULL,
+      removed_at TEXT,
+      removed_by TEXT,
+      joined_at TEXT,
+      last_seen_at TEXT,
+      last_sent_at TEXT,
+      send_count INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+  d.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_document_invites_active ON document_invites(slug, email) WHERE removed_at IS NULL');
+  d.exec('CREATE INDEX IF NOT EXISTS idx_document_invites_member ON document_invites(member_id, removed_at)');
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_guest_access (
+      slug TEXT PRIMARY KEY,
+      mode TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT
+    )
+  `);
   d.exec(`CREATE TABLE IF NOT EXISTS client_errors (
     signature TEXT PRIMARY KEY,
     count INTEGER NOT NULL,
@@ -2818,7 +2853,22 @@ export function revokeDocumentAgentKey(slug: string, tokenId: string): boolean {
   return revoked;
 }
 
+/**
+ * Invite person (2026-09-19): collab sessions opened without a share token carry a pseudo token
+ * id ("invite:<id>" for an invited person, "guest:<mode>" for a guest) so that removing a person
+ * or tightening the guest setting ends them at once, like revoking an agent key. The module that
+ * issues them (server/document-team.ts) registers how to check them.
+ */
+const collabTokenChecks = new Map<string, (slug: string, rest: string) => boolean>();
+
+export function registerCollabTokenCheck(prefix: string, check: (slug: string, rest: string) => boolean): void {
+  collabTokenChecks.set(prefix, check);
+}
+
 export function isDocumentAccessTokenActive(slug: string, tokenId: string): boolean {
+  for (const [prefix, check] of collabTokenChecks) {
+    if (tokenId.startsWith(prefix)) return check(slug, tokenId.slice(prefix.length));
+  }
   return Boolean(getDb().prepare(`
     SELECT 1 FROM document_access WHERE document_slug = ? AND token_id = ? AND revoked_at IS NULL
   `).get(slug, tokenId));

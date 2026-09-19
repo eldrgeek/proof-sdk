@@ -1285,7 +1285,7 @@ export class ReadingWalkUI {
    */
   private renderMe(): void {
     const me = this.host.lineMarks().viewerIdentity();
-    const sig = JSON.stringify([me.actor, me.trust, me.name, me.email ?? '', me.signInUrl ?? '']);
+    const sig = JSON.stringify([me.actor, me.trust, me.name, me.email ?? '', me.signInUrl ?? '', me.markNeedsSignIn === true]);
     if (this.meEl.dataset.sig === sig) return;
     this.meEl.dataset.sig = sig;
     this.meEl.dataset.trust = me.trust;
@@ -1304,9 +1304,13 @@ export class ReadingWalkUI {
       return;
     }
     this.meEl.append(el('span', 'prw-me-name', me.name || 'Anonymous'), el('span', 'prw-me-guest', 'guest, unverified'));
-    this.meEl.title = 'You are not signed in: your marks show your typed name as a guest, and do not answer asks addressed to a signed-in person.';
+    // Invite person (2026-09-19): under the default guest setting a guest reads, comments and
+    // chats; marks, answers, picks and approvals need signing in.
+    this.meEl.title = me.markNeedsSignIn
+      ? 'You are not signed in: you can read, comment and chat. Sign in to mark lines and answer.'
+      : 'You are not signed in: your marks show your typed name as a guest, and do not answer asks addressed to a signed-in person.';
     if (me.signInUrl) {
-      const link = el('a', 'prw-me-signin', 'Sign in');
+      const link = el('a', 'prw-me-signin', me.markNeedsSignIn ? 'Sign in to mark' : 'Sign in');
       link.href = me.signInUrl;
       link.onclick = () => {
         // Come back here after signing in (read by public/vendor/soma-auth/proof-session.js).

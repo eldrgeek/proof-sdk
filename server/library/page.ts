@@ -49,18 +49,18 @@ function signedOutPage(): string {
   </body></html>`;
 }
 
-function signedInPage(name: string, isOwner: boolean): string {
+function signedInPage(name: string, isOwner: boolean, invited = false): string {
   const initials = name.split(/\s+/).slice(0, 2).map((part) => part[0] || '').join('').toUpperCase();
-  return `<!doctype html><html lang="en"><head>${sharedHead}${somaAuthHead()}</head><body data-member-name="${escapeHtml(name)}" data-owner="${isOwner ? '1' : '0'}" data-soma="${isSomaAuthEnabled() ? '1' : '0'}">
+  return `<!doctype html><html lang="en"><head>${sharedHead}${somaAuthHead()}</head><body data-member-name="${escapeHtml(name)}" data-owner="${isOwner ? '1' : '0'}" data-soma="${isSomaAuthEnabled() ? '1' : '0'}" data-scope="${invited ? 'invited' : 'library'}">
     <header class="topbar shell">
       <span class="wordmark">Proof</span>
       <div class="header-actions">
-        <button class="btn primary" id="new-document"><span class="new-label">New document</span><span aria-hidden="true"> +</span></button>
+        <button class="btn primary" id="new-document"${invited ? ' hidden' : ''}><span class="new-label">New document</span><span aria-hidden="true"> +</span></button>
         <div class="menu-wrap">
           <button class="btn icon-btn avatar" id="avatar" aria-label="Open account menu" aria-expanded="false">${escapeHtml(initials)}</button>
           <div class="menu" id="account-menu" hidden>
             <div class="menu-name">${escapeHtml(name)}</div>
-            <button id="people-button">People</button>
+            <button id="people-button"${invited ? ' hidden' : ''}>People</button>
             ${isSomaAuthEnabled() ? '' : '<button id="device-button">Sign in on another device</button>'}
             <button id="signout-button">Sign out</button>
           </div>
@@ -68,7 +68,7 @@ function signedInPage(name: string, isOwner: boolean): string {
       </div>
     </header>
     <main class="shell">
-      <div class="title-row"><h1>Documents</h1><span class="count" id="document-count">0</span></div>
+      <div class="title-row"><h1>${invited ? 'Shared with you' : 'Documents'}</h1><span class="count" id="document-count">0</span></div>
       <section class="controls" aria-label="Document controls">
         <div class="search-sort">
           <input class="search" id="search" type="search" placeholder="Search titles and text" aria-label="Search titles and text">
@@ -110,7 +110,7 @@ function dialogs(isOwner: boolean): string {
 export function renderLibraryHome(req: Request, res: Response): void {
   const session = getLibrarySession(req, res);
   res.setHeader('Cache-Control', 'no-store');
-  res.type('html').send(injectSomaFeedback(session ? signedInPage(session.member.name, session.member.isOwner) : signedOutPage(), session ? 'library' : 'sign-in', session?.member));
+  res.type('html').send(injectSomaFeedback(session ? signedInPage(session.member.name, session.member.isOwner, session.member.scope === 'invited') : signedOutPage(), session ? 'library' : 'sign-in', session?.member));
 }
 
 function somaSigninForm(): string {

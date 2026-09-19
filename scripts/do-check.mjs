@@ -214,7 +214,8 @@ async function run(browser, style) {
         return { status: r.status, body: await r.json() };
       }, { s: slug, id: doId, h: clientHeaders });
       assert.equal(forced.status, 403);
-      assert.equal(forced.body.code, 'SIGNED_IN_PERSON_REQUIRED');
+      // Invite person (2026-09-19): under the default guest setting a guest is refused earlier.
+      assert.match(forced.body.code, /^(SIGNED_IN_PERSON_REQUIRED|SIGN_IN_TO_MARK)$/);
     });
     await check(`${tag}: the AI's key cannot approve from the page either`, async () => {
       const r = await guest.evaluate(async ({ s, id, h }) => {

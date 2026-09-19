@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
 import { resolveDocumentAccess, type DocumentRow } from './db.js';
 import { getCookie, shareTokenCookieName } from './cookies.js';
-import { getLibrarySession, isLibraryEnabled } from './library/auth.js';
+import { resolveTokenlessAccess } from './document-team.js';
 import type { ShareRole } from './share-types.js';
 
 export function deriveShareCapabilities(role: ShareRole, shareState: string) {
@@ -19,7 +19,10 @@ export function deriveShareCapabilities(role: ShareRole, shareState: string) {
  * and rejects unresolved credentials instead of falling back to anonymous access.
  */
 export function resolveSharePageAccess(req: Request, res: Response, slug: string, doc: DocumentRow | null, mode: 'page' | 'key-management' = 'page') {
-  const librarySession = isLibraryEnabled() ? getLibrarySession(req, res) : null;
+  // Invite person: the session counts here only for a library member or someone invited to this
+  // document; without a token everyone else gets the document's guest setting.
+  const tokenless = resolveTokenlessAccess(req, slug, res);
+  const librarySession = tokenless.documentSession?.session ?? null;
   const query = typeof req.query.token === 'string' ? req.query.token.trim() : '';
   const cookie = getCookie(req, shareTokenCookieName(slug)) ?? '';
   const header = (req.header('x-share-token') || req.header('x-bridge-token')
@@ -50,9 +53,14 @@ export function resolveSharePageAccess(req: Request, res: Response, slug: string
       break;
     }
   }
-  // Omitting a credential still yields editor rights until A2 requires sign-in.
-  const role = resolved?.role ?? 'editor';
-  const capabilities = deriveShareCapabilities(role, doc?.share_state ?? 'MISSING');
+  const role: ShareRole | null = resolved ? resolved.role : tokenless.role;
+  const capabilities = role
+    ? deriveShareCapabilities(role, doc?.share_state ?? 'MISSING')
+    : { canRead: false, canEdit: false, canComment: false };
   return { librarySession, token, tokenSource, invalidCredential, role, roleFromToken: resolved?.role ?? null,
-    tokenId: resolved?.tokenId ?? null, capabilities };
+    tokenId: resolved?.tokenId ?? null, capabilities,
+    /** True when the page is closed only because the document is private and nobody signed in. */
+    signInRequired: !resolved && !role && doc?.share_state === 'ACTIVE',
+    inviteId: resolved ? null : tokenless.documentSession?.inviteId ?? null,
+    guestMode: tokenless.guestMode };
 }

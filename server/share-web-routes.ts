@@ -40,6 +40,8 @@ import {
 } from './proof-sdk-routes.js';
 import { getPublicOrigin, isSecureRequest } from './public-origin.js';
 import { resolveSharePageAccess } from './share-page-access.js';
+import { getGuestAccessMode, touchInvite } from './document-team.js';
+import { renderSignInRequiredHtml } from './document-team-routes.js';
 
 export { getPublicOrigin, isSecureRequest } from './public-origin.js';
 
@@ -371,12 +373,14 @@ function renderUnavailableHtml(preview: SharePreviewModel, message: string): str
 shareWebRoutes.get('/og/share/:slug.png', async (req: Request, res: Response) => {
   const slug = Array.isArray(req.params.slug) ? (req.params.slug[0] ?? '') : (req.params.slug ?? '');
   const doc = slug ? (getCanonicalReadableDocumentSync(slug, 'share') ?? null) : null;
+  // Invite person: a private document's preview image shows neither its title nor its text.
+  const hidePreview = Boolean(doc && getGuestAccessMode(slug) === 'private');
   const preview = buildSharePreviewModel({
     slug,
     origin: getPublicOrigin(req),
     doc: doc ? {
-      title: doc.title,
-      markdown: doc.markdown,
+      title: hidePreview ? 'Private document' : doc.title,
+      markdown: hidePreview ? '' : doc.markdown,
       updatedAt: doc.updated_at,
       shareState: doc.share_state,
       revision: doc.revision,
@@ -396,6 +400,19 @@ shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
   const doc = slug ? (getCanonicalReadableDocumentSync(slug, 'share') ?? null) : null;
   const pageAccess = resolveSharePageAccess(req, res, slug, doc);
   const { librarySession, token, tokenSource, roleFromToken } = pageAccess;
+
+  // Invite person: a private document opened without access. No snapshot fallback, no content.
+  if (doc && pageAccess.signInRequired) {
+    recordShareLinkOpen('failure', 'SIGN_IN_REQUIRED');
+    res.setHeader('Cache-Control', 'no-store');
+    if (wantsJson(req) || wantsMarkdown(req)) {
+      res.status(401).json({ success: false, slug, code: 'SIGN_IN_REQUIRED', error: 'Sign in to open this document' });
+      return;
+    }
+    res.status(401).type('html').send(renderSignInRequiredHtml(req, slug));
+    return;
+  }
+  if (pageAccess.inviteId) touchInvite(pageAccess.inviteId);
 
   if (doc && !pageAccess.capabilities.canRead) {
     recordShareLinkOpen('failure', doc.share_state);
@@ -483,8 +500,8 @@ shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
   }
 
   if (wantsJson(req)) {
-    // Product decision: tokenless shares default to editable access (slug is the secret).
-    const role = roleFromToken ?? 'editor';
+    // Invite person: without a token the role is the tokenless access (member, invitee or guest).
+    const role = roleFromToken ?? pageAccess.role ?? 'viewer';
     const shareState = doc?.share_state ?? (slug ? 'MISSING' : 'UNKNOWN');
     const capabilities = pageAccess.capabilities;
     const origin = getPublicOrigin(req);

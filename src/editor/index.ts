@@ -225,6 +225,7 @@ import { keybindingsPlugin, setShowAgentInputCallback, type AgentInputContext } 
 import { tableKeyboardPlugin } from './plugins/table-keyboard';
 import { showAgentInputDialog } from '../ui/agent-input-dialog';
 import { showAgentKeyDialog } from '../ui/agent-key-dialog';
+import { showInvitePersonDialog, type InviteResult, type TeamState } from '../ui/invite-person-dialog';
 import { ShareEventPoller } from '../bridge/share-event-poller';
 import { initContextMenu } from '../ui/context-menu';
 import {
@@ -1130,6 +1131,8 @@ class ProofEditorImpl implements ProofEditor {
   private refreshBanner: HTMLElement | null = null;
   private toastElement: HTMLElement | null = null;
   private shareMenuCleanup: (() => void) | null = null;
+  /** Invite person: whether this viewer is an Owner who may invite people (null: not checked yet). */
+  private teamCanManage: boolean | null = null;
   private presenceMenuCleanup: (() => void) | null = null;
   private agentMenuCleanup: (() => void) | null = null;
   private playmakerReview: PlayMakerReview | null = null;
@@ -1671,6 +1674,7 @@ class ProofEditorImpl implements ProofEditor {
       this.clearErrorBanner();
       this.resetShareInitRetryState();
       window.dispatchEvent(new Event('proof:editor-ready'));
+      void this.checkTeamAccess();
     } catch (error) {
       if (attemptSeq !== this.shareInitAttemptSeq) return;
       console.error('[initFromShare] Failed:', error);
@@ -3949,6 +3953,7 @@ class ProofEditorImpl implements ProofEditor {
       if (!REVIEW_STYLE_POLICY.locked) item('Review style', style === 'playmaker' ? 'PlayMaker' : 'Proof', () => {
         setReviewStyle(style === 'playmaker' ? 'proof' : 'playmaker');
       });
+      if (this.teamCanManage) item('Invite person', 'by email', () => { this.openInvitePersonDialog(); });
       item('Add agent', 'manage keys', () => { this.openAgentKeyDialog(); });
       item('Download', 'Proof Document (.md)', () => { void this.downloadProofDocument(); });
       document.body.append(menu);
@@ -4891,6 +4896,44 @@ class ProofEditorImpl implements ProofEditor {
     ].join('\n');
   }
 
+  /** Invite person: the team routes (server/document-team-routes.ts), same origin, JSON. */
+  private async teamRequest<T>(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown): Promise<T> {
+    const slug = shareClient.getSlug();
+    if (!slug) throw new Error('No document');
+    const response = await fetch(`/api/documents/${encodeURIComponent(slug)}/team${path}`, {
+      method,
+      credentials: 'same-origin',
+      headers: body === undefined ? { Accept: 'application/json' } : { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const json = await response.json().catch(() => ({})) as Record<string, unknown>;
+    if (!response.ok) throw new Error(typeof json.error === 'string' ? json.error : 'Something went wrong. Try again.');
+    return json as T;
+  }
+
+  /** Invite person: only an Owner (signed in) sees "Invite person"; guests never ask. */
+  private async checkTeamAccess(): Promise<void> {
+    if (this.teamCanManage !== null || !window.__PROOF_LIBRARY_MEMBER__) return;
+    try {
+      const team = await this.teamRequest<{ canManage?: boolean }>('GET', '');
+      this.teamCanManage = team.canManage === true;
+    } catch {
+      this.teamCanManage = false;
+    }
+  }
+
+  private openInvitePersonDialog(): boolean {
+    showInvitePersonDialog({
+      load: () => this.teamRequest<TeamState>('GET', ''),
+      invite: (email, name) => this.teamRequest<InviteResult>('POST', '/invites', { email, name }),
+      resend: id => this.teamRequest<InviteResult>('POST', `/invites/${encodeURIComponent(id)}/resend`, {}),
+      remove: id => this.teamRequest<TeamState>('POST', `/invites/${encodeURIComponent(id)}/remove`, {}),
+      setGuestAccess: mode => this.teamRequest<TeamState>('PUT', '/guest-access', { mode }),
+      copy: text => this.copyTextToClipboard(text),
+    });
+    return true;
+  }
+
   private openAgentKeyDialog(): boolean {
     showAgentKeyDialog({
       // A2 will add team-only documents; today this notice depends on member sign-in.
@@ -5106,6 +5149,9 @@ class ProofEditorImpl implements ProofEditor {
       };
 
       addItem('Copy link', async () => this.copyLinkWithFallback(this.getCanonicalShareUrl()));
+      if (this.teamCanManage) {
+        addActionItem('Invite person', () => { this.openInvitePersonDialog(); });
+      }
       addDivider();
       addActionItem('Download as Proof Document (.md)', () => { void this.downloadProofDocument(); });
       addActionItem('View activity', () => this.openShareActivityModal());

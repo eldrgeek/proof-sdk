@@ -247,4 +247,6 @@ export interface ViewerIdentity {
   email?: string;
   /** Where a guest signs in (null when this server has no sign-in). */
   signInUrl: string | null;
+  /** Invite person: this guest can read, comment and chat, but marks need signing in. */
+  markNeedsSignIn?: boolean;
 }

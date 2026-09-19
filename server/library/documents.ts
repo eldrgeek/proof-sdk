@@ -5,6 +5,7 @@ import { createProofDocument } from '../routes.js';
 import type { LibraryMember } from './auth.js';
 import { applyImportedMarks, hasProofMarks, parseImport, type ImportSummary } from '../proof-dialect.js';
 import { isEmailAddress, verifiedHumanActor } from '../../src/shared/identity.js';
+import { getGuestAccessMode, type GuestAccessMode } from '../document-team.js';
 
 type StoredReviewMark = {
   kind?: unknown;
@@ -42,6 +43,8 @@ export interface LibraryDocumentListItem {
   suggestionsBy: Record<string, number>;
   openComments: number;
   updatedSinceYouLooked: boolean;
+  /** Invite person: what someone who is not signed in may do with the link. */
+  guestAccess: GuestAccessMode;
   snippet?: string;
   matchStart?: number;
   matchEnd?: number;
@@ -127,6 +130,7 @@ function mapDocument(row: LibraryDocumentRow, query: string): LibraryDocumentLis
     archived: Boolean(row.archived_at),
     ...review,
     updatedSinceYouLooked: Boolean(lastLooked && Date.parse(row.updated_at) > Date.parse(lastLooked)),
+    guestAccess: getGuestAccessMode(row.slug),
     ...(snippet ?? {}),
   };
 }
@@ -136,6 +140,8 @@ export function listLibraryDocuments(input: {
   query?: string;
   filter?: LibraryDocumentFilter;
   sort?: LibraryDocumentSort;
+  /** Invite person: an invited person sees only the documents they were invited to. */
+  onlySlugs?: string[] | null;
 }): {
   documents: LibraryDocumentListItem[];
   counts: Record<LibraryDocumentFilter, number>;
@@ -152,6 +158,10 @@ export function listLibraryDocuments(input: {
     LEFT JOIN library_visits visits ON visits.slug = d.slug AND visits.member_id = ?
     WHERE d.share_state != 'DELETED'
   `).all(input.memberId) as LibraryDocumentRow[];
+  if (input.onlySlugs) {
+    const allowed = new Set(input.onlySlugs);
+    for (let i = rows.length - 1; i >= 0; i -= 1) if (!allowed.has(rows[i].slug)) rows.splice(i, 1);
+  }
 
   const all = rows.map((row) => mapDocument(row, query));
   const searched = query

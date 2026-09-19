@@ -9,6 +9,9 @@ const temp = mkdtempSync(path.join(tmpdir(), 'proof-x1-keys-'));
 process.env.DATABASE_PATH = path.join(temp, 'test.db');
 process.env.PROOF_TRUST_PROXY_HEADERS = 'true';
 process.env.PROOF_LIBRARY_ENABLED = '1';
+// Invite person (2026-09-19): these checks mint keys as an anonymous page editor, the behaviour
+// a document keeps when its guest setting is "edit" (the default is now "comment").
+process.env.PROOF_GUEST_ACCESS_DEFAULT = 'edit';
 const db = await import('../../server/db');
 const { apiRoutes } = await import('../../server/routes');
 const { agentRoutes } = await import('../../server/agent-routes');

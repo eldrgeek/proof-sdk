@@ -12,7 +12,9 @@ import { createServer } from 'node:http';
 
 const temp = mkdtempSync(path.join(tmpdir(), 'proof-identity-'));
 process.env.DATABASE_PATH = path.join(temp, 'test.db');
-Object.assign(process.env, { PROOF_ENV: 'test', PROOF_DB_ENV_INIT: 'test', PROOF_LIBRARY_ENABLED: '1' });
+Object.assign(process.env, { PROOF_ENV: 'test', PROOF_DB_ENV_INIT: 'test', PROOF_LIBRARY_ENABLED: '1', PROOF_GUEST_ACCESS_DEFAULT: 'edit' });
+// Invite person (2026-09-19): guest marks still count where a document's guest setting is "edit";
+// the new default ("comment") refuses them, covered by src/tests/document-team.test.ts.
 delete process.env.PROOF_SOMA_AUTH_ENABLED;
 delete process.env.PROOF_PUBLIC_ORIGIN;
 

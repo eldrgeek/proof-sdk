@@ -49,6 +49,9 @@ async function startServer(style) {
     PORT: String(port), COLLAB_EMBEDDED_WS: '1', PROOF_DEFAULT_REVIEW_STYLE: style,
     PROOF_FEEDBACK_ENABLED: '1', SOMA_FEEDBACK_ENDPOINT: 'http://127.0.0.1:9/feedback',
     PROOF_LIBRARY_ENABLED: '1',
+    // Invite person (2026-09-19): this check covers guest marks, which count where a document's
+    // guest setting is "edit"; the new default ("comment") is covered by invite-check.mjs.
+    PROOF_GUEST_ACCESS_DEFAULT: 'edit',
     DATABASE_PATH: path.join(temp, 'test.db'), SNAPSHOT_DIR: path.join(temp, 'snapshots'),
   };
   const child = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { cwd: root, env, stdio: 'ignore' });

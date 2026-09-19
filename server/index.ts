@@ -20,6 +20,7 @@ import {
 } from './client-capabilities.js';
 import { getBuildInfo } from './build-info.js';
 import { libraryRoutes } from './library/routes.js';
+import { documentTeamRoutes } from './document-team-routes.js';
 import { isLibraryEnabled } from './library/auth.js';
 import { renderLibraryHome } from './library/page.js';
 
@@ -57,6 +58,8 @@ async function main(): Promise<void> {
   app.use('/assets', express.static(path.join(__dirname, '..', 'dist', 'assets'), { maxAge: 0 }));
   app.use(express.static(path.join(__dirname, '..', 'public')));
   app.use(libraryRoutes);
+  // Invite person: same-origin only (mounted before the CORS headers below).
+  app.use(documentTeamRoutes);
   app.use(somaFeedbackRoutes);
   app.use(clientErrorRoutes);
 

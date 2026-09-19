@@ -684,6 +684,7 @@ export class LineMarksUI {
       name: this.serverMe?.name || actor.replace(/^(human|ai|guest):/i, ''),
       ...(this.serverMe?.email ? { email: this.serverMe.email } : {}),
       signInUrl: this.serverMe?.signInUrl ?? null,
+      ...(this.serverMe?.markNeedsSignIn ? { markNeedsSignIn: true } : {}),
     };
   }
 
@@ -722,6 +723,10 @@ export class LineMarksUI {
   /** Writes the viewer's mark on a line. */
   setLineStatus(index: number, status: StatusChoice, reason?: string, via: MarkVia = 'click'): Promise<boolean> {
     const line = this.lines[index];
+    if (line && !this.canMark && via !== 'dwell' && this.serverMe?.markNeedsSignIn) {
+      // Invite person: a deliberate mark by a guest where guests' marks do not count.
+      this.toast('Sign in to mark. Without signing in you can read, comment and chat.');
+    }
     if (!line || !this.canMark) return Promise.resolve(false);
     return this.writeMark(line, status, reason, via);
   }

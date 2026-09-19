@@ -13,6 +13,13 @@
   const peopleDialog = document.getElementById('people-dialog');
   const deviceDialog = document.getElementById('device-dialog');
   const somaEnabled = document.body.dataset.soma === '1';
+  // Invite person: an invited person sees only their documents and does not manage them.
+  const invitedOnly = document.body.dataset.scope === 'invited';
+  const LINK_ACCESS = {
+    edit: 'Link copied. Anyone with this link can read and edit.',
+    comment: 'Link copied. Anyone with this link can read and comment; editing and marking need signing in.',
+    private: 'Link copied. Only invited people and team members can open it.',
+  };
   const isOwner = document.body.dataset.owner === '1';
   let searchTimer = 0;
 
@@ -188,7 +195,7 @@
       actions.className = 'row-actions';
       const copyButton = actionButton('Copy link', () => copy(
         `${location.origin}/d/${encodeURIComponent(doc.slug)}`,
-        'Link copied. Anyone with this link can read and edit.',
+        LINK_ACCESS[doc.guestAccess] || LINK_ACCESS.edit,
       ));
       copyButton.className = 'btn copy-visible';
       actions.append(copyButton);
@@ -208,10 +215,14 @@
       open.textContent = 'Open in new tab';
       menu.append(
         open,
-        actionButton('Copy link', () => copy(`${location.origin}/d/${encodeURIComponent(doc.slug)}`, 'Link copied. Anyone with this link can read and edit.')),
-        actionButton('Rename', () => openRename(doc)),
-        actionButton(doc.archived ? 'Restore' : 'Archive', () => archive(doc, !doc.archived)),
+        actionButton('Copy link', () => copy(`${location.origin}/d/${encodeURIComponent(doc.slug)}`, LINK_ACCESS[doc.guestAccess] || LINK_ACCESS.edit)),
       );
+      if (!invitedOnly) {
+        menu.append(
+          actionButton('Rename', () => openRename(doc)),
+          actionButton(doc.archived ? 'Restore' : 'Archive', () => archive(doc, !doc.archived)),
+        );
+      }
       details.append(summary, menu);
       actions.append(details);
       item.append(info, actions);
@@ -244,6 +255,9 @@
         text.textContent = 'Archived documents keep working at their links; they only leave this list.';
       } else if (state.filter === 'review') {
         heading.textContent = 'Nothing waiting for review.';
+      } else if (invitedOnly) {
+        heading.textContent = 'No documents are shared with you right now.';
+        text.textContent = 'When someone invites you to a document, it appears here.';
       } else {
         heading.textContent = 'No documents yet.';
         const create = document.createElement('button');

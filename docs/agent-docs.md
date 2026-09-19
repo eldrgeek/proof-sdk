@@ -425,6 +425,42 @@ The page reads who it is from `GET /api/documents/<slug>/line-marks` (`identity.
 `trust`, `name`, `signInUrl`) and shows it in the right rail header. Page routes for the asker or an
 owner: `POST /api/documents/<slug>/asks/:id/reask`, `DELETE /api/documents/<slug>/asks/:id`.
 
+## Invite person and the guest setting (2026-09-19)
+
+Who may open a document without a share token (policy `GUEST_ACCESS_POLICY` in `server/document-team.ts`):
+
+- A Documents library member (signed in): edits and marks, as before.
+- A person invited to this document (signed in with the invited email): edits and marks as
+  `human:<email>`. They see only the documents they were invited to; on any other document they
+  are a guest.
+- Everyone else is a guest, and the document's guest setting decides:
+  - `comment` (the default wherever sign-in exists): read, comment, suggest and chat. Line marks,
+    ask answers, picks, approvals, flags, objections and tiers are refused with
+    `403 SIGN_IN_TO_MARK` (not recorded). The page shows "Sign in to mark".
+  - `private`: nothing. The page is "Sign in to open this document" (401, no text, no snapshot);
+    JSON, markdown, `GET /api/documents/<slug>`, open-context and collab-session answer 401
+    `SIGN_IN_REQUIRED`.
+  - `edit`: the behaviour before this change (guest marks count as `guest:<name>`).
+  A server without the library defaults to `edit`; `PROOF_GUEST_ACCESS_DEFAULT` overrides the default.
+
+Share tokens are unchanged: `x-share-token` access tokens, agent keys, `?token=` links and the owner
+credential decide access exactly as before, whatever the guest setting.
+
+Team routes (an Owner: the document's creator, a Documents admin, or the owner credential; a
+session request must be same-origin JSON):
+
+    GET  /api/documents/<slug>/team                     invites (status invited/joined, last seen) + guestAccess
+    POST /api/documents/<slug>/team/invites             { email, name?, send? } -> invite + email result
+    POST /api/documents/<slug>/team/invites/<id>/resend
+    POST /api/documents/<slug>/team/invites/<id>/remove  ends the person's access at once
+    PUT  /api/documents/<slug>/team/guest-access        { mode: "private" | "comment" | "edit" }
+
+The invite link (`/invite/<id>`) is not a credential: it opens the document only for someone signed
+in as the invited email. Email: `PROOF_INVITE_MAIL_TRANSPORT` = `resend` (when `RESEND_API_KEY` is
+set; branded email), `soma-otp` (default with SOMA Auth: SOMA Auth emails a magic link that returns
+to the invite page), `capture` (tests: `PROOF_INVITE_MAIL_CAPTURE` file) or `none`. Limits: 20
+invites per document, 30 per inviter, 60 per address, per hour; a resend waits a minute.
+
 ## Honest reading, "Since you" and aligned snapshots (Proof Documents, Steps B3b and B3c)
 
 How a mark was earned: every line mark carries `via`: `dwell` (the reading walk), `click`, `key`,

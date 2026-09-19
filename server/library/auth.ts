@@ -19,7 +19,11 @@ export interface LibraryMember {
   invitedBy: string | null;
   createdAt: string;
   removedAt: string | null;
+  /** 'library': sees every document. 'invited': sees only documents they were invited to. */
+  scope: LibraryMemberScope;
 }
+
+export type LibraryMemberScope = 'library' | 'invited';
 
 type LibraryMemberRow = {
   id: string;
@@ -29,6 +33,7 @@ type LibraryMemberRow = {
   invited_by: string | null;
   created_at: string;
   removed_at: string | null;
+  scope?: string | null;
 };
 
 type LibrarySessionRow = {
@@ -66,6 +71,7 @@ function mapMember(row: LibraryMemberRow): LibraryMember {
     invitedBy: row.invited_by,
     createdAt: row.created_at,
     removedAt: row.removed_at,
+    scope: row.scope === 'invited' ? 'invited' : 'library',
   };
 }
 
@@ -78,6 +84,7 @@ export function createLibraryMember(input: {
   email: string;
   isOwner?: boolean;
   invitedBy?: string | null;
+  scope?: LibraryMemberScope;
 }): LibraryMember {
   const name = input.name.replace(/\s+/g, ' ').trim();
   const email = normalizeEmail(input.email);
@@ -87,9 +94,9 @@ export function createLibraryMember(input: {
   const now = new Date().toISOString();
   const id = randomUUID();
   getDb().prepare(`
-    INSERT INTO library_members (id, name, email, is_owner, invited_by, created_at, removed_at)
-    VALUES (?, ?, ?, ?, ?, ?, NULL)
-  `).run(id, name, email, input.isOwner ? 1 : 0, input.invitedBy ?? null, now);
+    INSERT INTO library_members (id, name, email, is_owner, invited_by, created_at, removed_at, scope)
+    VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
+  `).run(id, name, email, input.isOwner ? 1 : 0, input.invitedBy ?? null, now, input.scope === 'invited' ? 'invited' : 'library');
   return getLibraryMemberById(id) as LibraryMember;
 }
 
@@ -105,6 +112,20 @@ export function getLibraryMemberByEmail(email: string): LibraryMember | null {
     SELECT * FROM library_members WHERE email = ? LIMIT 1
   `).get(normalizeEmail(email)) as LibraryMemberRow | undefined;
   return row ? mapMember(row) : null;
+}
+
+/** Makes an invited person a full library member (an admin added them, or they are an admin). */
+export function promoteLibraryMember(memberId: string): void {
+  getDb().prepare(`UPDATE library_members SET scope = 'library', removed_at = NULL WHERE id = ?`).run(memberId);
+}
+
+/** True when an invited person still has at least one document they were invited to. */
+function hasActiveDocumentInvite(memberId: string): boolean {
+  try {
+    return Boolean(getDb().prepare(`SELECT 1 FROM document_invites WHERE member_id = ? AND removed_at IS NULL LIMIT 1`).get(memberId));
+  } catch {
+    return false;
+  }
 }
 
 export function listLibraryMembers(): LibraryMember[] {
@@ -127,7 +148,7 @@ export function listLibraryPeople(): Array<LibraryMember & {
     LEFT JOIN library_members inviter ON inviter.id = member.invited_by
     LEFT JOIN library_sessions sessions
       ON sessions.member_id = member.id AND sessions.revoked_at IS NULL
-    WHERE member.removed_at IS NULL
+    WHERE member.removed_at IS NULL AND COALESCE(member.scope, 'library') = 'library'
     GROUP BY member.id
     ORDER BY member.name COLLATE NOCASE, member.created_at
   `).all() as Array<LibraryMemberRow & {
@@ -392,14 +413,16 @@ export async function exchangeSomaSession(req: Request): Promise<{
     });
     if (!role.ok) return { status: 503, message: 'Could not check access. Please try again later.' };
     const isAdmin = await role.json() === true;
-    if (!isAdmin && (!member || member.removedAt)) {
+    // Invite person: an invited person may sign in while they still have a document invite.
+    const invitedOnly = Boolean(member && !member.removedAt && member.scope === 'invited');
+    if (!isAdmin && (!member || member.removedAt || (invitedOnly && !hasActiveDocumentInvite(member.id)))) {
       return { status: 403, email, message: `You're signed in as ${email}, but this Proof+ isn't shared with that address. Ask Mike or Eric to add you.` };
     }
     if (!member) {
       const metadataName = user.user_metadata?.full_name || user.user_metadata?.name;
       member = createLibraryMember({ name: typeof metadataName === 'string' ? metadataName : email, email });
-    } else if (member.removedAt && isAdmin) {
-      getDb().prepare('UPDATE library_members SET removed_at = NULL WHERE id = ?').run(member.id);
+    } else if ((member.removedAt || member.scope === 'invited') && isAdmin) {
+      promoteLibraryMember(member.id);
     }
     const sessionId = previous ? getCookie(req, LIBRARY_SESSION_COOKIE)! : randomOpaqueValue();
     const nowIso = now.toISOString();
