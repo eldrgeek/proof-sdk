@@ -846,6 +846,9 @@ in A or F. A proxy on a line the person already marked is moot and not shown.
   what it held before, in one request; once; within `PROXY_POLICY.undoWindowMs`; a line the person
   marked again since keeps the newer mark.
 - **Review the F flagged**: Next issue walks only those lines, then stops.
+- Reading a flagged line passively (dwell, scroll, a folded section) gives at most Seen, never Agreed,
+  and the line stays in the brief until the person marks it explicitly
+  (`PROXY_POLICY.passiveReadCapsAtSeenWhenFlagged`, COS ruling 2026-09-19).
 
 Evidence on every AI mark: `/marks/line` also takes `evidence` (kept for AI actors). An AI mark
 without it is listed with `claimed: true` in `/state` and shown as "claimed" in the page.

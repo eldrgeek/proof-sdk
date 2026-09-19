@@ -24,6 +24,7 @@
  * Pure code shared by the browser and the server.
  */
 import {
+  PASSIVE_VIAS,
   actorKey,
   buildLineStates,
   countsAsSeen,
@@ -31,7 +32,9 @@ import {
   type DocLine,
   type LineAnchor,
   type LineMark,
+  type LineMarkStatus,
   type LineState,
+  type MarkVia,
   type ProofIssue,
 } from './line-marks.js';
 
@@ -62,6 +65,13 @@ export const PROXY_POLICY = {
   },
   /** A proxy on a line the person has already marked (Seen or better) is moot and not shown. */
   hideWhenPersonMarked: true,
+  /**
+   * COS ruling on Q4 (2026-09-19): on a line in "Flagged for you" (rejected-suggested, below the
+   * threshold, or held), passive reading (dwell / scroll / folded section) gives at most Seen, never
+   * Agreed, and does not make the proxy moot: the line stays in the brief until the person marks it
+   * explicitly.
+   */
+  passiveReadCapsAtSeenWhenFlagged: true,
   /** How a ratified mark was earned (a line mark's `via`). Passive for the ringer list. */
   ratifiedVia: 'proxy' as const,
   /** Undo of a ratification: the person's own, once, within this long (the page offers it for the
@@ -263,12 +273,16 @@ export function evaluateProxies(input: {
   const me = actorKey(human);
   for (const [lineIndex, { proxy, carried }] of [...byLine.entries()].sort((a, b) => a[0] - b[0])) {
     const own = input.states[lineIndex]?.marks.get(me);
-    if (PROXY_POLICY.hideWhenPersonMarked && own?.current && countsAsSeen(own.mark.status)) { brief.moot += 1; continue; }
     const held = input.held.get(lineIndex) ?? [];
     const bucket: ProxyBucket = proxy.status === 'rejected-suggested' ? 'reject'
       : proxy.status === 'seen' ? 'seen'
       : held.length > 0 ? 'held'
       : proxy.confidence >= threshold ? 'ratify' : 'check';
+    if (PROXY_POLICY.hideWhenPersonMarked && own?.current && countsAsSeen(own.mark.status)) {
+      // A passive read of a flagged line does not settle it: the line stays in the brief.
+      const passive = PASSIVE_VIAS.has((own.mark.via ?? 'api') as MarkVia) && own.mark.via !== 'proxy';
+      if (!(PROXY_POLICY.passiveReadCapsAtSeenWhenFlagged && isFlaggedBucket(bucket) && passive)) { brief.moot += 1; continue; }
+    }
     const item: ProxyItem = { proxy, lineIndex, bucket, held, carried };
     brief.items.push(item);
     if (bucket === 'ratify') brief.ratify.push(item);
@@ -280,6 +294,20 @@ export function evaluateProxies(input: {
   for (const index of new Set(input.humanIssueLines ?? [])) if (!covered.has(index)) needYou += 1;
   brief.counts = { read: brief.items.length, agreed: brief.ratify.length, flagged: brief.flagged.length, needYou };
   return brief;
+}
+
+/** "Flagged for you": below the threshold, a recommended rejection, or held. */
+export function isFlaggedBucket(bucket: ProxyBucket): boolean {
+  return bucket === 'check' || bucket === 'reject' || bucket === 'held';
+}
+
+/**
+ * COS ruling on Q4: the most a passive read (dwell) may give on a line, given the status the
+ * statement rule would give and the reader's own proxy item there. Flagged lines cap at Seen.
+ */
+export function capPassiveRead(status: LineMarkStatus | null, item: Pick<ProxyItem, 'bucket'> | null | undefined): LineMarkStatus | null {
+  if (!status || !item || !PROXY_POLICY.passiveReadCapsAtSeenWhenFlagged || !isFlaggedBucket(item.bucket)) return status;
+  return status === 'agreed' || status === 'approved' ? 'seen' : status;
 }
 
 /** Line Issues open for the person (unseen, changed or skimmed by them). */

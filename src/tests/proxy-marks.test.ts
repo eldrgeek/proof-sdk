@@ -111,6 +111,29 @@ try {
     assert.equal(moot.ratify.length, 0);
   });
 
+  await test('Q4: a passive read of a flagged line gives at most Seen and keeps it in the brief; an explicit mark settles it', async () => {
+    assert.equal(proxy.PROXY_POLICY.passiveReadCapsAtSeenWhenFlagged, true);
+    assert.equal(proxy.capPassiveRead('agreed', { bucket: 'reject' }), 'seen');
+    assert.equal(proxy.capPassiveRead('agreed', { bucket: 'check' }), 'seen');
+    assert.equal(proxy.capPassiveRead('agreed', { bucket: 'held' }), 'seen');
+    assert.equal(proxy.capPassiveRead('agreed', { bucket: 'ratify' }), 'agreed');
+    assert.equal(proxy.capPassiveRead('agreed', null), 'agreed');
+    assert.equal(proxy.capPassiveRead('seen', { bucket: 'reject' }), 'seen');
+    const lines = await serverLines.computeServerLines(doc);
+    const L = (text: string) => lines.find(l => l.text.includes(text))!;
+    const mk = (id: string, text: string, status: any, confidence: number) => ({
+      id, familiar: 'ai:claude', for: 'human:mw@mike-wolf.com', status, confidence, evidence: 'Paraphrase of the line checked', at: '2026-09-19T10:00:00Z', anchor: shared.anchorForLine(L(text)),
+    });
+    const proxies = [mk('rej', 'nine to five', 'rejected-suggested', 0.8), mk('ok', 'second quarter', 'agreed', 0.95)];
+    const mark = (text: string, status: any, via: any) => ({ id: `m-${text}-${via}`, by: 'human:mw@mike-wolf.com', status, at: 'x', anchor: shared.anchorForLine(L(text)), via });
+    const brief = (marks: any[]) => proxy.evaluateProxies({ proxies, human: 'human:mw@mike-wolf.com', familiar: 'ai:claude', lines, states: shared.buildLineStates(lines, marks), held: new Map() });
+    const dwelled = brief([mark('nine to five', 'seen', 'dwell'), mark('second quarter', 'seen', 'dwell')]);
+    assert.deepEqual(dwelled.flagged.map(i => i.proxy.id), ['rej'], 'the flagged line stays after a dwell');
+    assert.equal(dwelled.moot, 1, 'an unflagged line is settled by the dwell as before');
+    const clicked = brief([mark('nine to five', 'seen', 'click')]);
+    assert.equal(clicked.flagged.length, 0, 'an explicit mark settles it');
+  });
+
   await test('held lines: objection, open ask, uncertain for the person, {do}, rejected by someone else, pending suggestion', () => {
     const issues: any[] = [
       { type: 'objection', lineIndices: [1, 2] },

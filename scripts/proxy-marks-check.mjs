@@ -284,6 +284,22 @@ async function run(browser, style) {
       await mike.evaluate(() => window.__proofReadingWalk.focusLine(0));
     });
 
+    await check(`${tag}: reading a flagged line by dwell gives Mike at most Seen, and it stays in the brief`, async () => {
+      // Claude (not Mike) is the last to have claimed the support line, so a dwell would otherwise give Agreed.
+      await call(base, slug, CLAUDE, 'POST', '/marks/line', { lineIndex: L.SUPPORT, status: 'agreed', evidence: 'Checked against last year\'s plan' });
+      await mike.evaluate(() => window.__proofLineMarks.refresh());
+      await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.SUPPORT);
+      await waitFor(mike, l => window.__proofLineMarks.debugState().marks.some(m => m.by === 'human:mw@mike-wolf.com' && m.anchor.ordinal === l && m.via === 'dwell'), L.SUPPORT, 15000);
+      // Stay on the line past its reading time again: an upgrade to Agreed would land now.
+      await mike.waitForTimeout(2500);
+      const mine = (await lm(mike)).marks.find(m => m.by === MIKE && m.anchor.ordinal === L.SUPPORT);
+      assert.equal(mine.status, 'seen', `the dwell gave ${mine.status}`);
+      const p = await proxyState(mike);
+      assert.ok(p.flagged.some(([line, bucket]) => line === L.SUPPORT && bucket === 'reject'), JSON.stringify(p.flagged));
+      assert.equal(await mike.evaluate(l => document.querySelector(`.plm-dot[data-line="${l}"]`)?.dataset.proxy, L.SUPPORT), 'rejected-suggested');
+      await mike.evaluate(() => window.__proofReadingWalk.focusLine(0));
+    });
+
     await check(`${tag}: Review the flagged walks Next issue through only those lines, then stops`, async () => {
       await mike.waitForTimeout(300);
       const flagged = (await proxyState(mike)).flagged.map(([line]) => line);

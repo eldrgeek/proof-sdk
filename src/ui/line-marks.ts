@@ -90,6 +90,7 @@ import {
   heldLines,
   humanIssueLines,
   isClaimedMark,
+  capPassiveRead,
   EVIDENCE_POLICY,
   type FamiliarBinding,
   type ProxyBrief,
@@ -650,7 +651,10 @@ export class LineMarksUI {
   dwellStatusFor(index: number): LineMarkStatus | null {
     const mine = this.states[index]?.marks.get(actorKey(this.me()));
     const current = !mine ? null : { status: mine.current ? mine.mark.status : 'changed', via: mine.mark.via ?? null };
-    return dwellMarkFor(this.isOthersStatement(index), current);
+    // COS ruling (Q4): a line my Familiar flagged for me is never Agreed by passive reading.
+    const flagged = this.briefByLine.get(index);
+    const others = this.isOthersStatement(index) && !(flagged && capPassiveRead('agreed', flagged) !== 'agreed');
+    return capPassiveRead(dwellMarkFor(others, current), flagged);
   }
 
   myStatus(index: number): StatusChoice | 'changed' {
