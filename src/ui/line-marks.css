@@ -1,0 +1,100 @@
+/* Proof Documents Step 1: line marks (Claude Opus 5, 2026-09-18). */
+/* Room for the margin dots: the text starts right of them at every width. */
+body.plm-on #editor { padding-left:calc(var(--provenance-bar-width, 6px) + 48px) !important; }
+.plm-gutter { position:absolute; top:0; left:0; width:0; height:0; z-index:40; }
+.plm-dot {
+  position:absolute; display:inline-flex; align-items:center; justify-content:center;
+  padding:0; margin:0; border:none; background:transparent; cursor:pointer; border-radius:50%;
+  font:700 12px/1 system-ui,-apple-system,sans-serif; color:#fff; -webkit-tap-highlight-color:transparent;
+}
+.plm-dot > * { pointer-events:none; }
+.plm-dot .plm-glyph {
+  display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; border-radius:50%;
+  box-sizing:border-box; border:1.5px solid #c3c8d0; background:#fff; color:#fff; font-size:11px; line-height:1;
+  transition:transform .12s ease, border-color .12s ease;
+}
+.plm-dot:hover .plm-glyph, .plm-dot:focus-visible .plm-glyph { transform:scale(1.2); border-color:#6b7280; }
+.plm-dot:focus-visible { outline:2px solid #2563eb; outline-offset:1px; }
+.plm-dot[data-issue="false"][data-status="unseen"] .plm-glyph { border-color:#e5e7eb; }
+.plm-dot[data-status="seen"] .plm-glyph { background:#9ca3af; border-color:#9ca3af; }
+.plm-dot[data-status="agreed"] .plm-glyph { background:#16a34a; border-color:#16a34a; }
+.plm-dot[data-status="approved"] .plm-glyph { background:#0d9488; border-color:#0d9488; }
+.plm-dot[data-status="rejected"] .plm-glyph { background:#dc2626; border-color:#dc2626; }
+.plm-dot[data-status="changed"] .plm-glyph { background:#fff; border-color:#d97706; color:#d97706; }
+.plm-pips { position:absolute; left:-2px; top:50%; transform:translate(-100%,-50%); display:flex; flex-direction:column; gap:2px; }
+.plm-pips i { display:block; width:5px; height:5px; border-radius:50%; background:#9ca3af; }
+.plm-pips i[data-status="agreed"] { background:#16a34a; }
+.plm-pips i[data-status="approved"] { background:#0d9488; }
+.plm-pips i[data-status="rejected"] { background:#dc2626; }
+.plm-pips i[data-status="changed"] { background:#fff; box-shadow:inset 0 0 0 1.5px #d97706; }
+
+.plm-menu {
+  position:fixed; width:280px; max-width:calc(100vw - 16px); box-sizing:border-box; z-index:10002;
+  background:#fffefb; color:#26303c; border:1px solid #d4d4cf; border-radius:12px; padding:12px;
+  box-shadow:0 12px 40px #16223833; font:14px/1.45 system-ui,-apple-system,sans-serif;
+}
+.plm-menu-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.plm-menu-head strong { font-size:14px; }
+.plm-close { width:32px; height:32px; border:none; background:transparent; font-size:22px; line-height:1; cursor:pointer; color:#4b5563; border-radius:8px; }
+.plm-excerpt { margin:4px 0 8px; color:#646b73; font-size:12px; overflow-wrap:anywhere; }
+.plm-changed { margin:0 0 8px; padding:6px 8px; border-radius:8px; background:#fffbeb; color:#92400e; font-size:12px; }
+.plm-actions { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+.plm-choice {
+  display:flex; align-items:center; gap:6px; min-height:36px; padding:6px 10px; border:1px solid #d4d4cf; border-radius:8px;
+  background:#fff; color:inherit; font:600 13px/1.2 system-ui,-apple-system,sans-serif; cursor:pointer; text-align:left;
+}
+.plm-choice:hover { background:#f3f4f6; }
+.plm-choice:disabled { opacity:.45; cursor:default; }
+.plm-choice[aria-pressed="true"] { border-color:#26303c; box-shadow:inset 0 0 0 1px #26303c; }
+.plm-choice-glyph { display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; border-radius:50%; color:#fff; font-size:11px; background:#9ca3af; flex-shrink:0; }
+.plm-choice[data-status="agreed"] .plm-choice-glyph { background:#16a34a; }
+.plm-choice[data-status="approved"] .plm-choice-glyph { background:#0d9488; }
+.plm-choice[data-status="rejected"] .plm-choice-glyph { background:#dc2626; }
+.plm-clear { grid-column:1 / -1; justify-content:center; font-weight:500; color:#4b5563; }
+.plm-reason { display:flex; gap:6px; margin-top:8px; }
+.plm-reason[hidden] { display:none; }
+.plm-reason input { flex:1; min-width:0; min-height:36px; padding:6px 8px; border:1px solid #949ca8; border-radius:8px; font:inherit; }
+.plm-reason input[aria-invalid="true"] { border-color:#dc2626; }
+.plm-reason button { min-height:36px; padding:0 12px; border:none; border-radius:8px; background:#dc2626; color:#fff; font:600 13px system-ui,sans-serif; cursor:pointer; }
+.plm-team { list-style:none; margin:10px 0 0; padding:8px 0 0; border-top:1px solid #ecebe6; display:grid; gap:3px; font-size:12px; }
+.plm-team li { display:flex; justify-content:space-between; gap:8px; }
+.plm-team-status { color:#646b73; text-align:right; overflow-wrap:anywhere; }
+.plm-team-status[data-status="agreed"] { color:#15803d; }
+.plm-team-status[data-status="approved"] { color:#0f766e; font-weight:600; }
+.plm-team-status[data-status="rejected"] { color:#b91c1c; }
+.plm-team-status[data-status="changed"] { color:#b45309; }
+
+.plm-issues { display:inline-flex; align-items:center; gap:6px; flex-shrink:0; font:600 12px/1.2 system-ui,-apple-system,sans-serif; }
+.plm-issues-count { white-space:nowrap; padding:4px 8px; border-radius:999px; background:#fef3c7; color:#92400e; font-variant-numeric:tabular-nums; }
+.plm-issues[data-state="aligned"] .plm-issues-count { background:#dcfce7; color:#166534; }
+.plm-issues[data-state="loading"] .plm-issues-count { background:#f3f4f6; color:#6b7280; }
+.plm-next { min-height:32px; padding:0 10px; border:1px solid #d2d6dc; border-radius:16px; background:#fff; color:#26303c; font:inherit; cursor:pointer; white-space:nowrap; }
+.plm-next:disabled { opacity:.45; cursor:default; }
+.plm-next-short { display:none; }
+
+.plm-flash { position:absolute; pointer-events:none; border-radius:8px; background:rgba(250,204,21,.28); box-shadow:0 0 0 2px rgba(234,179,8,.7); animation:plm-flash 2.2s ease forwards; z-index:30; }
+@keyframes plm-flash { 0%,60% { opacity:1; } 100% { opacity:0; } }
+.plm-toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); max-width:calc(100vw - 32px); padding:10px 14px; border-radius:10px; background:#1f2937; color:#fff; font:14px/1.4 system-ui,sans-serif; z-index:10003; }
+
+/* Phones: the dot keeps a 36 px touch target at the text's left edge; the menu is a bottom sheet
+   above the feedback chip (z 9999); the bar shows one compact "N ›" button. */
+@media (max-width:700px) {
+  body.plm-on #editor { padding-left:calc(var(--provenance-bar-width, 6px) + 38px) !important; }
+  .plm-menu.plm-sheet {
+    left:0 !important; right:0; top:auto !important; bottom:var(--proof-keyboard-offset,0px); width:100%; max-width:100%;
+    max-height:min(80dvh,560px); overflow:auto; border-radius:16px 16px 0 0; padding:14px 16px max(18px,env(safe-area-inset-bottom));
+    box-shadow:0 -8px 32px #16223833; font-size:15px;
+  }
+  .plm-sheet .plm-close { width:44px; height:44px; font-size:26px; }
+  .plm-sheet .plm-choice { min-height:48px; font-size:15px; }
+  .plm-sheet .plm-reason input, .plm-sheet .plm-reason button { min-height:48px; font-size:16px; }
+  .plm-sheet .plm-team { font-size:14px; }
+  #share-banner .plm-issues { gap:0; }
+  #share-banner .plm-issues-count { display:none; }
+  #share-banner .plm-next { min-height:44px; min-width:44px; padding:0 10px; font-size:13px; }
+  #share-banner .plm-next:disabled { opacity:1; }
+  #share-banner .plm-issues[data-state="aligned"] .plm-next { background:#dcfce7; color:#166534; border-color:#bbf7d0; }
+  #share-banner .plm-issues[data-state="issues"] .plm-next { background:#fef3c7; color:#92400e; border-color:#fde68a; }
+  #share-banner .plm-next-long { display:none; }
+  #share-banner .plm-next-short { display:inline; }
+}

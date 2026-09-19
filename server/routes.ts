@@ -101,6 +101,8 @@ import {
   validateOpPrecondition,
 } from './mutation-stage.js';
 import { resolveExplicitAgentIdentity } from '../src/shared/agent-identity.js';
+import { activeAgentKeyActors, documentOwnerActors, isLibraryDocumentCreator, listLineMarks, writeLineMark } from './line-marks.js';
+import { getLibrarySession, isLibraryEnabled } from './library/auth.js';
 import {
   buildProofSdkAgentDescriptor,
   buildProofSdkDocumentPaths,
@@ -1856,6 +1858,71 @@ apiRoutes.post('/documents/:slug/ops', opsRateLimiter, async (req: Request, res:
   }
 
   sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+});
+
+// Proof Documents Step 1: line marks for the page. Reads need document read access; writes
+// need comment access. Approved needs an Owner: the owner credential, a Documents library
+// admin, or the library member who created the document.
+function resolveLineMarkAccess(req: Request, slug: string, doc: NonNullable<ReturnType<typeof getDocumentBySlug>>) {
+  const role = getAccessRole(req, slug);
+  const ownerAuthorized = role === 'owner_bot' || canOwnerMutate(req, doc);
+  let library: ReturnType<typeof getLibrarySession> = null;
+  try { library = isLibraryEnabled() ? getLibrarySession(req) : null; } catch { library = null; }
+  const canApprove = ownerAuthorized
+    || Boolean(library?.member.isOwner)
+    || Boolean(library && isLibraryDocumentCreator(slug, library.member.id));
+  const active = doc.share_state === 'ACTIVE';
+  const canRead = doc.share_state !== 'DELETED' && (ownerAuthorized || (active && role !== null));
+  const canMark = ownerAuthorized || (active && (role === 'commenter' || role === 'editor'));
+  return { role, canRead, canMark, canApprove };
+}
+
+apiRoutes.get('/documents/:slug/line-marks', (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) {
+    res.status(404).json({ success: false, error: 'Document not found' });
+    return;
+  }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canRead) {
+    res.status(403).json({ success: false, error: 'No read access' });
+    return;
+  }
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    success: true,
+    lineMarks: listLineMarks(slug),
+    owners: documentOwnerActors(slug),
+    agentKeyActors: activeAgentKeyActors(slug),
+    viewer: { canMark: access.canMark, canApprove: access.canApprove },
+  });
+});
+
+apiRoutes.post('/documents/:slug/line-marks', opsRateLimiter, (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) {
+    res.status(404).json({ success: false, error: 'Document not found' });
+    return;
+  }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canMark) {
+    res.status(403).json({ success: false, error: 'Marking lines needs comment access' });
+    return;
+  }
+  const body = isRecord(req.body) ? req.body : {};
+  const result = writeLineMark(slug, {
+    by: body.by,
+    status: body.status,
+    reason: body.reason,
+    anchor: body.anchor,
+    replaceIds: body.replaceIds,
+    replaceAnchors: body.replaceAnchors,
+    canApprove: access.canApprove,
+    source: 'page',
+  });
+  res.status(result.status).json(result.body);
 });
 
 // DELETE is an alias for destructive delete.

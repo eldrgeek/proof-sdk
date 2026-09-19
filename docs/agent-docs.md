@@ -298,6 +298,41 @@ Common mutation contract error codes:
 - `REWRITE_BARRIER_FAILED`: rewrite safety barrier failed before mutation; no rewrite was applied.
   This response is retryable and includes `reason` + `nextSteps`; retry with bounded exponential backoff and jitter.
 
+## Line Marks, Issues And Alignment (Proof Documents, Step 1)
+
+Every line of a document (a paragraph, heading, code block, list item or table row) can carry one
+status mark per team member: `seen`, `agreed`, `approved` (owner credential only) or `rejected`
+(needs a `reason`). Marks are stored beside the document; they never change its text. A mark
+remembers a hash of the line's text, so when the line is edited the mark stops counting (it is
+reported as changed) until that member marks the line again.
+
+Read them with the state:
+
+  GET /api/agent/<slug>/state
+
+The response adds:
+- `lines`: `[{ index, kind, hash, occurrence, block, ref, text }]` (`ref` is the snapshot block ref `b<N>`)
+- `lineMarks`: `[{ id, by, status, reason, at, anchor: { hash, occurrence, ordinal, kind, excerpt } }]`
+- `issues`: document-ordered list. A line is an Issue when a team member has not marked its current
+  text (`unseenBy`, `changedFor`) or someone rejected it (`rejectedBy`). An open comment or a pending
+  suggestion is also an Issue (`type: "comment" | "suggestion"`).
+- `alignment`: `{ aligned, team, owners, counts }`. `aligned` is true when there are no Issues.
+  Step 1 team = the owner, everyone who has line-marked, commented, replied or suggested, and
+  every active agent key (as `ai:<key-name-slug>`).
+
+Mark a line (commenter, editor or owner token):
+
+  POST /api/agent/<slug>/marks/line
+  Body: {"status": "seen", "by": "ai:your-agent", "quote": "text from the line"}
+
+Target the line with exactly one of `lineIndex`, `hash` (+ optional `occurrence`), `ref`
+(+ `quote` when the block holds several lines, such as a list or table) or `quote`. Use
+`"status": "unseen"` to clear your mark, and `"reason"` with `rejected`. `by` must start with
+`ai:`; if you omit it, the agent key's name is used. Errors: `409 ANCHOR_NOT_FOUND`,
+`409 AMBIGUOUS_LINE` (returns `candidates`), `409 LINE_CHANGED` (the hash no longer exists; re-read
+state), `403 OWNER_REQUIRED` (approve), `400 REASON_REQUIRED`. Changes also appear as
+`line_mark.updated` events.
+
 ## Presence And Event Polling
 
 Poll for changes:

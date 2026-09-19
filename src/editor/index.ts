@@ -11,6 +11,8 @@ import { markApiView, isOwnHumanMarkChange, withHumanReviewWrite } from './revie
  */
 
 import { PlayMakerReview, type ReviewAction } from '../ui/playmaker-review';
+import { LineMarksUI } from '../ui/line-marks';
+import { lineMarksViewPlugin } from './plugins/line-marks-view';
 import { getReviewStyle, setReviewStyle } from './review-style';
 import { ReviewDecisionHistory, reconnectNativeUndoManager } from './review-decision-history';
 
@@ -1115,6 +1117,7 @@ class ProofEditorImpl implements ProofEditor {
   private presenceMenuCleanup: (() => void) | null = null;
   private agentMenuCleanup: (() => void) | null = null;
   private playmakerReview: PlayMakerReview | null = null;
+  private lineMarks: LineMarksUI | null = null;
   private reviewDecisionHistory: ReviewDecisionHistory | null = null;
   private reviewDecisionIds = new Set<string>();
   private capturingReviewDecision = false;
@@ -1279,6 +1282,8 @@ class ProofEditorImpl implements ProofEditor {
       .use(keybindingsPlugin)
       // Allow Backspace to delete empty table rows
       .use(tableKeyboardPlugin)
+      // Proof Documents Step 1: line marks overlay (no decorations, no document changes)
+      .use(lineMarksViewPlugin)
       .use(marksSyncPlugin((actionMarks, view, actionMetadata) => {
         this.handleMarksChange(actionMarks, view, actionMetadata);
       }))
@@ -2549,6 +2554,10 @@ class ProofEditorImpl implements ProofEditor {
       }
       return;
     }
+    if (type === 'line-marks.updated') {
+      this.lineMarks?.notifyRemoteChange();
+      return;
+    }
     if (type === 'document.title.updated') {
       if (typeof message.title === 'string') {
         this.applyShareTitle(message.title);
@@ -2612,6 +2621,10 @@ class ProofEditorImpl implements ProofEditor {
   }
 
   private handlePendingShareEvent(event: SharePendingEvent): void {
+    if (event.type === 'line_mark.updated') {
+      this.lineMarks?.notifyRemoteChange();
+      return;
+    }
     if (this.isMarksPendingShareEvent(event)) {
       this.scheduleShareMarksRefresh();
       return;
@@ -3679,6 +3692,7 @@ class ProofEditorImpl implements ProofEditor {
       suggestToggle,
       this.createReviewStyleControl(),
       suggestionReview,
+      this.ensureLineMarks().bannerEl,
       agentSlot,
       shareBtn,
       this.createShareOverflowButton(),
@@ -3690,6 +3704,29 @@ class ProofEditorImpl implements ProofEditor {
 
 
   private shareOverflowMenuCleanup: (() => void) | null = null;
+
+  /** Proof Documents Step 1: per-line marks, the Issue count and Next issue. */
+  private ensureLineMarks(): LineMarksUI {
+    if (!this.lineMarks) {
+      this.lineMarks = new LineMarksUI({
+        slug: () => shareClient.getSlug(),
+        apiBase: () => shareClient.getApiBaseUrl(),
+        authHeaders: () => shareClient.getShareAuthHeaders(),
+        actor: () => getCurrentActor(),
+        canComment: () => this.collabCanComment,
+        reviewMarks: (view) => getMarks(view.state)
+          .filter(mark => mark.kind === 'comment' || mark.kind === 'insert' || mark.kind === 'delete' || mark.kind === 'replace')
+          .map(mark => {
+            const data = (mark.data ?? {}) as { resolved?: boolean; status?: string; replies?: Array<{ by?: string }> };
+            const open = mark.kind === 'comment' ? data.resolved !== true : (data.status ?? 'pending') === 'pending';
+            return { id: mark.id, kind: mark.kind, by: mark.by, quote: mark.quote, pos: mark.range?.from ?? null, open, replies: data.replies };
+          }),
+      });
+      (window as unknown as { __proofLineMarks?: LineMarksUI }).__proofLineMarks = this.lineMarks;
+    }
+    this.lineMarks.start();
+    return this.lineMarks;
+  }
 
   /** Phones only (hidden by CSS above 700px): holds Add agent, Review style and Marks. */
   private createShareOverflowButton(): HTMLButtonElement {

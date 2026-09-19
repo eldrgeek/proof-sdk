@@ -5,6 +5,7 @@ import {
   addDocumentEvent,
   bumpDocumentAccessEpoch,
   getDocumentBySlug,
+  listDocumentAgentKeys,
   getDocumentProjectionBySlug,
   listDocumentEvents,
   rebuildDocumentBlocks,
@@ -39,6 +40,8 @@ import {
   verifyAuthoritativeMutationBaseStable,
 } from './collab.js';
 import { canonicalizeStoredMarks, type StoredMark } from '../src/formats/marks.js';
+import { buildIssueReport, writeAgentLineMark } from './line-marks.js';
+import { agentKeyActor } from '../src/shared/line-marks.js';
 import {
   deriveCollabApplied,
   deriveCursorApplied,
@@ -2116,6 +2119,31 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
     };
   }
 
+  // Proof Documents Step 1: line marks, the team and the Issue list, computed from the same
+  // markdown this response returns (before span stripping, which the line parser does itself).
+  if (typeof body.markdown === 'string' || typeof body.content === 'string') {
+    try {
+      const report = await buildIssueReport(
+        slug,
+        typeof body.markdown === 'string' ? body.markdown : String(body.content),
+        isRecord(body.marks) ? body.marks : doc?.marks,
+      );
+      body.lineMarks = report.lineMarks;
+      body.lines = report.lines;
+      body.issues = report.issues;
+      body.alignment = {
+        aligned: report.aligned,
+        team: report.team,
+        owners: report.owners,
+        counts: report.counts,
+        teamRule: 'Step 1: owner + everyone who has line-marked, commented, replied or suggested + active agent keys',
+      };
+      links.lineMark = { method: 'POST', href: `/api/agent/${slug}/marks/line` };
+    } catch (error) {
+      console.warn('[agent-routes] line-mark report failed', { slug, error: String(error) });
+    }
+  }
+
   // Strip all Proof span tags from agent-facing markdown so agents see clean text.
   if (typeof body.markdown === 'string') {
     body.markdown = stripAllProofSpanTags(body.markdown);
@@ -3430,6 +3458,47 @@ agentRoutes.post('/:slug/marks/comment', async (req: Request, res: Response) => 
   storeIdempotentMutationResult(replay, mutationRoute, slug, result.status, result.body);
   if (result.status >= 200 && result.status < 300) {
     notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'comment.add' }), { apply: false });
+  }
+  sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+});
+
+// Proof Documents Step 1: set one line's status mark for this agent (or clear it with "unseen").
+// Body: { status, reason?, by?, lineIndex | hash[, occurrence] | ref | quote }.
+// A line mark never changes the document's text, so no base token is needed; the target is
+// resolved against the current text, and a hash that no longer exists returns 409 LINE_CHANGED.
+agentRoutes.post('/:slug/marks/line', async (req: Request, res: Response) => {
+  const mutationRoute = 'POST /marks/line';
+  const slug = getSlug(req);
+  if (!slug) {
+    sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute });
+    return;
+  }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const replay = await maybeReplayIdempotentMutation(req, res, slug, mutationRoute, mutationRoute);
+  if (replay.handled) return;
+  const payload = asPayload(req.body);
+  const tokenId = agentRequestTokenIds.get(req) ?? null;
+  const keyLabel = tokenId ? listDocumentAgentKeys(slug).find(key => key.tokenId === tokenId)?.label : undefined;
+  const explicitBy = typeof payload.by === 'string' && payload.by.trim() ? payload.by.trim() : null;
+  const by = explicitBy ?? (keyLabel ? agentKeyActor(keyLabel) : null);
+  if (!by) {
+    sendMutationResponse(res, 400, { success: false, code: 'INVALID_ACTOR', error: 'Pass "by", for example "ai:claude"' }, { route: mutationRoute, slug });
+    return;
+  }
+  // Only the document owner's credential may mark on behalf of a human; an AI key marks as an AI.
+  if (role !== 'owner_bot' && !/^ai:/i.test(by)) {
+    sendMutationResponse(res, 403, { success: false, code: 'AI_ACTOR_REQUIRED', error: 'An agent key marks lines as an AI: "by" must start with "ai:"' }, { route: mutationRoute, slug });
+    return;
+  }
+  await recoverCanonicalDocumentIfNeeded(slug, 'state');
+  const state = await executeDocumentOperationAsync(slug, 'GET', '/state');
+  const stateBody = asPayload(state.body);
+  const markdown = typeof stateBody.markdown === 'string' ? stateBody.markdown : (getDocumentBySlug(slug)?.markdown ?? '');
+  const result = await writeAgentLineMark(slug, markdown, payload, { by, canApprove: role === 'owner_bot' });
+  storeIdempotentMutationResult(replay, mutationRoute, slug, result.status, result.body);
+  if (result.status >= 200 && result.status < 300) {
+    notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'line_mark.set' }), { apply: false });
   }
   sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
 });

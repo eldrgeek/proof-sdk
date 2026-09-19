@@ -1242,6 +1242,27 @@ function initDatabase(): void {
     ON document_blocks(document_id, retired_revision, ordinal)
   `);
 
+  // Proof Documents Step 1: per-TM, per-line status marks. Kept beside the document
+  // (never in its text or its Yjs state) so collab, repair and projection paths never touch them.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_line_marks (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      actor_key TEXT NOT NULL,
+      status TEXT NOT NULL,
+      reason TEXT,
+      line_hash TEXT NOT NULL,
+      line_occurrence INTEGER NOT NULL,
+      line_ordinal INTEGER NOT NULL,
+      line_kind TEXT NOT NULL,
+      line_excerpt TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_line_marks_slug ON document_line_marks(document_slug, updated_at)`);
+
   d.exec(`
     CREATE TABLE IF NOT EXISTS document_y_updates (
       seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3970,4 +3991,75 @@ export function updateDocumentOwnerId(slug: string, ownerId: string): boolean {
     WHERE slug = ? AND (owner_id IS NULL OR owner_id = '')
   `).run(ownerId, now, slug);
   return result.changes > 0;
+}
+
+
+// ============================================================================
+// Proof Documents Step 1: line marks
+// ============================================================================
+
+export interface DocumentLineMarkRow {
+  id: string;
+  document_slug: string;
+  by_actor: string;
+  actor_key: string;
+  status: string;
+  reason: string | null;
+  line_hash: string;
+  line_occurrence: number;
+  line_ordinal: number;
+  line_kind: string;
+  line_excerpt: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export function listDocumentLineMarks(slug: string): DocumentLineMarkRow[] {
+  return getDb().prepare(`
+    SELECT * FROM document_line_marks WHERE document_slug = ? ORDER BY updated_at ASC, id ASC
+  `).all(slug) as DocumentLineMarkRow[];
+}
+
+/**
+ * Replace the given actor's marks (ids in replaceIds, plus any on the same anchor) with one new
+ * mark, or only delete them when next is null. Returns the ids removed.
+ */
+export function replaceDocumentLineMark(input: {
+  slug: string;
+  actorKey: string;
+  replaceIds: string[];
+  /** Further anchors whose marks by this actor are replaced (a line's text before an edit). */
+  replaceAnchors?: Array<{ hash: string; occurrence: number }>;
+  anchor: { hash: string; occurrence: number };
+  next: Omit<DocumentLineMarkRow, 'document_slug' | 'actor_key' | 'created_at' | 'updated_at'> & { at: string } | null;
+}): string[] {
+  assertWritesAllowed('replaceDocumentLineMark');
+  const d = getDb();
+  const tx = d.transaction(() => {
+    const removed: string[] = [];
+    const byAnchor = d.prepare(`
+      SELECT id FROM document_line_marks
+      WHERE document_slug = ? AND actor_key = ? AND line_hash = ? AND line_occurrence = ?
+    `);
+    const ids = new Set(input.replaceIds);
+    for (const anchor of [input.anchor, ...(input.replaceAnchors ?? [])]) {
+      for (const row of byAnchor.all(input.slug, input.actorKey, anchor.hash, anchor.occurrence) as Array<{ id: string }>) ids.add(row.id);
+    }
+    const del = d.prepare(`DELETE FROM document_line_marks WHERE document_slug = ? AND actor_key = ? AND id = ?`);
+    for (const id of ids) {
+      if (del.run(input.slug, input.actorKey, id).changes > 0) removed.push(id);
+    }
+    if (input.next) {
+      const n = input.next;
+      d.prepare(`
+        INSERT INTO document_line_marks (
+          id, document_slug, by_actor, actor_key, status, reason, line_hash, line_occurrence,
+          line_ordinal, line_kind, line_excerpt, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(n.id, input.slug, n.by_actor, input.actorKey, n.status, n.reason, n.line_hash, n.line_occurrence,
+        n.line_ordinal, n.line_kind, n.line_excerpt, n.at, n.at);
+    }
+    return removed;
+  });
+  return tx();
 }
