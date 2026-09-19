@@ -39,6 +39,15 @@ import { canCommentInRuntime, canEditInRuntime } from './share-permissions';
 import { resolveQuoteRange } from '../utils/text-range';
 
 const markPopoverKey = new PluginKey('mark-popover');
+
+/**
+ * Mike, 2026-09-19: "When I clicked it put up the built-in review mechanism which we want to
+ * drop." A click or tap on text under a comment or suggestion places the caret, like Google Docs;
+ * the thread shows in the reading walk's right rail. The composer (Comment on a selection) stays.
+ */
+export const MARK_POPOVER_POLICY = {
+  textClickOpensThread: false,
+} as const;
 const controllers = new WeakMap<EditorView, MarkPopoverController>();
 type PopoverMode = 'thread' | 'suggestion' | 'composer' | null;
 type RenderMode = 'legacy-popover' | 'mobile-sheet';
@@ -389,6 +398,8 @@ class MarkPopoverController {
     if (event.pointerType === 'touch') {
       this.scheduleSelectionPolling();
     }
+    // Editing first: a press on marked text places the caret; it never opens the thread.
+    if (!MARK_POPOVER_POLICY.textClickOpensThread) return;
     const target = event.target as HTMLElement | null;
     const markEl = target?.closest('[data-mark-id]') as HTMLElement | null;
     if (!markEl) return;
@@ -405,6 +416,7 @@ class MarkPopoverController {
   };
 
   private handleEditorClick = (event: MouseEvent) => {
+    if (!MARK_POPOVER_POLICY.textClickOpensThread) return;
     if ((Date.now() - this.lastHandledPointerDownAt) < 450) return;
     const target = event.target as HTMLElement | null;
     const markEl = target?.closest('[data-mark-id]') as HTMLElement | null;

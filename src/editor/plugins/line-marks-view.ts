@@ -18,6 +18,8 @@ import { extractLines, type DocLine, type LineSourceNode } from '../../shared/li
  */
 export interface LocalLineEdit {
   hash: string;
+  /** Editing first (2026-09-19): the line's normalized text before the first local edit. */
+  text?: string;
   occurrence: number;
   currentHash: string;
   at: number;
@@ -87,7 +89,7 @@ function recordLocalEdit(tr: Transaction, oldState: EditorState, newState: Edito
       chained.currentHash = after.hash;
       chained.at = now;
     } else {
-      pendingLocalEdits.push({ hash: line.hash, occurrence: line.occurrence, currentHash: after.hash, at: now });
+      pendingLocalEdits.push({ hash: line.hash, text: line.text, occurrence: line.occurrence, currentHash: after.hash, at: now });
     }
   }
   if (pendingLocalEdits.length > 200) pendingLocalEdits = pendingLocalEdits.slice(-200);

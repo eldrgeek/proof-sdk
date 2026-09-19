@@ -29,9 +29,11 @@ export const LINE_MARK_STATUSES: readonly LineMarkStatus[] = ['seen', 'agreed', 
  *   section - a whole folded section marked at once;
  *   ask     - answering the line's ask marked it Seen;
  *   api     - an AI or a script through the agent API (or an older mark with no record).
+ *   edit    - (2026-09-19) the TM changed the meaning of another's statement: their Agreed on the new text;
+ *   correct - (2026-09-19) the TM corrected another's statement without changing its meaning.
  */
-export type MarkVia = 'dwell' | 'click' | 'key' | 'section' | 'ask' | 'api';
-export const MARK_VIAS: readonly MarkVia[] = ['dwell', 'click', 'key', 'section', 'ask', 'api'];
+export type MarkVia = 'dwell' | 'click' | 'key' | 'section' | 'ask' | 'api' | 'edit' | 'correct';
+export const MARK_VIAS: readonly MarkVia[] = ['dwell', 'click', 'key', 'section', 'ask', 'api', 'edit', 'correct'];
 /** Earned without a deliberate choice about this one line (the ringer list watches these). */
 export const PASSIVE_VIAS: ReadonlySet<MarkVia> = new Set<MarkVia>(['dwell', 'section']);
 
@@ -129,6 +131,69 @@ export const LINE_MARK_POLICY = {
    */
   carryCosmeticEdits: true,
 } as const;
+
+/**
+ * Mike, 2026-09-19: "When there is a statement in a document proposed by another I can signify
+ * my agreement explicitly or acceptance (and agreement) implicitly by scroll behavior. Or I can
+ * modify the statement. If the statement is not meaning changing it is treated differently than
+ * if it is meaningful."
+ *
+ * A line is "another's statement" for a viewer when someone other than the viewer wrote it
+ * (its authored marks) or someone other than the viewer holds a current mark on it.
+ */
+export const STATEMENT_POLICY = {
+  /** What reading another's statement by scrolling (dwell) gives the reader. */
+  dwellOnOthersStatement: 'agreed' as LineMarkStatus,
+  /** What reading one's own statement (or a line nobody else touched) by scrolling gives. */
+  dwellOnOwnStatement: 'seen' as LineMarkStatus,
+  /** A dwell Seen on another's statement is raised to the dwell status above on the next read. */
+  upgradeDwellSeen: true,
+  /** Editing another's statement: the editor's own mark becomes this (cosmetic or meaning change). */
+  editorMarkOnEdit: 'agreed' as LineMarkStatus,
+} as const;
+
+/**
+ * True when `line` is another's statement for `me` (see STATEMENT_POLICY).
+ *   read - someone else wrote it (authored marks), or someone else claimed it deliberately: an
+ *          Agreed or Approved they chose (not a passive dwell/section mark), or their edit of it.
+ *          Passive reading never makes a line someone's statement, so reading cannot cascade.
+ *   edit - someone else wrote it, or anyone else holds a current mark on it (other than skimmed):
+ *          "a line others have marked".
+ */
+export function isOthersStatement(input: {
+  /** The viewer's identities (line-mark actor and editor actor); compared by actorKey. */
+  me: string[];
+  /** Who wrote the line's text (authored marks), when known. */
+  authors?: Array<string | null | undefined>;
+  /** The line's current state (its marks by actor). */
+  state?: Pick<LineState, 'marks'> | null;
+  purpose?: 'read' | 'edit';
+}): boolean {
+  const mine = new Set(input.me.filter(Boolean).map(actorKey));
+  for (const author of input.authors ?? []) {
+    if (author && !mine.has(actorKey(author))) return true;
+  }
+  const purpose = input.purpose ?? 'read';
+  for (const [key, entry] of input.state?.marks ?? []) {
+    if (!entry.current || mine.has(key)) continue;
+    const mark = entry.mark;
+    if (mark.status === 'skimmed') continue;
+    if (purpose === 'edit') return true;
+    const via = (mark.via ?? 'api') as MarkVia;
+    if (via === 'edit' || via === 'correct') return true;
+    if ((mark.status === 'agreed' || mark.status === 'approved') && !PASSIVE_VIAS.has(via) && !mark.hidden) return true;
+  }
+  return false;
+}
+
+/** The status a dwell read gives, and whether to write it over the viewer's current status. */
+export function dwellMarkFor(othersStatement: boolean, current: { status: string; via?: MarkVia | null } | null): LineMarkStatus | null {
+  const target = othersStatement ? STATEMENT_POLICY.dwellOnOthersStatement : STATEMENT_POLICY.dwellOnOwnStatement;
+  if (!current || current.status === 'unseen' || current.status === 'changed' || current.status === 'skimmed') return target;
+  if (STATEMENT_POLICY.upgradeDwellSeen && current.status === 'seen' && target !== 'seen'
+    && current.via === 'dwell') return target;
+  return null;
+}
 
 // ============================================================================
 // Lines

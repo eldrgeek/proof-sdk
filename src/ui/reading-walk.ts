@@ -29,7 +29,23 @@ import { GestureGate, READING_WALK, ReadingWalk, countWords, dwellMsFor, type Wa
 import type { SinceItem, SinceYouReport, RingerItem } from '../shared/alignment';
 import type { LineMarksUI, MarkBox } from './line-marks';
 import { isOpenReviewMark, type PlayMakerReview, type ReviewAction } from './playmaker-review';
+import { editingRemainingMs, installEditingGuard, isEditing, onEditingActivity } from '../editor/editing-guard';
 import './reading-walk.css';
+
+/**
+ * Editing first (Mike, 2026-09-19). While the person edits (src/editor/editing-guard.ts), the
+ * walk never moves the view: no scroll-driven focus, stepping, barrier snap or scroll-accept.
+ * The focus line follows the caret instead, so the rail shows the line being edited.
+ */
+export const READING_EDIT_POLICY = {
+  /** The focus line follows the caret while the person edits. */
+  focusFollowsCaret: true,
+  /**
+   * A click in the text on a comment or suggestion counts as an explicit reading action (it
+   * commits the scroll-accepts above it). Off: a click in the text is for editing only.
+   */
+  textClickIsExplicitAction: false,
+} as const;
 
 export interface ReadingWalkHost {
   slug(): string | null;
@@ -139,6 +155,10 @@ export class ReadingWalkUI {
   private touchY: number | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private unsubscribe: (() => void) | null = null;
+  private unsubscribeEditing: (() => void) | null = null;
+  /** Set while the person edits: the next scroll after editing re-bases the focus (no snap). */
+  private rebaseAfterEdit = false;
+  private followQueued = false;
   private docs: LibraryDoc[] | null = null;
   private docsMessage = 'Loading…';
   private readonly seenWrites: number[] = [];
@@ -186,6 +206,11 @@ export class ReadingWalkUI {
     const blind = this.host.lineMarks().blindEl;
     if (blind.parentElement !== this.rightBody) this.rightBody.insertBefore(blind, this.sinceHost);
     this.unsubscribe = this.host.lineMarks().subscribe(() => this.sync());
+    installEditingGuard();
+    this.unsubscribeEditing = onEditingActivity(() => {
+      // The press that places the caret lands before focus moves: check on the next frame.
+      requestAnimationFrame(() => { if (isEditing()) { this.rebaseAfterEdit = true; this.queueFollowCaret(); } });
+    });
     this.sync();
     void this.loadDocuments();
   }
@@ -204,6 +229,8 @@ export class ReadingWalkUI {
     document.removeEventListener('click', this.onDocClick, true);
     document.removeEventListener('visibilitychange', this.onVisibility);
     this.unsubscribe?.();
+    this.unsubscribeEditing?.();
+    this.unsubscribeEditing = null;
     this.resizeObserver?.disconnect();
     this.host.playmaker()?.dock(null);
     this.left.remove(); this.right.remove(); this.focusEl.remove(); this.styleEl.remove();
@@ -224,6 +251,7 @@ export class ReadingWalkUI {
   /** The editor view updated (cursor, marks, text): re-read pending marks if they changed. */
   notifyViewUpdate(): void {
     if (!this.started) return;
+    if (isEditing()) this.queueFollowCaret();
     const sig = this.pendingSignature();
     if (sig !== this.marksSig) this.sync();
     else this.queueRender();
@@ -301,6 +329,24 @@ export class ReadingWalkUI {
 
   private view() { return this.host.lineMarks().editorView(); }
 
+  private queueFollowCaret(): void {
+    if (!READING_EDIT_POLICY.focusFollowsCaret || this.followQueued) return;
+    this.followQueued = true;
+    requestAnimationFrame(() => { this.followQueued = false; this.followCaret(); });
+  }
+
+  /** Editing first: the focus line is the caret's line (a jump: nothing read, nothing passed, no scroll). */
+  private followCaret(): void {
+    const walk = this.walk;
+    const view = this.view();
+    if (!walk || !view || !this.started || !isEditing()) return;
+    const line = this.host.lineMarks().lineAtPos(view.state.selection.head);
+    if (line < 0 || line === walk.focus || walk.isHidden(line)) return;
+    this.measure();
+    walk.moveTo(line, performance.now(), 'jump', this.heights);
+    this.afterChange();
+  }
+
   private attachOverlay(): void {
     const view = this.view();
     if (!view) return;
@@ -363,7 +409,15 @@ export class ReadingWalkUI {
   private onScroll = (): void => {
     const walk = this.walk;
     if (!walk || this.tops.length === 0) return;
+    // Editing first: while the person edits, scrolling moves nothing and snaps nothing.
+    if (isEditing()) { this.rebaseAfterEdit = true; this.queueRender(); return; }
     let target = this.lineAtReadingLine();
+    if (this.rebaseAfterEdit) {
+      // The first scroll after editing starts reading from here: no barrier snap back.
+      this.rebaseAfterEdit = false;
+      if (target !== walk.focus) { walk.moveTo(target, performance.now(), 'jump', this.heights); this.afterChange(); }
+      return;
+    }
     if (target > walk.focus) {
       // A line with marks not yet stepped holds the page (scrollbar, keys, touch inertia).
       const barrier = walk.barrier(walk.focus);
@@ -406,6 +460,8 @@ export class ReadingWalkUI {
 
   private handleDelta(dy: number, at: number, prevent: () => void): void {
     const walk = this.walk!;
+    // Editing first: native scrolling while the person edits (no stepping, no barrier).
+    if (isEditing()) { this.gate.reset(); return; }
     const result = this.gate.feed(dy, at, this.startMode);
     if (result.prevent) prevent();
     if (result.step === 1) { walk.stepForward(); this.afterChange(true); return; }
@@ -509,6 +565,7 @@ export class ReadingWalkUI {
 
   /** A click on a review mark in the text is an explicit action on its line. */
   private onDocClick = (event: MouseEvent): void => {
+    if (!READING_EDIT_POLICY.textClickIsExplicitAction) return;
     const target = event.target as HTMLElement | null;
     const markEl = target?.closest?.('.ProseMirror [data-mark-id]') as HTMLElement | null;
     if (!markEl || !this.walk) return;
@@ -671,6 +728,9 @@ export class ReadingWalkUI {
     if (wait <= 0) return;
     this.tickTimer = setTimeout(() => {
       this.tickTimer = null;
+      // Editing first: the line being edited is not read by dwell until editing pauses.
+      const editing = editingRemainingMs();
+      if (editing > 0) { this.tickTimer = setTimeout(() => { this.tickTimer = null; this.scheduleTick(); }, editing + 5); return; }
       walk.tick(performance.now());
       this.afterChange();
     }, wait + 5);
@@ -689,11 +749,13 @@ export class ReadingWalkUI {
       while (this.seenQueue.length) {
         const line = this.seenQueue.shift()!;
         if (!lm.isLoaded()) continue;
-        const status = lm.myStatus(line);
-        // Never downgrade a mark. A skimmed line read properly now becomes Seen.
-        if (status !== 'unseen' && status !== 'changed' && status !== 'skimmed') continue;
+        // Never downgrade a mark. A skimmed line read properly now becomes Seen, or Agreed when
+        // it is another's statement (STATEMENT_POLICY, Mike 2026-09-19: scrolling past another's
+        // statement is acceptance and agreement; still a passive mark for the ringer list).
+        const status = lm.dwellStatusFor(line);
+        if (!status || status === 'skimmed') continue;
         this.seenWrites.push(line);
-        await lm.setLineStatus(line, 'seen', undefined, 'dwell');
+        await lm.setLineStatus(line, status as 'seen' | 'agreed', undefined, 'dwell');
       }
     } finally {
       this.seenBusy = false;
@@ -1037,7 +1099,15 @@ export class ReadingWalkUI {
     const alts = lm.altSetFor(walk.focus);
     head.append(el('strong', undefined, 'Mark this line'),
       el('span', 'prw-keys', hasAsk ? 'Y yes · N no · T not yet' : alts ? `1–${alts.options.length} pick · A agree · E explain` : 'A agree · R reject · E explain · J/K move'));
-    this.boxHost.replaceChildren(head, box.root);
+    // Editing first (2026-09-19): who changed this line, and whether the meaning changed.
+    const note = lm.editNoteFor(walk.focus);
+    if (note) {
+      const edited = el('p', 'prw-edit-note', note.text);
+      edited.dataset.kind = note.kind;
+      this.boxHost.replaceChildren(head, edited, box.root);
+    } else {
+      this.boxHost.replaceChildren(head, box.root);
+    }
     this.box = box;
   }
 

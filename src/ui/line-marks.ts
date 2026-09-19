@@ -13,6 +13,9 @@ import type { EditorView } from '@milkdown/kit/prose/view';
 import type { EditorState } from '@milkdown/kit/prose/state';
 import {
   LINE_MARK_POLICY,
+  STATEMENT_POLICY,
+  dwellMarkFor,
+  isOthersStatement,
   actorKey,
   actorLabel,
   anchorForLine,
@@ -32,6 +35,7 @@ import {
   type ProofIssue,
   type ReviewMarkLike,
 } from '../shared/line-marks';
+import { classifyLineChange } from '../shared/line-change';
 import type { SinceYouReport } from '../shared/alignment';
 import { FOLDING, planSectionMark } from '../shared/folding';
 import { askIssueInputs, askTeamActors, evaluateAsks, type AskChoice, type AskView, type ProofAsk } from '../shared/asks';
@@ -112,6 +116,10 @@ export interface LineMarksHost {
   chatCounts?(): Map<number, number>;
   /** Step B7: a speech bubble in the margin was clicked. */
   onChatBubble?(lineIndex: number): void;
+  /** Editing first (2026-09-19): who wrote the text in [from, to) (the editor's authored marks). */
+  authorsOfRange?(from: number, to: number): string[];
+  /** Editing first: true while the editor is in Suggesting mode (edits become suggestions). */
+  isSuggesting?(): boolean;
 }
 
 export interface MarkBoxOptions {
@@ -164,6 +172,8 @@ const VIA_LABEL: Record<MarkVia, string> = {
   section: 'with its section',
   ask: 'by answering the ask',
   api: 'through the API',
+  edit: 'by changing it',
+  correct: 'by correcting it',
 };
 const POLL_MS = 4000;
 /** Step B3c: while the page stays aligned with nothing new, re-ask the server at most this often. */
@@ -594,6 +604,21 @@ export class LineMarksUI {
   editorView(): EditorView | null { return this.view; }
 
   /** The viewer's own status on a line ('changed' when their mark is out of date). */
+  /** STATEMENT_POLICY: the line is another's statement for this viewer (someone else wrote or marked it). */
+  isOthersStatement(index: number): boolean {
+    const line = this.lines[index];
+    if (!line) return false;
+    const authors = this.host.authorsOfRange?.(line.pos, line.pos + line.nodeSize) ?? [];
+    return isOthersStatement({ me: [this.me(), this.host.actor()], authors, state: this.states[index] });
+  }
+
+  /** STATEMENT_POLICY: what a dwell read of this line writes for the viewer (null: nothing). */
+  dwellStatusFor(index: number): LineMarkStatus | null {
+    const mine = this.states[index]?.marks.get(actorKey(this.me()));
+    const current = !mine ? null : { status: mine.current ? mine.mark.status : 'changed', via: mine.mark.via ?? null };
+    return dwellMarkFor(this.isOthersStatement(index), current);
+  }
+
   myStatus(index: number): StatusChoice | 'changed' {
     const mine = this.states[index]?.marks.get(actorKey(this.me()));
     return !mine ? 'unseen' : (mine.current ? mine.mark.status : 'changed');
@@ -944,24 +969,63 @@ export class LineMarksUI {
     for (const edit of edits) {
       const mine = this.serverMarks.find(mark => actorKey(mark.by) === me
         && mark.anchor.hash === edit.hash && mark.anchor.occurrence === edit.occurrence);
-      if (!mine) continue;
-      // Still current somewhere (for example a duplicate line)? Then nothing went stale.
-      if (lines.some(line => line.hash === mine.anchor.hash && line.occurrence === mine.anchor.occurrence)) continue;
       // The edited line is the one whose text is what this user last typed.
       const candidates = lines.filter(line => line.hash === edit.currentHash);
       if (candidates.length === 0) continue; // someone else changed it since: their edit resets it
+      // Editing first (Mike, 2026-09-19): editing another's statement. Others' marks on the text
+      // before the edit (or someone else's authorship) make it another's statement.
+      const others = this.serverMarks.filter(mark => actorKey(mark.by) !== me
+        && mark.anchor.hash === edit.hash && mark.anchor.occurrence === edit.occurrence);
+      const near = mine?.anchor.ordinal ?? others[0]?.anchor.ordinal ?? candidates[0].index;
       const line = candidates.reduce((best, next) =>
-        Math.abs(next.index - mine.anchor.ordinal) < Math.abs(best.index - mine.anchor.ordinal) ? next : best);
+        Math.abs(next.index - near) < Math.abs(best.index - near) ? next : best);
       if (done.has(line.index)) continue;
+      const othersState = { marks: new Map(others.map(mark => [actorKey(mark.by), { mark, current: true }] as const)) };
+      const authors = this.host.authorsOfRange?.(line.pos, line.pos + line.nodeSize) ?? [];
+      const othersStatement = isOthersStatement({ me: [this.me(), this.host.actor()], authors, state: othersState, purpose: 'edit' });
+      if (othersStatement && STATEMENT_POLICY.editorMarkOnEdit && !this.host.isSuggesting?.()) {
+        const kind = edit.text ? classifyLineChange(edit.text, line.text).kind : 'substantive';
+        if (kind !== 'same') {
+          done.add(line.index);
+          const via: MarkVia = kind === 'cosmetic' ? 'correct' : 'edit';
+          const status = STATEMENT_POLICY.editorMarkOnEdit as StatusChoice;
+          if (mine) void this.writeMarkReplacing(line, mine, { status: status as LineMarkStatus, via, reason: null });
+          else void this.writeMark(line, status, undefined, via);
+          continue;
+        }
+      }
+      if (!mine) continue;
+      // Still current somewhere (for example a duplicate line)? Then nothing went stale.
+      if (lines.some(l => l.hash === mine.anchor.hash && l.occurrence === mine.anchor.occurrence)) continue;
       done.add(line.index);
       void this.writeMarkReplacing(line, mine);
     }
   }
 
-  private async writeMarkReplacing(line: DocLine, old: LineMark): Promise<void> {
+  /**
+   * Editing first: who last edited a line, as the rail says it ("changed by Mike — meaning
+   * changed" / "corrected by Mike — meaning unchanged"), from the newest current edit/correct mark.
+   */
+  editNoteFor(index: number): { by: string; kind: 'edit' | 'correct'; text: string } | null {
+    const state = this.states[index];
+    if (!state) return null;
+    let best: LineMark | null = null;
+    for (const entry of state.marks.values()) {
+      const via = entry.mark.via;
+      if (!entry.current || entry.carried || (via !== 'edit' && via !== 'correct') || entry.mark.hidden) continue;
+      if (!best || String(entry.mark.at) > String(best.at)) best = entry.mark;
+    }
+    if (!best) return null;
+    const kind = best.via as 'edit' | 'correct';
+    const who = actorLabel(best.by);
+    return { by: best.by, kind, text: kind === 'edit' ? `changed by ${who} — meaning changed` : `corrected by ${who} — meaning unchanged` };
+  }
+
+  private async writeMarkReplacing(line: DocLine, previous: LineMark, change?: Partial<Pick<LineMark, 'status' | 'via' | 'reason'>>): Promise<void> {
     const slug = this.host.slug();
     if (!slug) return;
     const anchor = anchorForLine(line);
+    const old = { ...previous, ...(change ?? {}), id: previous.id, anchor: previous.anchor };
     this.serverMarks = this.serverMarks.filter(mark => mark.id !== old.id);
     this.serverMarks.push({ ...old, id: `local-${Date.now()}`, at: new Date().toISOString(), anchor });
     this.recompute();
@@ -1444,7 +1508,7 @@ export class LineMarksUI {
       what.dataset.status = status;
       what.textContent = status === 'changed' ? 'Changed since marked' : shownLabel(status);
       // Step B3b: how a Seen was earned ("Seen by scrolling" vs "Seen, marked").
-      if (entry?.current && entry.mark.status === 'seen' && !entry.mark.hidden) {
+      if (entry?.current && (entry.mark.status === 'seen' || (entry.mark.status === 'agreed' && entry.mark.via === 'dwell')) && !entry.mark.hidden) {
         const via = (entry.mark.via ?? 'api') as MarkVia;
         what.textContent += ` ${via === 'click' || via === 'key' ? '(marked)' : `(${VIA_LABEL[via]})`}`;
         what.dataset.via = via;

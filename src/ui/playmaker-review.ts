@@ -1,5 +1,5 @@
 import { getActorName, getMarkColor, type Mark, type CommentData, type ReplaceData } from '../formats/marks';
-import { getReviewStyle, setReviewStyle, getReviewWalk, setReviewWalk, REVIEW_STYLE_EVENT } from '../editor/review-style';
+import { getReviewStyle, setReviewStyle, getReviewWalk, setReviewWalk, REVIEW_STYLE_EVENT, REVIEW_STYLE_POLICY } from '../editor/review-style';
 import './playmaker-review.css';
 
 export type ReviewAction = 'accept' | 'reject' | 'resolve' | 'reply';
@@ -10,6 +10,19 @@ export interface ReviewBridge {
   jump(id: string): void;
   changed(): void;
 }
+/**
+ * Mike, 2026-09-19 ("editing first"): clicking or tapping text in the document always places the
+ * caret. No review dialog opens from the text; review lives in the right rail. The Marks list's
+ * rows move the focus line to the mark (no dialog), and "Start review" (the dialog walk) is gone.
+ * Set these to true to bring back the old PlayMaker dialog behaviour.
+ */
+export const REVIEW_CLICK_POLICY = {
+  /** A click on a comment or suggestion in the text opens the review dialog. */
+  textClickOpensDialog: false,
+  /** A row in the Marks list opens the review dialog (false: it only moves the focus line). */
+  listRowOpensDialog: false,
+} as const;
+
 export function isOpenReviewMark(mark: Mark): boolean {
   if (mark.kind === 'comment') return !(mark.data as CommentData)?.resolved;
   return ['insert', 'delete', 'replace'].includes(mark.kind)
@@ -41,7 +54,8 @@ export class PlayMakerReview {
   constructor(private readonly bridge: ReviewBridge) {
     try { this.settled = new Set(JSON.parse(localStorage.getItem(this.settledKey) || '[]')); } catch { /* optional cache */ }
     this.control.className = 'review-style-control';
-    this.control.append('Review style ', this.select);
+    // Mike 2026-09-19: Proof Documents is the only review behaviour; the selector is hidden.
+    if (!REVIEW_STYLE_POLICY.locked) this.control.append('Review style ', this.select);
     this.select.setAttribute('aria-label', 'Review style');
     for (const [value, label] of [['proof', 'Proof'], ['playmaker', 'PlayMaker']]) {
       const option = document.createElement('option'); option.value = value; option.textContent = label;
@@ -132,11 +146,14 @@ export class PlayMakerReview {
     this.panel.append(closeMarks);
     const counts = document.createElement('p'); counts.className = 'pm-review-counts'; counts.setAttribute('aria-live', 'polite');
     counts.textContent = `${marks.length} open · ${this.settled.size} settled`;
-    this.panel.append(heading, counts, this.button('Start review', () => { if (marks[0]) this.open(marks[0].id); }, !marks.length));
-    const walkLabel = document.createElement('label'); walkLabel.className = 'pm-review-walk';
-    const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = this.walk;
-    checkbox.onchange = () => { this.walk = checkbox.checked; setReviewWalk(this.walk); if (!this.walk) this.cancelWalk(); };
-    walkLabel.append(checkbox, 'Go to the next mark after I decide'); this.panel.append(walkLabel);
+    this.panel.append(heading, counts);
+    if (REVIEW_CLICK_POLICY.listRowOpensDialog) {
+      this.panel.append(this.button('Start review', () => { if (marks[0]) this.open(marks[0].id); }, !marks.length));
+      const walkLabel = document.createElement('label'); walkLabel.className = 'pm-review-walk';
+      const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = this.walk;
+      checkbox.onchange = () => { this.walk = checkbox.checked; setReviewWalk(this.walk); if (!this.walk) this.cancelWalk(); };
+      walkLabel.append(checkbox, 'Go to the next mark after I decide'); this.panel.append(walkLabel);
+    }
     const bulk = document.createElement('div'); bulk.className = 'pm-review-actions';
     for (const action of ['accept', 'reject'] as const) {
       const suggestions = marks.filter(mark => mark.kind !== 'comment');
@@ -148,7 +165,7 @@ export class PlayMakerReview {
     this.panel.append(bulk);
     const list = document.createElement('div'); list.className = 'pm-review-list';
     for (const mark of marks) {
-      const row = this.button('', () => this.open(mark.id)); row.className = 'pm-review-row'; row.dataset.reviewRow = mark.id;
+      const row = this.button('', () => (REVIEW_CLICK_POLICY.listRowOpensDialog ? this.open(mark.id) : this.bridge.jump(mark.id))); row.className = 'pm-review-row'; row.dataset.reviewRow = mark.id;
       if (this.failedIds.has(mark.id)) { row.setAttribute('aria-invalid', 'true'); row.title = 'This suggestion changed. Review it before deciding.'; }
       row.style.setProperty('--review-author', getMarkColor(mark.by));
       const author = document.createElement('strong'); author.textContent = getActorName(mark.by);
@@ -174,6 +191,11 @@ export class PlayMakerReview {
   }
   private pointerDown = (event: PointerEvent): void => {
     if (getReviewStyle() !== 'playmaker') return;
+    if (!REVIEW_CLICK_POLICY.textClickOpensDialog) {
+      // Editing first: the press reaches ProseMirror and places the caret.
+      if (this.dialog && event.target instanceof Element && event.target.closest('.ProseMirror')) { this.cancelWalk(); this.close(false); }
+      return;
+    }
     const id = this.markAt(event.target);
     if (id) { event.preventDefault(); event.stopImmediatePropagation(); }
     else if (event.target instanceof Element && event.target.closest('.ProseMirror')) {
@@ -182,7 +204,7 @@ export class PlayMakerReview {
     }
   };
   private click = (event: MouseEvent): void => {
-    if (getReviewStyle() !== 'playmaker') return;
+    if (getReviewStyle() !== 'playmaker' || !REVIEW_CLICK_POLICY.textClickOpensDialog) return;
     const id = this.markAt(event.target);
     if (!id) return;
     event.preventDefault(); event.stopImmediatePropagation();

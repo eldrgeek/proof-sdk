@@ -431,6 +431,17 @@ How a mark was earned: every line mark carries `via`: `dwell` (the reading walk)
 `section` (a folded section), `ask` (answering the line's ask marked it Seen) or `api` (an AI
 through `/marks/line`, and older marks). `dwell` and `section` are passive.
 
+Editing first (Mike, 2026-09-19; `STATEMENT_POLICY` in `src/shared/line-marks.ts`):
+- Reading another's statement by scrolling gives the reader **Agreed** with `via: dwell` (still
+  passive, so the ringer list watches it); reading one's own line gives Seen. A line is another's
+  statement when someone else wrote it (authored marks) or deliberately claimed it (an Agreed or
+  Approved that was not passive, or an edit). Passive marks never make a line someone's statement.
+- Editing a line someone else wrote or marked (Editing mode, not Suggesting): the editor's own mark
+  becomes Agreed with `via: correct` when the change keeps the meaning (`src/shared/line-change.ts`;
+  others' marks carry forward) or `via: edit` when it changes the meaning (others' marks reset).
+  The rail shows "changed by <name> — meaning changed" or "corrected by <name> — meaning unchanged".
+- Clicking text in the page places the caret; no review popover or dialog opens from the text.
+
 Skimmed: status `skimmed` means the reader's focus passed the line faster than its reading time
 (its words at the reader's rate, default 4 words/s, at least 0.25 s, at most 6 s; constants in
 `READING_WALK`). It is not Seen: the line stays an Issue, and line Issues list `skimmedBy`.

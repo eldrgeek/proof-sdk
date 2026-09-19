@@ -20,7 +20,8 @@ import { foldViewPlugin } from './plugins/fold-view';
 import { askViewPlugin } from './plugins/ask-view';
 import { doViewPlugin } from './plugins/do-view';
 import { proofExtrasViewPlugin } from './plugins/proof-extras-view';
-import { getReviewStyle, setReviewStyle } from './review-style';
+import { getReviewStyle, setReviewStyle, REVIEW_STYLE_POLICY } from './review-style';
+import { isEditing } from './editing-guard';
 import { ReviewDecisionHistory, reconnectNativeUndoManager } from './review-decision-history';
 
 import { getAgentPresenceDisplay } from '../shared/agent-presence';
@@ -3749,6 +3750,17 @@ class ProofEditorImpl implements ProofEditor {
             const open = mark.kind === 'comment' ? data.resolved !== true : (data.status ?? 'pending') === 'pending';
             return { id: mark.id, kind: mark.kind, by: mark.by, quote: mark.quote, pos: mark.range?.from ?? null, open, replies: data.replies, status: mark.kind === 'comment' ? null : (data.status ?? 'pending') };
           }),
+        isSuggesting: () => this.isSuggestionsEnabled(),
+        authorsOfRange: (from, to) => {
+          let authors: string[] = [];
+          this.editor?.action(ctx => {
+            authors = getMarks(ctx.get(editorViewCtx).state)
+              .filter(mark => mark.kind === 'authored' && mark.range && mark.range.from < to && mark.range.to > from)
+              .map(mark => mark.by)
+              .filter((by): by is string => typeof by === 'string' && by.length > 0);
+          });
+          return authors;
+        },
         onDotActivate: (lineIndex) => this.readingWalk?.activateDot(lineIndex) ?? false,
         focusLine: (lineIndex) => this.readingWalk?.focusLine(lineIndex) ?? false,
         viewUpdated: () => { this.readingWalk?.notifyViewUpdate(); this.folding?.queueRender(); },
@@ -3905,7 +3917,7 @@ class ProofEditorImpl implements ProofEditor {
         item('Fold all', 'outline', () => this.folding?.foldAll());
         item('Unfold all', 'outline', () => this.folding?.unfoldAll());
       }
-      item('Review style', style === 'playmaker' ? 'PlayMaker' : 'Proof', () => {
+      if (!REVIEW_STYLE_POLICY.locked) item('Review style', style === 'playmaker' ? 'PlayMaker' : 'Proof', () => {
         setReviewStyle(style === 'playmaker' ? 'proof' : 'playmaker');
       });
       item('Add agent', 'manage keys', () => { this.openAgentKeyDialog(); });
@@ -3948,6 +3960,15 @@ class ProofEditorImpl implements ProofEditor {
         decide: (ids, action, text) => this.performReviewDecision(ids, action, text),
         history: redo => this.restoreReviewDecision(redo),
         jump: id => {
+          // Editing first (2026-09-19): a Marks row moves the reading walk's focus line to the
+          // mark's line; the rail shows its comments and changes. No dialog opens.
+          let from: number | null = null;
+          this.editor?.action(ctx => {
+            const mark = getMarks(ctx.get(editorViewCtx).state).find(item => item.id === id);
+            from = typeof mark?.range?.from === 'number' ? mark.range.from : null;
+          });
+          const line = from !== null && this.lineMarks ? this.lineMarks.lineAtPos(from) : -1;
+          if (line >= 0 && this.readingWalk?.focusLine(line)) return;
           const element = document.querySelector<HTMLElement>(`.ProseMirror [data-mark-id="${CSS.escape(id)}"]`);
           element?.scrollIntoView({ block: 'center', behavior: 'instant' });
         },
@@ -7142,7 +7163,7 @@ class ProofEditorImpl implements ProofEditor {
           el = el.parentNode as Node;
         }
 
-        if (el instanceof HTMLElement) {
+        if (el instanceof HTMLElement && !isEditing()) {
           console.log('[scrollToLine] Scrolling to element:', el.tagName);
           el.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
@@ -7174,7 +7195,7 @@ class ProofEditorImpl implements ProofEditor {
           el = el.parentNode as Node;
         }
 
-        if (el instanceof HTMLElement) {
+        if (el instanceof HTMLElement && !isEditing()) {
           console.log('[scrollToOffset] Scrolling to element:', el.tagName);
           el.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }

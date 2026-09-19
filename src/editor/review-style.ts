@@ -4,11 +4,20 @@ export const REVIEW_WALK_KEY = 'proof:review-walk';
 export const REVIEW_STYLE_EVENT = 'proof:review-style-changed';
 let runtimeReviewStyle: ReviewStyle | null = null;
 
+/**
+ * Mike, 2026-09-19: "I really don't like the built-in Proof review mechanism." Proof Documents
+ * (the reading walk, its right rail, and the Marks list) is the only review behaviour, so the
+ * style is locked and the Review style selector is hidden. Set `locked` to null to bring back
+ * the old choice between 'proof' and 'playmaker'.
+ */
+export const REVIEW_STYLE_POLICY: { locked: ReviewStyle | null } = { locked: 'playmaker' };
+
 export function normalizeReviewStyle(value: unknown): ReviewStyle {
   return typeof value === 'string' && value.trim().toLowerCase() === 'playmaker' ? 'playmaker' : 'proof';
 }
 
 export function getReviewStyle(): ReviewStyle {
+  if (REVIEW_STYLE_POLICY.locked) return REVIEW_STYLE_POLICY.locked;
   if (runtimeReviewStyle) return runtimeReviewStyle;
   let saved: string | null = null;
   try { saved = window.localStorage.getItem(REVIEW_STYLE_KEY); } catch { /* Storage is optional. */ }
@@ -17,6 +26,7 @@ export function getReviewStyle(): ReviewStyle {
 }
 
 export function setReviewStyle(style: ReviewStyle): void {
+  if (REVIEW_STYLE_POLICY.locked) return;
   runtimeReviewStyle = style;
   try { window.localStorage.setItem(REVIEW_STYLE_KEY, style); } catch { /* Storage is optional. */ }
   // The runtime value also makes switching immediate when storage is unavailable.

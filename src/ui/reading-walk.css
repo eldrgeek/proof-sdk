@@ -204,3 +204,6 @@ body.prw-right-collapsed .prw-right .prw-chat { display: none; }
   position: absolute; top: -6px; right: -6px; min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box;
   border-radius: 999px; background: #dc2626; color: #fff; font: 700 10px/16px system-ui, sans-serif; text-align: center;
 }
+/* Editing first (2026-09-19): "changed by <name> — meaning changed" above the line's marks. */
+.prw-edit-note { margin: 4px 0 6px; font-size: 12px; color: #92400e; }
+.prw-edit-note[data-kind="correct"] { color: #4b5563; }

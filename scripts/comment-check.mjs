@@ -187,10 +187,11 @@ async function run(browser, base, style, viewport) {
     assert.ok(barRect.left >= 0 && barRect.right <= view.w && barRect.top >= 0 && barRect.bottom <= view.h, `selection bar off screen ${JSON.stringify(barRect)}`);
   });
 
-  if (style === 'playmaker') await check(`${tag}: Start review stays clickable while text is selected`, async () => {
-    const startReview = page.getByRole('button', { name: 'Start review', exact: true });
-    await startReview.waitFor({ state: 'visible', timeout: 3000 });
-    assert.equal(await reallyVisible(startReview), true, 'Start review is covered');
+  // Editing first (Mike 2026-09-19): the review-dialog walk ("Start review") and the Review
+  // style selector are gone; Proof Documents (the rail) is the only review behaviour.
+  await check(`${tag}: no Start review button and no Review style selector`, async () => {
+    assert.equal(await page.getByRole('button', { name: 'Start review', exact: true }).count(), 0, 'Start review is still offered');
+    assert.equal(await page.locator('.review-style-control select:visible').count(), 0, 'the Review style selector is still shown');
   });
 
   const composer = page.locator('.mark-popover textarea').first();
@@ -243,36 +244,39 @@ async function run(browser, base, style, viewport) {
     await page.screenshot({ path: path.join(shots, `${tag}-3-posted.png`) });
   });
 
-  // Opens the thread by clicking the highlighted words; returns the visible thread container.
+  // Editing first (Mike 2026-09-19): clicking the highlighted words places the caret and opens
+  // nothing; the thread is in the right rail (the focus line follows the caret).
   const openThread = async () => {
     await page.keyboard.press('Escape');
     const mark = await localComment(page, commentText);
-    await page.locator(`.ProseMirror [data-mark-id="${mark.id}"]`).first().click();
-    const thread = style === 'playmaker' ? page.locator('.pm-review-dialog') : page.locator('.mark-popover');
-    await thread.first().waitFor({ state: 'visible', timeout: 3000 });
-    assert.equal(await reallyVisible(thread.first()), true, 'thread is hidden or covered');
-    assert.ok((await thread.first().innerText()).includes(commentText), 'thread does not show the comment');
-    return thread.first();
+    const highlight = page.locator(`.ProseMirror [data-mark-id="${mark.id}"]`).first();
+    await highlight.click();
+    await page.waitForTimeout(250);
+    assert.equal(await page.locator('.pm-review-dialog:visible, .mark-popover:visible').count(), 0, 'a review dialog or popover opened on click');
+    assert.ok(await page.evaluate(() => {
+      const sel = getSelection();
+      return !!sel && sel.isCollapsed && !!sel.anchorNode && !!document.querySelector('.ProseMirror')?.contains(sel.anchorNode);
+    }), 'the click did not place the caret in the text');
+    const card = page.locator(`.prw-right .prw-card[data-mark-id="${mark.id}"]`);
+    await card.first().waitFor({ state: 'visible', timeout: 3000 });
+    assert.ok((await card.first().innerText()).includes(commentText), 'the rail does not show the comment');
+    await page.evaluate(() => document.activeElement?.blur());
+    return card.first();
   };
 
-  await check(`${tag}: the thread opens and a reply can be posted`, async () => {
+  await check(`${tag}: clicking the comment places the caret; the rail shows it and a reply can be posted`, async () => {
     const thread = await openThread();
-    if (style === 'playmaker') {
-      await thread.getByRole('button', { name: /^Reply/ }).click();
-      await thread.locator('textarea').fill(replyText);
-      await page.screenshot({ path: path.join(shots, `${tag}-4-reply.png`) });
-      await thread.getByRole('button', { name: 'Send reply' }).click();
-    } else {
-      await thread.locator('textarea').first().fill(replyText);
-      await page.screenshot({ path: path.join(shots, `${tag}-4-reply.png`) });
-      await thread.getByRole('button', { name: 'Reply', exact: true }).click();
-    }
+    await thread.getByRole('button', { name: /^Reply/ }).click();
+    await thread.locator('textarea').fill(replyText);
+    await page.screenshot({ path: path.join(shots, `${tag}-4-reply.png`) });
+    await thread.getByRole('button', { name: 'Send reply' }).click();
     await waitForServer(base, created, s => s.includes(replyText), 'the reply');
   });
 
-  await check(`${tag}: the comment can be resolved`, async () => {
+  await check(`${tag}: the comment can be resolved from the rail`, async () => {
     const thread = await openThread();
-    assert.ok((await thread.innerText()).includes(replyText), 'thread does not show the reply');
+    await page.waitForFunction(({ id, r }) => document.querySelector(`.prw-right .prw-card[data-mark-id="${id}"]`)?.textContent?.includes(r),
+      { id: (await localComment(page, commentText)).id, r: replyText }, { timeout: 5000 });
     await thread.getByRole('button', { name: /^Resolve/ }).click();
     await page.waitForFunction(t => (window.proof?.getAllMarks?.() ?? window.proof?.getMarks?.() ?? [])
       .some(m => m.kind === 'comment' && m.data?.text === t && m.data?.resolved === true), commentText, { timeout: 5000 });

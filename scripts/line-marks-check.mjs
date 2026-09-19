@@ -197,7 +197,7 @@ async function desktop(browser, base) {
     assert.equal(response.status, 200, await response.text());
     await waitFor(page, () => document.querySelector('.plm-dot[data-line="7"] .plm-pips i')?.dataset.status === 'agreed');
   });
-  await check(`${tag}: editing a line resets the others' marks on it and keeps the changer's`, async () => {
+  await check(`${tag}: editing a line resets the others' marks on it and gives the changer Agreed`, async () => {
     // Line 2 ("The second paragraph..."): Ada rejected it; Bob marks it Seen, then edits it directly.
     await mark(b.page, 2, /Seen/);
     await b.page.getByRole('button', { name: /^Suggesting:/ }).click();
@@ -205,10 +205,12 @@ async function desktop(browser, base) {
     await b.page.keyboard.press('End');
     await b.page.keyboard.insertText(' Edited by Bob.');
     await waitFor(page, () => document.querySelector('.ProseMirror')?.textContent.includes('Edited by Bob.'), null, 12000);
-    // Ada's Rejected there is now out of date ("changed"); Bob's Seen followed his own edit.
+    // Ada's Rejected there is now out of date ("changed"). Bob changed the meaning of a line
+    // another person had marked, so his own mark became Agreed (Mike's rule, 2026-09-19; it was
+    // his Seen carried forward before).
     await waitFor(page, () => document.querySelector('.plm-dot[data-line="2"]')?.dataset.status === 'changed', null, 12000);
-    await waitFor(b.page, () => document.querySelector('.plm-dot[data-line="2"]')?.dataset.status === 'seen', null, 12000);
-    await waitFor(page, () => [...document.querySelectorAll('.plm-dot[data-line="2"] .plm-pips i')].some(i => i.dataset.status === 'seen'), null, 12000);
+    await waitFor(b.page, () => document.querySelector('.plm-dot[data-line="2"]')?.dataset.status === 'agreed', null, 12000);
+    await waitFor(page, () => [...document.querySelectorAll('.plm-dot[data-line="2"] .plm-pips i')].some(i => i.dataset.status === 'agreed'), null, 12000);
     await page.screenshot({ path: path.join(shots, `${tag}-2-changed.png`) });
   });
   await check(`${tag}: Next issue moves the focus line to an issue and highlights it, then moves on`, async () => {

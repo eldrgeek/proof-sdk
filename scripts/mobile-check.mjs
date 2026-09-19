@@ -172,10 +172,12 @@ async function phone(browser, base, name, viewport) {
     await page.getByRole('button', { name: 'Close marks', exact: true }).click();
     assert.equal(await visible(page, '.pm-review-panel'), false, 'panel did not close');
   });
-  await check(`${tag}: overflow menu holds Add agent and Review style`, async () => {
+  // Editing first (Mike 2026-09-19): Proof Documents is the only review behaviour, so the
+  // Review style item is gone from the overflow menu.
+  await check(`${tag}: overflow menu holds Add agent and no Review style`, async () => {
     await page.getByRole('button', { name: 'More options', exact: true }).click();
     await page.getByRole('menuitem', { name: /Add agent/ }).waitFor({ timeout: 2000 });
-    await page.getByRole('menuitem', { name: /Review style/ }).waitFor({ timeout: 2000 });
+    assert.equal(await page.getByRole('menuitem', { name: /Review style/ }).count(), 0, 'Review style is still offered');
     await page.screenshot({ path: path.join(shots, `${tag}-3-overflow.png`) });
     await page.keyboard.press('Escape');
     await page.mouse.click(viewport.width / 2, viewport.height / 2);
@@ -209,23 +211,30 @@ async function phone(browser, base, name, viewport) {
     }
     assert.ok(found, 'comment text not in server state');
   });
-  await check(`${tag}: tapping the comment opens a readable, replyable thread`, async () => {
+  // Editing first (Mike 2026-09-19): a tap on the comment places the caret and opens nothing;
+  // the thread is in "This line" (the reading walk's right sheet), which follows the caret.
+  await check(`${tag}: tapping the comment places the caret; This line shows a replyable thread`, async () => {
     await page.mouse.click(viewport.width / 2, 5);
     await page.waitForTimeout(300);
-    await page.locator('.ProseMirror [data-mark-id]').first().tap();
-    const sheet = page.locator('.pm-review-dialog:visible, .mark-popover:visible').first();
-    await sheet.waitFor({ state: 'visible', timeout: 3000 });
-    const text = await sheet.innerText();
-    assert.ok(text.includes(commentText), 'thread does not show the comment');
-    // PlayMaker's dialog opens a reply box from its Reply button; the Proof thread shows the box
-    // at once and keeps Reply disabled until there is text.
-    if (style === 'playmaker') await sheet.getByRole('button', { name: /^Reply/ }).first().click();
-    const reply = sheet.locator('textarea').first();
+    const highlight = page.locator('.ProseMirror [data-mark-id]').first();
+    const id = await highlight.getAttribute('data-mark-id');
+    await highlight.tap();
+    await page.waitForTimeout(300);
+    assert.equal(await page.locator('.pm-review-dialog:visible, .mark-popover:visible').count(), 0, 'a review dialog or popover opened on tap');
+    assert.ok(await page.evaluate(() => {
+      const sel = getSelection();
+      return !!sel && !!sel.anchorNode && !!document.querySelector('.ProseMirror')?.contains(sel.anchorNode);
+    }), 'the tap did not place the caret in the text');
+    await page.getByRole('button', { name: 'More options', exact: true }).click();
+    await page.getByRole('menuitem', { name: /This line/ }).click();
+    const card = page.locator(`.prw-right .prw-card[data-mark-id="${id}"]`);
+    await card.waitFor({ state: 'visible', timeout: 3000 });
+    assert.ok((await card.innerText()).includes(commentText), 'This line does not show the comment');
+    await card.getByRole('button', { name: /^Reply/ }).click();
+    const reply = card.locator('textarea').first();
     await reply.fill('Reply from the phone');
-    if (style !== 'playmaker') assert.equal(await sheet.getByRole('button', { name: 'Reply', exact: true }).isEnabled(), true, 'Reply stays disabled');
     await page.screenshot({ path: path.join(shots, `${tag}-6-thread.png`) });
-    const r = await sheet.evaluate(el => ({ ...el.getBoundingClientRect().toJSON(), vh: innerHeight, vw: innerWidth }));
-    assert.ok(r.bottom >= r.vh - 2 && r.width >= r.vw - 2, `thread rect ${JSON.stringify(r)}`);
+    assert.equal(await chipOnTop(page, `.prw-right .prw-card[data-mark-id="${id}"] textarea`), false, 'feedback chip covers the reply box');
   });
   await context.close();
 }
