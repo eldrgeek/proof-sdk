@@ -312,10 +312,11 @@ export function answerAsk(slug: string, input: {
   let lineMarked = false;
   if (ASK_POLICY.answerMarksLineSeen && input.canMark) {
     const me = actorKey(by);
+    // Step B3b: a skimmed mark does not count: answering reads the line.
     const hasCurrent = listCanonicalLineMarks(slug).some(mark => actorKey(mark.by) === me
-      && mark.anchor.hash === anchor.hash && mark.anchor.occurrence === anchor.occurrence);
+      && mark.anchor.hash === anchor.hash && mark.anchor.occurrence === anchor.occurrence && mark.status !== 'skimmed');
     if (!hasCurrent) {
-      const marked = writeLineMark(slug, { by, status: 'seen', anchor, canApprove: false, source: input.source });
+      const marked = writeLineMark(slug, { by, status: 'seen', via: 'ask', anchor, canApprove: false, source: input.source });
       lineMarked = marked.status === 200;
     }
   }

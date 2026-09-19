@@ -22,7 +22,8 @@ import type { Mark, CommentData, ReplaceData } from '../formats/marks';
 import { getActorName, getMarkColor } from '../formats/marks';
 import { actorKey, type DocLine } from '../shared/line-marks';
 import { ASK_POLICY, type AskChoice } from '../shared/asks';
-import { GestureGate, READING_WALK, ReadingWalk, type WalkLine, type WalkMark, type WalkSnapshot } from '../shared/reading-walk';
+import { GestureGate, READING_WALK, ReadingWalk, countWords, dwellMsFor, type WalkLine, type WalkMark, type WalkSnapshot } from '../shared/reading-walk';
+import type { SinceItem, SinceYouReport, RingerItem } from '../shared/alignment';
 import type { LineMarksUI, MarkBox } from './line-marks';
 import { isOpenReviewMark, type PlayMakerReview, type ReviewAction } from './playmaker-review';
 import './reading-walk.css';
@@ -47,6 +48,21 @@ export interface ReadingWalkHost {
 
 const PHONE_QUERY = '(max-width: 700px)';
 const RAIL_STATE_KEY = 'proof:reading-rails';
+/** Step B3b: the reader's reading rate (words per second), per browser. */
+const RATE_KEY = 'proof:reading-rate';
+/** Step B3b: skims are batched: one request per this long of scrolling. */
+const SKIM_FLUSH_MS = 400;
+
+function savedRate(): number {
+  try {
+    const raw = localStorage.getItem(RATE_KEY);
+    if (raw === null) return READING_WALK.WORDS_PER_SECOND;
+    const value = Number(raw);
+    return Number.isFinite(value) && value >= 0 ? value : READING_WALK.WORDS_PER_SECOND;
+  } catch {
+    return READING_WALK.WORDS_PER_SECOND;
+  }
+}
 /** Visible gap kept between the reading line and the top bar. */
 const READING_LINE_SLACK_PX = 2;
 
@@ -82,6 +98,16 @@ export class ReadingWalkUI {
   /** Step B6: who you are (signed-in name, an agent key's AI, or "guest — sign in"). */
   private readonly meEl = el('div', 'prw-me');
   private readonly provisionalEl = el('div', 'prw-provisional');
+  /** Step B3c: "Since you last marked" (collapsible) and the ringer list. */
+  private readonly sinceHost = el('section', 'prw-since');
+  /** Step B3b: the reading-rate setting. */
+  private readonly rateEl = el('label', 'prw-rate');
+  private sinceReport: SinceYouReport | null = null;
+  private sinceLoaded = false;
+  private sinceOpen = true;
+  private skimQueue: number[] = [];
+  private skimTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly skimmedLines: number[] = [];
   private readonly boxHost = el('section', 'prw-linebox');
   private readonly changesHost = el('section', 'prw-changes');
   private readonly dockHost = el('div', 'prw-dock');
@@ -207,6 +233,7 @@ export class ReadingWalkUI {
     const hidden = this.host.hiddenLines?.() ?? new Set<number>();
     const walkLines: WalkLine[] = this.lines.map(line => ({
       key: `${line.hash}:${line.occurrence}`,
+      words: countWords(line.text),
       marks: [] as WalkMark[],
       ...(hidden.has(line.index) ? { hidden: true } : {}),
     }));
@@ -219,6 +246,7 @@ export class ReadingWalkUI {
     if (!this.walk) {
       if (walkLines.length === 0) return;
       this.walk = new ReadingWalk(walkLines, now);
+      this.walk.setRate(savedRate());
     } else {
       this.walk.setLines(walkLines, now);
     }
@@ -233,6 +261,10 @@ export class ReadingWalkUI {
     if (!this.restored && lm.isLoaded()) {
       this.restored = true;
       this.restoreSession();
+    }
+    if (!this.sinceLoaded && lm.isLoaded()) {
+      this.sinceLoaded = true;
+      void this.loadSinceYou();
     }
     this.afterChange();
   }
@@ -489,7 +521,7 @@ export class ReadingWalkUI {
 
   private markFocus(status: 'agreed' | 'seen'): void {
     this.renderNow();
-    this.box?.choose(status);
+    this.box?.choose(status, 'key');
   }
 
   private openReason(): void {
@@ -547,6 +579,7 @@ export class ReadingWalkUI {
     if (!walk) return;
     for (const event of walk.drain()) {
       if (event.type === 'seen') this.enqueueSeen(event.line);
+      else if (event.type === 'skimmed') this.enqueueSkim(event.line);
     }
     this.scheduleTick();
     this.scheduleSave();
@@ -582,13 +615,170 @@ export class ReadingWalkUI {
         const line = this.seenQueue.shift()!;
         if (!lm.isLoaded()) continue;
         const status = lm.myStatus(line);
-        if (status !== 'unseen' && status !== 'changed') continue; // never downgrade a mark
+        // Never downgrade a mark. A skimmed line read properly now becomes Seen.
+        if (status !== 'unseen' && status !== 'changed' && status !== 'skimmed') continue;
         this.seenWrites.push(line);
-        await lm.setLineStatus(line, 'seen');
+        await lm.setLineStatus(line, 'seen', undefined, 'dwell');
       }
     } finally {
       this.seenBusy = false;
     }
+  }
+
+  /** Step B3b: lines scrolled past too fast, written together (one request per SKIM_FLUSH_MS). */
+  private enqueueSkim(line: number): void {
+    this.skimQueue.push(line);
+    if (this.skimTimer) return;
+    this.skimTimer = setTimeout(() => {
+      this.skimTimer = null;
+      const lines = this.skimQueue.splice(0);
+      const lm = this.host.lineMarks();
+      if (!lm.isLoaded() || lines.length === 0) return;
+      this.skimmedLines.push(...lines);
+      void lm.markSkimmed(lines);
+    }, SKIM_FLUSH_MS);
+  }
+
+  /** Step B3b: the reader chose a reading rate (words per second; 0 = no length rule). */
+  setReadingRate(rate: number): void {
+    try { localStorage.setItem(RATE_KEY, String(rate)); } catch { /* optional */ }
+    this.walk?.setRate(rate);
+    this.renderRate(true);
+    this.scheduleTick();
+  }
+
+  private renderRate(force = false): void {
+    const walk = this.walk;
+    if (!walk) return;
+    const rate = walk.readingRate;
+    const line = this.lines[walk.focus];
+    const need = dwellMsFor(line ? countWords(line.text) : undefined, rate);
+    const sig = `${rate}|${need}`;
+    if (!force && this.rateEl.dataset.sig === sig) return;
+    this.rateEl.dataset.sig = sig;
+    const select = this.rateEl.querySelector('select') as HTMLSelectElement | null;
+    if (select && select.value !== String(rate)) select.value = String(rate);
+    const hint = this.rateEl.querySelector('.prw-rate-need') as HTMLElement | null;
+    if (hint) hint.textContent = `this line: ${(need / 1000).toFixed(need < 1000 ? 2 : 1)} s`;
+  }
+
+  // --------------------------------------------------------------------------
+  // Step B3c: Since you
+  // --------------------------------------------------------------------------
+
+  private async loadSinceYou(): Promise<void> {
+    const report = await this.host.lineMarks().fetchSinceYou();
+    this.sinceReport = report;
+    this.renderSince();
+  }
+
+  private renderSince(): void {
+    const report = this.sinceReport;
+    this.sinceHost.replaceChildren();
+    this.sinceHost.hidden = !report || !report.hasHistory;
+    if (!report || !report.hasHistory) return;
+    const details = el('details', 'prw-since-details');
+    details.open = this.sinceOpen && report.counts.total > 0;
+    details.addEventListener('toggle', () => { this.sinceOpen = details.open; });
+    const summary = el('summary', 'prw-since-summary');
+    const when = report.baseline.at ? new Date(report.baseline.at) : null;
+    const whenText = when ? when.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+    const title = report.baseline.source === 'snapshot' ? `Since the aligned version (${whenText})` : `Since you last marked (${whenText})`;
+    summary.append(el('strong', undefined, title));
+    const count = el('span', 'prw-since-count', report.counts.total === 0 ? 'nothing new' : String(report.counts.total));
+    count.dataset.count = String(report.counts.total);
+    summary.append(count);
+    details.append(summary);
+    const refresh = el('button', 'prw-link prw-since-refresh', 'Refresh');
+    refresh.type = 'button';
+    refresh.onclick = () => { void this.loadSinceYou(); };
+    const groups: Array<[string, SinceItem[], number, string]> = [
+      ['Lines edited since', report.edited, report.counts.edited, 'edited'],
+      ['New asks', report.asks, report.counts.asks, 'asks'],
+      ['Rejected by others', report.rejections, report.counts.rejections, 'rejections'],
+      ['Suggestions added', report.suggestions, report.counts.suggestions, 'suggestions'],
+      ['Comments added', report.comments, report.counts.comments, 'comments'],
+    ];
+    for (const [label, items, total, kind] of groups) {
+      if (items.length === 0) continue;
+      const group = el('div', 'prw-since-group');
+      group.dataset.kind = kind;
+      group.append(el('h4', undefined, `${label} (${total})`));
+      const list = el('ul');
+      for (const item of items) list.append(this.sinceItem(item));
+      group.append(list);
+      details.append(group);
+    }
+    if (report.ringers.length) {
+      const group = el('div', 'prw-since-group prw-ringers');
+      group.dataset.kind = 'ringers';
+      group.append(el('h4', undefined, `Ringer list (${report.counts.ringers})`));
+      group.append(el('p', 'prw-since-note', 'These count as seen for you only because you scrolled past them or marked their section, and they changed or gained something since.'));
+      const list = el('ul');
+      for (const item of report.ringers) list.append(this.ringerItem(item));
+      group.append(list);
+      details.append(group);
+    }
+    details.append(refresh);
+    this.sinceHost.append(details);
+  }
+
+  private sinceItem(item: SinceItem): HTMLElement {
+    const li = el('li');
+    const button = el('button', 'prw-since-item');
+    button.type = 'button';
+    button.dataset.type = item.type;
+    if (item.lineIndex !== null) button.dataset.line = String(item.lineIndex);
+    const head = item.type === 'edited'
+      ? (item.change === 'cosmetic' ? 'Small fix' : item.change === 'new-since-snapshot' ? 'New or changed' : 'Changed')
+      : item.type === 'ask' ? `Ask from ${getActorName(item.by ?? '')}`
+      : item.type === 'rejection' ? `${getActorName(item.by ?? '')} rejected`
+      : item.type === 'suggestion' ? `Suggestion by ${getActorName(item.by ?? '')}`
+      : item.type === 'reply' ? `Reply by ${getActorName(item.by ?? '')}`
+      : `Comment by ${getActorName(item.by ?? '')}`;
+    button.append(el('span', 'prw-since-head', head));
+    button.append(el('span', 'prw-since-text', item.excerpt || '(line not found)'));
+    const detail = item.type === 'rejection' ? (item.reason ? `Reason: ${item.reason}` : '')
+      : item.type === 'edited' ? (item.from ? `Was: ${item.from}` : '')
+      : (item.detail ?? '');
+    if (detail) button.append(el('span', 'prw-since-detail', detail.length > 160 ? `${detail.slice(0, 160)}…` : detail));
+    button.onclick = () => this.gotoSince(item.hash, item.occurrence, item.lineIndex, item.markId);
+    li.append(button);
+    return li;
+  }
+
+  private ringerItem(item: RingerItem): HTMLElement {
+    const li = el('li');
+    const button = el('button', 'prw-since-item');
+    button.type = 'button';
+    button.dataset.type = 'ringer';
+    button.dataset.line = String(item.lineIndex);
+    button.append(el('span', 'prw-since-head', item.via === 'section' ? 'Seen with its section' : 'Seen by scrolling'));
+    button.append(el('span', 'prw-since-text', item.excerpt));
+    button.append(el('span', 'prw-since-detail', item.why));
+    button.onclick = () => this.gotoSince(item.hash, item.occurrence, item.lineIndex);
+    li.append(button);
+    return li;
+  }
+
+  /** Moves the focus line to a Since-you item: by its mark, else its line text, else its index. */
+  private gotoSince(hash: string | null, occurrence: number | null, lineIndex: number | null, markId?: string): void {
+    const lm = this.host.lineMarks();
+    let index = -1;
+    if (markId) {
+      const mark = (() => { try { return this.host.marks().find(m => m.id === markId); } catch { return undefined; } })();
+      if (mark?.range && typeof mark.range.from === 'number') index = lm.lineAtPos(mark.range.from);
+    }
+    if (index < 0 && hash) {
+      const lines = lm.lineList();
+      const exact = lines.find(line => line.hash === hash && line.occurrence === (occurrence ?? 0)) ?? lines.find(line => line.hash === hash);
+      if (exact) index = exact.index;
+    }
+    if (index < 0 && lineIndex !== null && lineIndex < lm.lineList().length) index = lineIndex;
+    if (index < 0) return;
+    lm.revealLine(index);
+    this.focusLine(index);
+    if (isPhone()) this.closeSheets();
   }
 
   private sessionKey(): string | null {
@@ -643,6 +833,7 @@ export class ReadingWalkUI {
     this.renderBox();
     this.renderChanges();
     this.renderDocuments();
+    this.renderRate();
   }
 
   private dockPanel(): void {
@@ -887,14 +1078,34 @@ export class ReadingWalkUI {
     const rightToggle = el('button', 'prw-collapse');
     rightToggle.type = 'button';
     rightToggle.onclick = () => this.toggleRail('right');
-    rightHead.append(rightTitle, this.statusEl, rightToggle, this.meEl);
+    rightHead.append(rightTitle, this.statusEl, rightToggle, this.meEl, this.rateEl);
     this.meEl.setAttribute('aria-live', 'polite');
     this.provisionalEl.hidden = true;
     this.provisionalEl.setAttribute('aria-live', 'polite');
-    this.rightBody.append(this.provisionalEl, this.boxHost, this.changesHost, this.dockHost);
+    this.sinceHost.hidden = true;
+    this.sinceHost.setAttribute('aria-label', 'Since you last marked');
+    this.buildRate();
+    this.rightBody.append(this.sinceHost, this.provisionalEl, this.boxHost, this.changesHost, this.dockHost);
     this.right.append(rightHead, this.rightBody);
     this.right.setAttribute('role', 'complementary');
     this.left.setAttribute('role', 'navigation');
+  }
+
+  /** Step B3b: "Reading speed" select (per browser). A line counts as read after its words at this rate. */
+  private buildRate(): void {
+    const label = el('span', 'prw-rate-label', 'Reading speed');
+    const select = el('select');
+    select.setAttribute('aria-label', 'Reading speed: how long a line must stay the focus line to count as read');
+    for (const rate of READING_WALK.RATE_CHOICES) {
+      const option = el('option', undefined, rate > 0 ? `${rate} words/s${rate === READING_WALK.WORDS_PER_SECOND ? ' (default)' : ''}` : `any (${READING_WALK.MIN_DWELL_MS} ms per line)`);
+      option.value = String(rate);
+      select.append(option);
+    }
+    select.value = String(savedRate());
+    select.onchange = () => this.setReadingRate(Number(select.value));
+    const need = el('span', 'prw-rate-need');
+    this.rateEl.append(label, select, need);
+    this.rateEl.title = 'A line counts as Seen once it has been the focus line for its reading time: its words at this speed (at least 0.25 s, at most 6 s). Lines you scroll past faster are marked skimmed, not Seen.';
   }
 
   private railState(): { left?: boolean; right?: boolean } {
@@ -1029,6 +1240,10 @@ export class ReadingWalkUI {
       marksOnFocus: walk?.marksOn(walk.focus).map(m => m.id) ?? [],
       provisional: walk?.provisionalIds() ?? [],
       seenWrites: [...this.seenWrites],
+      skimmed: [...this.skimmedLines],
+      rate: walk?.readingRate ?? null,
+      dwellMs: walk ? walk.dwellFor(walk.focus) : null,
+      since: this.sinceReport ? { hasHistory: this.sinceReport.hasHistory, counts: this.sinceReport.counts, baseline: this.sinceReport.baseline } : null,
       readingY: this.readingY(),
       tops: [...this.tops],
       constants: READING_WALK,

@@ -5,8 +5,10 @@
  * decisions for the gaps; built by Claude Opus 5 (worker reading-walk), 2026-09-18.
  *
  * The reader has one focus line. Scrolling down moves the focus down line by line.
- * - A line the focus leaves after a real look (READING_WALK.DWELL_MS, or passed no faster than
- *   READING_WALK.READING_SPEED_PX_PER_S) is reported as read ("seen"). A fling reads nothing.
+ * - A line the focus leaves after a real look is reported as read ("seen"). Step B3b: a real look
+ *   scales with the line's length: READING_WALK.WORDS_PER_SECOND (a per-reader setting), at least
+ *   MIN_DWELL_MS, at most MAX_DWELL_MS. A line scrolled past faster than that is reported as
+ *   "skimmed": shown, never Seen, still an Issue. A fling reads nothing and skims what it passes.
  * - A line with pending marks (suggestions, open comments) holds the focus: each scroll gesture
  *   steps to the next mark on the line, and only after the last one does the focus move on.
  * - Stepping past a suggestion, or scrolling past it, accepts it PROVISIONALLY: the reader sees
@@ -17,10 +19,16 @@
  */
 
 export const READING_WALK = {
-  /** A line counts as read once it has been the focus line for at least this long. */
+  /** Step B3b: the reading time of a line is its word count at this rate (words per second)... */
+  WORDS_PER_SECOND: 4,
+  /** ...but never less than this (a one-word heading still needs a real look)... */
+  MIN_DWELL_MS: 250,
+  /** ...and never more than this (a very long paragraph is not a 30-second wait). */
+  MAX_DWELL_MS: 6000,
+  /** The shortest dwell (Step 1b's flat dwell; kept for older callers). */
   DWELL_MS: 250,
-  /** ...or when the focus passed it no faster than this (the line's height / time as focus). */
-  READING_SPEED_PX_PER_S: 400,
+  /** Rates a reader can choose in the rail (words per second); 0 = no length rule (MIN_DWELL_MS only). */
+  RATE_CHOICES: [2, 3, 4, 6, 8, 12, 0] as readonly number[],
   /** Wheel or touch events closer together than this are one gesture (trackpad inertia included). */
   GESTURE_GAP_MS: 180,
   /** A gesture must travel this far (px) before it takes its one step. */
@@ -37,6 +45,8 @@ export interface WalkMark {
 export interface WalkLine {
   /** Stable identity of the line's current text (for example `${hash}:${occurrence}`). */
   key: string;
+  /** Step B3b: the line's word count (its reading time). Absent = the shortest dwell. */
+  words?: number;
   /** Pending suggestions and open comments on the line, in document order. */
   marks: WalkMark[];
   /**
@@ -49,11 +59,28 @@ export interface WalkLine {
 
 export type WalkEvent =
   | { type: 'seen'; line: number; key: string }
+  /** Step B3b: scrolled past faster than its reading time (reported once per line text). */
+  | { type: 'skimmed'; line: number; key: string }
   | { type: 'provisional'; id: string; line: number }
   | { type: 'revert'; id: string; line: number }
   | { type: 'focus'; line: number };
 
 export type MoveMode = 'scroll' | 'jump';
+
+/** Step B3b: words in a line of text (its reading time). */
+export function countWords(text: string): number {
+  return (String(text ?? '').match(/[\p{L}\p{N}]+(?:['’.\-][\p{L}\p{N}]+)*/gu) ?? []).length;
+}
+
+/**
+ * Step B3b: how long a line must hold the focus to count as read, at `rate` words per second
+ * (0 or less = no length rule). Clamped to [MIN_DWELL_MS, MAX_DWELL_MS].
+ */
+export function dwellMsFor(words: number | undefined, rate: number = READING_WALK.WORDS_PER_SECOND): number {
+  if (!(typeof words === 'number' && words > 0) || !(rate > 0)) return READING_WALK.MIN_DWELL_MS;
+  const ms = (words / rate) * 1000;
+  return Math.round(Math.min(READING_WALK.MAX_DWELL_MS, Math.max(READING_WALK.MIN_DWELL_MS, ms)));
+}
 
 export interface WalkSnapshot {
   focus: number;
@@ -74,6 +101,10 @@ export class ReadingWalk {
   private readonly provisional = new Map<string, number>();
   /** Line keys already reported as read in this session. */
   private readonly readKeys = new Set<string>();
+  /** Step B3b: line keys already reported as skimmed in this session. */
+  private readonly skimKeys = new Set<string>();
+  /** Step B3b: this reader's rate (words per second; 0 = no length rule). */
+  private rate: number = READING_WALK.WORDS_PER_SECOND;
   private events: WalkEvent[] = [];
 
   constructor(lines: WalkLine[], now: number) {
@@ -83,6 +114,14 @@ export class ReadingWalk {
   }
 
   get focus(): number { return this.focusLine; }
+
+  /** Step B3b: the reader's reading rate (words per second; 0 = the shortest dwell for every line). */
+  setRate(rate: number): void { this.rate = Number.isFinite(rate) && rate >= 0 ? rate : READING_WALK.WORDS_PER_SECOND; }
+  get readingRate(): number { return this.rate; }
+
+  /** Step B3b: how long this line must hold the focus to be read. */
+  dwellFor(line: number): number { return dwellMsFor(this.lines[line]?.words, this.rate); }
+  hasSkimmed(key: string): boolean { return this.skimKeys.has(key) && !this.readKeys.has(key); }
   get lineCount(): number { return this.lines.length; }
 
   /** Takes the events produced since the last call. */
@@ -178,9 +217,9 @@ export class ReadingWalk {
    * marks are passed (suggestions accepted provisionally). `jump` (Next issue, a click) reads
    * and passes nothing on the way down. Moving up, by either mode, reverts every provisional
    * accept below the new focus line and forgets that its marks were passed.
-   * `heights` (px per line) lets the reading-speed rule judge lines the focus passed quickly.
+   * `heights` is accepted for older callers and ignored (Step B3b: reading time is by words).
    */
-  moveTo(target: number, now: number, mode: MoveMode = 'scroll', heights?: ArrayLike<number>): void {
+  moveTo(target: number, now: number, mode: MoveMode = 'scroll', _heights?: ArrayLike<number>): void {
     const to = Math.max(0, Math.min(this.lines.length - 1, Math.round(target)));
     if (this.lines.length === 0 || to === this.focusLine) return;
     if (to > this.focusLine) {
@@ -188,7 +227,8 @@ export class ReadingWalk {
         for (let line = this.focusLine; line < to; line += 1) {
           if (this.lines[line]?.hidden) continue;
           const time = line === this.focusLine && this.lines[line]?.key === this.dwellKey ? now - this.enteredAt : 0;
-          if (this.readEnough(time, heights?.[line])) this.markRead(line);
+          if (time >= this.dwellFor(line)) this.markRead(line);
+          else this.markSkimmed(line);
           for (const mark of this.marksOn(line)) this.pass(mark, line);
         }
       }
@@ -221,14 +261,14 @@ export class ReadingWalk {
     if (this.lines.length === 0) return;
     if (this.lines[this.focusLine]?.hidden) return;
     if (this.lines[this.focusLine]?.key !== this.dwellKey) return;
-    if (now - this.enteredAt >= READING_WALK.DWELL_MS) this.markRead(this.focusLine);
+    if (now - this.enteredAt >= this.dwellFor(this.focusLine)) this.markRead(this.focusLine);
   }
 
   /** How long until tick() could mark the focus line read (0 when it already is). */
   msUntilRead(now: number): number {
     const line = this.lines[this.focusLine];
     if (!line || this.readKeys.has(line.key) || line.key !== this.dwellKey) return 0;
-    return Math.max(0, READING_WALK.DWELL_MS - (now - this.enteredAt));
+    return Math.max(0, this.dwellFor(this.focusLine) - (now - this.enteredAt));
   }
 
   /**
@@ -298,10 +338,11 @@ export class ReadingWalk {
     }
   }
 
-  private readEnough(timeMs: number, heightPx: number | undefined): boolean {
-    if (timeMs >= READING_WALK.DWELL_MS) return true;
-    if (!(timeMs > 0) || !(typeof heightPx === 'number' && heightPx > 0)) return false;
-    return heightPx / (timeMs / 1000) <= READING_WALK.READING_SPEED_PX_PER_S;
+  private markSkimmed(line: number): void {
+    const entry = this.lines[line];
+    if (!entry || this.readKeys.has(entry.key) || this.skimKeys.has(entry.key)) return;
+    this.skimKeys.add(entry.key);
+    this.events.push({ type: 'skimmed', line, key: entry.key });
   }
 
   private markRead(line: number): void {

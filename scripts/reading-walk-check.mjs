@@ -212,10 +212,13 @@ async function desktop(browser, base, style, width) {
     await page.evaluate(() => document.activeElement?.blur());
   });
   await check(`${tag}: scrolling at reading pace marks lines Seen after the dwell`, async () => {
-    // line 2 -> 3 -> 4, pausing longer than the dwell on 3.
+    // line 2 -> 3 -> 4, pausing longer than line 3's reading time (Step B3b: its words at the
+    // reader's rate, from debugState().dwellMs).
     await gesture(page, await lineDelta(page, 2));
     await waitFor(page, () => window.__proofReadingWalk.debugState().focus === 3);
-    await page.waitForTimeout(400);
+    const need = (await walk(page)).dwellMs;
+    assert.ok(need > 1000, `a 20-word line should need more than 1 s at 4 words/s (dwellMs ${need})`);
+    await page.waitForTimeout(need + 200);
     await gesture(page, await lineDelta(page, 3));
     await waitFor(page, () => window.__proofReadingWalk.debugState().focus === 4);
     await waitFor(page, () => window.__proofReadingWalk.debugState().seenWrites.includes(3));
@@ -230,7 +233,8 @@ async function desktop(browser, base, style, width) {
     assert.equal(state.focus, TRIPLE, `focus ${state.focus}: the fling ran past the changes`);
     for (let line = 5; line < TRIPLE; line += 1) {
       assert.ok(!state.seenWrites.includes(line), `line ${line} was marked Seen by a fling`);
-      assert.equal(await dotStatus(page, line), 'unseen', `line ${line}`);
+      // Step B3b: a line the fling passed is skimmed (a hollow dot), never Seen.
+      assert.equal(await dotStatus(page, line), 'skimmed', `line ${line}`);
     }
   });
   const bob = await openDoc(browser, base, created.slug, 'Bob', { viewport: { width: 1280, height: 900 } });

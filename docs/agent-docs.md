@@ -425,6 +425,39 @@ The page reads who it is from `GET /api/documents/<slug>/line-marks` (`identity.
 `trust`, `name`, `signInUrl`) and shows it in the right rail header. Page routes for the asker or an
 owner: `POST /api/documents/<slug>/asks/:id/reask`, `DELETE /api/documents/<slug>/asks/:id`.
 
+## Honest reading, "Since you" and aligned snapshots (Proof Documents, Steps B3b and B3c)
+
+How a mark was earned: every line mark carries `via`: `dwell` (the reading walk), `click`, `key`,
+`section` (a folded section), `ask` (answering the line's ask marked it Seen) or `api` (an AI
+through `/marks/line`, and older marks). `dwell` and `section` are passive.
+
+Skimmed: status `skimmed` means the reader's focus passed the line faster than its reading time
+(its words at the reader's rate, default 4 words/s, at least 0.25 s, at most 6 s; constants in
+`READING_WALK`). It is not Seen: the line stays an Issue, and line Issues list `skimmedBy`.
+
+Carry-forward: a mark now stores the line's whole text (`anchor.text`). When a line changes only
+cosmetically (spacing, case, punctuation, or a small spelling fix; `classifyLineChange` in
+`src/shared/line-change.ts`) every mark on it still counts, tagged carried. A number, a negation or
+other meaning word, a name, or an added, removed or moved word is substantive and resets marks as
+before. `/state` lists carried marks in `carriedMarks` (`markId`, `by`, `lineIndex`, `from`, `to`).
+
+Since you: `GET /api/agent/<slug>/since-you` (the page: `GET /api/documents/<slug>/since-you`)
+returns what changed since the caller last marked a line on purpose, or since the last aligned
+snapshot when that is later: `edited`, `asks`, `rejections`, `suggestions`, `comments`, and
+`ringers` (lines Seen only passively that changed or gained something since). Lists hold at most 50
+items; `counts` has the totals. An agent key reads as its own AI; the owner credential may pass `?by=`.
+
+Aligned snapshots: when the Issue count reaches 0 the server freezes the markdown, every counted
+line mark (actor, status, via, hash), the asks with answers and the team (once per distinct aligned
+state; the newest 50 are kept). `/state` shows it in `alignment.lastSnapshot`.
+
+  GET /api/agent/<slug>/snapshots            newest first, with `ledger` and `json` links
+  GET /api/agent/<slug>/snapshots/<id>.md    the markdown ledger
+  GET /api/agent/<slug>/snapshots/<id>       the JSON (markdown, lineMarks, asks, team)
+
+The page reads the latest from `GET /api/documents/<slug>/line-marks` (`alignedSnapshot`) and asks
+the server to check with `POST /api/documents/<slug>/alignment-check` (the server decides).
+
 ## Presence And Event Polling
 
 Poll for changes:

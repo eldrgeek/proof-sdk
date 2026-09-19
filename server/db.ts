@@ -1262,6 +1262,26 @@ function initDatabase(): void {
     )
   `);
   d.exec(`CREATE INDEX IF NOT EXISTS idx_document_line_marks_slug ON document_line_marks(document_slug, updated_at)`);
+  // Step B3b: how a mark was earned (via), and the line's whole text when marked (carry-forward).
+  {
+    const cols = new Set((d.prepare('PRAGMA table_info(document_line_marks)').all() as Array<{ name: string }>).map(c => c.name));
+    if (!cols.has('via')) d.exec('ALTER TABLE document_line_marks ADD COLUMN via TEXT');
+    if (!cols.has('line_text')) d.exec('ALTER TABLE document_line_marks ADD COLUMN line_text TEXT');
+  }
+
+  // Proof Documents Step B3c: aligned snapshots. Frozen when a document's Issue count reaches 0:
+  // its markdown, every line mark, the asks with answers and the team. Rows are never changed.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_aligned_snapshots (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      markdown TEXT NOT NULL,
+      payload TEXT NOT NULL
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_aligned_snapshots_slug ON document_aligned_snapshots(document_slug, created_at)`);
 
   // Proof Documents Step B3: {ask} decision lines. Beside the document like line marks.
   d.exec(`
@@ -4061,6 +4081,9 @@ export interface DocumentLineMarkRow {
   line_excerpt: string;
   created_at: string;
   updated_at: string;
+  /** Step B3b (null on older rows). */
+  via?: string | null;
+  line_text?: string | null;
 }
 
 export function listDocumentLineMarks(slug: string): DocumentLineMarkRow[] {
@@ -4103,16 +4126,63 @@ export function replaceDocumentLineMark(input: {
       d.prepare(`
         INSERT INTO document_line_marks (
           id, document_slug, by_actor, actor_key, status, reason, line_hash, line_occurrence,
-          line_ordinal, line_kind, line_excerpt, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          line_ordinal, line_kind, line_excerpt, created_at, updated_at, via, line_text
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(n.id, input.slug, n.by_actor, input.actorKey, n.status, n.reason, n.line_hash, n.line_occurrence,
-        n.line_ordinal, n.line_kind, n.line_excerpt, n.at, n.at);
+        n.line_ordinal, n.line_kind, n.line_excerpt, n.at, n.at, n.via ?? null, n.line_text ?? null);
     }
     return removed;
   });
   return tx();
 }
 
+
+// ============================================================================
+// Proof Documents Step B3c: aligned snapshots
+// ============================================================================
+
+export interface DocumentAlignedSnapshotRow {
+  id: string;
+  document_slug: string;
+  created_at: string;
+  fingerprint: string;
+  markdown: string;
+  payload: string;
+}
+
+export function latestAlignedSnapshot(slug: string): DocumentAlignedSnapshotRow | undefined {
+  return getDb().prepare(`
+    SELECT * FROM document_aligned_snapshots WHERE document_slug = ? ORDER BY created_at DESC, id DESC LIMIT 1
+  `).get(slug) as DocumentAlignedSnapshotRow | undefined;
+}
+
+export function listAlignedSnapshots(slug: string, limit = 50): DocumentAlignedSnapshotRow[] {
+  return getDb().prepare(`
+    SELECT * FROM document_aligned_snapshots WHERE document_slug = ? ORDER BY created_at DESC, id DESC LIMIT ?
+  `).all(slug, Math.max(1, Math.min(limit, 500))) as DocumentAlignedSnapshotRow[];
+}
+
+export function getAlignedSnapshot(slug: string, id: string): DocumentAlignedSnapshotRow | undefined {
+  return getDb().prepare(`SELECT * FROM document_aligned_snapshots WHERE document_slug = ? AND id = ?`)
+    .get(slug, id) as DocumentAlignedSnapshotRow | undefined;
+}
+
+/** Inserts a snapshot and keeps only the newest `keep` for the document. */
+export function insertAlignedSnapshot(row: DocumentAlignedSnapshotRow, keep: number): void {
+  assertWritesAllowed('insertAlignedSnapshot');
+  const d = getDb();
+  d.transaction(() => {
+    d.prepare(`
+      INSERT INTO document_aligned_snapshots (id, document_slug, created_at, fingerprint, markdown, payload)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(row.id, row.document_slug, row.created_at, row.fingerprint, row.markdown, row.payload);
+    d.prepare(`
+      DELETE FROM document_aligned_snapshots WHERE document_slug = ? AND id NOT IN (
+        SELECT id FROM document_aligned_snapshots WHERE document_slug = ? ORDER BY created_at DESC, id DESC LIMIT ?
+      )
+    `).run(row.document_slug, row.document_slug, Math.max(1, keep));
+  })();
+}
 
 // ============================================================================
 // Proof Documents Step B3: asks

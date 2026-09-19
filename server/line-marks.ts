@@ -25,12 +25,16 @@ import {
   actorKey,
   agentKeyActor,
   anchorForLine,
+  buildLineStates,
   computeIssues,
   computeStep1Team,
   extractLines,
   isLineAnchor,
   isLineMarkStatus,
+  isMarkVia,
   normalizeLineText,
+  LINE_TEXT_MAX,
+  type MarkVia,
   type AskIssueInput,
   type DocLine,
   type IssueSummary,
@@ -49,19 +53,22 @@ const MAX_REASON = 500;
 const MAX_ACTOR = 120;
 
 export function rowToLineMark(row: DocumentLineMarkRow): LineMark {
+  const anchor: LineAnchor = {
+    hash: row.line_hash,
+    occurrence: row.line_occurrence,
+    ordinal: row.line_ordinal,
+    kind: row.line_kind,
+    excerpt: row.line_excerpt,
+  };
+  if (typeof row.line_text === 'string' && row.line_text) anchor.text = row.line_text;
   return {
     id: row.id,
     by: row.by_actor,
     status: isLineMarkStatus(row.status) ? row.status : 'seen',
     reason: row.reason,
     at: row.updated_at,
-    anchor: {
-      hash: row.line_hash,
-      occurrence: row.line_occurrence,
-      ordinal: row.line_ordinal,
-      kind: row.line_kind,
-      excerpt: row.line_excerpt,
-    },
+    anchor,
+    via: isMarkVia(row.via) ? row.via : 'api',
   };
 }
 
@@ -170,6 +177,8 @@ export interface IssueReport extends IssueSummary {
   lines: Array<Pick<DocLine, 'index' | 'kind' | 'hash' | 'occurrence' | 'block'> & { text: string; ref: string }>;
   owners: string[];
   actorLabels: Record<string, string>;
+  /** Step B3b: marks carried over a cosmetic edit of their line (they count as current). */
+  carried: Array<{ markId: string; by: string; status: string; lineIndex: number; from: string | null; to: string }>;
   /** Step B2: the document's outline, with each section's Issue count (same Issues as above). */
   sections: Array<{ headingIndex: number; ref: string; level: number; text: string; lineEnd: number; parent: number | null; issues: number }>;
 }
@@ -197,8 +206,15 @@ export async function buildIssueReport(slug: string, markdown: string, rawMarks:
     issues: sectionIssueCount(section, lines, summary).total,
   }));
   const owners = documentOwnerActors(slug);
+  const carried: IssueReport['carried'] = [];
+  for (const state of buildLineStates(lines, lineMarks)) {
+    for (const entry of state.marks.values()) {
+      if (entry.carried) carried.push({ markId: entry.mark.id, by: entry.mark.by, status: entry.mark.status, lineIndex: state.line.index, from: entry.carriedFrom ?? null, to: state.line.text.slice(0, 200) });
+    }
+  }
   return {
     ...summary,
+    carried,
     sections,
     owners,
     // Step B6: display names for the actors above (a verified human's actor is their email).
@@ -225,6 +241,7 @@ function cleanActor(value: unknown): string | null {
 
 type ValidEntry = {
   status: LineMark['status'] | null;
+  via: MarkVia;
   reason: string;
   anchor: LineAnchor;
   replaceIds: string[];
@@ -235,6 +252,7 @@ type ValidEntry = {
 function validateEntry(input: {
   status: unknown;
   reason?: unknown;
+  via?: unknown;
   anchor: unknown;
   replaceIds?: unknown;
   replaceAnchors?: unknown;
@@ -242,7 +260,7 @@ function validateEntry(input: {
 }): { ok: true; entry: ValidEntry } | { ok: false; result: LineMarkResult } {
   const clearing = input.status === 'unseen' || input.status === null;
   if (!clearing && !isLineMarkStatus(input.status)) {
-    return { ok: false, result: { status: 400, body: { success: false, code: 'INVALID_STATUS', error: 'status must be one of seen, agreed, approved, rejected, unseen' } } };
+    return { ok: false, result: { status: 400, body: { success: false, code: 'INVALID_STATUS', error: 'status must be one of seen, agreed, approved, rejected, skimmed, unseen' } } };
   }
   if (!isLineAnchor(input.anchor)) {
     return { ok: false, result: { status: 400, body: { success: false, code: 'INVALID_ANCHOR', error: 'Missing or invalid line anchor' } } };
@@ -265,7 +283,8 @@ function validateEntry(input: {
         && ((a as { hash: string }).hash.length <= 32) && Number.isInteger((a as { occurrence?: unknown }).occurrence))
       .slice(0, 5)
     : [];
-  return { ok: true, entry: { status, reason, anchor, replaceIds, replaceAnchors } };
+  const via: MarkVia = isMarkVia(input.via) ? input.via : 'api';
+  return { ok: true, entry: { status, via, reason, anchor, replaceIds, replaceAnchors } };
 }
 
 /** Writes validated entries in one database transaction. Returns the new marks and removed ids. */
@@ -279,6 +298,7 @@ function applyEntries(slug: string, by: string, entries: ValidEntry[]): { marks:
       const { status, reason, anchor } = entry;
       const id = randomUUID();
       const excerpt = normalizeLineText(String(anchor.excerpt ?? '')).slice(0, 80);
+      const lineText = typeof anchor.text === 'string' ? normalizeLineText(anchor.text).slice(0, LINE_TEXT_MAX) : '';
       const markReason = status === 'rejected' ? reason : (reason || null);
       removed.push(...replaceDocumentLineMark({
         slug,
@@ -298,10 +318,12 @@ function applyEntries(slug: string, by: string, entries: ValidEntry[]): { marks:
             line_kind: anchor.kind,
             line_excerpt: excerpt,
             at: now,
+            via: entry.via,
+            line_text: lineText || null,
           }
           : null,
       }));
-      marks.push(status ? { id, by, status, reason: markReason, at: now, anchor: { ...anchor, excerpt } } : null);
+      marks.push(status ? { id, by, status, reason: markReason, at: now, anchor: { ...anchor, excerpt, ...(lineText ? { text: lineText } : {}) }, via: entry.via } : null);
     }
   };
   if (entries.length === 1) run();
@@ -318,6 +340,8 @@ export function writeLineMark(slug: string, input: {
   by: unknown;
   status: unknown;
   reason?: unknown;
+  /** Step B3b: how the mark was earned (MarkVia; default "api"). */
+  via?: unknown;
   anchor: unknown;
   replaceIds?: unknown;
   replaceAnchors?: unknown;
@@ -332,7 +356,7 @@ export function writeLineMark(slug: string, input: {
   const mark = marks[0];
   const { status, anchor } = checked.entry;
   try {
-    addDocumentEvent(slug, 'line_mark.updated', { markId: mark?.id ?? null, removed, status: status ?? 'unseen', anchor: { hash: anchor.hash, excerpt: mark?.anchor.excerpt ?? anchor.excerpt }, source: input.source }, by);
+    addDocumentEvent(slug, 'line_mark.updated', { markId: mark?.id ?? null, removed, status: status ?? 'unseen', via: checked.entry.via, anchor: { hash: anchor.hash, excerpt: mark?.anchor.excerpt ?? anchor.excerpt }, source: input.source }, by);
   } catch (error) {
     console.warn('[line-marks] failed to record event', { slug, error: String(error) });
   }
@@ -349,6 +373,7 @@ export interface LineMarkBatchEntry {
   /** Overrides the batch's status for this line (an undo restores each line's own earlier mark). */
   status?: unknown;
   reason?: unknown;
+  via?: unknown;
   replaceIds?: unknown;
   replaceAnchors?: unknown;
 }
@@ -362,6 +387,8 @@ export function writeLineMarksBatch(slug: string, input: {
   by: unknown;
   status: unknown;
   reason?: unknown;
+  /** Step B3b: default via for every entry (a section batch is "section"). */
+  via?: unknown;
   lines: unknown;
   canApprove: boolean;
   source: 'page' | 'agent';
@@ -386,6 +413,7 @@ export function writeLineMarksBatch(slug: string, input: {
     const checked = validateEntry({
       status: raw.status !== undefined ? raw.status : input.status,
       reason: raw.reason !== undefined ? raw.reason : input.reason,
+      via: raw.via !== undefined ? raw.via : input.via,
       anchor: raw.anchor,
       replaceIds: raw.replaceIds,
       replaceAnchors: raw.replaceAnchors,
@@ -506,6 +534,7 @@ export async function writeAgentLineMark(slug: string, markdown: string, body: R
       status: body.status,
       reason: body.reason,
       lines: members.map(line => ({ anchor: anchorForLine(line), replaceIds: staleIdsOnLine(lines, line, own) })),
+      via: 'section',
       canApprove: options.canApprove,
       source: 'agent',
       context: { section: { heading: describe(target.line), level: section.level, lines: members.length } },

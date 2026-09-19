@@ -41,6 +41,7 @@ import {
 } from './collab.js';
 import { canonicalizeStoredMarks, type StoredMark } from '../src/formats/marks.js';
 import { buildIssueReport, computeServerLines, resolveAgentLineTarget, writeAgentLineMark } from './line-marks.js';
+import { buildSinceYou, freezeIfAligned, listSnapshotInfos, scheduleAlignmentCheck, sendSnapshotFile } from './alignment.js';
 import { agentKeyActor } from '../src/shared/line-marks.js';
 import { decideActor } from './identity.js';
 import { answerAgentAsk, buildAskReport, createAskOnLine, createAgentAsk, listAgentAsks, listCanonicalAsks, reaskAsk, withdrawAsk } from './asks.js';
@@ -2147,11 +2148,22 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
       body.lines = report.lines;
       body.sections = report.sections;
       body.issues = report.issues;
+      // Step B3c: an aligned report freezes a snapshot (once per distinct aligned state).
+      let snapshot: Awaited<ReturnType<typeof freezeIfAligned>>['snapshot'] = null;
+      try {
+        snapshot = (await freezeIfAligned(slug, typeof body.markdown === 'string' ? body.markdown : String(body.content), report)).snapshot;
+      } catch (error) {
+        console.warn('[agent-routes] snapshot freeze failed', { slug, error: String(error) });
+      }
+      links.snapshots = { method: 'GET', href: `/api/agent/${slug}/snapshots` };
+      links.sinceYou = { method: 'GET', href: `/api/agent/${slug}/since-you` };
+      body.carriedMarks = report.carried;
       body.alignment = {
         aligned: report.aligned,
         team: report.team,
         owners: report.owners,
         counts: report.counts,
+        lastSnapshot: snapshot ? { ...snapshot, ledger: `/api/agent/${slug}/snapshots/${snapshot.id}.md` } : null,
         teamRule: 'Step 1: owner + everyone who has line-marked, commented, replied or suggested + active agent keys (Step B3: + askers and the people asked)',
       };
       links.lineMark = { method: 'POST', href: `/api/agent/${slug}/marks/line` };
@@ -3517,6 +3529,7 @@ agentRoutes.post('/:slug/marks/line', async (req: Request, res: Response) => {
   const stateBody = asPayload(state.body);
   const markdown = typeof stateBody.markdown === 'string' ? stateBody.markdown : (getDocumentBySlug(slug)?.markdown ?? '');
   const result = await writeAgentLineMark(slug, markdown, payload, { by, canApprove: role === 'owner_bot' });
+  if (result.status === 200) scheduleAlignmentCheck(slug);
   storeIdempotentMutationResult(replay, mutationRoute, slug, result.status, result.body);
   if (result.status >= 200 && result.status < 300) {
     notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'line_mark.set' }), { apply: false });
@@ -3658,7 +3671,51 @@ agentRoutes.post('/:slug/asks/:askId/answer', async (req: Request, res: Response
   if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route: mutationRoute, slug }); return; }
   const askId = String(req.params.askId ?? '');
   const result = await answerAgentAsk(slug, await currentAgentMarkdown(slug), askId, payload, actor.by, true);
+  if (result.status === 200) scheduleAlignmentCheck(slug);
   sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+});
+
+// ============================================================================
+// Proof Documents Step B3c: aligned snapshots and "Since you"
+// ============================================================================
+
+// Every aligned snapshot of the document, newest first (no text; follow `ledger` or `json`).
+agentRoutes.get('/:slug/snapshots', (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    success: true,
+    snapshots: listSnapshotInfos(slug).map(info => ({
+      ...info,
+      ledger: `/api/agent/${slug}/snapshots/${info.id}.md`,
+      json: `/api/agent/${slug}/snapshots/${info.id}`,
+    })),
+  });
+});
+
+// One snapshot: <id>.md is the markdown ledger, <id> the JSON (markdown, marks, asks, team).
+agentRoutes.get('/:slug/snapshots/:file', (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  sendSnapshotFile(res, slug, String(req.params.file ?? ''));
+});
+
+// What changed since this AI last marked a line on purpose (or since the last aligned snapshot).
+// An agent key reads as its own AI; the owner credential may pass ?by= for anyone.
+agentRoutes.get('/:slug/since-you', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  const role = checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const actor = resolveAgentActor(req, slug, typeof req.query.by === 'string' ? { by: req.query.by } : {}, role);
+  if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
+  const report = await buildSinceYou(slug, actor.by);
+  res.setHeader('Cache-Control', 'no-store');
+  if (!report) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  res.json({ success: true, ...report });
 });
 
 // The asker re-asks (reopens it for everyone; may update recommend / ifYes / to).
@@ -3686,6 +3743,7 @@ agentRoutes.delete('/:slug/asks/:askId', async (req: Request, res: Response) => 
   const actor = resolveAgentActor(req, slug, { ...payload, ...(typeof req.query.by === 'string' ? { by: req.query.by } : {}) }, role);
   if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route: mutationRoute, slug }); return; }
   const result = withdrawAsk(slug, { id: String(req.params.askId ?? ''), by: actor.by, isOwner: role === 'owner_bot' });
+  if (result.status === 200) scheduleAlignmentCheck(slug);
   sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
 });
 

@@ -104,6 +104,7 @@ import {
 import { resolveExplicitAgentIdentity } from '../src/shared/agent-identity.js';
 import { activeAgentKeyActors, documentOwnerActors, isLibraryDocumentCreator, listCanonicalLineMarks, listLineMarks, reviewMarksFromStored, writeLineMark, writeLineMarksBatch } from './line-marks.js';
 import { answerAsk, listCanonicalAsks, reaskAsk, withdrawAsk } from './asks.js';
+import { buildSinceYou, checkAlignment, latestSnapshotInfo, listSnapshotInfos, scheduleAlignmentCheck, sendSnapshotFile } from './alignment.js';
 import { buildDirectory, clientDirectory, decideActor, sessionIdentity } from './identity.js';
 import { IDENTITY_POLICY, actorsIn, isEmailAddress, verifiedHumanActor, type IdentityDirectory, type ViewerIdentity } from '../src/shared/identity.js';
 import { actorKey, agentKeyActor } from '../src/shared/line-marks.js';
@@ -1963,7 +1964,58 @@ apiRoutes.get('/documents/:slug/line-marks', (req: Request, res: Response) => {
     viewer: { canMark: access.canMark, canApprove: access.canApprove },
     // Step B6: who this viewer is (a guest's actor is filled in by the page from the typed name).
     identity: { me, directory },
+    // Step B3c: the latest aligned snapshot (the top bar's "Aligned as of").
+    alignedSnapshot: latestSnapshotInfo(slug),
   });
+});
+
+// Step B3c: "Since you" for the viewer (a signed-in person, an agent key's AI, or the guest who
+// types ?by=<name>): what changed since they last marked a line on purpose, and the ringer list.
+apiRoutes.get('/documents/:slug/since-you', async (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canRead) { res.status(403).json({ success: false, error: 'No read access' }); return; }
+  const actor = resolvePageActor(req, slug, access, typeof req.query.by === 'string' ? req.query.by : undefined);
+  if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
+  const report = await buildSinceYou(slug, actor.actor);
+  res.setHeader('Cache-Control', 'no-store');
+  if (!report) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  res.json({ success: true, ...report });
+});
+
+// Step B3c: the page saw the Issue count reach 0: the server checks for itself and freezes a
+// snapshot when the document really is aligned (a page can only ask, never declare).
+apiRoutes.post('/documents/:slug/alignment-check', opsRateLimiter, async (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canRead) { res.status(403).json({ success: false, error: 'No read access' }); return; }
+  const result = await checkAlignment(slug);
+  if (!result) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  res.json({ success: true, ...result });
+});
+
+apiRoutes.get('/documents/:slug/snapshots', (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canRead) { res.status(403).json({ success: false, error: 'No read access' }); return; }
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, snapshots: listSnapshotInfos(slug) });
+});
+
+// GET /documents/:slug/snapshots/<id>.md is the markdown ledger; /<id> is the JSON.
+apiRoutes.get('/documents/:slug/snapshots/:file', (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canRead) { res.status(403).json({ success: false, error: 'No read access' }); return; }
+  sendSnapshotFile(res, slug, String(req.params.file ?? ''));
 });
 
 apiRoutes.post('/documents/:slug/line-marks', opsRateLimiter, (req: Request, res: Response) => {
@@ -1991,18 +2043,24 @@ apiRoutes.post('/documents/:slug/line-marks', opsRateLimiter, (req: Request, res
       by: actor.actor,
       status: body.status,
       reason: body.reason,
+      // Step B3b: a folded section's batch is "section"; a skim batch from the walk says "dwell".
+      via: body.via !== undefined ? body.via : (isRecord(body.section) ? 'section' : 'click'),
       lines: body.lines,
       canApprove: access.canApprove,
       source: 'page',
       context: isRecord(body.section) ? { section: { heading: String(body.section.heading ?? '').slice(0, 200), lines: body.lines.length } } : undefined,
     });
+    if (batch.status === 200) scheduleAlignmentCheck(slug);
     res.status(batch.status).json({ ...batch.body, actor: actor.actor, trust: actor.trust });
     return;
   }
+  scheduleAlignmentCheck(slug);
   const result = writeLineMark(slug, {
     by: actor.actor,
     status: body.status,
     reason: body.reason,
+    // Step B3b: how the page earned the mark (dwell, click, key); default "click".
+    via: body.via !== undefined ? body.via : 'click',
     anchor: body.anchor,
     replaceIds: body.replaceIds,
     replaceAnchors: body.replaceAnchors,
@@ -2059,6 +2117,7 @@ apiRoutes.post('/documents/:slug/asks/:askId/answer', opsRateLimiter, (req: Requ
     source: 'page',
     canMark: access.canMark,
   });
+  if (result.status === 200) scheduleAlignmentCheck(slug);
   res.status(result.status).json({ ...result.body, actor: actor.actor, trust: actor.trust });
 });
 

@@ -1,7 +1,7 @@
 // Proof Documents Step 1b: the reading walk state machine and the gesture gate.
 // Authorship: Claude Opus 5 (worker reading-walk), 2026-09-18.
 import assert from 'node:assert/strict';
-import { GestureGate, READING_WALK, ReadingWalk, type WalkLine, type WalkEvent } from '../shared/reading-walk';
+import { GestureGate, READING_WALK, ReadingWalk, countWords, dwellMsFor, type WalkLine, type WalkEvent } from '../shared/reading-walk';
 
 let passed = 0;
 function test(name: string, fn: () => void): void {
@@ -56,20 +56,61 @@ test('scrolling down line by line at reading pace marks each line read', () => {
   assert.deepEqual(seen(walk.drain()), [0, 1, 2]);
 });
 
-test('a fling marks nothing: skipped lines and briefly focused lines stay unread', () => {
+test('a fling marks nothing Seen: skipped lines and briefly focused lines stay unread (Step B3b: skimmed)', () => {
   const walk = new ReadingWalk(lines([[], [], [], [], [], []]), 0);
   walk.moveTo(1, 10, 'scroll', [30, 30, 30, 30, 30, 30]); // 30 px in 10 ms = 3000 px/s
   walk.moveTo(5, 20, 'scroll', [30, 30, 30, 30, 30, 30]);
   assert.deepEqual(seen(walk.drain()), []);
 });
 
-test('reading speed: a short line passed slowly enough counts even under the dwell', () => {
-  const walk = new ReadingWalk(lines([[], [], []]), 0);
-  // 24 px in 100 ms = 240 px/s <= READING_SPEED_PX_PER_S
-  walk.moveTo(1, 100, 'scroll', [24, 24, 24]);
-  // 24 px in 20 ms = 1200 px/s: too fast
-  walk.moveTo(2, 120, 'scroll', [24, 24, 24]);
+test('Step B3b: the dwell scales with the line\'s words (4 words/s, min 250 ms, cap 6 s)', () => {
+  assert.equal(dwellMsFor(undefined), READING_WALK.MIN_DWELL_MS, 'no word count: the shortest dwell');
+  assert.equal(dwellMsFor(1), READING_WALK.MIN_DWELL_MS, 'a one-word line still needs the minimum');
+  assert.equal(dwellMsFor(8), 2000, '8 words at 4 words/s');
+  assert.equal(dwellMsFor(200), READING_WALK.MAX_DWELL_MS, 'long paragraphs are capped');
+  assert.equal(dwellMsFor(8, 8), 1000, 'a faster reader: 8 words at 8 words/s');
+  assert.equal(dwellMsFor(40, 0), READING_WALK.MIN_DWELL_MS, 'rate 0 = no length rule');
+  assert.equal(countWords('The quick brown fox — jumps, over 2 lazy dogs.'), 9);
+  assert.equal(countWords("Don't split e.g. or 3.5 or co-op"), 7);
+  const walk = new ReadingWalk([{ key: 'long', words: 20, marks: [] }, { key: 'b', words: 2, marks: [] }], 0);
+  walk.tick(4999);
+  assert.deepEqual(seen(walk.drain()), [], '20 words need 5 s');
+  assert.equal(walk.msUntilRead(4999), 1);
+  walk.tick(5000);
   assert.deepEqual(seen(walk.drain()), [0]);
+});
+
+test('Step B3b: a line scrolled past faster than its reading time is skimmed (once), not seen', () => {
+  const walk = new ReadingWalk([{ key: 'a', words: 12, marks: [] }, { key: 'b', words: 12, marks: [] }, { key: 'c', words: 12, marks: [] }, { key: 'd', words: 12, marks: [] }], 0);
+  walk.moveTo(1, 1000, 'scroll'); // 12 words need 3 s: 1 s is a skim
+  walk.moveTo(3, 1100, 'scroll'); // line 2 is jumped over: skimmed too
+  let events = walk.drain();
+  assert.deepEqual(seen(events), []);
+  assert.deepEqual(events.filter(e => e.type === 'skimmed').map(e => (e as { line: number }).line), [0, 1, 2]);
+  assert.ok(walk.hasSkimmed('a'));
+  walk.moveTo(0, 1200, 'scroll');
+  walk.moveTo(1, 1300, 'scroll');
+  assert.deepEqual(walk.drain().filter(e => e.type === 'skimmed'), [], 'a skim is reported once per line text');
+  walk.tick(1300 + 3000);
+  events = walk.drain();
+  assert.deepEqual(seen(events), [1], 'reading it properly later makes it seen');
+  assert.equal(walk.hasSkimmed('b'), false);
+  const jump = new ReadingWalk([{ key: 'x', words: 12, marks: [] }, { key: 'y', words: 12, marks: [] }, { key: 'z', words: 12, marks: [] }], 0);
+  jump.moveTo(2, 10, 'jump');
+  assert.deepEqual(jump.drain().filter(e => e.type === 'skimmed'), [], 'a jump (Next issue) neither reads nor skims');
+});
+
+test('Step B3b: a per-reader rate changes the reading time', () => {
+  const walk = new ReadingWalk([{ key: 'a', words: 24, marks: [] }, { key: 'b', words: 4, marks: [] }], 0);
+  assert.equal(walk.dwellFor(0), 6000);
+  walk.setRate(12);
+  assert.equal(walk.dwellFor(0), 2000);
+  walk.moveTo(1, 2000, 'scroll');
+  assert.deepEqual(seen(walk.drain()), [0], 'a fast reader at 12 words/s reads 24 words in 2 s');
+  walk.setRate(0);
+  assert.equal(walk.dwellFor(0), READING_WALK.MIN_DWELL_MS);
+  walk.setRate(-3);
+  assert.equal(walk.readingRate, READING_WALK.WORDS_PER_SECOND, 'invalid rates fall back to the default');
 });
 
 test('a line with pending marks holds the focus; each step passes one mark', () => {

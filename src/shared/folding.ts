@@ -39,7 +39,7 @@ export const FOLDING = {
   badgeCounts: 'team' as 'team',
 } as const;
 
-const STATUS_RANK: Record<LineMarkStatus, number> = { seen: 1, agreed: 2, approved: 3, rejected: 0 };
+const STATUS_RANK: Record<LineMarkStatus, number> = { skimmed: 0, seen: 1, agreed: 2, approved: 3, rejected: 0 };
 
 // ============================================================================
 // Sections

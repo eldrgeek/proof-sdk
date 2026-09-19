@@ -27,9 +27,11 @@ import {
   type LineMarkStatus,
   type LineSourceNode,
   type LineState,
+  type MarkVia,
   type ProofIssue,
   type ReviewMarkLike,
 } from '../shared/line-marks';
+import type { SinceYouReport } from '../shared/alignment';
 import { FOLDING, planSectionMark } from '../shared/folding';
 import { askIssueInputs, askTeamActors, evaluateAsks, type AskChoice, type AskView, type ProofAsk } from '../shared/asks';
 import { setAskDecorations, type AskDecorationSpec } from '../editor/plugins/ask-view';
@@ -71,7 +73,7 @@ export interface MarkBox {
   /** Shows the one-line reason field (R). */
   openReason(): void;
   /** Sets a status as if its button was pressed (A). Returns false when marking is not allowed. */
-  choose(status: StatusChoice): boolean;
+  choose(status: StatusChoice, via?: MarkVia): boolean;
   /** Step B3: the line's ask control, when the line carries an ask (Y / N / T). */
   ask?: AskControl;
 }
@@ -84,6 +86,7 @@ const STATUS_LABEL: Record<StatusChoice, string> = {
   agreed: 'Agreed',
   approved: 'Approved',
   rejected: 'Rejected',
+  skimmed: 'Skimmed',
 };
 const STATUS_GLYPH: Record<StatusChoice | 'changed', string> = {
   unseen: '',
@@ -92,8 +95,21 @@ const STATUS_GLYPH: Record<StatusChoice | 'changed', string> = {
   approved: '★',
   rejected: '✕',
   changed: '!',
+  // Step B3b: a hollow dot (drawn by CSS: the ring, no fill).
+  skimmed: '',
+};
+/** Step B3b: how a mark was earned, as the rail says it. */
+const VIA_LABEL: Record<MarkVia, string> = {
+  dwell: 'by scrolling',
+  click: 'marked',
+  key: 'marked with a key',
+  section: 'with its section',
+  ask: 'by answering the ask',
+  api: 'through the API',
 };
 const POLL_MS = 4000;
+/** Step B3c: while the page stays aligned with nothing new, re-ask the server at most this often. */
+const ALIGN_RECHECK_MS = 15000;
 const RESTAMP_IDLE_MS = 1200;
 const PHONE_QUERY = '(max-width: 700px)';
 
@@ -105,6 +121,8 @@ export class LineMarksUI {
   readonly bannerEl = document.createElement('span');
   private readonly countEl = document.createElement('span');
   private readonly nextBtn = document.createElement('button');
+  /** Step B3c: "Aligned as of <time>" / "Last aligned <time>", a link to the snapshot's ledger. */
+  private readonly alignedEl = document.createElement('button');
   private readonly gutter = document.createElement('div');
   private view: EditorView | null = null;
   private lines: DocLine[] = [];
@@ -148,7 +166,11 @@ export class LineMarksUI {
     const short = document.createElement('span'); short.className = 'plm-next-short'; short.textContent = '…';
     this.nextBtn.append(long, short);
     this.nextBtn.onclick = () => this.gotoNextIssue();
-    this.bannerEl.append(this.countEl, this.nextBtn);
+    this.alignedEl.type = 'button';
+    this.alignedEl.className = 'plm-aligned-at';
+    this.alignedEl.hidden = true;
+    this.alignedEl.onclick = () => { if (this.snapshot) void this.openLedger(this.snapshot.id); };
+    this.bannerEl.append(this.countEl, this.nextBtn, this.alignedEl);
     this.gutter.className = 'plm-gutter';
     this.gutter.setAttribute('aria-label', 'Line marks');
     this.gutter.addEventListener('click', this.onGutterClick);
@@ -204,6 +226,7 @@ export class LineMarksUI {
         lineMarks?: LineMark[]; owners?: string[]; agentKeyActors?: string[]; asks?: ProofAsk[];
         viewer?: { canApprove?: boolean; canMark?: boolean };
         identity?: { me?: ViewerIdentity; directory?: IdentityDirectory };
+        alignedSnapshot?: { id: string; createdAt: string } | null;
       };
       // A newer fetch or a local write superseded this answer.
       if (seq !== this.fetchSeq || this.writesInFlight > 0) return;
@@ -219,6 +242,7 @@ export class LineMarksUI {
         : EMPTY_DIRECTORY;
       registerActorLabels(this.directory.labels);
       this.serverMe = body.identity?.me ?? null;
+      this.snapshot = body.alignedSnapshot && typeof body.alignedSnapshot.id === 'string' ? body.alignedSnapshot : null;
       this.loaded = true;
       this.recompute();
     } catch {
@@ -240,7 +264,7 @@ export class LineMarksUI {
     if (document.visibilityState === 'visible') void this.refresh();
   };
 
-  private async writeMark(line: DocLine, status: StatusChoice, reason?: string): Promise<boolean> {
+  private async writeMark(line: DocLine, status: StatusChoice, reason?: string, via: MarkVia = 'click'): Promise<boolean> {
     const slug = this.host.slug();
     if (!slug) return false;
     const by = this.me();
@@ -253,7 +277,7 @@ export class LineMarksUI {
     this.serverMarks = this.serverMarks.filter(mark => !replaceIds.includes(mark.id)
       && !(actorKey(mark.by) === me && mark.anchor.hash === anchor.hash && mark.anchor.occurrence === anchor.occurrence));
     if (status !== 'unseen') {
-      this.serverMarks.push({ id: `local-${Date.now()}`, by, status, reason: reason ?? null, at: new Date().toISOString(), anchor });
+      this.serverMarks.push({ id: `local-${Date.now()}`, by, status, reason: reason ?? null, at: new Date().toISOString(), anchor, via });
     }
     this.recompute();
     this.writesInFlight += 1;
@@ -262,7 +286,7 @@ export class LineMarksUI {
         method: 'POST',
         credentials: 'same-origin',
         headers: { ...this.host.authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ by, status, reason, anchor, replaceIds: replaceIds.filter(id => !id.startsWith('local-')) }),
+        body: JSON.stringify({ by, status, reason, via, anchor, replaceIds: replaceIds.filter(id => !id.startsWith('local-')) }),
       });
       if (!response.ok) {
         const body = await response.json().catch(() => ({})) as { error?: string };
@@ -342,6 +366,7 @@ export class LineMarksUI {
       this.askViews = evaluateAsks(this.serverAsks, this.lines);
       this.summary = computeIssues({ lines: this.lines, lineMarks: this.serverMarks, team, reviewMarks, asks: askIssueInputs(this.askViews) });
       this.queueAskDecorations();
+      this.maybeCheckAlignment();
     }
     this.renderBanner();
     this.queueRender();
@@ -385,6 +410,8 @@ export class LineMarksUI {
   }
 
   isLoaded(): boolean { return this.loaded; }
+  /** Step B3c: unfold whatever hides a line (a Since-you item was clicked). */
+  revealLine(index: number): boolean { return this.host.revealLine?.(index) ?? false; }
   lineList(): DocLine[] { return this.lines; }
   lineState(index: number): LineState | undefined { return this.states[index]; }
   issueSummary(): IssueSummary | null { return this.summary; }
@@ -397,10 +424,125 @@ export class LineMarksUI {
   }
 
   /** Writes the viewer's mark on a line. */
-  setLineStatus(index: number, status: StatusChoice, reason?: string): Promise<boolean> {
+  setLineStatus(index: number, status: StatusChoice, reason?: string, via: MarkVia = 'click'): Promise<boolean> {
     const line = this.lines[index];
     if (!line || !this.canMark) return Promise.resolve(false);
-    return this.writeMark(line, status, reason);
+    return this.writeMark(line, status, reason, via);
+  }
+
+  /**
+   * Step B3b: the reading walk passed these lines faster than their reading time. Each line the
+   * viewer has no mark on becomes "skimmed", in one request. A skim never replaces a mark, not
+   * even an out-of-date one (that one still says "changed since you marked it", and the
+   * changer's own mark still follows their edit).
+   */
+  async markSkimmed(indices: number[]): Promise<boolean> {
+    const slug = this.host.slug();
+    if (!slug || !this.canMark || !this.loaded) return false;
+    const by = this.me();
+    const me = actorKey(by);
+    const lines = [...new Set(indices)].map(index => this.lines[index]).filter((line): line is DocLine => Boolean(line))
+      .filter(line => this.myStatus(line.index) === 'unseen' && !this.states[line.index]?.marks.has(me))
+      .slice(0, FOLDING.maxBatchLines);
+    if (lines.length === 0) return true;
+    const entries = lines.map(line => {
+      const own = [...(this.states[line.index]?.marks.values() ?? [])].filter(e => actorKey(e.mark.by) === me);
+      return { line, anchor: anchorForLine(line), replaceIds: own.map(e => e.mark.id).filter(id => !id.startsWith('local-')) };
+    });
+    const replaced = new Set(entries.flatMap(entry => entry.replaceIds));
+    const at = new Date().toISOString();
+    this.serverMarks = this.serverMarks.filter(mark => !replaced.has(mark.id));
+    entries.forEach((entry, i) => this.serverMarks.push({ id: `local-skim-${Date.now()}-${i}`, by, status: 'skimmed', reason: null, at, anchor: entry.anchor, via: 'dwell' }));
+    this.recompute();
+    this.skimWrites += entries.length;
+    this.writesInFlight += 1;
+    try {
+      const response = await fetch(`${this.host.apiBase()}/documents/${encodeURIComponent(slug)}/line-marks`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { ...this.host.authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ by, status: 'skimmed', via: 'dwell', lines: entries.map(entry => ({ anchor: entry.anchor, replaceIds: entry.replaceIds })) }),
+      });
+      return response.ok;
+    } catch {
+      return false;
+    } finally {
+      this.writesInFlight -= 1;
+      this.fetchSeq += 1;
+      void this.refresh();
+    }
+  }
+
+  /** Test hook: lines this page has marked skimmed. */
+  private skimWrites = 0;
+
+  // --------------------------------------------------------------------------
+  // Step B3c: "Since you" and the aligned snapshot
+  // --------------------------------------------------------------------------
+
+  /** The latest aligned snapshot (from the line-marks poll). */
+  alignedSnapshot(): { id: string; createdAt: string } | null { return this.snapshot; }
+
+  /** What changed since the viewer last marked a line on purpose (null when it failed). */
+  async fetchSinceYou(): Promise<SinceYouReport | null> {
+    const slug = this.host.slug();
+    if (!slug) return null;
+    const guest = this.serverMe?.actor ? '' : `?by=${encodeURIComponent(this.me())}`;
+    try {
+      const response = await fetch(`${this.host.apiBase()}/documents/${encodeURIComponent(slug)}/since-you${guest}`, {
+        headers: this.host.authHeaders(),
+        credentials: 'same-origin',
+      });
+      if (!response.ok) return null;
+      return await response.json() as SinceYouReport;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Opens the snapshot's markdown ledger in a new tab (fetched with this page's credentials). */
+  async openLedger(id: string): Promise<void> {
+    const slug = this.host.slug();
+    if (!slug) return;
+    const tab = window.open('', '_blank');
+    try {
+      const response = await fetch(`${this.host.apiBase()}/documents/${encodeURIComponent(slug)}/snapshots/${encodeURIComponent(id)}.md`, {
+        headers: this.host.authHeaders(),
+        credentials: 'same-origin',
+      });
+      const text = response.ok ? await response.text() : `Could not load the ledger (${response.status}).`;
+      const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+      if (tab) tab.location.href = url; else window.location.href = url;
+    } catch {
+      tab?.close();
+      this.toast('Could not load the ledger (offline?)');
+    }
+  }
+
+  private snapshot: { id: string; createdAt: string } | null = null;
+  private alignCheckAt = 0;
+  private alignCheckSig = '';
+
+  /** The page's own count reached 0: ask the server to check and freeze (it decides). */
+  private maybeCheckAlignment(): void {
+    const slug = this.host.slug();
+    const summary = this.summary;
+    if (!slug || !summary || !summary.aligned || !this.loaded || summary.counts.lines === 0) return;
+    const sig = `${this.lines.map(line => line.hash).join(',')}|${this.serverMarks.map(mark => `${mark.id}:${mark.status}`).join(',')}`;
+    const now = Date.now();
+    if (sig === this.alignCheckSig && now - this.alignCheckAt < ALIGN_RECHECK_MS) return;
+    this.alignCheckSig = sig;
+    this.alignCheckAt = now;
+    void fetch(`${this.host.apiBase()}/documents/${encodeURIComponent(slug)}/alignment-check`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { ...this.host.authHeaders(), 'Content-Type': 'application/json' },
+      body: '{}',
+    }).then(async response => {
+      if (!response.ok) return;
+      const body = await response.json() as { snapshot?: { id: string; createdAt: string } | null };
+      if (body.snapshot && body.snapshot.id !== this.snapshot?.id) { this.snapshot = body.snapshot; this.renderBanner(); }
+    }).catch(() => { /* the next change retries */ });
   }
 
   /** The line (index) that holds a document position, or -1. */
@@ -560,7 +702,7 @@ export class LineMarksUI {
         credentials: 'same-origin',
         headers: { ...this.host.authHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          by: old.by, status: old.status, reason: old.reason ?? undefined, anchor,
+          by: old.by, status: old.status, reason: old.reason ?? undefined, via: old.via ?? undefined, anchor,
           replaceIds: old.id.startsWith('local-') ? [] : [old.id],
           replaceAnchors: [{ hash: old.anchor.hash, occurrence: old.anchor.occurrence }],
         }),
@@ -606,6 +748,21 @@ export class LineMarksUI {
     this.nextBtn.disabled = n === 0;
     this.setShort(n === 0 ? '✓ Aligned' : `${n} ›`);
     this.nextBtn.setAttribute('aria-label', n === 0 ? 'No issues: aligned' : `Next issue (${n} ${n === 1 ? 'issue' : 'issues'})`);
+    this.renderAlignedAt(n === 0);
+  }
+
+  /** Step B3c: the snapshot link beside the Issue count. */
+  private renderAlignedAt(aligned: boolean): void {
+    const snap = this.snapshot;
+    this.alignedEl.hidden = !snap;
+    if (!snap) return;
+    const when = formatWhen(snap.createdAt);
+    this.alignedEl.textContent = aligned ? `Aligned as of ${when}` : `Last aligned ${when}`;
+    this.alignedEl.dataset.state = aligned ? 'aligned' : 'since';
+    this.alignedEl.title = aligned
+      ? `Everyone agreed on this version at ${new Date(snap.createdAt).toLocaleString()}. Open the ledger: the text, every mark and every answer.`
+      : `The last aligned version was frozen at ${new Date(snap.createdAt).toLocaleString()}; changes since then start a new round. Open its ledger.`;
+    this.alignedEl.setAttribute('aria-label', `${this.alignedEl.textContent}: open the ledger`);
   }
 
   private setShort(text: string): void {
@@ -648,6 +805,8 @@ export class LineMarksUI {
       const myStatus: StatusChoice | 'changed' = !mine ? 'unseen' : (mine.current ? mine.mark.status : 'changed');
       dot.dataset.status = myStatus;
       dot.dataset.issue = issueLines.has(line.index) ? 'true' : 'false';
+      // Step B3b: your mark survived a small edit (the rail shows what changed).
+      if (mine?.carried) dot.dataset.carried = 'true'; else delete dot.dataset.carried;
       const lineHeight = parseFloat(getComputedStyle(dom).lineHeight) || 24;
       const top = rect.top - containerRect.top + Math.max(0, (Math.min(lineHeight, rect.height) - dotSize) / 2);
       dot.style.top = `${Math.round(top)}px`;
@@ -674,7 +833,8 @@ export class LineMarksUI {
         dot.replaceChildren(glyph, pips);
       }
       const othersText = others.map(([, e]) => `${actorLabel(e.mark.by)}: ${e.current ? STATUS_LABEL[e.mark.status] : 'changed since marked'}`).join('; ');
-      dot.setAttribute('aria-label', `Line ${line.index + 1}: your mark ${myStatus === 'changed' ? 'is out of date (the line changed)' : STATUS_LABEL[myStatus as StatusChoice]}${othersText ? `. ${othersText}` : ''}. Mark this line`);
+      const carriedText = mine?.carried ? ' (carried over a small edit)' : '';
+      dot.setAttribute('aria-label', `Line ${line.index + 1}: your mark ${myStatus === 'changed' ? 'is out of date (the line changed)' : STATUS_LABEL[myStatus as StatusChoice]}${carriedText}${othersText ? `. ${othersText}` : ''}. Mark this line`);
       dot.title = othersText ? `You: ${myStatus === 'changed' ? 'changed since you marked it' : STATUS_LABEL[myStatus as StatusChoice]}\n${othersText.replace(/; /g, '\n')}` : 'Mark this line';
     }
     for (const [key, el] of existing) if (!used.has(key)) el.remove();
@@ -725,6 +885,38 @@ export class LineMarksUI {
       changed.textContent = `Changed since you marked it ${STATUS_LABEL[mine.mark.status]}. Mark it again.`;
       root.append(changed);
     }
+    // Step B3b: a mark carried over a small edit: say what changed, and let the reader undo it.
+    if (mine?.carried) {
+      const carried = document.createElement('div');
+      carried.className = 'plm-carried';
+      const text = document.createElement('p');
+      text.textContent = `Your ${STATUS_LABEL[mine.mark.status]} mark carried over a small edit (spelling, case or punctuation).`;
+      carried.append(text);
+      if (mine.carriedFrom) {
+        const was = document.createElement('p');
+        was.className = 'plm-carried-was';
+        const label = document.createElement('span');
+        label.textContent = 'Was: ';
+        const old = document.createElement('del');
+        old.textContent = mine.carriedFrom.length > 200 ? `${mine.carriedFrom.slice(0, 200)}…` : mine.carriedFrom;
+        was.append(label, old);
+        carried.append(was);
+      }
+      const revert = document.createElement('button');
+      revert.type = 'button';
+      revert.className = 'plm-choice plm-carried-revert';
+      revert.textContent = 'Mark unseen';
+      revert.disabled = !this.canMark;
+      revert.onclick = () => { options.onChosen?.('unseen'); void this.writeMark(line, 'unseen'); };
+      carried.append(revert);
+      root.append(carried);
+    }
+    if (mine?.current && mine.mark.status === 'skimmed') {
+      const skim = document.createElement('p');
+      skim.className = 'plm-skimmed-note';
+      skim.textContent = 'You scrolled past this line faster than its reading time, so it is not Seen yet. Stay on it, or mark it.';
+      root.append(skim);
+    }
 
     // Step B2: on a folded heading a mark applies to every line of the section (policy).
     const scope = this.host.markScope?.(line.index) ?? null;
@@ -745,7 +937,7 @@ export class LineMarksUI {
     unfold.onclick = () => { this.host.revealLine?.(line.index + 1); };
     sectionHint.append(unfold);
 
-    const choose = (status: StatusChoice, reason?: string): boolean => {
+    const choose = (status: StatusChoice, reason?: string, via: MarkVia = 'click'): boolean => {
       if (!this.canMark) return false;
       if (scope && status === 'rejected' && !FOLDING.allowSectionReject) { sectionHint.hidden = false; return false; }
       options.onExplicit?.(status);
@@ -756,13 +948,13 @@ export class LineMarksUI {
         void this.writeSectionMark(scope, status);
         return true;
       }
-      void this.writeMark(fresh, status, reason);
+      void this.writeMark(fresh, status, reason, via);
       return true;
     };
 
     const actions = document.createElement('div');
     actions.className = 'plm-actions';
-    const current: StatusChoice = mine?.current ? mine.mark.status : 'unseen';
+    const current: StatusChoice = mine?.current && mine.mark.status !== 'skimmed' ? mine.mark.status : 'unseen';
     const choices: StatusChoice[] = ['seen', 'agreed'];
     if (this.canApprove || !LINE_MARK_POLICY.approveRequiresOwner) choices.push('approved');
     choices.push('rejected');
@@ -843,12 +1035,19 @@ export class LineMarksUI {
       const status = !entry ? 'unseen' : (entry.current ? entry.mark.status : 'changed');
       what.dataset.status = status;
       what.textContent = status === 'changed' ? 'Changed since marked' : STATUS_LABEL[status as StatusChoice];
+      // Step B3b: how a Seen was earned ("Seen by scrolling" vs "Seen, marked").
+      if (entry?.current && entry.mark.status === 'seen') {
+        const via = (entry.mark.via ?? 'api') as MarkVia;
+        what.textContent += ` ${via === 'click' || via === 'key' ? '(marked)' : `(${VIA_LABEL[via]})`}`;
+        what.dataset.via = via;
+      }
+      if (entry?.carried) { what.textContent += ' · carried over a small edit'; what.dataset.carried = 'true'; }
       if (entry?.current && entry.mark.status === 'rejected' && entry.mark.reason) what.textContent += `: ${entry.mark.reason}`;
       li.append(who, what);
       list.append(li);
     }
     root.append(list);
-    return { root, openReason, choose: (status) => choose(status), ...(askControl ? { ask: askControl } : {}) };
+    return { root, openReason, choose: (status, via) => choose(status, undefined, via ?? 'click'), ...(askControl ? { ask: askControl } : {}) };
   }
 
   private openMenu(line: DocLine, dot: HTMLElement): void {
@@ -1102,8 +1301,11 @@ export class LineMarksUI {
   }
 
   /** Test and agent hook: the numbers the UI shows. */
-  debugState(): { loaded: boolean; issues: number; aligned: boolean; team: string[]; lines: number; marks: LineMark[]; sectionWrites: number; askIssues: number; askAnswers: number; asks: Array<Record<string, unknown>> } {
+  debugState(): { loaded: boolean; issues: number; aligned: boolean; team: string[]; lines: number; marks: LineMark[]; sectionWrites: number; askIssues: number; askAnswers: number; asks: Array<Record<string, unknown>>; skimWrites: number; snapshot: { id: string; createdAt: string } | null; carried: Array<{ line: number; by: string; from: string | null }> } {
     return {
+      skimWrites: this.skimWrites,
+      snapshot: this.snapshot,
+      carried: this.states.flatMap(state => [...state.marks.values()].filter(e => e.carried).map(e => ({ line: state.line.index, by: e.mark.by, from: e.carriedFrom ?? null }))),
       askIssues: this.summary?.counts.askIssues ?? -1,
       askAnswers: this.askAnswers,
       asks: this.askViews.map(v => ({ id: v.ask.id, lineIndex: v.lineIndex, openFor: v.openFor, snoozedFor: v.snoozedFor, outcome: v.outcome, answers: v.answers.map(a => [a.by, a.choice, a.words]) })),
@@ -1116,6 +1318,16 @@ export class LineMarksUI {
       marks: this.serverMarks,
     };
   }
+}
+
+/** Step B3c: a short time for the top bar: "14:02" today, "Sep 17, 14:02" otherwise. */
+function formatWhen(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const today = new Date();
+  if (date.toDateString() === today.toDateString()) return time;
+  return `${date.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${time}`;
 }
 
 function hashSig(input: string): number {

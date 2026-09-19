@@ -104,7 +104,9 @@ async function agentMark(base, created, payload) {
 async function openDoc(browser, base, slug, name, contextOptions = {}) {
   const context = await browser.newContext(contextOptions);
   await context.route('**/*', route => new URL(route.request().url()).origin === base ? route.continue() : route.abort());
-  await context.addInitScript(viewer => { try { localStorage.setItem('proof-share-viewer-name', viewer); } catch {} }, name);
+  // Step B3b: these checks read with J at a steady 330 ms per line; the reader's rate "any"
+  // (0 = the 250 ms minimum for every line) keeps them about folding, not reading speed.
+  await context.addInitScript(viewer => { try { localStorage.setItem('proof-share-viewer-name', viewer); localStorage.setItem('proof:reading-rate', '0'); } catch {} }, name);
   const page = await context.newPage();
   await page.goto(`${base}/d/${slug}`);
   await ready(page);

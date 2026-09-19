@@ -12,8 +12,37 @@
  * without edit hooks.
  */
 
-export type LineMarkStatus = 'seen' | 'agreed' | 'approved' | 'rejected';
-export const LINE_MARK_STATUSES: readonly LineMarkStatus[] = ['seen', 'agreed', 'approved', 'rejected'];
+import { classifyLineChange } from './line-change.js';
+
+/**
+ * Step B3b: `skimmed` = the reader's focus passed the line faster than its reading time. It is
+ * shown (a hollow dot) but it is not Seen: the line stays an Issue for that reader.
+ */
+export type LineMarkStatus = 'seen' | 'agreed' | 'approved' | 'rejected' | 'skimmed';
+export const LINE_MARK_STATUSES: readonly LineMarkStatus[] = ['seen', 'agreed', 'approved', 'rejected', 'skimmed'];
+
+/**
+ * Step B3b: how a mark was earned, so the rail can say "seen by scrolling" vs "marked".
+ *   dwell   - the reading walk: the line held the focus for its reading time (or was skimmed);
+ *   click   - a button in the mark box, popover or sheet;
+ *   key     - a keyboard shortcut (A);
+ *   section - a whole folded section marked at once;
+ *   ask     - answering the line's ask marked it Seen;
+ *   api     - an AI or a script through the agent API (or an older mark with no record).
+ */
+export type MarkVia = 'dwell' | 'click' | 'key' | 'section' | 'ask' | 'api';
+export const MARK_VIAS: readonly MarkVia[] = ['dwell', 'click', 'key', 'section', 'ask', 'api'];
+/** Earned without a deliberate choice about this one line (the ringer list watches these). */
+export const PASSIVE_VIAS: ReadonlySet<MarkVia> = new Set<MarkVia>(['dwell', 'section']);
+
+export function isMarkVia(value: unknown): value is MarkVia {
+  return typeof value === 'string' && (MARK_VIAS as readonly string[]).includes(value);
+}
+
+/** Statuses that count as having seen the line. */
+export function countsAsSeen(status: LineMarkStatus): boolean {
+  return status !== 'skimmed';
+}
 
 export interface LineAnchor {
   /** Hash of the line's kind and normalized text when it was marked. */
@@ -25,7 +54,15 @@ export interface LineAnchor {
   kind: string;
   /** Up to 80 characters of the line, for humans and AIs reading the raw data. */
   excerpt: string;
+  /**
+   * Step B3b: the line's whole normalized text when it was marked (up to LINE_TEXT_MAX), so a
+   * later cosmetic edit can carry the mark forward. Older marks have only the excerpt.
+   */
+  text?: string;
 }
+
+/** Step B3b: longest line text stored with a mark (longer lines keep only their excerpt: no carry). */
+export const LINE_TEXT_MAX = 4000;
 
 export interface LineMark {
   id: string;
@@ -34,6 +71,8 @@ export interface LineMark {
   reason?: string | null;
   at: string;
   anchor: LineAnchor;
+  /** Step B3b: how the mark was earned (absent on older marks: read as "api"). */
+  via?: MarkVia | null;
 }
 
 export interface DocLine {
@@ -76,6 +115,11 @@ export const LINE_MARK_POLICY = {
   openReviewMarksAreIssues: true,
   /** When a TM edits a line they had marked, their own mark follows the new text. */
   changerKeepsMark: true,
+  /**
+   * Step B3b: a mark survives a cosmetic edit of its line (src/shared/line-change.ts), tagged
+   * "carried". Off = every edit resets every mark (Step 1 behaviour).
+   */
+  carryCosmeticEdits: true,
 } as const;
 
 // ============================================================================
@@ -100,6 +144,11 @@ function cyrb53(input: string, seed = 0): number {
   h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
   h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
   return 4294967296 * (2097151 & h2) + (h1 >>> 0);
+}
+
+/** Step B3c: a short deterministic hash of any text (snapshot fingerprints). */
+export function hashText(text: string): string {
+  return cyrb53(String(text ?? '')).toString(36);
 }
 
 export function hashLine(kind: string, text: string): string {
@@ -152,13 +201,25 @@ export function extractLines(doc: LineSourceNode): DocLine[] {
 }
 
 export function anchorForLine(line: DocLine): LineAnchor {
-  return {
+  const anchor: LineAnchor = {
     hash: line.hash,
     occurrence: line.occurrence,
     ordinal: line.index,
     kind: line.kind,
     excerpt: line.text.slice(0, 80),
   };
+  if (line.text.length <= LINE_TEXT_MAX) anchor.text = line.text;
+  return anchor;
+}
+
+/** Step B3b: the full text a mark was made on, when known (an excerpt shorter than 80 is the whole line). */
+export function anchorText(anchor: LineAnchor): string | null {
+  if (typeof anchor.text === 'string' && anchor.text) return normalizeLineText(anchor.text);
+  const excerpt = normalizeLineText(anchor.excerpt ?? '');
+  // An excerpt is the first 80 characters: shorter means it is the whole line. Its hash must
+  // match, so a trimmed excerpt of a longer line is never mistaken for the line.
+  if (excerpt && excerpt.length < 80 && hashLine(anchor.kind, excerpt) === anchor.hash) return excerpt;
+  return null;
 }
 
 export interface ResolvedAnchor {
@@ -291,7 +352,12 @@ export function computeStep1Team(input: {
 
 export interface LineMarkEntry {
   mark: LineMark;
+  /** True when the mark counts for the line's current text (exactly, or carried over a cosmetic edit). */
   current: boolean;
+  /** Step B3b: the line changed cosmetically since the mark; the mark was carried forward. */
+  carried?: boolean;
+  /** Step B3b: for a carried mark, the text it was made on. */
+  carriedFrom?: string;
 }
 
 export interface LineState {
@@ -300,20 +366,57 @@ export interface LineState {
   marks: Map<string, LineMarkEntry>;
 }
 
+/**
+ * Step B3b: the line a stale mark carries to, when the marked text changed only cosmetically:
+ * the nearest line (to where it was) of the same kind whose text is a cosmetic change of it.
+ * Lines whose text some mark still matches exactly are not candidates (they were not edited).
+ */
+export function findCarryTarget(lines: DocLine[], anchor: LineAnchor, cache?: Map<string, boolean>): DocLine | null {
+  if (!LINE_MARK_POLICY.carryCosmeticEdits) return null;
+  const before = anchorText(anchor);
+  if (!before) return null;
+  let best: DocLine | null = null;
+  const lo = before.length * 0.8 - 4;
+  const hi = before.length * 1.25 + 4;
+  for (const line of lines) {
+    if (line.kind !== anchor.kind || line.hash === anchor.hash) continue;
+    if (line.text.length < lo || line.text.length > hi) continue;
+    const key = `${anchor.hash}|${line.hash}`;
+    let cosmetic = cache?.get(key);
+    if (cosmetic === undefined) {
+      cosmetic = classifyLineChange(before, line.text).kind === 'cosmetic';
+      cache?.set(key, cosmetic);
+    }
+    if (!cosmetic) continue;
+    if (!best || Math.abs(line.index - anchor.ordinal) < Math.abs(best.index - anchor.ordinal)) best = line;
+  }
+  return best;
+}
+
 export function buildLineStates(lines: DocLine[], lineMarks: LineMark[]): LineState[] {
   const states: LineState[] = lines.map(line => ({ line, marks: new Map() }));
+  const cache = new Map<string, boolean>();
   for (const mark of lineMarks) {
     if (!mark?.anchor) continue;
-    const resolved = resolveLineAnchor(lines, mark.anchor);
+    let resolved: (ResolvedAnchor & { carried?: boolean }) | null = resolveLineAnchor(lines, mark.anchor);
+    if (!resolved || !resolved.current) {
+      // Step B3b: a cosmetic edit carries the mark to the new text.
+      const target = findCarryTarget(lines, mark.anchor, cache);
+      if (target) resolved = { lineIndex: target.index, current: true, carried: true };
+    }
     if (!resolved) continue;
     const state = states[resolved.lineIndex];
     const key = actorKey(mark.by);
     const existing = state.marks.get(key);
-    const candidate = { mark, current: resolved.current };
+    const candidate: LineMarkEntry = resolved.carried
+      ? { mark, current: true, carried: true, carriedFrom: anchorText(mark.anchor) ?? undefined }
+      : { mark, current: resolved.current };
+    // An exact mark beats a carried one; a carried one beats a stale one.
+    const rank = (entry: LineMarkEntry) => (entry.current ? (entry.carried ? 1 : 2) : 0);
     if (
       !existing
-      || (candidate.current && !existing.current)
-      || (candidate.current === existing.current && String(mark.at) > String(existing.mark.at))
+      || rank(candidate) > rank(existing)
+      || (rank(candidate) === rank(existing) && String(mark.at) > String(existing.mark.at))
     ) {
       state.marks.set(key, candidate);
     }
@@ -335,6 +438,8 @@ export type ProofIssue =
     unseenBy: string[];
     changedFor: string[];
     rejectedBy: Array<{ by: string; reason: string | null }>;
+    /** Step B3b: members whose focus passed the line too fast (they are in unseenBy too). */
+    skimmedBy: string[];
   }
   | {
     /** Step B3: an ask on this line that someone it was asked of has not answered. */
@@ -387,10 +492,12 @@ export function computeIssues(input: {
   for (const state of states) {
     const unseenBy: string[] = [];
     const changedFor: string[] = [];
+    const skimmedBy: string[] = [];
     for (const member of input.team) {
       const entry = state.marks.get(actorKey(member));
-      if (!entry || !entry.current) unseenBy.push(member);
+      if (!entry || !entry.current || !countsAsSeen(entry.mark.status)) unseenBy.push(member);
       if (entry && !entry.current) changedFor.push(member);
+      if (entry && entry.current && entry.mark.status === 'skimmed') skimmedBy.push(member);
     }
     const rejectedBy: Array<{ by: string; reason: string | null }> = [];
     for (const entry of state.marks.values()) {
@@ -414,6 +521,7 @@ export function computeIssues(input: {
       unseenBy,
       changedFor,
       rejectedBy,
+      skimmedBy,
     });
   }
   let reviewMarkIssues = 0;
@@ -473,5 +581,6 @@ export function isLineAnchor(value: unknown): value is LineAnchor {
     && Number.isInteger(anchor.occurrence) && Number(anchor.occurrence) >= 0
     && Number.isInteger(anchor.ordinal) && Number(anchor.ordinal) >= 0
     && typeof anchor.kind === 'string' && anchor.kind.length <= 40
-    && (anchor.excerpt === undefined || typeof anchor.excerpt === 'string');
+    && (anchor.excerpt === undefined || typeof anchor.excerpt === 'string')
+    && (anchor.text === undefined || (typeof anchor.text === 'string' && anchor.text.length <= LINE_TEXT_MAX));
 }
