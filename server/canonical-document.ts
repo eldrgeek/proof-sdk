@@ -98,8 +98,23 @@ type CanonicalMutationArgs = {
   strictLiveDoc?: boolean;
   guardPathologicalGrowth?: boolean;
   resolvedSuggestionId?: string;
+  /** Defaults to CANONICAL_FRAGMENT_POLICY.incrementalByDefault. */
   incrementalFragmentUpdate?: boolean;
 };
+
+/**
+ * Caret stability (Mike, 2026-09-19: his typing "moved the view away" and landed as scattered
+ * fragments while agents wrote marks). A canonical mutation used to delete and re-insert the whole
+ * live Yjs fragment, even when only marks changed. That invalidates every connected client's
+ * relative positions: y-prosemirror could not restore the caret and left it at the end of the
+ * document, and keystrokes in flight landed in deleted paragraphs (lost) or at the new caret.
+ * The incremental write (y-prosemirror updateYFragment) keeps every unchanged Yjs node and only
+ * diffs what changed, so carets and in-flight typing elsewhere survive. A caller can still pass
+ * incrementalFragmentUpdate: false to force a full replace.
+ */
+export const CANONICAL_FRAGMENT_POLICY = {
+  incrementalByDefault: true,
+} as const;
 
 type CanonicalMutationFailure = {
   ok: false;
@@ -1148,7 +1163,7 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
     persistedCandidateDoc.transact(() => {
       if (!preserveLocallyFinalizedFragment) {
         const fragment = persistedCandidateDoc.getXmlFragment('prosemirror');
-        if (args.incrementalFragmentUpdate) {
+        if (args.incrementalFragmentUpdate ?? CANONICAL_FRAGMENT_POLICY.incrementalByDefault) {
           updateYXmlFragment(fragment, parsedNext.doc);
         } else {
           replaceYXmlFragment(fragment, parsedNext.doc);
@@ -1346,7 +1361,7 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
     ydoc.transact(() => {
       if (!preserveLocallyFinalizedFragment) {
         const fragment = ydoc.getXmlFragment('prosemirror');
-        if (args.incrementalFragmentUpdate) {
+        if (args.incrementalFragmentUpdate ?? CANONICAL_FRAGMENT_POLICY.incrementalByDefault) {
           updateYXmlFragment(fragment, parsedNext.doc);
         } else {
           replaceYXmlFragment(fragment, parsedNext.doc);

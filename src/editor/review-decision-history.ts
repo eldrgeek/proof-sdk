@@ -23,6 +23,37 @@ export function reconnectNativeUndoManager(manager: Y.UndoManager): void {
 type StackItem = Y.UndoManager['undoStack'][number];
 type SuggestionRecords = Map<string, { value: string | undefined; version: number }>;
 
+/** The parts of y-prosemirror's ProsemirrorBinding this file relies on. */
+interface SyncBinding {
+  type: Y.XmlFragment;
+  prosemirrorView: EditorView | null;
+  _observeFunction: (events: Array<Y.YEvent<any>>, transaction: Y.Transaction) => void;
+}
+
+/**
+ * Caret stability (Mike, 2026-09-19: typing "moved the view away from where I was typing" and
+ * landed as scattered fragments). y-prosemirror writes each local ProseMirror change to Yjs inside
+ * its own mutex, so its fragment observer ignores the echo. When we wrap that write in an outer
+ * Yjs transaction (edit/decide below, to group text and mark records in one undo entry), the
+ * observers only run when the OUTER transaction ends, after the mutex is released. The binding
+ * then took its own keystroke for a remote change: it replaced the whole document, restored the
+ * caret from a relative position captured before the keystroke (which could resolve to the end
+ * of the document) and called scrollIntoView. This runs `action` with the binding's observer
+ * detached, which is exactly what the mutex does for an unwrapped local change.
+ */
+export function withoutOwnEcho<T>(binding: SyncBinding | null | undefined, action: () => T): T {
+  const type = binding?.type;
+  const observer = binding?._observeFunction;
+  if (!binding || !type || !observer || !binding.prosemirrorView) return action();
+  type.unobserveDeep(observer);
+  try {
+    return action();
+  } finally {
+    // Re-attach only if the binding still owns this view (a destroy during `action` detached it).
+    if (binding.prosemirrorView) type.observeDeep(observer);
+  }
+}
+
 /** Review metadata extends the page's native history, including its selection hooks. */
 export class ReviewDecisionHistory {
   private destroyed = false;
@@ -69,12 +100,12 @@ export class ReviewDecisionHistory {
     const previous = this.manager.undoStack[this.manager.undoStack.length - 1];
     // A later local edit must not refresh an older entry's stale refusal guard.
     if (previous && !this.suggestionsMatch(previous)) this.manager.stopCapturing();
-    this.doc.transact(tr => {
+    withoutOwnEcho(this.binding(), () => this.doc.transact(tr => {
       action();
       // Derived metadata dispatches can set this flag to false inside the same
       // transaction. The caller already excluded loads and remote operations.
       tr.meta.set('addToHistory', true);
-    }, this.editOrigin);
+    }, this.editOrigin));
     const item = this.manager.undoStack[this.manager.undoStack.length - 1];
     if (!item) return;
     this.rememberSelection(item);
@@ -94,7 +125,7 @@ export class ReviewDecisionHistory {
     const before = snapshotText(fragment);
     this.manager.stopCapturing();
     const count = this.manager.undoStack.length;
-    this.doc.transact(tr => { action(); tr.meta.set('addToHistory', true); }, this.origin);
+    withoutOwnEcho(this.binding(), () => this.doc.transact(tr => { action(); tr.meta.set('addToHistory', true); }, this.origin));
     this.manager.stopCapturing();
     if (this.manager.undoStack.length > count) {
       this.rememberSelection(this.manager.undoStack[this.manager.undoStack.length - 1]);
@@ -169,6 +200,9 @@ export class ReviewDecisionHistory {
       expected.value = current.value;
       return;
     }
+  }
+  private binding(): SyncBinding | null {
+    return (this.view && (ySyncPluginKey.getState(this.view.state)?.binding as SyncBinding | undefined)) ?? null;
   }
   private rememberSelection(item: StackItem): void {
     const binding = this.view && ySyncPluginKey.getState(this.view.state)?.binding;

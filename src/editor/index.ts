@@ -55,6 +55,8 @@ import {
   absolutePositionToRelativePosition,
 } from 'y-prosemirror';
 import { applyAwarenessUpdate, removeAwarenessStates } from 'y-protocols/awareness';
+import { installRemoteChangeScrollPolicy } from './remote-change-scroll';
+import { anchorCaretAround } from './caret-anchor';
 import * as encoding from 'lib0/encoding';
 
 import { proofMarkPlugins } from './schema/proof-marks';
@@ -265,6 +267,9 @@ import {
 import { WebHaptics } from 'web-haptics';
 
 import '../agent/external-agent-bridge';
+
+// Remote Yjs changes never scroll the view (caret stability, 2026-09-19).
+installRemoteChangeScrollPolicy();
 
 const LEGACY_REST_FALLBACK = false;
 
@@ -6240,6 +6245,10 @@ class ProofEditorImpl implements ProofEditor {
           this.scheduleShareSuggestionReviewDisplay(view);
         }
       };
+
+      // Caret stability (2026-09-19): a change the person did not make keeps their line in place.
+      const interceptedDispatch = (view as any).dispatch as (tr: any) => void;
+      (view as any).dispatch = (tr: any) => anchorCaretAround(view, tr, interceptedDispatch);
 
       console.log('[setupSuggestionsInterceptor] Suggestions interceptor installed');
     });
