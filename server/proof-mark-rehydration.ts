@@ -25,6 +25,7 @@ import {
   extractAuthoredMarksFromMarkdown,
   synchronizeAuthoredMarks,
 } from './proof-authored-mark-sync.js';
+import { isOrphanedSuggestionMark } from './proof-mark-orphans.js';
 
 type RehydrationMode = 'repair' | 'accept' | 'reject';
 
@@ -33,6 +34,7 @@ type RequiredHydrationReason = 'authored' | 'comment' | 'suggestion' | 'review';
 export type ProofMarkRehydrationFailureCode =
   | 'MARKDOWN_PARSE_FAILED'
   | 'MARK_NOT_HYDRATED'
+  | 'MARK_ORPHANED'
   | 'REQUIRED_MARKS_MISSING'
   | 'STRUCTURED_MUTATION_FAILED';
 
@@ -207,6 +209,9 @@ function collectRequiredHydrationIds(marks: Record<string, StoredMark>, markdown
   for (const [id, mark] of Object.entries(marks)) {
     const reason = requiredHydrationReason(mark);
     if (reason === null) continue;
+    // ORPHANED_SUGGESTION_POLICY: a pending suggestion whose quote is gone from the text cannot
+    // hydrate and must not block every other mark operation. It stays in storage.
+    if (reason === 'suggestion' && isOrphanedSuggestionMark(markdown, mark, id)) continue;
     if (reason !== 'authored') {
       requiredIds.push(id);
       continue;
@@ -366,6 +371,15 @@ export async function finalizeSuggestionThroughRehydration(args: {
     return rehydrated;
   }
   if (!rehydrated.hydratedIds.includes(args.markId)) {
+    if (isOrphanedSuggestionMark(args.markdown, canonicalMarks[args.markId], args.markId)) {
+      return missingMarkFailure(
+        'MARK_ORPHANED',
+        'Suggestion text no longer exists in the document; it can only be rejected',
+        rehydrated.strippedMarkdown,
+        (rehydrated as { hydratedIds: string[] }).hydratedIds,
+        (rehydrated as { missingRequiredIds: string[] }).missingRequiredIds,
+      );
+    }
     return missingMarkFailure(
       'MARK_NOT_HYDRATED',
       'Target Proof mark could not be rehydrated from stored anchors',

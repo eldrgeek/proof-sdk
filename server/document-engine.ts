@@ -63,6 +63,11 @@ import {
 } from './proof-mark-rehydration.js';
 import { stripAllProofSpanTags } from './proof-span-strip.js';
 import {
+  isOrphanedSuggestionMark,
+  listOrphanedSuggestionMarks,
+  ORPHANED_SUGGESTION_POLICY,
+} from './proof-mark-orphans.js';
+import {
   recordEditAnchorAmbiguous,
   recordEditAnchorNotFound,
   recordEditAuthoredSpanRemap,
@@ -1005,6 +1010,18 @@ function buildAcceptedSuggestionMarkdown(markdown: string, suggestion: StoredMar
   return markdown;
 }
 
+function orphanedAcceptResult(markId: string): EngineExecutionResult {
+  return {
+    status: 409,
+    body: {
+      success: false,
+      code: ORPHANED_SUGGESTION_POLICY.acceptErrorCode,
+      error: 'Suggestion text no longer exists in the document, so there is nothing to accept; reject it instead',
+      markId,
+    },
+  };
+}
+
 function toStructuredMutationFailureResult(
   failure: ProofMarkRehydrationFailure,
   fallbackAnchorMessage: string,
@@ -1030,6 +1047,16 @@ function toStructuredMutationFailureResult(
           success: false,
           code: 'MARK_NOT_HYDRATED',
           error: fallbackAnchorMessage,
+          ...details,
+        },
+      };
+    case 'MARK_ORPHANED':
+      return {
+        status: 409,
+        body: {
+          success: false,
+          code: ORPHANED_SUGGESTION_POLICY.acceptErrorCode,
+          error: failure.error,
           ...details,
         },
       };
@@ -1314,6 +1341,7 @@ function readState(slug: string): EngineExecutionResult {
       content: doc.markdown,
       markdown: doc.markdown,
       marks,
+      orphanedMarks: listOrphanedSuggestionMarks(doc.markdown, marks),
       updatedAt: mutationReady ? doc.updated_at : null,
       revision: mutationReady ? doc.revision : null,
       readSource,
@@ -1358,6 +1386,7 @@ async function readStateAsync(slug: string): Promise<EngineExecutionResult> {
       content: doc.markdown,
       markdown: doc.markdown,
       marks,
+      orphanedMarks: listOrphanedSuggestionMarks(doc.markdown, marks),
       updatedAt: mutationReady ? doc.updated_at : null,
       revision: mutationReady ? doc.revision : null,
       readSource,
@@ -2647,6 +2676,73 @@ async function addSuggestionAsync(
   };
 }
 
+async function removeSuggestionWithoutTextChange(
+  slug: string,
+  doc: { markdown: string; revision: number },
+  marks: Record<string, StoredMark>,
+  markId: string,
+  existing: StoredMark,
+  status: 'accepted' | 'rejected',
+  actor: string,
+  sourceTag: string,
+  context?: AsyncDocumentMutationContext,
+): Promise<EngineExecutionResult> {
+  const nextMarks = { ...marks };
+  delete nextMarks[markId];
+  const mutation = await mutateCanonicalDocument({
+    slug,
+    nextMarkdown: doc.markdown,
+    nextMarks: nextMarks as unknown as Record<string, unknown>,
+    source: `engine:${status}:${actor}:${sourceTag}`,
+    baseRevision: doc.revision,
+    strictLiveDoc: true,
+    guardPathologicalGrowth: true,
+    resolvedSuggestionId: markId,
+  });
+  if (!mutation.ok) {
+    return {
+      status: mutation.status,
+      body: {
+        success: false,
+        code: mutation.code,
+        error: mutation.error,
+        ...(mutation.retryWithState ? { retryWithState: mutation.retryWithState } : {}),
+      },
+    };
+  }
+
+  const eventId = addDocumentEvent(
+    slug,
+    `suggestion.${status}`,
+    { markId, status, by: actor },
+    actor,
+    mutationContextIdempotencyKey(context),
+    mutationContextIdempotencyRoute(context),
+  );
+  upsertMarkTombstone(slug, markId, status, mutation.document.revision);
+  const updatedMarks = parseMarks(mutation.document.marks);
+  const responseMarks: Record<string, StoredMark> = {
+    ...updatedMarks,
+    [markId]: {
+      ...existing,
+      ...(updatedMarks[markId] ?? {}),
+      status,
+    },
+  };
+  return {
+    status: 200,
+    body: {
+      success: true,
+      eventId,
+      shareState: mutation.document.share_state,
+      updatedAt: mutation.document.updated_at,
+      content: mutation.document.markdown,
+      markdown: mutation.document.markdown,
+      marks: responseMarks,
+    },
+  };
+}
+
 async function updateSuggestionStatusAsync(
   slug: string,
   body: JsonRecord,
@@ -2716,6 +2812,17 @@ async function updateSuggestionStatusAsync(
     return result;
   }
 
+  // ORPHANED_SUGGESTION_POLICY: the suggestion's text is gone from the document. Rejecting it
+  // only removes the stored mark (there is no text to restore); accepting it has nothing to apply.
+  // This runs before any anchor resolution or rehydration so an orphan can never be re-anchored
+  // onto unrelated text.
+  if (isOrphanedSuggestionMark(doc.markdown, existing, markId)) {
+    if (status === 'rejected') {
+      return removeSuggestionWithoutTextChange(slug, doc, marks, markId, existing, status, actor, 'orphan', context);
+    }
+    return orphanedAcceptResult(markId);
+  }
+
   let marksForRehydration = marks;
   if (isRecord(existing.target)) {
     const parsedTarget = parseAnchorTarget(existing.target);
@@ -2760,63 +2867,14 @@ async function updateSuggestionStatusAsync(
   if (!structuredResult.ok) {
     if (
       status === 'rejected'
-      && structuredResult.code === 'MARK_NOT_HYDRATED'
-      && canRejectSuggestionWithoutHydration(doc.markdown, existing)
+      && (structuredResult.code === 'MARK_ORPHANED'
+        || (structuredResult.code === 'MARK_NOT_HYDRATED'
+          && canRejectSuggestionWithoutHydration(doc.markdown, existing)))
     ) {
-      const nextMarks = { ...marks };
-      delete nextMarks[markId];
-      const mutation = await mutateCanonicalDocument({
-        slug,
-        nextMarkdown: doc.markdown,
-        nextMarks: nextMarks as unknown as Record<string, unknown>,
-        source: `engine:${status}:${actor}:fallback`,
-        baseRevision: doc.revision,
-        strictLiveDoc: true,
-        guardPathologicalGrowth: true,
-        resolvedSuggestionId: markId,
-      });
-      if (!mutation.ok) {
-        return {
-          status: mutation.status,
-          body: {
-            success: false,
-            code: mutation.code,
-            error: mutation.error,
-            ...(mutation.retryWithState ? { retryWithState: mutation.retryWithState } : {}),
-          },
-        };
-      }
-
-      const eventId = addDocumentEvent(
-        slug,
-        `suggestion.${status}`,
-        { markId, status, by: actor },
-        actor,
-        mutationContextIdempotencyKey(context),
-        mutationContextIdempotencyRoute(context),
+      return removeSuggestionWithoutTextChange(
+        slug, doc, marks, markId, existing, status, actor,
+        structuredResult.code === 'MARK_ORPHANED' ? 'orphan' : 'fallback', context,
       );
-      upsertMarkTombstone(slug, markId, status, mutation.document.revision);
-      const updatedMarks = parseMarks(mutation.document.marks);
-      const responseMarks: Record<string, StoredMark> = {
-        ...updatedMarks,
-        [markId]: {
-          ...existing,
-          ...(updatedMarks[markId] ?? {}),
-          status,
-        },
-      };
-      return {
-        status: 200,
-        body: {
-          success: true,
-          eventId,
-          shareState: mutation.document.share_state,
-          updatedAt: mutation.document.updated_at,
-          content: mutation.document.markdown,
-          markdown: mutation.document.markdown,
-          marks: responseMarks,
-        },
-      };
     }
     return toStructuredMutationFailureResult(structuredResult, 'Suggestion anchor quote not found in document');
   }
@@ -2903,6 +2961,16 @@ export async function finalizeSuggestionsBatchAsync(
       return { status: 400, body: { success: false, code: 'NOT_A_SUGGESTION', error: `${markId} is not a suggestion; nothing was changed`, markId } };
     }
     if (existing.status === status) continue;
+    if (isOrphanedSuggestionMark(markdown, existing, markId)) {
+      if (status === 'accepted') {
+        return { ...orphanedAcceptResult(markId), body: { ...orphanedAcceptResult(markId).body, error: `Suggestion ${markId} no longer has text in the document; nothing was changed` } };
+      }
+      const nextMarks = { ...marks };
+      delete nextMarks[markId];
+      marks = nextMarks;
+      done.push(markId);
+      continue;
+    }
     let working = marks;
     if (isRecord(existing.target)) {
       const parsedTarget = parseAnchorTarget(existing.target);
