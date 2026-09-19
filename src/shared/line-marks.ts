@@ -47,6 +47,8 @@ export interface DocLine {
   nodeSize: number;
   /** 0-based index of the top-level block that holds the line (agent snapshot ref b<block+1>). */
   block: number;
+  /** Heading level (1-6) for a top-level heading; absent for every other line (Step B2 folding). */
+  level?: number;
 }
 
 /** The subset of a ProseMirror Node this module reads (works for client and headless server docs). */
@@ -58,6 +60,7 @@ export interface LineSourceNode {
   childCount: number;
   child(index: number): LineSourceNode;
   nodeSize: number;
+  attrs?: Record<string, unknown>;
 }
 
 // ============================================================================
@@ -111,13 +114,15 @@ export function extractLines(doc: LineSourceNode): DocLine[] {
   const lines: DocLine[] = [];
   const seen = new Map<string, number>();
   let block = 0;
-  const push = (kind: string, text: string, pos: number, nodeSize: number) => {
+  const push = (kind: string, text: string, pos: number, nodeSize: number, level?: number) => {
     const normalized = normalizeLineText(text);
     if (!normalized) return;
     const hash = hashLine(kind, normalized);
     const occurrence = seen.get(hash) ?? 0;
     seen.set(hash, occurrence + 1);
-    lines.push({ index: lines.length, kind, text: normalized, hash, occurrence, pos, nodeSize, block });
+    const line: DocLine = { index: lines.length, kind, text: normalized, hash, occurrence, pos, nodeSize, block };
+    if (level !== undefined) line.level = level;
+    lines.push(line);
   };
   const walk = (node: LineSourceNode, contentStart: number, parentName: string) => {
     let pos = contentStart;
@@ -131,7 +136,11 @@ export function extractLines(doc: LineSourceNode): DocLine[] {
         push('table_row', cells.join(' | '), pos, child.nodeSize);
       } else if (child.isTextblock) {
         const kind = parentName === 'list_item' ? 'list_item' : name;
-        push(kind, child.textContent, pos, child.nodeSize);
+        const rawLevel = Number(child.attrs?.level);
+        const level = name === 'heading' && parentName === 'doc'
+          ? (Number.isInteger(rawLevel) && rawLevel >= 1 && rawLevel <= 6 ? rawLevel : 1)
+          : undefined;
+        push(kind, child.textContent, pos, child.nodeSize, level);
       } else if (child.childCount > 0 && !child.isAtom) {
         walk(child, pos + 1, name);
       }

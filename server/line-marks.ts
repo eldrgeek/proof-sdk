@@ -38,6 +38,7 @@ import {
   type LineSourceNode,
   type ReviewMarkLike,
 } from '../src/shared/line-marks.js';
+import { FOLDING, computeSections, sectionByHeading, sectionIssueCount, sectionLineIndices } from '../src/shared/folding.js';
 
 export type LineMarkResult = { status: number; body: Record<string, unknown> };
 
@@ -151,6 +152,8 @@ export interface IssueReport extends IssueSummary {
   lineMarks: LineMark[];
   lines: Array<Pick<DocLine, 'index' | 'kind' | 'hash' | 'occurrence' | 'block'> & { text: string; ref: string }>;
   owners: string[];
+  /** Step B2: the document's outline, with each section's Issue count (same Issues as above). */
+  sections: Array<{ headingIndex: number; ref: string; level: number; text: string; lineEnd: number; parent: number | null; issues: number }>;
 }
 
 export async function buildIssueReport(slug: string, markdown: string, rawMarks: unknown): Promise<IssueReport> {
@@ -159,8 +162,18 @@ export async function buildIssueReport(slug: string, markdown: string, rawMarks:
   const reviewMarks = reviewMarksFromStored(rawMarks);
   const team = computeDocumentTeam(slug, lineMarks, reviewMarks);
   const summary = computeIssues({ lines, lineMarks, team, reviewMarks });
+  const sections = computeSections(lines).map(section => ({
+    headingIndex: section.headingIndex,
+    ref: `b${section.block + 1}`,
+    level: section.level,
+    text: lines[section.headingIndex].text.slice(0, 200),
+    lineEnd: section.lineEnd,
+    parent: section.parent,
+    issues: sectionIssueCount(section, lines, summary).total,
+  }));
   return {
     ...summary,
+    sections,
     owners: documentOwnerActors(slug),
     lineMarks,
     lines: lines.map(line => ({
@@ -182,6 +195,92 @@ function cleanActor(value: unknown): string | null {
   return trimmed;
 }
 
+type ValidEntry = {
+  status: LineMark['status'] | null;
+  reason: string;
+  anchor: LineAnchor;
+  replaceIds: string[];
+  replaceAnchors: Array<{ hash: string; occurrence: number }>;
+};
+
+/** Checks one line-mark write (status, reason, anchor, owner rule) without writing anything. */
+function validateEntry(input: {
+  status: unknown;
+  reason?: unknown;
+  anchor: unknown;
+  replaceIds?: unknown;
+  replaceAnchors?: unknown;
+  canApprove: boolean;
+}): { ok: true; entry: ValidEntry } | { ok: false; result: LineMarkResult } {
+  const clearing = input.status === 'unseen' || input.status === null;
+  if (!clearing && !isLineMarkStatus(input.status)) {
+    return { ok: false, result: { status: 400, body: { success: false, code: 'INVALID_STATUS', error: 'status must be one of seen, agreed, approved, rejected, unseen' } } };
+  }
+  if (!isLineAnchor(input.anchor)) {
+    return { ok: false, result: { status: 400, body: { success: false, code: 'INVALID_ANCHOR', error: 'Missing or invalid line anchor' } } };
+  }
+  const anchor = input.anchor as LineAnchor;
+  const status = clearing ? null : input.status as LineMark['status'];
+  if (status === 'approved' && LINE_MARK_POLICY.approveRequiresOwner && !input.canApprove) {
+    return { ok: false, result: { status: 403, body: { success: false, code: 'OWNER_REQUIRED', error: 'Only an Owner can approve a line' } } };
+  }
+  const reason = typeof input.reason === 'string' ? input.reason.trim().slice(0, MAX_REASON) : '';
+  if (status === 'rejected' && LINE_MARK_POLICY.rejectRequiresReason && !reason) {
+    return { ok: false, result: { status: 400, body: { success: false, code: 'REASON_REQUIRED', error: 'A rejection needs a one-line reason' } } };
+  }
+  const replaceIds = Array.isArray(input.replaceIds)
+    ? input.replaceIds.filter((id): id is string => typeof id === 'string' && id.length <= 64).slice(0, 20)
+    : [];
+  const replaceAnchors = Array.isArray(input.replaceAnchors)
+    ? input.replaceAnchors
+      .filter((a): a is { hash: string; occurrence: number } => Boolean(a) && typeof (a as { hash?: unknown }).hash === 'string'
+        && ((a as { hash: string }).hash.length <= 32) && Number.isInteger((a as { occurrence?: unknown }).occurrence))
+      .slice(0, 5)
+    : [];
+  return { ok: true, entry: { status, reason, anchor, replaceIds, replaceAnchors } };
+}
+
+/** Writes validated entries in one database transaction. Returns the new marks and removed ids. */
+function applyEntries(slug: string, by: string, entries: ValidEntry[]): { marks: Array<LineMark | null>; removed: string[] } {
+  const now = new Date().toISOString();
+  const marks: Array<LineMark | null> = [];
+  const removed: string[] = [];
+  const key = actorKey(by);
+  const run = () => {
+    for (const entry of entries) {
+      const { status, reason, anchor } = entry;
+      const id = randomUUID();
+      const excerpt = normalizeLineText(String(anchor.excerpt ?? '')).slice(0, 80);
+      const markReason = status === 'rejected' ? reason : (reason || null);
+      removed.push(...replaceDocumentLineMark({
+        slug,
+        actorKey: key,
+        replaceIds: entry.replaceIds,
+        replaceAnchors: entry.replaceAnchors,
+        anchor,
+        next: status
+          ? {
+            id,
+            by_actor: by,
+            status,
+            reason: markReason,
+            line_hash: anchor.hash,
+            line_occurrence: anchor.occurrence,
+            line_ordinal: anchor.ordinal,
+            line_kind: anchor.kind,
+            line_excerpt: excerpt,
+            at: now,
+          }
+          : null,
+      }));
+      marks.push(status ? { id, by, status, reason: markReason, at: now, anchor: { ...anchor, excerpt } } : null);
+    }
+  };
+  if (entries.length === 1) run();
+  else getDb().transaction(run)();
+  return { marks, removed };
+}
+
 /**
  * Set (or clear, with status "unseen") one actor's mark on one line.
  * replaceIds: that actor's earlier marks on the same line (for example a stale mark from before
@@ -198,66 +297,97 @@ export function writeLineMark(slug: string, input: {
   source: 'page' | 'agent';
 }): LineMarkResult {
   const by = cleanActor(input.by);
-  if (!by) return { status: 400, body: { success: false, code: 'INVALID_ACTOR', error: 'Missing or invalid "by" (for example "human:Mike" or "ai:claude")' } };
-  const clearing = input.status === 'unseen' || input.status === null;
-  if (!clearing && !isLineMarkStatus(input.status)) {
-    return { status: 400, body: { success: false, code: 'INVALID_STATUS', error: 'status must be one of seen, agreed, approved, rejected, unseen' } };
-  }
-  if (!isLineAnchor(input.anchor)) {
-    return { status: 400, body: { success: false, code: 'INVALID_ANCHOR', error: 'Missing or invalid line anchor' } };
-  }
-  const anchor = input.anchor as LineAnchor;
-  const status = clearing ? null : input.status as LineMark['status'];
-  if (status === 'approved' && LINE_MARK_POLICY.approveRequiresOwner && !input.canApprove) {
-    return { status: 403, body: { success: false, code: 'OWNER_REQUIRED', error: 'Only an Owner can approve a line' } };
-  }
-  const reason = typeof input.reason === 'string' ? input.reason.trim().slice(0, MAX_REASON) : '';
-  if (status === 'rejected' && LINE_MARK_POLICY.rejectRequiresReason && !reason) {
-    return { status: 400, body: { success: false, code: 'REASON_REQUIRED', error: 'A rejection needs a one-line reason' } };
-  }
-  const replaceIds = Array.isArray(input.replaceIds)
-    ? input.replaceIds.filter((id): id is string => typeof id === 'string' && id.length <= 64).slice(0, 20)
-    : [];
-  const replaceAnchors = Array.isArray(input.replaceAnchors)
-    ? input.replaceAnchors
-      .filter((a): a is { hash: string; occurrence: number } => Boolean(a) && typeof (a as { hash?: unknown }).hash === 'string'
-        && ((a as { hash: string }).hash.length <= 32) && Number.isInteger((a as { occurrence?: unknown }).occurrence))
-      .slice(0, 5)
-    : [];
-  const now = new Date().toISOString();
-  const id = randomUUID();
-  const excerpt = normalizeLineText(String(anchor.excerpt ?? '')).slice(0, 80);
-  const removed = replaceDocumentLineMark({
-    slug,
-    actorKey: actorKey(by),
-    replaceIds,
-    replaceAnchors,
-    anchor,
-    next: status
-      ? {
-        id,
-        by_actor: by,
-        status,
-        reason: status === 'rejected' ? reason : (reason || null),
-        line_hash: anchor.hash,
-        line_occurrence: anchor.occurrence,
-        line_ordinal: anchor.ordinal,
-        line_kind: anchor.kind,
-        line_excerpt: excerpt,
-        at: now,
-      }
-      : null,
-  });
-  const mark: LineMark | null = status
-    ? { id, by, status, reason: status === 'rejected' ? reason : (reason || null), at: now, anchor: { ...anchor, excerpt } }
-    : null;
+  if (!by) return invalidActor();
+  const checked = validateEntry(input);
+  if (!checked.ok) return checked.result;
+  const { marks, removed } = applyEntries(slug, by, [checked.entry]);
+  const mark = marks[0];
+  const { status, anchor } = checked.entry;
   try {
-    addDocumentEvent(slug, 'line_mark.updated', { markId: mark?.id ?? null, removed, status: status ?? 'unseen', anchor: { hash: anchor.hash, excerpt }, source: input.source }, by);
+    addDocumentEvent(slug, 'line_mark.updated', { markId: mark?.id ?? null, removed, status: status ?? 'unseen', anchor: { hash: anchor.hash, excerpt: mark?.anchor.excerpt ?? anchor.excerpt }, source: input.source }, by);
   } catch (error) {
     console.warn('[line-marks] failed to record event', { slug, error: String(error) });
   }
-  broadcastToRoom(slug, { type: 'line-marks.updated', by, timestamp: now });
+  broadcastToRoom(slug, { type: 'line-marks.updated', by, timestamp: new Date().toISOString() });
   return { status: 200, body: { success: true, lineMark: mark, removed } };
+}
+
+function invalidActor(): LineMarkResult {
+  return { status: 400, body: { success: false, code: 'INVALID_ACTOR', error: 'Missing or invalid "by" (for example "human:Mike" or "ai:claude")' } };
+}
+
+export interface LineMarkBatchEntry {
+  anchor: unknown;
+  /** Overrides the batch's status for this line (an undo restores each line's own earlier mark). */
+  status?: unknown;
+  reason?: unknown;
+  replaceIds?: unknown;
+  replaceAnchors?: unknown;
+}
+
+/**
+ * Step B2: set one actor's marks on many lines in one request and one transaction (marking a
+ * folded section). All entries are checked first; if any is invalid nothing is written and the
+ * error names its index. One event (line_mark.batch) and one room broadcast.
+ */
+export function writeLineMarksBatch(slug: string, input: {
+  by: unknown;
+  status: unknown;
+  reason?: unknown;
+  lines: unknown;
+  canApprove: boolean;
+  source: 'page' | 'agent';
+  /** Extra fields for the event and the response (for example the section heading). */
+  context?: Record<string, unknown>;
+}): LineMarkResult {
+  const by = cleanActor(input.by);
+  if (!by) return invalidActor();
+  if (!Array.isArray(input.lines) || input.lines.length === 0) {
+    return { status: 400, body: { success: false, code: 'INVALID_LINES', error: '"lines" must be a non-empty array' } };
+  }
+  if (input.lines.length > FOLDING.maxBatchLines) {
+    return { status: 400, body: { success: false, code: 'BATCH_TOO_LARGE', error: `At most ${FOLDING.maxBatchLines} lines per request` } };
+  }
+  const entries: ValidEntry[] = [];
+  const seenAnchors = new Map<string, number>();
+  for (let i = 0; i < input.lines.length; i += 1) {
+    const raw = input.lines[i] as LineMarkBatchEntry | null;
+    if (!raw || typeof raw !== 'object') {
+      return { status: 400, body: { success: false, code: 'INVALID_LINES', error: `lines[${i}] is not an object`, index: i } };
+    }
+    const checked = validateEntry({
+      status: raw.status !== undefined ? raw.status : input.status,
+      reason: raw.reason !== undefined ? raw.reason : input.reason,
+      anchor: raw.anchor,
+      replaceIds: raw.replaceIds,
+      replaceAnchors: raw.replaceAnchors,
+      canApprove: input.canApprove,
+    });
+    if (!checked.ok) {
+      return { status: checked.result.status, body: { ...checked.result.body, index: i } };
+    }
+    // The same line twice: the later entry wins.
+    const key = `${checked.entry.anchor.hash}:${checked.entry.anchor.occurrence}`;
+    const earlier = seenAnchors.get(key);
+    if (earlier !== undefined) entries[earlier] = checked.entry;
+    else { seenAnchors.set(key, entries.length); entries.push(checked.entry); }
+  }
+  const { marks, removed } = applyEntries(slug, by, entries);
+  const statuses = [...new Set(entries.map(entry => entry.status ?? 'unseen'))];
+  try {
+    addDocumentEvent(slug, 'line_mark.batch', {
+      count: entries.length,
+      statuses,
+      removed: removed.length,
+      anchors: entries.slice(0, 50).map(entry => ({ hash: entry.anchor.hash, excerpt: normalizeLineText(String(entry.anchor.excerpt ?? '')).slice(0, 80) })),
+      source: input.source,
+      ...(input.context ?? {}),
+    }, by);
+  } catch (error) {
+    console.warn('[line-marks] failed to record batch event', { slug, error: String(error) });
+  }
+  broadcastToRoom(slug, { type: 'line-marks.updated', by, timestamp: new Date().toISOString() });
+  return { status: 200, body: { success: true, count: entries.length, lineMarks: marks, removed, ...(input.context ?? {}) } };
 }
 
 /**
@@ -301,36 +431,102 @@ export function resolveAgentLineTarget(lines: DocLine[], body: Record<string, un
   return { ok: true, line: matches[0] };
 }
 
-/** Agent write: resolve the target against current text, then write with that line's anchor. */
+/** This actor's stale marks that sit on `line` (from before an edit): replaced by a new mark. */
+function staleIdsOnLine(lines: DocLine[], line: DocLine, own: LineMark[]): string[] {
+  const anchor = anchorForLine(line);
+  const ids: string[] = [];
+  for (const mark of own) {
+    if (mark.anchor.hash === anchor.hash && mark.anchor.occurrence === anchor.occurrence) continue;
+    const onThisLine = !lines.some(candidate => candidate.hash === mark.anchor.hash) && mark.anchor.ordinal === line.index;
+    if (onThisLine) ids.push(mark.id);
+  }
+  return ids;
+}
+
+/**
+ * Agent write: resolve the target against current text, then write with that line's anchor.
+ * Step B2 adds two batch forms (one request, one transaction):
+ *   { status, lines: [target, ...] }  each target is { lineIndex | hash[, occurrence] | ref | quote }
+ *                                     and may carry its own status and reason;
+ *   { status, section: target }       the target must be a heading; every line of its section
+ *                                     (the heading included) gets the mark.
+ */
 export async function writeAgentLineMark(slug: string, markdown: string, body: Record<string, unknown>, options: {
   by: string;
   canApprove: boolean;
 }): Promise<LineMarkResult> {
   const lines = await computeServerLines(markdown);
+  const own = listLineMarks(slug).filter(mark => actorKey(mark.by) === actorKey(options.by));
+  const describe = (line: DocLine) => ({ lineIndex: line.index, ref: `b${line.block + 1}`, text: line.text.slice(0, 200), hash: line.hash });
+  const fail = (status: number, code: string, error: string, extra: Record<string, unknown> = {}): LineMarkResult =>
+    ({ status, body: { success: false, code, error, ...extra } });
+
+  if (body.section !== undefined && body.section !== null) {
+    if (!body.section || typeof body.section !== 'object' || Array.isArray(body.section)) {
+      return fail(400, 'INVALID_SECTION', '"section" must be a target object, for example {"quote": "Heading text"}');
+    }
+    if ((body.status === 'rejected') && !FOLDING.allowSectionReject) {
+      return fail(400, 'SECTION_REJECT_NOT_ALLOWED', 'A whole section cannot be rejected: reject a specific line, with a reason');
+    }
+    const target = resolveAgentLineTarget(lines, body.section as Record<string, unknown>);
+    if (!target.ok) return fail(target.status, target.code, target.error, target.candidates ? { candidates: target.candidates } : {});
+    const section = sectionByHeading(computeSections(lines), target.line.index);
+    if (!section) return fail(409, 'NOT_A_HEADING', 'The section target must be a top-level heading line', { line: describe(target.line) });
+    const members = sectionLineIndices(section).map(index => lines[index]);
+    const result = writeLineMarksBatch(slug, {
+      by: options.by,
+      status: body.status,
+      reason: body.reason,
+      lines: members.map(line => ({ anchor: anchorForLine(line), replaceIds: staleIdsOnLine(lines, line, own) })),
+      canApprove: options.canApprove,
+      source: 'agent',
+      context: { section: { heading: describe(target.line), level: section.level, lines: members.length } },
+    });
+    return result;
+  }
+
+  if (Array.isArray(body.lines)) {
+    if (body.lines.length === 0) return fail(400, 'INVALID_LINES', '"lines" must be a non-empty array');
+    if (body.lines.length > FOLDING.maxBatchLines) return fail(400, 'BATCH_TOO_LARGE', `At most ${FOLDING.maxBatchLines} lines per request`);
+    const entries: LineMarkBatchEntry[] = [];
+    const resolved: DocLine[] = [];
+    for (let i = 0; i < body.lines.length; i += 1) {
+      const raw = body.lines[i];
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return fail(400, 'INVALID_LINES', `lines[${i}] is not a target object`, { index: i });
+      const item = raw as Record<string, unknown>;
+      const target = resolveAgentLineTarget(lines, item);
+      if (!target.ok) return fail(target.status, target.code, `lines[${i}]: ${target.error}`, { index: i, ...(target.candidates ? { candidates: target.candidates } : {}) });
+      resolved.push(target.line);
+      entries.push({
+        anchor: anchorForLine(target.line),
+        ...(item.status !== undefined ? { status: item.status } : {}),
+        ...(item.reason !== undefined ? { reason: item.reason } : {}),
+        replaceIds: staleIdsOnLine(lines, target.line, own),
+      });
+    }
+    const result = writeLineMarksBatch(slug, {
+      by: options.by,
+      status: body.status,
+      reason: body.reason,
+      lines: entries,
+      canApprove: options.canApprove,
+      source: 'agent',
+    });
+    if (result.status === 200) result.body.lines = resolved.map(describe);
+    return result;
+  }
+
   const target = resolveAgentLineTarget(lines, body);
-  if (!target.ok) {
-    return { status: target.status, body: { success: false, code: target.code, error: target.error, ...(target.candidates ? { candidates: target.candidates } : {}) } };
-  }
-  const anchor = anchorForLine(target.line);
-  // Replace this actor's stale marks that sit on the same line (from before an edit).
-  const existing = listLineMarks(slug).filter(mark => actorKey(mark.by) === actorKey(options.by));
-  const replaceIds: string[] = [];
-  for (const mark of existing) {
-    if (mark.anchor.hash === anchor.hash && mark.anchor.occurrence === anchor.occurrence) continue;
-    const onThisLine = !lines.some(line => line.hash === mark.anchor.hash) && mark.anchor.ordinal === target.line.index;
-    if (onThisLine) replaceIds.push(mark.id);
-  }
+  if (!target.ok) return fail(target.status, target.code, target.error, target.candidates ? { candidates: target.candidates } : {});
   const result = writeLineMark(slug, {
     by: options.by,
     status: body.status,
     reason: body.reason,
-    anchor,
-    replaceIds,
+    anchor: anchorForLine(target.line),
+    replaceIds: staleIdsOnLine(lines, target.line, own),
     canApprove: options.canApprove,
     source: 'agent',
   });
-  if (result.status === 200) {
-    result.body.line = { lineIndex: target.line.index, ref: `b${target.line.block + 1}`, text: target.line.text.slice(0, 200), hash: target.line.hash };
-  }
+  if (result.status === 200) result.body.line = describe(target.line);
   return result;
 }

@@ -29,6 +29,7 @@ import {
   type ProofIssue,
   type ReviewMarkLike,
 } from '../shared/line-marks';
+import { FOLDING, planSectionMark } from '../shared/folding';
 import { setLineMarksViewListener, peekPendingLocalLineEdits, takePendingLocalLineEdits } from '../editor/plugins/line-marks-view';
 import './line-marks.css';
 
@@ -45,6 +46,10 @@ export interface LineMarksHost {
   focusLine?(lineIndex: number): boolean;
   /** Step 1b: every editor view update (cursor, marks, text), after this UI has handled it. */
   viewUpdated?(): void;
+  /** Step B2: a folded heading's marking scope (every line of its section), or null. */
+  markScope?(lineIndex: number): { lines: number[]; heading: string } | null;
+  /** Step B2: unfold whatever hides a line. Returns true when something unfolded. */
+  revealLine?(lineIndex: number): boolean;
 }
 
 export interface MarkBoxOptions {
@@ -557,12 +562,36 @@ export class LineMarksUI {
       root.append(changed);
     }
 
+    // Step B2: on a folded heading a mark applies to every line of the section (policy).
+    const scope = this.host.markScope?.(line.index) ?? null;
+    if (scope) {
+      const note = document.createElement('p');
+      note.className = 'plm-section-note';
+      note.textContent = `Folded section: Seen, Agree${this.canApprove || !LINE_MARK_POLICY.approveRequiresOwner ? ' and Approve' : ''} apply to all ${scope.lines.length} lines in it.`;
+      root.append(note);
+    }
+    const sectionHint = document.createElement('p');
+    sectionHint.className = 'plm-section-hint';
+    sectionHint.hidden = true;
+    sectionHint.setAttribute('role', 'status');
+    sectionHint.textContent = 'Reject needs a specific line. Unfold the section and reject the line.';
+    const unfold = document.createElement('button');
+    unfold.type = 'button';
+    unfold.textContent = 'Unfold';
+    unfold.onclick = () => { this.host.revealLine?.(line.index + 1); };
+    sectionHint.append(unfold);
+
     const choose = (status: StatusChoice, reason?: string): boolean => {
       if (!this.canMark) return false;
+      if (scope && status === 'rejected' && !FOLDING.allowSectionReject) { sectionHint.hidden = false; return false; }
       options.onExplicit?.(status);
       options.onChosen?.(status);
       // onExplicit may have committed accepts on this line, which re-extracts the lines.
       const fresh = this.lines[line.index] ?? line;
+      if (scope && status !== 'unseen' && status !== 'rejected') {
+        void this.writeSectionMark(scope, status);
+        return true;
+      }
       void this.writeMark(fresh, status, reason);
       return true;
     };
@@ -601,6 +630,7 @@ export class LineMarksUI {
     });
     const openReason = () => {
       if (!this.canMark) return;
+      if (scope && !FOLDING.allowSectionReject) { sectionHint.hidden = false; return; }
       reasonRow.hidden = false;
       reasonInput.focus({ preventScroll: true });
     };
@@ -626,10 +656,14 @@ export class LineMarksUI {
       clear.className = 'plm-choice plm-clear';
       clear.textContent = 'Clear my mark';
       clear.disabled = !this.canMark;
-      clear.onclick = () => { options.onChosen?.('unseen'); void this.writeMark(line, 'unseen'); };
+      clear.onclick = () => {
+        options.onChosen?.('unseen');
+        if (scope && FOLDING.sectionClearAllowed) { void this.writeSectionMark(scope, 'unseen'); return; }
+        void this.writeMark(line, 'unseen');
+      };
       actions.append(clear);
     }
-    root.append(actions, reasonRow);
+    root.append(actions, reasonRow, sectionHint);
 
     // Everyone's marks on this line.
     const team = this.summary?.team ?? [];
@@ -735,10 +769,12 @@ export class LineMarksUI {
     if (!view || issues.length === 0) return;
     const next = issues.find(issue => (issue.pos as number) > this.lastIssuePos) ?? issues[0];
     this.lastIssuePos = next.pos as number;
+    const lineIndex = next.type === 'line' ? next.lineIndex : this.lineAtPos(next.pos as number);
+    // Step B2: the next issue may sit in a folded section: unfold it first.
+    if (lineIndex >= 0) this.host.revealLine?.(lineIndex);
     const target = this.issueElement(view, next);
     if (!target) return;
     // Step 1b: with the reading walk on, Next issue moves the focus line (which scrolls there).
-    const lineIndex = next.type === 'line' ? next.lineIndex : this.lineAtPos(next.pos as number);
     if (!(lineIndex >= 0 && this.host.focusLine?.(lineIndex))) {
       target.scrollIntoView({ block: 'center', behavior: 'auto' });
     }
@@ -784,6 +820,114 @@ export class LineMarksUI {
     setTimeout(() => el.remove(), 2200);
   }
 
+  /**
+   * Step B2: the viewer marks a whole folded section in one request (the batch form of the
+   * line-marks route), then gets a one-step Undo that restores each line's earlier mark.
+   */
+  async writeSectionMark(scope: { lines: number[]; heading: string }, status: StatusChoice): Promise<boolean> {
+    const slug = this.host.slug();
+    if (!slug || !this.canMark || status === 'rejected') return false;
+    const by = this.host.actor();
+    const me = actorKey(by);
+    const indices = scope.lines.filter(index => this.lines[index]);
+    let apply: number[];
+    if (status === 'unseen') {
+      apply = indices.filter(index => this.states[index]?.marks.has(me));
+    } else {
+      const plan = planSectionMark(indices, status, index => {
+        const entry = this.states[index]?.marks.get(me);
+        return entry ? { status: entry.mark.status, reason: entry.mark.reason ?? null, current: entry.current } : null;
+      });
+      apply = plan.apply;
+    }
+    if (apply.length === 0) {
+      this.toast(`Nothing to change: every line in this section already has that mark${status === 'unseen' ? '' : ' or a stronger one'}.`);
+      return true;
+    }
+    type Entry = { line: DocLine; previous: LineMark | null; replaceIds: string[] };
+    const entries: Entry[] = apply.map(index => {
+      const state = this.states[index];
+      const own = state ? [...state.marks.values()].filter(e => actorKey(e.mark.by) === me) : [];
+      const current = own.find(e => e.current)?.mark ?? null;
+      return { line: this.lines[index], previous: current, replaceIds: own.map(e => e.mark.id).filter(id => !id.startsWith('local-')) };
+    });
+    const post = async (lines: Array<Record<string, unknown>>, batchStatus: StatusChoice): Promise<boolean> => {
+      this.writesInFlight += 1;
+      try {
+        const response = await fetch(`${this.host.apiBase()}/documents/${encodeURIComponent(slug)}/line-marks`, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { ...this.host.authHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ by, status: batchStatus, lines, section: { heading: scope.heading.slice(0, 200) } }),
+        });
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({})) as { error?: string };
+          this.toast(body.error || 'Could not save the marks');
+          return false;
+        }
+        return true;
+      } catch {
+        this.toast('Could not save the marks (offline?)');
+        return false;
+      } finally {
+        this.writesInFlight -= 1;
+        this.fetchSeq += 1;
+        void this.refresh();
+      }
+    };
+    // Optimistic: show the new marks at once.
+    const previous = this.serverMarks;
+    const anchors = entries.map(entry => anchorForLine(entry.line));
+    const replaced = new Set(entries.flatMap(entry => entry.replaceIds));
+    const anchorKeys = new Set(anchors.map(anchor => `${anchor.hash}:${anchor.occurrence}`));
+    this.serverMarks = this.serverMarks.filter(mark => !replaced.has(mark.id)
+      && !(actorKey(mark.by) === me && anchorKeys.has(`${mark.anchor.hash}:${mark.anchor.occurrence}`)));
+    if (status !== 'unseen') {
+      const at = new Date().toISOString();
+      anchors.forEach((anchor, i) => this.serverMarks.push({ id: `local-${Date.now()}-${i}`, by, status, reason: null, at, anchor }));
+    }
+    this.recompute();
+    this.sectionWrites += 1;
+    const ok = await post(entries.map((entry, i) => ({ anchor: anchors[i], replaceIds: entry.replaceIds })), status);
+    if (!ok) {
+      this.serverMarks = previous;
+      this.recompute();
+      return false;
+    }
+    const label = status === 'unseen' ? 'Cleared' : STATUS_LABEL[status];
+    this.toastWithAction(`${label}: ${entries.length} ${entries.length === 1 ? 'line' : 'lines'} in “${scope.heading.slice(0, 40)}”.`, 'Undo', () => {
+      // One step back: every line gets the mark it had before (or none).
+      this.sectionWrites += 1;
+      void post(entries.map((entry, i) => ({
+        anchor: anchors[i],
+        status: entry.previous ? entry.previous.status : 'unseen',
+        ...(entry.previous?.reason ? { reason: entry.previous.reason } : {}),
+      })), 'unseen');
+    }, FOLDING.undoToastMs);
+    return true;
+  }
+
+  /** Test hook: how many section (batch) requests this page has sent. */
+  private sectionWrites = 0;
+
+  private toastWithAction(message: string, label: string, action: () => void, ms: number): void {
+    document.querySelector('.plm-toast[data-action]')?.remove();
+    const el = document.createElement('div');
+    el.className = 'plm-toast';
+    el.dataset.action = 'true';
+    el.setAttribute('role', 'status');
+    const text = document.createElement('span');
+    text.textContent = message;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'plm-toast-action';
+    button.textContent = label;
+    button.onclick = () => { el.remove(); action(); };
+    el.append(text, button);
+    document.body.append(el);
+    setTimeout(() => el.remove(), ms);
+  }
+
   private toast(message: string): void {
     const el = document.createElement('div');
     el.className = 'plm-toast';
@@ -794,8 +938,9 @@ export class LineMarksUI {
   }
 
   /** Test and agent hook: the numbers the UI shows. */
-  debugState(): { loaded: boolean; issues: number; aligned: boolean; team: string[]; lines: number; marks: LineMark[] } {
+  debugState(): { loaded: boolean; issues: number; aligned: boolean; team: string[]; lines: number; marks: LineMark[]; sectionWrites: number } {
     return {
+      sectionWrites: this.sectionWrites,
       loaded: this.loaded,
       issues: this.summary?.counts.total ?? -1,
       aligned: this.summary?.aligned ?? false,

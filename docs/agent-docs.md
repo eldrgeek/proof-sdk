@@ -333,6 +333,35 @@ Target the line with exactly one of `lineIndex`, `hash` (+ optional `occurrence`
 state), `403 OWNER_REQUIRED` (approve), `400 REASON_REQUIRED`. Changes also appear as
 `line_mark.updated` events.
 
+### Sections, folding and batch marks (Proof Documents, Step B2)
+
+A section is a top-level heading and everything after it until the next top-level heading of the
+same or a higher level (an H2 section ends at the next H1 or H2). People can fold sections in the
+editor. Folding is per viewer and view-only: it never changes the text, the marks or the Yjs state.
+
+`GET /state` also returns `sections`: `[{ headingIndex, ref, level, text, lineEnd, parent, issues }]`.
+Lines `headingIndex` to `lineEnd - 1` belong to the section. `parent` is the enclosing heading's
+line index, or null. `issues` counts the line Issues inside the section. Review-mark Issues carry
+no position in `/state`, so they are not counted here; the editor's section badge counts both.
+
+Mark many lines in one request and one transaction (same route, same rules per line):
+
+  POST /api/agent/<slug>/marks/line
+  Body: {"status": "seen", "lines": [{"quote": "..."}, {"lineIndex": 7}, {"ref": "b4", "quote": "...", "status": "rejected", "reason": "..."}]}
+
+Each entry is a target, exactly as in the single form, and may carry its own `status` and
+`reason`. Mark a whole section by its heading:
+
+  Body: {"status": "agreed", "section": {"quote": "Heading text"}}
+
+A section can be marked `seen`, `agreed`, `approved` (owner credential) or `unseen`. `rejected` is
+refused with `400 SECTION_REJECT_NOT_ALLOWED`, because a rejection needs a specific line and a
+reason. A target that is not a top-level heading returns `409 NOT_A_HEADING`. In a batch, one bad
+entry writes nothing, and the error carries its `index`. A request holds at most 1000 lines. A
+batch is recorded as one `line_mark.batch` event (`count`, `statuses`, `anchors`). The page route
+`POST /api/documents/<slug>/line-marks` takes the same batch as
+`{ by, status, lines: [{ anchor, status?, reason?, replaceIds? }] }`.
+
 ## Presence And Event Polling
 
 Poll for changes:

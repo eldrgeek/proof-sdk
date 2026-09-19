@@ -36,6 +36,10 @@ export interface ReadingWalkHost {
   playmaker(): PlayMakerReview | null;
   /** Current review style ('proof' | 'playmaker'). */
   reviewStyle(): string;
+  /** Step B2: lines inside folded sections (the walk steps over them). */
+  hiddenLines?(): ReadonlySet<number>;
+  /** Step B2: the visible line that stands for a hidden one (its folded heading). */
+  visibleLineFor?(lineIndex: number): number;
 }
 
 const PHONE_QUERY = '(max-width: 700px)';
@@ -155,6 +159,18 @@ export class ReadingWalkUI {
     this.left.remove(); this.right.remove(); this.focusEl.remove(); this.styleEl.remove();
   }
 
+  /** Step B2: a section folded or unfolded. Rebuild the walk's hidden lines and the rail box. */
+  onFoldChange(): void {
+    if (!this.started) return;
+    this.boxSig = '';
+    this.sync();
+  }
+
+  /** Step B2: a tool (the outline fold controls) at the top of the right rail. */
+  mountTool(node: HTMLElement): void {
+    if (node.parentElement !== this.rightBody) this.rightBody.prepend(node);
+  }
+
   /** The editor view updated (cursor, marks, text): re-read pending marks if they changed. */
   notifyViewUpdate(): void {
     if (!this.started) return;
@@ -183,7 +199,12 @@ export class ReadingWalkUI {
     this.lines = lm.lineList();
     const pending = this.pendingMarks();
     this.marksSig = pending.map(mark => `${mark.id}@${mark.range!.from}`).join(',') + `|${this.lines.length}`;
-    const walkLines: WalkLine[] = this.lines.map(line => ({ key: `${line.hash}:${line.occurrence}`, marks: [] as WalkMark[] }));
+    const hidden = this.host.hiddenLines?.() ?? new Set<number>();
+    const walkLines: WalkLine[] = this.lines.map(line => ({
+      key: `${line.hash}:${line.occurrence}`,
+      marks: [] as WalkMark[],
+      ...(hidden.has(line.index) ? { hidden: true } : {}),
+    }));
     for (const mark of pending) {
       const index = lm.lineAtPos(mark.range!.from);
       if (index < 0 || !walkLines[index]) continue;
@@ -195,6 +216,11 @@ export class ReadingWalkUI {
       this.walk = new ReadingWalk(walkLines, now);
     } else {
       this.walk.setLines(walkLines, now);
+    }
+    // Step B2: the focus line was folded away: it moves up to the folded heading.
+    if (this.walk.isHidden(this.walk.focus)) {
+      const visible = this.host.visibleLineFor?.(this.walk.focus) ?? this.walk.nextVisible(-1) ?? 0;
+      this.walk.moveTo(visible, now, 'jump');
     }
     if (!this.view()) return;
     this.attachOverlay();
@@ -252,6 +278,8 @@ export class ReadingWalkUI {
       const mid = (lo + hi) >> 1;
       if (this.tops[mid] <= y) { found = mid; lo = mid + 1; } else hi = mid - 1;
     }
+    // Step B2: hidden lines share their folded heading's top; the heading is the line there.
+    while (found > 0 && this.walk?.isHidden(found)) found -= 1;
     return found;
   }
 
@@ -390,8 +418,10 @@ export class ReadingWalkUI {
     const walk = this.walk;
     if (!walk) return;
     if (walk.stepForward()) { this.afterChange(true); return; }
-    if (walk.focus >= walk.lineCount - 1) return;
-    walk.moveTo(walk.focus + 1, performance.now(), 'scroll', this.heights);
+    // Step B2: a folded section is one step.
+    const to = walk.nextVisible(1);
+    if (to === null) return;
+    walk.moveTo(to, performance.now(), 'scroll', this.heights);
     this.scrollToLine(walk.focus);
     this.afterChange();
   }
@@ -401,8 +431,9 @@ export class ReadingWalkUI {
     const walk = this.walk;
     if (!walk) return;
     if (walk.stepBack()) { this.afterChange(true); return; }
-    if (walk.focus <= 0) return;
-    walk.moveTo(walk.focus - 1, performance.now(), 'scroll', this.heights);
+    const to = walk.nextVisible(-1);
+    if (to === null) return;
+    walk.moveTo(to, performance.now(), 'scroll', this.heights);
     this.scrollToLine(walk.focus);
     this.afterChange();
   }
@@ -411,6 +442,7 @@ export class ReadingWalkUI {
   focusLine(index: number): boolean {
     const walk = this.walk;
     if (!walk || this.tops[index] === undefined) return false;
+    if (walk.isHidden(index)) index = this.host.visibleLineFor?.(index) ?? index;
     this.measure();
     walk.moveTo(index, performance.now(), 'jump', this.heights);
     this.scrollToLine(index);
@@ -554,6 +586,9 @@ export class ReadingWalkUI {
     try { snapshot = JSON.parse(sessionStorage.getItem(key) || 'null'); } catch { snapshot = null; }
     if (!snapshot) return;
     this.walk.restore(snapshot, performance.now());
+    if (this.walk.isHidden(this.walk.focus)) {
+      this.walk.moveTo(this.host.visibleLineFor?.(this.walk.focus) ?? 0, performance.now(), 'jump');
+    }
     if (this.walk.focus > 0) this.scrollToLine(this.walk.focus);
   }
 

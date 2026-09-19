@@ -39,6 +39,12 @@ export interface WalkLine {
   key: string;
   /** Pending suggestions and open comments on the line, in document order. */
   marks: WalkMark[];
+  /**
+   * Step B2: the line sits in a folded section. The focus never lands on it, scrolling past it
+   * does not read it, and its marks neither hold the page nor get passed (you cannot read what
+   * is hidden).
+   */
+  hidden?: boolean;
 }
 
 export type WalkEvent =
@@ -140,6 +146,7 @@ export class ReadingWalk {
    */
   barrier(from = this.focusLine): number | null {
     for (let line = Math.max(0, from); line < this.lines.length; line += 1) {
+      if (this.lines[line]?.hidden) continue;
       if (this.marksOn(line).some(mark => !this.passed.has(mark.id))) return line;
     }
     return null;
@@ -179,6 +186,7 @@ export class ReadingWalk {
     if (to > this.focusLine) {
       if (mode === 'scroll') {
         for (let line = this.focusLine; line < to; line += 1) {
+          if (this.lines[line]?.hidden) continue;
           const time = line === this.focusLine && this.lines[line]?.key === this.dwellKey ? now - this.enteredAt : 0;
           if (this.readEnough(time, heights?.[line])) this.markRead(line);
           for (const mark of this.marksOn(line)) this.pass(mark, line);
@@ -198,9 +206,20 @@ export class ReadingWalk {
     this.events.push({ type: 'focus', line: to });
   }
 
+  /** Step B2: the nearest line after (dir 1) or before (dir -1) the focus that is not hidden. */
+  nextVisible(dir: 1 | -1, from = this.focusLine): number | null {
+    for (let line = from + dir; line >= 0 && line < this.lines.length; line += dir) {
+      if (!this.lines[line]?.hidden) return line;
+    }
+    return null;
+  }
+
+  isHidden(line: number): boolean { return Boolean(this.lines[line]?.hidden); }
+
   /** Called on a timer: the focus line becomes read once it has held the focus long enough. */
   tick(now: number): void {
     if (this.lines.length === 0) return;
+    if (this.lines[this.focusLine]?.hidden) return;
     if (this.lines[this.focusLine]?.key !== this.dwellKey) return;
     if (now - this.enteredAt >= READING_WALK.DWELL_MS) this.markRead(this.focusLine);
   }

@@ -101,7 +101,7 @@ import {
   validateOpPrecondition,
 } from './mutation-stage.js';
 import { resolveExplicitAgentIdentity } from '../src/shared/agent-identity.js';
-import { activeAgentKeyActors, documentOwnerActors, isLibraryDocumentCreator, listLineMarks, writeLineMark } from './line-marks.js';
+import { activeAgentKeyActors, documentOwnerActors, isLibraryDocumentCreator, listLineMarks, writeLineMark, writeLineMarksBatch } from './line-marks.js';
 import { getLibrarySession, isLibraryEnabled } from './library/auth.js';
 import {
   buildProofSdkAgentDescriptor,
@@ -1912,6 +1912,21 @@ apiRoutes.post('/documents/:slug/line-marks', opsRateLimiter, (req: Request, res
     return;
   }
   const body = isRecord(req.body) ? req.body : {};
+  // Step B2: { by, status, reason?, lines: [{ anchor, status?, reason?, replaceIds?, replaceAnchors? }] }
+  // marks many lines in one request and one transaction (a folded section, or its undo).
+  if (Array.isArray(body.lines)) {
+    const batch = writeLineMarksBatch(slug, {
+      by: body.by,
+      status: body.status,
+      reason: body.reason,
+      lines: body.lines,
+      canApprove: access.canApprove,
+      source: 'page',
+      context: isRecord(body.section) ? { section: { heading: String(body.section.heading ?? '').slice(0, 200), lines: body.lines.length } } : undefined,
+    });
+    res.status(batch.status).json(batch.body);
+    return;
+  }
   const result = writeLineMark(slug, {
     by: body.by,
     status: body.status,

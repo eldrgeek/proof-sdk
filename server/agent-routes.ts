@@ -2130,6 +2130,7 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
       );
       body.lineMarks = report.lineMarks;
       body.lines = report.lines;
+      body.sections = report.sections;
       body.issues = report.issues;
       body.alignment = {
         aligned: report.aligned,
@@ -3464,6 +3465,8 @@ agentRoutes.post('/:slug/marks/comment', async (req: Request, res: Response) => 
 
 // Proof Documents Step 1: set one line's status mark for this agent (or clear it with "unseen").
 // Body: { status, reason?, by?, lineIndex | hash[, occurrence] | ref | quote }.
+// Step B2 batch forms (one request, one transaction): { status, lines: [target, ...] } and
+// { status, section: target } (a heading; marks every line of its section).
 // A line mark never changes the document's text, so no base token is needed; the target is
 // resolved against the current text, and a hash that no longer exists returns 409 LINE_CHANGED.
 agentRoutes.post('/:slug/marks/line', async (req: Request, res: Response) => {

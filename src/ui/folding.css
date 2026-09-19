@@ -1,0 +1,54 @@
+/* Proof Documents Step B2: folding (Claude Opus 5, 2026-09-18). */
+/* A folded section's body: hidden in the view only (a node decoration, never the document). */
+.ProseMirror .pfold-hidden { display: none !important; }
+/* Room at the right of every top-level heading for its fold chip. */
+body.pfold-on .ProseMirror > :is(h1, h2, h3, h4, h5, h6) { padding-right: 72px; }
+
+.pfold-layer { position: absolute; top: 0; left: 0; width: 100%; height: 0; z-index: 41; pointer-events: none; }
+.pfold-chip {
+  position: absolute; pointer-events: auto; display: inline-flex; align-items: center; gap: 4px;
+  min-width: 44px; padding: 0 8px; box-sizing: border-box; justify-content: center;
+  border: 1px solid #e3e2dc; border-radius: 999px; background: #fffefb; color: #4b5563; cursor: pointer;
+  font: 600 12px/1 system-ui, -apple-system, sans-serif; font-variant-numeric: tabular-nums;
+  -webkit-tap-highlight-color: transparent;
+}
+.pfold-chip > * { pointer-events: none; }
+.pfold-chip:hover { background: #f3f4f6; border-color: #c3c8d0; }
+.pfold-chip:focus-visible { outline: 2px solid #2563eb; outline-offset: 1px; }
+.pfold-caret { font-size: 14px; line-height: 1; color: #4b5563; }
+.pfold-badge { min-width: 12px; text-align: center; }
+/* "Issues remain" (amber) and "issues resolved" (green check). */
+.pfold-chip[data-state="issues"] .pfold-badge { color: #92400e; }
+.pfold-chip[data-state="resolved"] .pfold-badge { color: #15803d; }
+.pfold-chip[data-folded="true"] { border-color: #c3c8d0; background: #f8f7f3; }
+.pfold-chip[data-folded="true"][data-state="issues"] { background: #fef3c7; border-color: #fde68a; }
+.pfold-chip[data-folded="true"][data-state="resolved"] { background: #dcfce7; border-color: #bbf7d0; }
+.pfold-chip[data-folded="true"] .pfold-caret { color: #26303c; }
+
+.pfold-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 10px; padding-bottom: 10px; border-bottom: 1px solid #ecebe6; }
+.pfold-controls[hidden] { display: none; }
+.pfold-controls-label { font-size: 12px; font-weight: 600; color: #646b73; margin-right: 2px; }
+.pfold-controls button {
+  min-height: 28px; padding: 0 9px; border: 1px solid #d4d4cf; border-radius: 8px; background: #fff; color: #26303c;
+  font: 600 12px/1 system-ui, -apple-system, sans-serif; cursor: pointer;
+}
+.pfold-controls button:hover { background: #f3f4f6; }
+.pfold-controls button:disabled { opacity: .45; cursor: default; }
+.pfold-levels { display: inline-flex; gap: 4px; margin-left: auto; }
+
+/* Marking a folded section (the mark box). */
+.plm-section-note { margin: 0 0 8px; padding: 6px 8px; border-radius: 8px; background: #eff6ff; color: #1e3a8a; font-size: 12px; }
+.plm-section-hint { margin: 8px 0 0; padding: 6px 8px; border-radius: 8px; background: #fef2f2; color: #991b1b; font-size: 12px; }
+.plm-section-hint[hidden] { display: none; }
+.plm-section-hint button { margin-left: 6px; border: none; background: none; color: #1d4ed8; text-decoration: underline; cursor: pointer; font: inherit; padding: 0; }
+.plm-toast-action { margin-left: 12px; border: none; background: none; color: #93c5fd; font: 600 14px system-ui, sans-serif; cursor: pointer; text-decoration: underline; padding: 0; }
+
+/* Phones: 36 px chips (the margin dots' size), 44 px controls. */
+@media (max-width: 700px) {
+  body.pfold-on .ProseMirror > :is(h1, h2, h3, h4, h5, h6) { padding-right: 60px; }
+  .pfold-chip { min-width: 52px; font-size: 13px; }
+  .pfold-controls button { min-height: 44px; padding: 0 12px; font-size: 14px; }
+}
+
+/* A folded heading: a dashed rule under it says "there is more here". */
+.ProseMirror .pfold-folded-heading { border-bottom: 1px dashed #c3c8d0; padding-bottom: 2px; }

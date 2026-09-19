@@ -13,7 +13,9 @@ import { markApiView, isOwnHumanMarkChange, withHumanReviewWrite } from './revie
 import { PlayMakerReview, type ReviewAction } from '../ui/playmaker-review';
 import { LineMarksUI } from '../ui/line-marks';
 import { ReadingWalkUI } from '../ui/reading-walk';
+import { FoldingUI } from '../ui/folding';
 import { lineMarksViewPlugin } from './plugins/line-marks-view';
+import { foldViewPlugin } from './plugins/fold-view';
 import { getReviewStyle, setReviewStyle } from './review-style';
 import { ReviewDecisionHistory, reconnectNativeUndoManager } from './review-decision-history';
 
@@ -1120,6 +1122,7 @@ class ProofEditorImpl implements ProofEditor {
   private playmakerReview: PlayMakerReview | null = null;
   private lineMarks: LineMarksUI | null = null;
   private readingWalk: ReadingWalkUI | null = null;
+  private folding: FoldingUI | null = null;
   private reviewDecisionHistory: ReviewDecisionHistory | null = null;
   private reviewDecisionIds = new Set<string>();
   private capturingReviewDecision = false;
@@ -1286,6 +1289,8 @@ class ProofEditorImpl implements ProofEditor {
       .use(tableKeyboardPlugin)
       // Proof Documents Step 1: line marks overlay (no decorations, no document changes)
       .use(lineMarksViewPlugin)
+      // Proof Documents Step B2: folded sections (view-only node decorations)
+      .use(foldViewPlugin)
       .use(marksSyncPlugin((actionMarks, view, actionMetadata) => {
         this.handleMarksChange(actionMarks, view, actionMetadata);
       }))
@@ -3725,11 +3730,20 @@ class ProofEditorImpl implements ProofEditor {
           }),
         onDotActivate: (lineIndex) => this.readingWalk?.activateDot(lineIndex) ?? false,
         focusLine: (lineIndex) => this.readingWalk?.focusLine(lineIndex) ?? false,
-        viewUpdated: () => this.readingWalk?.notifyViewUpdate(),
+        viewUpdated: () => { this.readingWalk?.notifyViewUpdate(); this.folding?.queueRender(); },
+        markScope: (lineIndex) => this.folding?.markScope(lineIndex) ?? null,
+        revealLine: (lineIndex) => this.folding?.reveal(lineIndex) ?? false,
       });
       (window as unknown as { __proofLineMarks?: LineMarksUI }).__proofLineMarks = this.lineMarks;
       // Proof Documents Step 1b: the three-column reading layout and the reading walk.
       const lineMarks = this.lineMarks;
+      // Proof Documents Step B2: folding. Subscribes to line marks before the reading walk does,
+      // so the walk always reads the current hidden lines.
+      this.folding = new FoldingUI({
+        slug: () => shareClient.getSlug(),
+        lineMarks: () => lineMarks,
+      });
+      (window as unknown as { __proofFolding?: FoldingUI }).__proofFolding = this.folding;
       this.readingWalk = new ReadingWalkUI({
         slug: () => shareClient.getSlug(),
         actor: () => getCurrentActor(),
@@ -3745,10 +3759,16 @@ class ProofEditorImpl implements ProofEditor {
         },
         playmaker: () => this.playmakerReview,
         reviewStyle: () => getReviewStyle(),
+        hiddenLines: () => this.folding?.hiddenLines() ?? new Set<number>(),
+        visibleLineFor: (lineIndex) => this.folding?.visibleLineFor(lineIndex) ?? lineIndex,
       });
       (window as unknown as { __proofReadingWalk?: ReadingWalkUI }).__proofReadingWalk = this.readingWalk;
+      const walkUi = this.readingWalk;
+      this.folding.subscribe(() => walkUi.onFoldChange());
+      walkUi.mountTool(this.folding.controlsEl);
     }
     this.lineMarks.start();
+    this.folding?.start();
     this.readingWalk?.start();
     return this.lineMarks;
   }
@@ -3799,6 +3819,10 @@ class ProofEditorImpl implements ProofEditor {
       if (this.readingWalk) {
         item('This line', 'mark · changes', () => this.readingWalk?.openSheet('right'));
         item('Documents', 'list', () => this.readingWalk?.openSheet('left'));
+      }
+      if (this.folding && this.folding.sectionList().length > 0) {
+        item('Fold all', 'outline', () => this.folding?.foldAll());
+        item('Unfold all', 'outline', () => this.folding?.unfoldAll());
       }
       item('Review style', style === 'playmaker' ? 'PlayMaker' : 'Proof', () => {
         setReviewStyle(style === 'playmaker' ? 'proof' : 'playmaker');
