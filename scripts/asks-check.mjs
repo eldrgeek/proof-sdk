@@ -202,7 +202,7 @@ async function desktop(browser, base, style, width) {
     await waitFor(page, () => window.__proofLineMarks.debugState().askAnswers >= 1);
     const ask = await serverAsk(base, created, created.ask1);
     assert.equal(ask.status, 'no');
-    assert.deepEqual(ask.answers.map(x => [x.by, x.choice, x.words]), [['human:Ada', 'no', 'Not before Eric has read it.']]);
+    assert.deepEqual(ask.answers.map(x => [x.by, x.choice, x.words]), [['guest:Ada', 'no', 'Not before Eric has read it.']]);
     await waitFor(page, id => document.querySelector(`.ProseMirror .pask[data-ask-id="${id}"]`)?.dataset.outcome === 'no', created.ask1);
     await waitFor(page, i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.status === 'seen', L.Q1);
     assert.equal((await lm(page)).askIssues, 1);
@@ -216,7 +216,7 @@ async function desktop(browser, base, style, width) {
     const answered = events.body.events.filter(e => e.type === 'ask.answered');
     assert.equal(answered.length, 1);
     assert.equal(answered[0].data.words, 'Not before Eric has read it.');
-    assert.equal(answered[0].actor, 'human:Ada');
+    assert.equal(answered[0].actor, 'guest:Ada');
   });
 
   await check(`${tag}: in the right rail the focus line's box carries the same control; T opens its reason field`, async () => {

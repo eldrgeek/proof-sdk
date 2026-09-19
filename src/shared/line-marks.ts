@@ -193,8 +193,32 @@ export function actorKey(actor: string): string {
   return String(actor ?? '').normalize('NFC').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+/**
+ * Step B6: display names for actors, registered from the server's identity directory (a verified
+ * human's actor is their email; people see their Documents profile name instead).
+ */
+const actorLabels = new Map<string, string>();
+
+export function registerActorLabels(labels: Record<string, string> | null | undefined): void {
+  if (!labels) return;
+  for (const [key, label] of Object.entries(labels)) {
+    if (typeof label === 'string' && label.trim()) actorLabels.set(actorKey(key), label.trim());
+  }
+}
+
+/**
+ * The name people see for an actor. A guest (a typed name, including old "human:<name>" rows)
+ * carries a visible " (guest)" suffix: it was not verified. Verified humans show their profile
+ * name when known, else their email. AIs show their name.
+ */
 export function actorLabel(actor: string): string {
-  return String(actor ?? '').replace(/^(human|ai):/i, '').trim() || actor;
+  const raw = String(actor ?? '').trim();
+  const known = actorLabels.get(actorKey(raw));
+  const body = raw.replace(/^(human|ai|guest):/i, '').trim() || raw;
+  if (/^ai:/i.test(raw)) return known ?? body;
+  const isGuest = /^guest:/i.test(raw) || (/^human:/i.test(raw) && !/^[^\s@:]+@[^\s@:]+\.[^\s@:]+$/.test(body)) || !/^(human|ai|guest):/i.test(raw);
+  if (isGuest) return `${known ?? body} (guest)`;
+  return known ?? body;
 }
 
 export function isAiActor(actor: string): boolean {
@@ -228,26 +252,36 @@ export function computeStep1Team(input: {
   reviewMarks?: Array<Pick<ReviewMarkLike, 'by' | 'replies'>>;
   agentKeyActors?: string[];
   extra?: string[];
+  /**
+   * Step B6: maps actors to one identity per person. `actor` reads who did something (marks,
+   * already canonical when they come from the server); `target` reads who is meant (owners,
+   * comment authors, the people asked), so a comment typed as "Mike Wolf" counts as the verified
+   * member of that name. Both default to identity (Step 1 behaviour).
+   */
+  identity?: { actor?: (actor: string) => string; target?: (actor: string) => string };
 }): string[] {
   const team: string[] = [];
   const keys = new Set<string>();
-  const add = (actor: string | null | undefined) => {
+  const asActor = input.identity?.actor ?? ((actor: string) => actor);
+  const asTarget = input.identity?.target ?? ((actor: string) => actor);
+  const add = (actor: string | null | undefined, map: (actor: string) => string = asActor) => {
     if (typeof actor !== 'string' || !actor.trim()) return;
-    const trimmed = actor.trim();
-    if (/^(system|ai:unknown|human:unknown|human:anonymous)$/i.test(trimmed)) return;
+    const trimmed = map(actor.trim()).trim();
+    if (!trimmed) return;
+    if (/^(system|ai:unknown|human:unknown|human:anonymous|guest:anonymous|guest:unknown)$/i.test(trimmed)) return;
     const key = actorKey(trimmed);
     if (keys.has(key)) return;
     keys.add(key);
     team.push(trimmed);
   };
-  for (const owner of input.owners ?? []) add(owner);
+  for (const owner of input.owners ?? []) add(owner, asTarget);
   for (const mark of input.lineMarks ?? []) add(mark.by);
   for (const mark of input.reviewMarks ?? []) {
-    add(mark.by);
-    for (const reply of mark.replies ?? []) add(reply?.by);
+    add(mark.by, asTarget);
+    for (const reply of mark.replies ?? []) add(reply?.by, asTarget);
   }
   for (const actor of input.agentKeyActors ?? []) add(actor);
-  for (const actor of input.extra ?? []) add(actor);
+  for (const actor of input.extra ?? []) add(actor, asTarget);
   return team;
 }
 

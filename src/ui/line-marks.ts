@@ -20,6 +20,7 @@ import {
   computeIssues,
   computeStep1Team,
   extractLines,
+  registerActorLabels,
   type DocLine,
   type IssueSummary,
   type LineMark,
@@ -34,6 +35,7 @@ import { askIssueInputs, askTeamActors, evaluateAsks, type AskChoice, type AskVi
 import { setAskDecorations, type AskDecorationSpec } from '../editor/plugins/ask-view';
 import { askControlSignature, buildAskControl, buildAskTag, type AskControl } from './asks';
 import { setLineMarksViewListener, peekPendingLocalLineEdits, takePendingLocalLineEdits } from '../editor/plugins/line-marks-view';
+import { EMPTY_DIRECTORY, actorTrust, normalizeActorString, resolveTargetActor, type IdentityDirectory, type ViewerIdentity } from '../shared/identity';
 import './line-marks.css';
 
 export interface LineMarksHost {
@@ -115,6 +117,9 @@ export class LineMarksUI {
   private askDecoQueued = false;
   private owners: string[] = [];
   private agentKeyActors: string[] = [];
+  /** Step B6: who the server says this viewer is, and the directory that reads names. */
+  private serverMe: ViewerIdentity | null = null;
+  private directory: IdentityDirectory = EMPTY_DIRECTORY;
   private canApprove = false;
   private canMark = true;
   private loaded = false;
@@ -198,6 +203,7 @@ export class LineMarksUI {
       const body = await response.json() as {
         lineMarks?: LineMark[]; owners?: string[]; agentKeyActors?: string[]; asks?: ProofAsk[];
         viewer?: { canApprove?: boolean; canMark?: boolean };
+        identity?: { me?: ViewerIdentity; directory?: IdentityDirectory };
       };
       // A newer fetch or a local write superseded this answer.
       if (seq !== this.fetchSeq || this.writesInFlight > 0) return;
@@ -207,6 +213,12 @@ export class LineMarksUI {
       this.agentKeyActors = Array.isArray(body.agentKeyActors) ? body.agentKeyActors : [];
       this.canApprove = body.viewer?.canApprove === true;
       this.canMark = body.viewer?.canMark !== false;
+      const directory = body.identity?.directory;
+      this.directory = directory && typeof directory === 'object'
+        ? { merges: directory.merges ?? {}, names: directory.names ?? {}, labels: directory.labels ?? {} }
+        : EMPTY_DIRECTORY;
+      registerActorLabels(this.directory.labels);
+      this.serverMe = body.identity?.me ?? null;
       this.loaded = true;
       this.recompute();
     } catch {
@@ -231,7 +243,7 @@ export class LineMarksUI {
   private async writeMark(line: DocLine, status: StatusChoice, reason?: string): Promise<boolean> {
     const slug = this.host.slug();
     if (!slug) return false;
-    const by = this.host.actor();
+    const by = this.me();
     const me = actorKey(by);
     const state = this.states[line.index];
     const replaceIds = state ? [...state.marks.values()].filter(e => actorKey(e.mark.by) === me).map(e => e.mark.id) : [];
@@ -323,7 +335,8 @@ export class LineMarksUI {
         lineMarks: this.serverMarks,
         reviewMarks,
         agentKeyActors: this.agentKeyActors,
-        extra: [this.host.actor(), ...askTeamActors(this.serverAsks)],
+        extra: [this.me(), ...askTeamActors(this.serverAsks)],
+        identity: { target: actor => resolveTargetActor(actor, this.directory) },
       });
       this.states = buildLineStates(this.lines, this.serverMarks);
       this.askViews = evaluateAsks(this.serverAsks, this.lines);
@@ -347,6 +360,30 @@ export class LineMarksUI {
     return () => { this.listeners.delete(listener); };
   }
 
+  /**
+   * Step B6: the actor this viewer marks and answers as. A signed-in person is their verified
+   * identity (human:<email>) and an agent key is its AI, both as the server says; anyone else is
+   * the guest who typed their name (guest:<name>), which is also what the server records.
+   */
+  me(): string {
+    const server = this.serverMe?.actor;
+    if (server) return server;
+    return normalizeActorString(this.host.actor()) || 'guest:Anonymous';
+  }
+
+  /** Step B6: what the right rail header shows about the viewer. */
+  viewerIdentity(): ViewerIdentity {
+    const actor = this.me();
+    const trust = this.serverMe?.actor ? this.serverMe.trust : actorTrust(actor);
+    return {
+      actor,
+      trust,
+      name: this.serverMe?.name || actor.replace(/^(human|ai|guest):/i, ''),
+      ...(this.serverMe?.email ? { email: this.serverMe.email } : {}),
+      signInUrl: this.serverMe?.signInUrl ?? null,
+    };
+  }
+
   isLoaded(): boolean { return this.loaded; }
   lineList(): DocLine[] { return this.lines; }
   lineState(index: number): LineState | undefined { return this.states[index]; }
@@ -355,7 +392,7 @@ export class LineMarksUI {
 
   /** The viewer's own status on a line ('changed' when their mark is out of date). */
   myStatus(index: number): StatusChoice | 'changed' {
-    const mine = this.states[index]?.marks.get(actorKey(this.host.actor()));
+    const mine = this.states[index]?.marks.get(actorKey(this.me()));
     return !mine ? 'unseen' : (mine.current ? mine.mark.status : 'changed');
   }
 
@@ -390,7 +427,7 @@ export class LineMarksUI {
   /** Changes whenever the line's ask control would look different (for the rail's box). */
   askSignature(index: number): string {
     const view = this.askForLine(index);
-    return view ? askControlSignature(view, this.host.actor(), this.canMark) : '';
+    return view ? askControlSignature(view, this.me(), this.canMark) : '';
   }
 
   /** Records the viewer's answer: Yes / Not yet / No in their own words. */
@@ -401,7 +438,7 @@ export class LineMarksUI {
     this.host.onAskAnswered?.(view.lineIndex);
     const line = this.lines[view.lineIndex] ?? null;
     if (!line) return false;
-    const by = this.host.actor();
+    const by = this.me();
     const anchor = anchorForLine(line);
     // Optimistic: the answer shows at once.
     const previous = this.serverAsks;
@@ -443,7 +480,7 @@ export class LineMarksUI {
 
   private buildAskControlFor(view: AskView, place: 'inline' | 'box'): AskControl {
     return buildAskControl(view, {
-      actor: this.host.actor(),
+      actor: this.me(),
       canAnswer: this.canMark && this.loaded,
       place,
       answer: (choice, words) => this.answerAsk(view.ask.id, choice, words),
@@ -465,14 +502,14 @@ export class LineMarksUI {
         if (askView.lineIndex === null) continue;
         const line = this.lines[askView.lineIndex];
         if (!line || line.kind === 'table_row') continue; // table rows: the rail and sheet only
-        const sig = askControlSignature(askView, this.host.actor(), this.canMark && this.loaded);
+        const sig = askControlSignature(askView, this.me(), this.canMark && this.loaded);
         sigs.push(`${askView.ask.id}@${line.pos}:${line.nodeSize}:${sig}`);
         specs.push({
           askId: askView.ask.id,
           pos: line.pos,
           nodeSize: line.nodeSize,
           sig: String(hashSig(sig)),
-          tag: () => buildAskTag(askView, this.host.actor()),
+          tag: () => buildAskTag(askView, this.me()),
           control: () => this.buildAskControlFor(askView, 'inline').root,
         });
       }
@@ -489,7 +526,7 @@ export class LineMarksUI {
     const view = this.view;
     if (!view || !this.loaded) return;
     const edits = takePendingLocalLineEdits();
-    const me = actorKey(this.host.actor());
+    const me = actorKey(this.me());
     const lines = extractLines(view.state.doc as unknown as LineSourceNode);
     const done = new Set<number>();
     for (const edit of edits) {
@@ -581,7 +618,7 @@ export class LineMarksUI {
     if (!view || !this.gutter.isConnected) return;
     const containerRect = this.gutter.parentElement!.getBoundingClientRect();
     const editorRect = view.dom.getBoundingClientRect();
-    const me = actorKey(this.host.actor());
+    const me = actorKey(this.me());
     const phone = isPhone();
     const dotSize = phone ? 36 : 28;
     const leftEdge = editorRect.left - containerRect.left - dotSize - (phone ? 1 : 8);
@@ -667,7 +704,7 @@ export class LineMarksUI {
    */
   buildMarkBox(line: DocLine, options: MarkBoxOptions = {}): MarkBox {
     const state = this.states[line.index];
-    const me = actorKey(this.host.actor());
+    const me = actorKey(this.me());
     const mine = state?.marks.get(me);
     const root = document.createElement('div');
     root.className = 'plm-box';
@@ -954,7 +991,7 @@ export class LineMarksUI {
   async writeSectionMark(scope: { lines: number[]; heading: string }, status: StatusChoice): Promise<boolean> {
     const slug = this.host.slug();
     if (!slug || !this.canMark || status === 'rejected') return false;
-    const by = this.host.actor();
+    const by = this.me();
     const me = actorKey(by);
     const indices = scope.lines.filter(index => this.lines[index]);
     let apply: number[];

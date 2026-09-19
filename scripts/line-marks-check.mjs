@@ -187,7 +187,7 @@ async function desktop(browser, base) {
     await mark(b.page, 1, /Seen/);
     await waitFor(page, () => [...document.querySelectorAll('.plm-dot[data-line="1"] .plm-pips i')].some(i => i.dataset.status === 'seen'));
     const team = await page.evaluate(() => window.__proofLineMarks.debugState().team);
-    assert.deepEqual(team.map(t => t.toLowerCase()).sort(), ['human:ada', 'human:bob']);
+    assert.deepEqual(team.map(t => t.toLowerCase()).sort(), ['guest:ada', 'guest:bob']);
   });
   await check(`${tag}: an AI's mark through the agent API appears in the margin`, async () => {
     const response = await fetch(`${base}/api/agent/${slug}/marks/line`, {
@@ -238,7 +238,8 @@ async function desktop(browser, base) {
     for (const who of state.alignment.team) {
       for (const line of state.lines) {
         const r = await fetch(`${base}/api/documents/${slug}/line-marks`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json', ...clientHeaders },
+          // Step B6: only the owner credential may write as another team member (AIs included).
+          method: 'POST', headers: { 'Content-Type': 'application/json', ...clientHeaders, 'x-share-token': created.ownerSecret },
           body: JSON.stringify({ by: who, status: 'seen', anchor: { hash: line.hash, occurrence: line.occurrence, ordinal: line.index, kind: line.kind, excerpt: line.text.slice(0, 80) } }),
         });
         assert.equal(r.status, 200);

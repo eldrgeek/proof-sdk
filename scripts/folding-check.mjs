@@ -125,7 +125,7 @@ async function ready(page) {
 const fold = page => page.evaluate(() => window.__proofFolding.debugState());
 const walk = page => page.evaluate(() => window.__proofReadingWalk.debugState());
 const myMarks = (page, name) => page.evaluate(n => window.__proofLineMarks.debugState().marks
-  .filter(m => m.by === `human:${n}` && !m.id.startsWith('local-')).map(m => [m.anchor.ordinal, m.status]), name);
+  .filter(m => m.by === `guest:${n}` && !m.id.startsWith('local-')).map(m => [m.anchor.ordinal, m.status]), name);
 const dotStatus = (page, line) => page.evaluate(i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.status ?? null, line);
 const chip = (page, heading) => page.locator(`.pfold-chip[data-heading="${heading}"]`);
 const waitFor = (page, fn, arg, timeout = 8000) => page.waitForFunction(fn, arg, { timeout, polling: 100 });
@@ -259,19 +259,19 @@ async function desktop(browser, base, style, width) {
     const sent = batchPosts[batchPosts.length - 1];
     assert.equal(sent.status, 'agreed');
     assert.equal(sent.lines.length, 6, 'the rejected line was overwritten or a line is missing');
-    await waitFor(page, () => window.__proofLineMarks.debugState().marks.filter(m => m.by === 'human:Ada' && m.status === 'agreed' && !m.id.startsWith('local-')).length >= 6);
+    await waitFor(page, () => window.__proofLineMarks.debugState().marks.filter(m => m.by === 'guest:Ada' && m.status === 'agreed' && !m.id.startsWith('local-')).length >= 6);
     const marks = new Map(await myMarks(page, 'Ada'));
     for (const line of [2, 3, 4, 5, 6, 8]) assert.equal(marks.get(line), 'agreed', `line ${line}: ${marks.get(line)}`);
     assert.equal(marks.get(7), 'rejected', 'my reject was overwritten');
     assert.equal(await dotStatus(page, L.ALPHA), 'agreed');
     await page.screenshot({ path: path.join(shots, `${tag}-3-section-agreed.png`) });
     // Bob sees the marks too.
-    await waitFor(bob.page, () => window.__proofLineMarks.debugState().marks.filter(m => m.by === 'human:Ada' && m.status === 'agreed').length >= 6, null, 12000);
+    await waitFor(bob.page, () => window.__proofLineMarks.debugState().marks.filter(m => m.by === 'guest:Ada' && m.status === 'agreed').length >= 6, null, 12000);
     // Undo: one request; lines go back to their earlier marks (Seen from reading, or none).
     await page.locator('.plm-toast[data-action] .plm-toast-action').click();
     await page.waitForTimeout(800);
     assert.equal(batchPosts.length - before, 2, 'undo is not one request');
-    await waitFor(page, () => window.__proofLineMarks.debugState().marks.filter(m => m.by === 'human:Ada' && m.status === 'agreed').length === 0);
+    await waitFor(page, () => window.__proofLineMarks.debugState().marks.filter(m => m.by === 'guest:Ada' && m.status === 'agreed').length === 0);
     const after = new Map(await myMarks(page, 'Ada'));
     assert.equal(after.get(L.ALPHA), 'seen', 'heading did not go back to Seen');
     assert.equal(after.get(3), undefined, 'hidden line kept a mark after undo');
@@ -388,7 +388,7 @@ async function phone(browser, base, style) {
     assert.match(await sheet.locator('.plm-section-note').innerText(), /all 5 lines/);
     await page.screenshot({ path: path.join(shots, `${tag}-2-sheet.png`) });
     await sheet.getByRole('button', { name: /Seen/ }).tap();
-    await waitFor(page, () => window.__proofLineMarks.debugState().marks.filter(m => m.by === 'human:Pat' && m.status === 'seen' && !m.id.startsWith('local-')).length >= 5);
+    await waitFor(page, () => window.__proofLineMarks.debugState().marks.filter(m => m.by === 'guest:Pat' && m.status === 'seen' && !m.id.startsWith('local-')).length >= 5);
     await page.screenshot({ path: path.join(shots, `${tag}-3-marked.png`) });
   });
   await check(`${tag}: the ⋯ menu has Fold all and Unfold all`, async () => {

@@ -327,11 +327,11 @@ Mark a line (commenter, editor or owner token):
 
 Target the line with exactly one of `lineIndex`, `hash` (+ optional `occurrence`), `ref`
 (+ `quote` when the block holds several lines, such as a list or table) or `quote`. Use
-`"status": "unseen"` to clear your mark, and `"reason"` with `rejected`. `by` must start with
-`ai:`; if you omit it, the agent key's name is used. Errors: `409 ANCHOR_NOT_FOUND`,
+`"status": "unseen"` to clear your mark, and `"reason"` with `rejected`. With an agent key you
+always mark as the key's AI (`ai:<key-name-slug>`): omit `by`, or send exactly that. Errors: `409 ANCHOR_NOT_FOUND`,
 `409 AMBIGUOUS_LINE` (returns `candidates`), `409 LINE_CHANGED` (the hash no longer exists; re-read
-state), `403 OWNER_REQUIRED` (approve), `400 REASON_REQUIRED`. Changes also appear as
-`line_mark.updated` events.
+state), `403 OWNER_REQUIRED` (approve), `400 REASON_REQUIRED`, `403 ACTOR_MISMATCH` (see Identity
+below). Changes also appear as `line_mark.updated` events.
 
 ### Sections, folding and batch marks (Proof Documents, Step B2)
 
@@ -375,9 +375,9 @@ curl -X POST "$BASE/api/agent/$SLUG/asks" -H "x-share-token: $KEY" -H 'Content-T
 
 Or add a new line and make it an ask in one call (needs edit access): `{"insertAfter": {"quote": "..."} | "b7", "text": "Can we retire PM /review this week?", "to": [...], "recommend": "..."}`. The response carries `inserted: {ref, lineIndex, text}`.
 
-- `to`: identities (`"human:Mike"`, `"ai:critic"`; a bare name means a human). Default: the document's human owners. An empty list means any human other than the asker.
+- `to`: identities (`"human:mw@mike-wolf.com"`, `"Mike Wolf"`, `"ai:critic"`; see Identity below). Default: the document's owner (the member who created it). An empty list means any human other than the asker.
 - `recommend` is required (400 `RECOMMEND_REQUIRED`). One ask per line (409 `ASK_EXISTS`: re-ask or withdraw instead).
-- `by` defaults to your key's AI; an agent key cannot act as a human.
+- `by` is your key's AI; an agent key cannot act as a human or another AI (403 `ACTOR_MISMATCH`).
 
 Read and act:
 
@@ -390,6 +390,40 @@ Read and act:
 Rules (policy `ASK_POLICY` in `src/shared/asks.ts`): Yes and No close the ask for the person who answered. Not yet snoozes it for that person (not an Issue) until the question line's text changes or the asker re-asks. Any answer stops counting when the question line's text changes. An answer from someone not in `to` is recorded and shown but does not settle the ask. Answering marks the answerer's line Seen (never lowers a mark). A deleted question line leaves the ask `orphaned` (listed, not an Issue).
 
 In the page: the question line shows an **Ask** tag and, under it, the recommendation and the Yes / Not yet / No buttons with a words field; the right rail and the phone sheet show the same control for the focus line. Keys while reading: **Y** yes, **N** no, **T** not yet (N and T open the reason field). Answering is an explicit action for the reading walk: it commits the scroll-accepts above the line. The page answers through `POST /api/documents/$SLUG/asks/:id/answer` `{by, choice, words, anchor}`, and reads asks from the line-marks poll (`GET /api/documents/$SLUG/line-marks` returns `asks`).
+
+## Identity: who a mark or an answer names (Proof Documents, Step B6)
+
+Line marks, asks and ask answers name one of three kinds of actor:
+
+- `human:<email>`: a person the server verified. The page's request carried a Documents session
+  (the `proof_library_session` cookie; with SOMA Auth on, only a session the server checked
+  against SOMA Auth). People see the member's profile name, not the email.
+- `ai:<key-name-slug>`: an AI that presented an "Add agent" key.
+- `guest:<name>`: a share-link viewer who typed a name. It is shown with "(guest)" everywhere.
+  Rows written before this step with a typed `human:<name>` are read as `guest:<name>`.
+
+Who a request acts as (first match wins; policy `IDENTITY_POLICY` in `src/shared/identity.ts`):
+an agent key acts as its own AI, and a `by` naming anyone else is `403 ACTOR_MISMATCH`; a signed-in
+session acts as its person, and any `by` is ignored (a session request from another origin is
+`403 CROSS_ORIGIN`); the owner credential (scripts) acts as the `by` it names, and may name
+`human:<email>`; another share token may only name an `ai:` that is not an agent key's AI
+(`403 AI_ACTOR_REQUIRED`, `403 ACTOR_RESERVED`); anyone else on the page is `guest:<typed name>`.
+
+Asks: `to` entries may be `human:<email>`, an email, a member's display name (stored as that
+member's `human:<email>`), `ai:<name>`, or another name (the guest who types it). An ask stored
+before this step with a typed name keeps working: a name a member holds means that member, so a
+guest typing the same name does not answer it. `to: []` (any human but the asker) counts verified
+people and guests. Responses show the resolved `to`, and `toRaw` when the stored text differs.
+
+Merges: marks written under a typed name before the person signed in stay readable and are never
+rewritten. The COS can, on request, read them as that person:
+`npx tsx server/library/cli.ts merge-identity --from "Mike" --into human:mw@mike-wolf.com --slug <slug>`
+(or `--all-documents`; `unmerge-identity`, `list-merges`, `actors --slug <slug>`). A merge covers
+only what the typed name wrote before the merge. Merged rows carry `originalBy`.
+
+The page reads who it is from `GET /api/documents/<slug>/line-marks` (`identity.me`: `actor`,
+`trust`, `name`, `signInUrl`) and shows it in the right rail header. Page routes for the asker or an
+owner: `POST /api/documents/<slug>/asks/:id/reask`, `DELETE /api/documents/<slug>/asks/:id`.
 
 ## Presence And Event Polling
 

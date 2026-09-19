@@ -42,7 +42,8 @@ import {
 import { canonicalizeStoredMarks, type StoredMark } from '../src/formats/marks.js';
 import { buildIssueReport, computeServerLines, resolveAgentLineTarget, writeAgentLineMark } from './line-marks.js';
 import { agentKeyActor } from '../src/shared/line-marks.js';
-import { answerAgentAsk, buildAskReport, createAskOnLine, createAgentAsk, listAgentAsks, listAsks, reaskAsk, withdrawAsk } from './asks.js';
+import { decideActor } from './identity.js';
+import { answerAgentAsk, buildAskReport, createAskOnLine, createAgentAsk, listAgentAsks, listCanonicalAsks, reaskAsk, withdrawAsk } from './asks.js';
 import { ASK_POLICY, askTeamActors, oneLine } from '../src/shared/asks.js';
 
 /** Step B3: edit/v2 conflicts that an insertAfter ask retries (a keystroke landed meanwhile). */
@@ -2136,7 +2137,7 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
         isRecord(body.marks) ? body.marks : doc?.marks,
         {
           asks: (lines) => { const built = buildAskReport(slug, lines); askReport = built; return built.issueInputs; },
-          teamExtra: askTeamActors(listAsks(slug)),
+          teamExtra: askTeamActors(listCanonicalAsks(slug)),
         },
       );
       body.asks = (askReport as ReturnType<typeof buildAskReport> | null)?.asks ?? [];
@@ -3504,19 +3505,13 @@ agentRoutes.post('/:slug/marks/line', async (req: Request, res: Response) => {
   const replay = await maybeReplayIdempotentMutation(req, res, slug, mutationRoute, mutationRoute);
   if (replay.handled) return;
   const payload = asPayload(req.body);
-  const tokenId = agentRequestTokenIds.get(req) ?? null;
-  const keyLabel = tokenId ? listDocumentAgentKeys(slug).find(key => key.tokenId === tokenId)?.label : undefined;
-  const explicitBy = typeof payload.by === 'string' && payload.by.trim() ? payload.by.trim() : null;
-  const by = explicitBy ?? (keyLabel ? agentKeyActor(keyLabel) : null);
-  if (!by) {
-    sendMutationResponse(res, 400, { success: false, code: 'INVALID_ACTOR', error: 'Pass "by", for example "ai:claude"' }, { route: mutationRoute, slug });
+  // Step B6: an agent key marks as its own AI; only the owner credential may name a human.
+  const actor = resolveAgentActor(req, slug, payload, role);
+  if (!actor.ok) {
+    sendMutationResponse(res, actor.status, actor.body, { route: mutationRoute, slug });
     return;
   }
-  // Only the document owner's credential may mark on behalf of a human; an AI key marks as an AI.
-  if (role !== 'owner_bot' && !/^ai:/i.test(by)) {
-    sendMutationResponse(res, 403, { success: false, code: 'AI_ACTOR_REQUIRED', error: 'An agent key marks lines as an AI: "by" must start with "ai:"' }, { route: mutationRoute, slug });
-    return;
-  }
+  const by = actor.by;
   await recoverCanonicalDocumentIfNeeded(slug, 'state');
   const state = await executeDocumentOperationAsync(slug, 'GET', '/state');
   const stateBody = asPayload(state.body);
@@ -3533,18 +3528,26 @@ agentRoutes.post('/:slug/marks/line', async (req: Request, res: Response) => {
 // Proof Documents Step B3: {ask} decision lines
 // ============================================================================
 
-/** The actor an agent request acts as: explicit "by", else its key's AI. Humans need the owner credential. */
+/**
+ * Step B6: the actor an agent request acts as (server/identity.ts decideActor).
+ *   agent key         -> its own AI (ai:<key-name>); a "by" naming anyone else is 403 ACTOR_MISMATCH;
+ *   owner credential  -> the "by" it names (scripts; may name a verified human, human:<email>);
+ *   other share token -> the "ai:" it names, never a human and never a key's AI.
+ */
 function resolveAgentActor(req: Request, slug: string, payload: Record<string, unknown>, role: ShareRole):
   { ok: true; by: string } | { ok: false; status: number; body: Record<string, unknown> } {
   const tokenId = agentRequestTokenIds.get(req) ?? null;
-  const keyLabel = tokenId ? listDocumentAgentKeys(slug).find(key => key.tokenId === tokenId)?.label : undefined;
-  const explicitBy = typeof payload.by === 'string' && payload.by.trim() ? payload.by.trim() : null;
-  const by = explicitBy ?? (keyLabel ? agentKeyActor(keyLabel) : null);
-  if (!by) return { ok: false, status: 400, body: { success: false, code: 'INVALID_ACTOR', error: 'Pass "by", for example "ai:claude"' } };
-  if (role !== 'owner_bot' && !/^ai:/i.test(by)) {
-    return { ok: false, status: 403, body: { success: false, code: 'AI_ACTOR_REQUIRED', error: 'An agent key acts as an AI: "by" must start with "ai:"' } };
-  }
-  return { ok: true, by };
+  const keys = listDocumentAgentKeys(slug).filter(key => !key.revokedAt);
+  const keyLabel = tokenId ? keys.find(key => key.tokenId === tokenId)?.label ?? null : null;
+  const decision = decideActor({
+    mode: 'agent',
+    typedBy: payload.by,
+    agentKeyLabel: keyLabel,
+    ownerCredential: role === 'owner_bot',
+    activeKeyActors: keys.map(key => agentKeyActor(key.label)),
+  });
+  if (!decision.ok) return decision;
+  return { ok: true, by: decision.actor };
 }
 
 async function currentAgentMarkdown(slug: string): Promise<string> {

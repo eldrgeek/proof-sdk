@@ -3750,7 +3750,8 @@ class ProofEditorImpl implements ProofEditor {
       (window as unknown as { __proofFolding?: FoldingUI }).__proofFolding = this.folding;
       this.readingWalk = new ReadingWalkUI({
         slug: () => shareClient.getSlug(),
-        actor: () => getCurrentActor(),
+        // Step B6: the reading walk acts as the same identity the line marks write with.
+        actor: () => lineMarks.me(),
         lineMarks: () => lineMarks,
         marks: () => {
           let marks: Mark[] = [];

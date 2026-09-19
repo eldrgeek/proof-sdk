@@ -35,6 +35,7 @@ import {
   getStoredIdempotencyRecord,
   pauseDocument,
   resolveDocumentAccess,
+  listDocumentAgentKeys,
   resolveDocumentAccessRole,
   rebuildDocumentBlocks,
   resumeDocument,
@@ -101,8 +102,12 @@ import {
   validateOpPrecondition,
 } from './mutation-stage.js';
 import { resolveExplicitAgentIdentity } from '../src/shared/agent-identity.js';
-import { activeAgentKeyActors, documentOwnerActors, isLibraryDocumentCreator, listLineMarks, writeLineMark, writeLineMarksBatch } from './line-marks.js';
-import { answerAsk, listAsks } from './asks.js';
+import { activeAgentKeyActors, documentOwnerActors, isLibraryDocumentCreator, listCanonicalLineMarks, listLineMarks, reviewMarksFromStored, writeLineMark, writeLineMarksBatch } from './line-marks.js';
+import { answerAsk, listCanonicalAsks, reaskAsk, withdrawAsk } from './asks.js';
+import { buildDirectory, clientDirectory, decideActor, sessionIdentity } from './identity.js';
+import { IDENTITY_POLICY, actorsIn, isEmailAddress, verifiedHumanActor, type IdentityDirectory, type ViewerIdentity } from '../src/shared/identity.js';
+import { actorKey, agentKeyActor } from '../src/shared/line-marks.js';
+import { getPublicOrigin } from './public-origin.js';
 import { getLibrarySession, isLibraryEnabled } from './library/auth.js';
 import {
   buildProofSdkAgentDescriptor,
@@ -1863,19 +1868,63 @@ apiRoutes.post('/documents/:slug/ops', opsRateLimiter, async (req: Request, res:
 
 // Proof Documents Step 1: line marks for the page. Reads need document read access; writes
 // need comment access. Approved needs an Owner: the owner credential, a Documents library
-// admin, or the library member who created the document.
+// admin, or the library member who created the document (Step B6: always a verified session).
 function resolveLineMarkAccess(req: Request, slug: string, doc: NonNullable<ReturnType<typeof getDocumentBySlug>>) {
   const role = getAccessRole(req, slug);
   const ownerAuthorized = role === 'owner_bot' || canOwnerMutate(req, doc);
   let library: ReturnType<typeof getLibrarySession> = null;
   try { library = isLibraryEnabled() ? getLibrarySession(req) : null; } catch { library = null; }
   const canApprove = ownerAuthorized
-    || Boolean(library?.member.isOwner)
+    || Boolean(IDENTITY_POLICY.adminsHaveOwnerRights && library?.member.isOwner)
     || Boolean(library && isLibraryDocumentCreator(slug, library.member.id));
   const active = doc.share_state === 'ACTIVE';
   const canRead = doc.share_state !== 'DELETED' && (ownerAuthorized || (active && role !== null));
   const canMark = ownerAuthorized || (active && (role === 'commenter' || role === 'editor'));
-  return { role, canRead, canMark, canApprove };
+  return { role, canRead, canMark, canApprove, ownerAuthorized, library };
+}
+
+/** Step B6: the label of the agent key this request presents, if it presents one. */
+function presentedAgentKeyLabel(req: Request, slug: string): string | null {
+  const secret = getExplicitShareSecret(req);
+  if (!secret) return null;
+  const access = resolveDocumentAccess(slug, secret);
+  if (!access?.tokenId) return null;
+  const key = listDocumentAgentKeys(slug).find(k => k.tokenId === access.tokenId && !k.revokedAt);
+  return key?.label ?? null;
+}
+
+/**
+ * Step B6: who a page request acts as (server/identity.ts decideActor). The "by" in the body is
+ * only a guest's typed name: a signed-in session always wins, and an agent key always acts as
+ * its own AI.
+ */
+function resolvePageActor(req: Request, slug: string, access: ReturnType<typeof resolveLineMarkAccess>, typedBy: unknown) {
+  const origin = req.header('origin');
+  return decideActor({
+    mode: 'page',
+    typedBy,
+    agentKeyLabel: presentedAgentKeyLabel(req, slug),
+    session: sessionIdentity(access.library?.member),
+    sessionOriginOk: !origin || origin === getPublicOrigin(req),
+    ownerCredential: access.ownerAuthorized,
+  });
+}
+
+/** Step B6: who the page viewer is, for the right rail header and for every new mark. */
+function viewerIdentity(req: Request, slug: string, access: ReturnType<typeof resolveLineMarkAccess>, dir: IdentityDirectory): ViewerIdentity {
+  const signInUrl = isLibraryEnabled() ? '/' : null;
+  const keyLabel = presentedAgentKeyLabel(req, slug);
+  if (keyLabel) {
+    const actor = agentKeyActor(keyLabel);
+    return { actor, trust: 'ai', name: keyLabel, signInUrl: null };
+  }
+  const member = access.library?.member;
+  if (member?.email && isEmailAddress(member.email)) {
+    const actor = verifiedHumanActor(member.email);
+    return { actor, trust: 'verified', name: member.name || dir.labels[actorKey(actor)] || member.email, email: member.email.toLowerCase(), signInUrl: null };
+  }
+  // A guest: the page supplies the typed name (guest:<name>).
+  return { actor: '', trust: 'guest', name: '', signInUrl };
 }
 
 apiRoutes.get('/documents/:slug/line-marks', (req: Request, res: Response) => {
@@ -1890,15 +1939,30 @@ apiRoutes.get('/documents/:slug/line-marks', (req: Request, res: Response) => {
     res.status(403).json({ success: false, error: 'No read access' });
     return;
   }
+  const dir = buildDirectory(slug);
+  const lineMarks = listCanonicalLineMarks(slug, dir);
+  const asks = listCanonicalAsks(slug, dir);
+  const owners = documentOwnerActors(slug);
+  const agentKeyActors = activeAgentKeyActors(slug);
+  const me = viewerIdentity(req, slug, access, dir);
+  // Comment and suggestion authors in the stored document: the page resolves them to people for
+  // the team (a comment typed as "Mike Wolf" counts as the member of that name).
+  const reviewAuthors = reviewMarksFromStored(doc.marks).flatMap(mark => [mark.by, ...(mark.replies ?? []).map(reply => reply.by)]);
+  const directory = clientDirectory(dir, [
+    ...actorsIn(lineMarks, asks, [...owners, ...agentKeyActors, ...reviewAuthors, me.actor]),
+    ...listLineMarks(slug).map(mark => mark.by),
+  ]);
   res.setHeader('Cache-Control', 'no-store');
   res.json({
     success: true,
-    lineMarks: listLineMarks(slug),
+    lineMarks,
     // Step B3: the page evaluates asks against its own lines (same poll, no extra request).
-    asks: listAsks(slug),
-    owners: documentOwnerActors(slug),
-    agentKeyActors: activeAgentKeyActors(slug),
+    asks,
+    owners,
+    agentKeyActors,
     viewer: { canMark: access.canMark, canApprove: access.canApprove },
+    // Step B6: who this viewer is (a guest's actor is filled in by the page from the typed name).
+    identity: { me, directory },
   });
 });
 
@@ -1915,11 +1979,16 @@ apiRoutes.post('/documents/:slug/line-marks', opsRateLimiter, (req: Request, res
     return;
   }
   const body = isRecord(req.body) ? req.body : {};
+  const actor = resolvePageActor(req, slug, access, body.by);
+  if (!actor.ok) {
+    res.status(actor.status).json(actor.body);
+    return;
+  }
   // Step B2: { by, status, reason?, lines: [{ anchor, status?, reason?, replaceIds?, replaceAnchors? }] }
   // marks many lines in one request and one transaction (a folded section, or its undo).
   if (Array.isArray(body.lines)) {
     const batch = writeLineMarksBatch(slug, {
-      by: body.by,
+      by: actor.actor,
       status: body.status,
       reason: body.reason,
       lines: body.lines,
@@ -1927,11 +1996,11 @@ apiRoutes.post('/documents/:slug/line-marks', opsRateLimiter, (req: Request, res
       source: 'page',
       context: isRecord(body.section) ? { section: { heading: String(body.section.heading ?? '').slice(0, 200), lines: body.lines.length } } : undefined,
     });
-    res.status(batch.status).json(batch.body);
+    res.status(batch.status).json({ ...batch.body, actor: actor.actor, trust: actor.trust });
     return;
   }
   const result = writeLineMark(slug, {
-    by: body.by,
+    by: actor.actor,
     status: body.status,
     reason: body.reason,
     anchor: body.anchor,
@@ -1940,7 +2009,7 @@ apiRoutes.post('/documents/:slug/line-marks', opsRateLimiter, (req: Request, res
     canApprove: access.canApprove,
     source: 'page',
   });
-  res.status(result.status).json(result.body);
+  res.status(result.status).json({ ...result.body, actor: actor.actor, trust: actor.trust });
 });
 
 // Proof Documents Step B3: asks for the page. Reads need read access; answering needs comment access.
@@ -1957,11 +2026,12 @@ apiRoutes.get('/documents/:slug/asks', (req: Request, res: Response) => {
     return;
   }
   res.setHeader('Cache-Control', 'no-store');
-  res.json({ success: true, asks: listAsks(slug) });
+  res.json({ success: true, asks: listCanonicalAsks(slug) });
 });
 
 // Body: { by, choice: yes|not_yet|no, words?, anchor } where anchor is the question line as the
-// page sees it now (the same anchor shape as a line mark).
+// page sees it now (the same anchor shape as a line mark). Step B6: "by" is only a guest's typed
+// name; a signed-in viewer answers as their verified identity.
 apiRoutes.post('/documents/:slug/asks/:askId/answer', opsRateLimiter, (req: Request, res: Response) => {
   const slug = getSlugParam(req);
   const doc = slug ? getDocumentBySlug(slug) : undefined;
@@ -1975,15 +2045,48 @@ apiRoutes.post('/documents/:slug/asks/:askId/answer', opsRateLimiter, (req: Requ
     return;
   }
   const body = isRecord(req.body) ? req.body : {};
+  const actor = resolvePageActor(req, slug, access, body.by);
+  if (!actor.ok) {
+    res.status(actor.status).json(actor.body);
+    return;
+  }
   const result = answerAsk(slug, {
     id: String(req.params.askId ?? ''),
-    by: body.by,
+    by: actor.actor,
     choice: body.choice,
     words: body.words,
     line: body.anchor ? { anchor: body.anchor as never } : null,
     source: 'page',
     canMark: access.canMark,
   });
+  res.status(result.status).json({ ...result.body, actor: actor.actor, trust: actor.trust });
+});
+
+// Step B6: re-ask and withdraw from the page. The asker (by verified identity) or an Owner
+// (the document's creator, a Documents admin, or the owner credential).
+apiRoutes.post('/documents/:slug/asks/:askId/reask', opsRateLimiter, (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canMark) { res.status(403).json({ success: false, error: 'Re-asking needs comment access' }); return; }
+  const body = isRecord(req.body) ? req.body : {};
+  const actor = resolvePageActor(req, slug, access, body.by);
+  if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
+  const result = reaskAsk(slug, { id: String(req.params.askId ?? ''), by: actor.actor, isOwner: access.canApprove, recommend: body.recommend, ifYes: body.ifYes, to: body.to });
+  res.status(result.status).json(result.body);
+});
+
+apiRoutes.delete('/documents/:slug/asks/:askId', opsRateLimiter, (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canMark) { res.status(403).json({ success: false, error: 'Withdrawing needs comment access' }); return; }
+  const body = isRecord(req.body) ? req.body : {};
+  const actor = resolvePageActor(req, slug, access, body.by);
+  if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
+  const result = withdrawAsk(slug, { id: String(req.params.askId ?? ''), by: actor.actor, isOwner: access.canApprove });
   res.status(result.status).json(result.body);
 });
 

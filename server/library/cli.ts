@@ -7,6 +7,7 @@ import {
   removeLibraryMember,
 } from './auth.js';
 import { getDb } from '../db.js';
+import { listDocumentActors, listMerges, mergeIdentity, unmergeIdentity } from '../identity.js';
 
 function readOption(args: string[], name: string): string | null {
   const index = args.indexOf(name);
@@ -110,6 +111,46 @@ async function main(): Promise<void> {
     const slug = requireOption(args, '--slug');
     if (!setArchived(slug, false)) throw new Error('Document not found');
     console.log('Unarchived 1 document');
+    return;
+  }
+
+  // Proof Documents Step B6: identity merges. The COS runs these only on an explicit request,
+  // e.g. merge-identity --from "Mike" --into human:mw@mike-wolf.com --slug abc123 (or --all-documents).
+  // A merge covers what the typed name wrote up to now; stored rows are not rewritten.
+  if (command === 'merge-identity') {
+    const from = requireOption(args, '--from');
+    const into = requireOption(args, '--into');
+    const slug = readOption(args, '--slug')?.trim();
+    const all = args.includes('--all-documents');
+    if (Boolean(slug) === all) throw new Error('Pass exactly one of --slug <slug> or --all-documents');
+    if (slug && !getDb().prepare('SELECT 1 FROM documents WHERE slug = ?').get(slug)) throw new Error('Document not found');
+    const merged = mergeIdentity({ from, into, scope: slug || '*', createdBy: readOption(args, '--by') || 'operator', note: readOption(args, '--note') });
+    console.log(`Merged ${merged.fromKey} into ${merged.intoActor} (${merged.scope === '*' ? 'all documents' : merged.scope})`);
+    return;
+  }
+
+  if (command === 'unmerge-identity') {
+    const from = requireOption(args, '--from');
+    const slug = readOption(args, '--slug')?.trim();
+    const all = args.includes('--all-documents');
+    if (Boolean(slug) === all) throw new Error('Pass exactly one of --slug <slug> or --all-documents');
+    if (!unmergeIdentity({ from, scope: slug || '*' })) throw new Error('No such merge');
+    console.log('Removed 1 merge');
+    return;
+  }
+
+  if (command === 'list-merges') {
+    for (const merge of listMerges(readOption(args, '--slug')?.trim() || null)) {
+      console.log([merge.scope, merge.fromKey, merge.intoActor, merge.createdAt, merge.createdBy ?? ''].join('\t'));
+    }
+    return;
+  }
+
+  if (command === 'actors') {
+    const slug = requireOption(args, '--slug');
+    for (const row of listDocumentActors(slug)) {
+      console.log([row.actor, row.canonical, `marks=${row.lineMarks}`, `asks=${row.asks}`, `answers=${row.answers}`].join('\t'));
+    }
     return;
   }
 

@@ -217,9 +217,14 @@ try {
     assert.equal(set.body.line.lineIndex, 7);
     const human = await call(`/api/agent/${slug}/marks/line`, 'POST', { quote: 'Last paragraph', status: 'seen', by: 'human:Mike' }, headers);
     assert.equal(human.status, 403);
-    const approve = await call(`/api/agent/${slug}/marks/line`, 'POST', { quote: 'Last paragraph', status: 'approved', by: 'ai:claude' }, headers);
+    const approve = await call(`/api/agent/${slug}/marks/line`, 'POST', { quote: 'Last paragraph', status: 'approved', by: 'ai:claude-cos' }, headers);
     assert.equal(approve.status, 403);
-    const reject = await call(`/api/agent/${slug}/marks/line`, 'POST', { lineIndex: 0, status: 'rejected', reason: 'Title is vague', by: 'ai:claude' }, headers);
+    assert.equal(approve.body.code, 'OWNER_REQUIRED');
+    // Step B6: an agent key acts as its own AI; naming another AI is refused.
+    const other = await call(`/api/agent/${slug}/marks/line`, 'POST', { lineIndex: 0, status: 'seen', by: 'ai:claude' }, headers);
+    assert.equal(other.status, 403);
+    assert.equal(other.body.code, 'ACTOR_MISMATCH');
+    const reject = await call(`/api/agent/${slug}/marks/line`, 'POST', { lineIndex: 0, status: 'rejected', reason: 'Title is vague', by: 'ai:claude-cos' }, headers);
     assert.equal(reject.status, 200, JSON.stringify(reject.body));
   });
 
@@ -230,10 +235,11 @@ try {
     assert.equal(state.body.lines.length, lines.length);
     assert.equal(state.body.lines[5].ref, 'b4');
     const team: string[] = state.body.alignment.team;
-    assert.ok(team.includes('ai:claude-cos') && team.includes('ai:claude') && team.includes('human:Mike'), team.join(','));
+    // The owner credential wrote as the typed name "human:Mike": read as the guest it is (Step B6).
+    assert.ok(team.includes('ai:claude-cos') && team.includes('guest:Mike'), team.join(','));
     assert.equal(state.body.alignment.aligned, false);
     const rejected = state.body.issues.find((issue: any) => issue.type === 'line' && issue.lineIndex === 0);
-    assert.deepEqual(rejected.rejectedBy, [{ by: 'ai:claude', reason: 'Title is vague' }]);
+    assert.deepEqual(rejected.rejectedBy, [{ by: 'ai:claude-cos', reason: 'Title is vague' }]);
     assert.equal(state.body._links.lineMark.href, `/api/agent/${slug}/marks/line`);
   });
 

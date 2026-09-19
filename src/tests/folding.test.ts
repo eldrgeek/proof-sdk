@@ -185,7 +185,7 @@ try {
     assert.equal(set.body.count, goalLines.length);
     const list = await call(`/api/documents/${slug}/line-marks`);
     assert.equal(list.body.lineMarks.length, goalLines.length);
-    assert.ok(list.body.lineMarks.every((m: any) => m.status === 'agreed' && m.by === 'human:Eric'));
+    assert.ok(list.body.lineMarks.every((m: any) => m.status === 'agreed' && m.by === 'guest:Eric'));
     const events = db.getDb().prepare(`SELECT event_type, event_data FROM document_events WHERE document_slug = ? AND event_type = 'line_mark.batch'`).all(slug) as Array<{ event_data: string }>;
     assert.equal(events.length, 1);
     assert.equal(JSON.parse(events[0].event_data).count, goalLines.length);

@@ -22,7 +22,9 @@ import {
   type DocumentAskRow,
 } from './db.js';
 import { broadcastToRoom } from './ws.js';
-import { computeServerLines, documentOwnerActors, listLineMarks, resolveAgentLineTarget, writeLineMark } from './line-marks.js';
+import { computeServerLines, documentOwnerActors, listCanonicalLineMarks, resolveAgentLineTarget, writeLineMark } from './line-marks.js';
+import { buildDirectory } from './identity.js';
+import { canonicalizeAsks, resolveTargetActor, type IdentityDirectory } from '../src/shared/identity.js';
 import {
   ASK_POLICY,
   askIssueInputs,
@@ -96,10 +98,17 @@ export function listAsks(slug: string): ProofAsk[] {
   return listDocumentAsks(slug).map(row => rowToAsk(row, answersByAsk.get(row.id) ?? []));
 }
 
-function getAsk(slug: string, id: string): ProofAsk | null {
+/** Step B6: every live ask read through the document's identity directory (merges applied, `to`
+ *  names resolved to verified people). Stored rows are not rewritten. */
+export function listCanonicalAsks(slug: string, dir: IdentityDirectory = buildDirectory(slug)): ProofAsk[] {
+  return canonicalizeAsks(listAsks(slug), dir);
+}
+
+/** One live ask, canonical (see listCanonicalAsks). */
+function getAsk(slug: string, id: string, dir: IdentityDirectory = buildDirectory(slug)): ProofAsk | null {
   const row = getDocumentAsk(slug, id);
   if (!row || row.withdrawn_at) return null;
-  return listAsks(slug).find(ask => ask.id === id) ?? null;
+  return listCanonicalAsks(slug, dir).find(ask => ask.id === id) ?? null;
 }
 
 /**
@@ -162,7 +171,7 @@ export interface AskReport {
 
 /** Asks for /state and GET /asks: evaluated against the current lines, re-anchored. */
 export function buildAskReport(slug: string, lines: DocLine[]): AskReport {
-  const asks = listAsks(slug);
+  const asks = listCanonicalAsks(slug);
   reanchorAsks(slug, asks, lines);
   const views = evaluateAsks(asks, lines);
   return { asks: views.map(view => serializeAskView(view, lines)), views, issueInputs: askIssueInputs(views) };
@@ -172,18 +181,24 @@ export function buildAskReport(slug: string, lines: DocLine[]): AskReport {
 // Create
 // ============================================================================
 
-/** Validates and normalizes `to`: an array of identities (bare names become humans). */
+/**
+ * Validates and normalizes `to`: an array of identities. Step B6: an email, or a name a Documents
+ * member holds, is stored as that member's verified identity (human:<email>); another name is
+ * stored as the guest who types it (IDENTITY_POLICY.guestsMayAnswerUnreservedNames).
+ */
 function parseToInput(raw: unknown, slug: string): { ok: true; to: string[] } | { ok: false; result: AskResult } {
   if (raw === undefined || raw === null) {
     return { ok: true, to: documentOwnerActors(slug) };
   }
+  const dir = buildDirectory(slug);
   const list = typeof raw === 'string' ? [raw] : raw;
   if (!Array.isArray(list)) return { ok: false, result: fail(400, 'INVALID_TO', '"to" must be a list of identities, for example ["human:Mike"]') };
   if (list.length > ASK_POLICY.maxTo) return { ok: false, result: fail(400, 'INVALID_TO', `At most ${ASK_POLICY.maxTo} people per ask`) };
   const out: string[] = [];
   const keys = new Set<string>();
   for (const entry of list) {
-    const actor = typeof entry === 'string' ? normalizeAskActor(entry) : '';
+    const typed = typeof entry === 'string' ? normalizeAskActor(entry) : '';
+    const actor = typed && cleanActor(typed) ? resolveTargetActor(typed, dir) : '';
     if (!actor || !cleanActor(actor)) return { ok: false, result: fail(400, 'INVALID_TO', `Invalid identity in "to": ${JSON.stringify(entry)}`) };
     const key = actorKey(actor);
     if (keys.has(key)) continue;
@@ -214,7 +229,7 @@ export function createAskOnLine(slug: string, line: DocLine, lines: DocLine[], i
   const to = parseToInput(input.to, slug);
   if (!to.ok) return to.result;
   if (ASK_POLICY.oneAskPerLine) {
-    const existing = evaluateAsks(listAsks(slug), lines).find(view => view.lineIndex === line.index);
+    const existing = evaluateAsks(listCanonicalAsks(slug), lines).find(view => view.lineIndex === line.index);
     if (existing) {
       return fail(409, 'ASK_EXISTS', 'This line already carries an ask. Re-ask it (POST /asks/:id/reask) or withdraw it first.', { ask: serializeAskView(existing, lines) });
     }
@@ -297,7 +312,7 @@ export function answerAsk(slug: string, input: {
   let lineMarked = false;
   if (ASK_POLICY.answerMarksLineSeen && input.canMark) {
     const me = actorKey(by);
-    const hasCurrent = listLineMarks(slug).some(mark => actorKey(mark.by) === me
+    const hasCurrent = listCanonicalLineMarks(slug).some(mark => actorKey(mark.by) === me
       && mark.anchor.hash === anchor.hash && mark.anchor.occurrence === anchor.occurrence);
     if (!hasCurrent) {
       const marked = writeLineMark(slug, { by, status: 'seen', anchor, canApprove: false, source: input.source });

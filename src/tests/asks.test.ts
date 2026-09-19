@@ -162,9 +162,9 @@ try {
     assert.equal(created.status, 200, JSON.stringify(created.body));
     askId = created.body.ask.id;
     assert.equal(created.body.ask.by, 'ai:claude-cos', '"by" defaults to the key\'s AI');
-    assert.deepEqual(created.body.ask.to, ['human:Mike']);
+    assert.deepEqual(created.body.ask.to, ['guest:Mike']);
     assert.equal(created.body.ask.lineIndex, Q1);
-    assert.deepEqual(created.body.ask.openFor, ['human:Mike']);
+    assert.deepEqual(created.body.ask.openFor, ['guest:Mike']);
     const again = await call(`/api/agent/${slug}/asks`, 'POST', { lineIndex: Q1, to: ['Mike'], recommend: 'x' }, H);
     assert.equal(again.status, 409);
     assert.equal(again.body.code, 'ASK_EXISTS');
@@ -183,7 +183,7 @@ try {
     assert.equal(notYet.body.answer.words, 'Wait for Eric\'s read.', 'exact words, trimmed only');
     assert.equal(notYet.body.lineMarked, true, 'answering marks the line Seen for the answerer');
     const marks = await call(`/api/documents/${slug}/line-marks`);
-    assert.ok(marks.body.lineMarks.some((m: any) => m.by === 'human:Mike' && m.status === 'seen' && m.anchor.hash === anchor.hash));
+    assert.ok(marks.body.lineMarks.some((m: any) => m.by === 'guest:Mike' && m.status === 'seen' && m.anchor.hash === anchor.hash));
   });
 
   await test('/state: asks with answers; a snoozed ask is not an Issue; ask.answered events carry the words', async () => {
@@ -191,24 +191,24 @@ try {
     assert.equal(state.status, 200);
     const ask = state.body.asks.find((a: any) => a.id === askId);
     assert.equal(ask.status, 'snoozed');
-    assert.deepEqual(ask.snoozedFor, ['human:Mike']);
+    assert.deepEqual(ask.snoozedFor, ['guest:Mike']);
     assert.equal(ask.answers[0].words, 'Wait for Eric\'s read.');
     assert.equal(state.body.alignment.counts.askIssues, 0);
-    assert.ok(state.body.alignment.team.includes('human:Mike'), 'the person asked joins the team');
+    assert.ok(state.body.alignment.team.includes('guest:Mike'), 'the person asked joins the team');
     assert.equal(state.body._links.asks.href, `/api/agent/${slug}/asks`);
     const events = await call(`/api/agent/${slug}/events/pending?after=0`, 'GET', undefined, H);
     const answered = events.body.events.filter((e: any) => e.type === 'ask.answered');
     assert.equal(answered.length, 1);
     assert.equal(answered[0].data.choice, 'not_yet');
     assert.equal(answered[0].data.words, 'Wait for Eric\'s read.');
-    assert.equal(answered[0].actor, 'human:Mike');
+    assert.equal(answered[0].actor, 'guest:Mike');
     // The asker re-asks: open again, an Issue again.
     const reask = await call(`/api/agent/${slug}/asks/${askId}/reask`, 'POST', {}, H);
     assert.equal(reask.status, 200, JSON.stringify(reask.body));
     state = await call(`/api/agent/${slug}/state`, 'GET', undefined, H);
     assert.equal(state.body.alignment.counts.askIssues, 1);
     const issue = state.body.issues.find((i: any) => i.type === 'ask');
-    assert.deepEqual(issue.openFor, ['human:Mike']);
+    assert.deepEqual(issue.openFor, ['guest:Mike']);
     assert.equal(issue.recommend, 'Yes: every check passes');
   });
 

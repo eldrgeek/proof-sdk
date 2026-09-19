@@ -14,6 +14,15 @@
     }, Math.max(1000, delay));
   }
   function say(text) { if (message) message.textContent = text; }
+  // A same-site document path saved in the last 30 minutes, used once.
+  function returnPath() {
+    try {
+      var saved = JSON.parse(localStorage.getItem('proof:return-to') || 'null');
+      localStorage.removeItem('proof:return-to');
+      if (!saved || typeof saved.path !== 'string' || Date.now() - Number(saved.at) > 30 * 60 * 1000) return null;
+      return /^\/d\/[A-Za-z0-9_-]+(?:[?#][^\s]*)?$/.test(saved.path) ? saved.path : null;
+    } catch (_) { return null; }
+  }
   async function exchange(session) {
     if (!session || exchanging || signedOut) return;
     exchanging = true;
@@ -30,6 +39,9 @@
         return;
       }
       scheduleRefresh(result.refreshAfterMs || 24 * 60 * 60 * 1000);
+      // Proof Documents Step B6: a document page's "Sign in" link stores where to come back to.
+      var back = message ? returnPath() : null;
+      if (back && message) { location.replace(back); return; }
       if (message || (document.body.dataset.soma === '1' &&
           (document.body.dataset.owner === '1') !== result.isAdmin)) location.replace('/');
     } catch (_) { say('Sign-in is unavailable. Please try again later.'); scheduleRefresh(60000); }

@@ -1297,6 +1297,21 @@ function initDatabase(): void {
   `);
   d.exec(`CREATE INDEX IF NOT EXISTS idx_document_ask_answers_ask ON document_ask_answers(ask_id, created_at)`);
 
+  // Proof Documents Step B6: explicit identity merges (a typed-name actor -> a verified person).
+  // Made only by the COS on request (server/library/cli.ts merge-identity); rows are never
+  // rewritten, the merge applies when marks and answers are read. scope = a slug or '*'.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS identity_merges (
+      scope TEXT NOT NULL,
+      from_key TEXT NOT NULL,
+      into_actor TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      created_by TEXT,
+      note TEXT,
+      PRIMARY KEY (scope, from_key)
+    )
+  `);
+
   d.exec(`
     CREATE TABLE IF NOT EXISTS document_y_updates (
       seq INTEGER PRIMARY KEY AUTOINCREMENT,

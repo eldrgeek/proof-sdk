@@ -39,6 +39,8 @@ import {
   type LineSourceNode,
   type ReviewMarkLike,
 } from '../src/shared/line-marks.js';
+import { buildDirectory, clientDirectory } from './identity.js';
+import { canonicalizeLineMarks, isEmailAddress, resolveTargetActor, verifiedHumanActor, type IdentityDirectory } from '../src/shared/identity.js';
 import { FOLDING, computeSections, sectionByHeading, sectionIssueCount, sectionLineIndices } from '../src/shared/folding.js';
 
 export type LineMarkResult = { status: number; body: Record<string, unknown> };
@@ -107,19 +109,30 @@ export function reviewMarksFromStored(rawMarks: unknown): ReviewMarkLike[] {
   return out;
 }
 
-/** Step 1 owner identity: the Documents library member who created the document, if any. */
+/**
+ * Owner identity for the team and for an ask's default "to": the Documents library member who
+ * created the document, as a verified person (Step B6: human:<email>). Documents admins have
+ * Owner rights too (resolveLineMarkAccess), but join the team only when they take part
+ * (IDENTITY_POLICY.adminsJoinTeam).
+ */
 export function documentOwnerActors(slug: string): string[] {
   try {
     const row = getDb().prepare(`
-      SELECT m.name AS name FROM library_document_meta meta
+      SELECT m.name AS name, m.email AS email FROM library_document_meta meta
       JOIN library_members m ON m.id = meta.created_by_member_id
       WHERE meta.slug = ?
-    `).get(slug) as { name?: string } | undefined;
+    `).get(slug) as { name?: string; email?: string | null } | undefined;
+    if (row?.email && isEmailAddress(row.email)) return [verifiedHumanActor(row.email)];
     if (row?.name && row.name.trim()) return [`human:${row.name.trim()}`];
   } catch {
     // Library tables are optional in bare SDK deployments.
   }
   return [];
+}
+
+/** Step B6: the document's line marks read through its identity directory (merges applied). */
+export function listCanonicalLineMarks(slug: string, dir: IdentityDirectory = buildDirectory(slug)): LineMark[] {
+  return canonicalizeLineMarks(listLineMarks(slug), dir);
 }
 
 export function isLibraryDocumentCreator(slug: string, memberId: string): boolean {
@@ -140,13 +153,15 @@ export function activeAgentKeyActors(slug: string): string[] {
   }
 }
 
-export function computeDocumentTeam(slug: string, lineMarks: LineMark[], reviewMarks: ReviewMarkLike[], extra: string[] = []): string[] {
+/** lineMarks must already be canonical (listCanonicalLineMarks). */
+export function computeDocumentTeam(slug: string, lineMarks: LineMark[], reviewMarks: ReviewMarkLike[], extra: string[] = [], dir: IdentityDirectory = buildDirectory(slug)): string[] {
   return computeStep1Team({
     owners: documentOwnerActors(slug),
     lineMarks,
     reviewMarks,
     agentKeyActors: activeAgentKeyActors(slug),
     extra,
+    identity: { target: actor => resolveTargetActor(actor, dir) },
   });
 }
 
@@ -154,6 +169,7 @@ export interface IssueReport extends IssueSummary {
   lineMarks: LineMark[];
   lines: Array<Pick<DocLine, 'index' | 'kind' | 'hash' | 'occurrence' | 'block'> & { text: string; ref: string }>;
   owners: string[];
+  actorLabels: Record<string, string>;
   /** Step B2: the document's outline, with each section's Issue count (same Issues as above). */
   sections: Array<{ headingIndex: number; ref: string; level: number; text: string; lineEnd: number; parent: number | null; issues: number }>;
 }
@@ -165,9 +181,10 @@ export async function buildIssueReport(slug: string, markdown: string, rawMarks:
   teamExtra?: string[];
 } = {}): Promise<IssueReport> {
   const lines = await computeServerLines(markdown);
-  const lineMarks = listLineMarks(slug);
+  const dir = buildDirectory(slug);
+  const lineMarks = listCanonicalLineMarks(slug, dir);
   const reviewMarks = reviewMarksFromStored(rawMarks);
-  const team = computeDocumentTeam(slug, lineMarks, reviewMarks, options.teamExtra);
+  const team = computeDocumentTeam(slug, lineMarks, reviewMarks, options.teamExtra, dir);
   const asks = options.asks ? options.asks(lines) : [];
   const summary = computeIssues({ lines, lineMarks, team, reviewMarks, asks });
   const sections = computeSections(lines).map(section => ({
@@ -179,10 +196,13 @@ export async function buildIssueReport(slug: string, markdown: string, rawMarks:
     parent: section.parent,
     issues: sectionIssueCount(section, lines, summary).total,
   }));
+  const owners = documentOwnerActors(slug);
   return {
     ...summary,
     sections,
-    owners: documentOwnerActors(slug),
+    owners,
+    // Step B6: display names for the actors above (a verified human's actor is their email).
+    actorLabels: clientDirectory(dir, [...team, ...owners, ...lineMarks.map(mark => mark.by)]).labels,
     lineMarks,
     lines: lines.map(line => ({
       index: line.index,

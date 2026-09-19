@@ -79,6 +79,8 @@ export class ReadingWalkUI {
   private readonly leftBody = el('div', 'prw-rail-body');
   private readonly rightBody = el('div', 'prw-rail-body');
   private readonly statusEl = el('p', 'prw-status');
+  /** Step B6: who you are (signed-in name, an agent key's AI, or "guest — sign in"). */
+  private readonly meEl = el('div', 'prw-me');
   private readonly provisionalEl = el('div', 'prw-provisional');
   private readonly boxHost = el('section', 'prw-linebox');
   private readonly changesHost = el('section', 'prw-changes');
@@ -637,6 +639,7 @@ export class ReadingWalkUI {
     this.renderFocus();
     this.renderDynamicStyle();
     this.renderStatus();
+    this.renderMe();
     this.renderBox();
     this.renderChanges();
     this.renderDocuments();
@@ -681,6 +684,43 @@ export class ReadingWalkUI {
     }
     const css = rules.join('\n');
     if (this.styleEl.textContent !== css) this.styleEl.textContent = css;
+  }
+
+  /**
+   * Step B6: the right rail header says who the viewer's marks and answers will name. A guest's
+   * name is shown as unverified, with a sign-in link when this server has sign-in.
+   */
+  private renderMe(): void {
+    const me = this.host.lineMarks().viewerIdentity();
+    const sig = JSON.stringify([me.actor, me.trust, me.name, me.email ?? '', me.signInUrl ?? '']);
+    if (this.meEl.dataset.sig === sig) return;
+    this.meEl.dataset.sig = sig;
+    this.meEl.dataset.trust = me.trust;
+    this.meEl.replaceChildren();
+    if (me.trust === 'verified') {
+      const badge = el('span', 'prw-me-badge', '✓');
+      badge.setAttribute('aria-hidden', 'true');
+      const who = el('span', 'prw-me-name', me.name);
+      this.meEl.append(badge, el('span', 'prw-me-label', 'Signed in as '), who);
+      this.meEl.title = `Your marks and answers are recorded as ${me.email ?? me.actor}`;
+      return;
+    }
+    if (me.trust === 'ai') {
+      this.meEl.append(el('span', 'prw-me-label', 'AI: '), el('span', 'prw-me-name', me.name));
+      this.meEl.title = `Marks and answers are recorded as ${me.actor}`;
+      return;
+    }
+    this.meEl.append(el('span', 'prw-me-name', me.name || 'Anonymous'), el('span', 'prw-me-guest', 'guest, unverified'));
+    this.meEl.title = 'You are not signed in: your marks show your typed name as a guest, and do not answer asks addressed to a signed-in person.';
+    if (me.signInUrl) {
+      const link = el('a', 'prw-me-signin', 'Sign in');
+      link.href = me.signInUrl;
+      link.onclick = () => {
+        // Come back here after signing in (read by public/vendor/soma-auth/proof-session.js).
+        try { localStorage.setItem('proof:return-to', JSON.stringify({ path: location.pathname + location.search + location.hash, at: Date.now() })); } catch { /* optional */ }
+      };
+      this.meEl.append(el('span', 'prw-me-sep', ' — '), link);
+    }
   }
 
   private renderStatus(): void {
@@ -847,7 +887,8 @@ export class ReadingWalkUI {
     const rightToggle = el('button', 'prw-collapse');
     rightToggle.type = 'button';
     rightToggle.onclick = () => this.toggleRail('right');
-    rightHead.append(rightTitle, this.statusEl, rightToggle);
+    rightHead.append(rightTitle, this.statusEl, rightToggle, this.meEl);
+    this.meEl.setAttribute('aria-live', 'polite');
     this.provisionalEl.hidden = true;
     this.provisionalEl.setAttribute('aria-live', 'polite');
     this.rightBody.append(this.provisionalEl, this.boxHost, this.changesHost, this.dockHost);

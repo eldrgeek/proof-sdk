@@ -15,6 +15,7 @@
  *   - the answer is a real control (Yes / Not yet / No), recorded with the person's exact words.
  */
 import { actorKey, actorLabel, isAiActor, resolveLineAnchor, type DocLine, type LineAnchor } from './line-marks.js';
+import { IDENTITY_POLICY, isGuestActor } from './identity.js';
 
 export type AskChoice = 'yes' | 'not_yet' | 'no';
 export const ASK_CHOICES: readonly AskChoice[] = ['yes', 'not_yet', 'no'];
@@ -73,8 +74,8 @@ export const ASK_POLICY = {
   reaskReopensAll: true,
   /**
    * An answer from someone not in `to` is recorded and shown, but does not settle the ask for
-   * the people it was asked of (decision; identity is still the typed viewer name until the
-   * team model ties it to sign-in).
+   * the people it was asked of (decision). Since Step B6 answers carry the verified identity
+   * (human:<email>), an agent key's AI, or a guest's typed name (src/shared/identity.ts).
    */
   outsideAnswersSettle: false,
   /** When `to` is empty, the first Yes or No from a human who is not the asker closes it. */
@@ -177,7 +178,9 @@ export function evaluateAsk(ask: ProofAsk, lines: DocLine[]): AskView {
   } else {
     // Any human other than the asker. A Yes / No from one of them closes it; otherwise the
     // latest Not yet from one of them snoozes it.
-    const eligible = answers.filter(answer => !isAiActor(answer.by) && actorKey(answer.by) !== actorKey(ask.by));
+    const eligible = answers.filter(answer => !isAiActor(answer.by)
+      && (IDENTITY_POLICY.emptyToCountsGuests || !isGuestActor(answer.by))
+      && actorKey(answer.by) !== actorKey(ask.by));
     const closing = [...eligible].reverse().find(answer => ASK_POLICY.closes[answer.choice]) ?? null;
     const snoozing = closing ? null : ([...eligible].reverse().find(answer => !ASK_POLICY.closes[answer.choice]) ?? null);
     const answer = closing ?? snoozing;
@@ -215,7 +218,9 @@ export function evaluateAsks(asks: ProofAsk[], lines: DocLine[]): AskView[] {
 
 /** Is `actor` one of the people this ask is for? (Empty `to`: any human who is not the asker.) */
 export function isAskedOf(ask: ProofAsk, actor: string): boolean {
-  if (ask.to.length === 0) return !isAiActor(actor) && actorKey(actor) !== actorKey(ask.by);
+  if (ask.to.length === 0) {
+    return !isAiActor(actor) && (IDENTITY_POLICY.emptyToCountsGuests || !isGuestActor(actor)) && actorKey(actor) !== actorKey(ask.by);
+  }
   return ask.to.some(member => actorKey(member) === actorKey(actor));
 }
 

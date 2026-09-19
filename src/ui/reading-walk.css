@@ -32,6 +32,14 @@ body.prw-on.prw-right-collapsed { --prw-right: var(--prw-collapsed); }
 .prw-right { right: var(--prw-gap); width: calc(var(--prw-right) - 2 * var(--prw-gap)); }
 .prw-rail-head { display: flex; align-items: center; gap: 8px; padding: 10px 10px 8px 14px; border-bottom: 1px solid #ecebe6; flex-shrink: 0; }
 .prw-rail-head strong { font-size: 14px; }
+/* Step B6: who you are, on its own row under the right rail's title. */
+.prw-right .prw-rail-head { flex-wrap: wrap; }
+.prw-me { order: 10; flex-basis: 100%; min-width: 0; margin: 0; font-size: 12px; color: #4b5563; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prw-me-name { font-weight: 600; color: #26303c; }
+.prw-me-badge { display: inline-block; margin-right: 4px; color: #15803d; font-weight: 700; }
+.prw-me-guest { margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: #fef3c7; color: #92400e; font-size: 11px; }
+.prw-me-signin { color: #2563eb; font-weight: 600; text-decoration: none; }
+.prw-me-signin:hover { text-decoration: underline; }
 .prw-status { margin: 0; flex: 1; color: #646b73; font-size: 12px; font-variant-numeric: tabular-nums; }
 .prw-all { margin-left: auto; font-size: 12px; color: #2563eb; text-decoration: none; }
 .prw-collapse { width: 32px; height: 32px; flex-shrink: 0; border: 1px solid #e3e2dc; border-radius: 8px; background: #fff; color: #4b5563; cursor: pointer; font: 600 14px/1 system-ui, sans-serif; }
