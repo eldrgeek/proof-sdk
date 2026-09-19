@@ -20,7 +20,7 @@
 
 export const READING_WALK = {
   /** Step B3b: the reading time of a line is its word count at this rate (words per second)... */
-  WORDS_PER_SECOND: 4,
+  WORDS_PER_SECOND: 8, // COS 2026-09-19: 4 left most of a fast reader's lines "skimmed"; Mike reads fast
   /** ...but never less than this (a one-word heading still needs a real look)... */
   MIN_DWELL_MS: 250,
   /** ...and never more than this (a very long paragraph is not a 30-second wait). */

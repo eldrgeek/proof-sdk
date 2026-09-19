@@ -146,11 +146,11 @@ async function desktop(browser, base, style) {
 
   await check(`${tag}: a line's reading time scales with its words; the rail's Reading speed changes it`, async () => {
     const rate = rail.locator('.prw-rate select');
-    assert.equal(await rate.inputValue(), '4', 'default rate is 4 words/s');
+    assert.equal(await rate.inputValue(), '8', 'default rate is 8 words/s');
     await page.keyboard.press('j'); await page.keyboard.press('j');
     await waitFor(page, i => window.__proofReadingWalk.debugState().focus === i, L.LONG);
     let s = await walk(page);
-    assert.equal(s.dwellMs, 6000, `24 words at 4 words/s is capped at 6 s (got ${s.dwellMs})`);
+    assert.equal(s.dwellMs, 3000, `24 words at the default 8 words/s take 3 s (got ${s.dwellMs})`);
     await page.waitForTimeout(1200);
     assert.notEqual(await dotStatus(page, L.LONG), 'seen', 'a 24-word line was Seen after 1.2 s');
     await rate.selectOption('12');

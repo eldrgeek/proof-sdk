@@ -63,16 +63,17 @@ test('a fling marks nothing Seen: skipped lines and briefly focused lines stay u
   assert.deepEqual(seen(walk.drain()), []);
 });
 
-test('Step B3b: the dwell scales with the line\'s words (4 words/s, min 250 ms, cap 6 s)', () => {
+test('Step B3b: the dwell scales with the line\'s words (8 words/s, min 250 ms, cap 6 s)', () => {
   assert.equal(dwellMsFor(undefined), READING_WALK.MIN_DWELL_MS, 'no word count: the shortest dwell');
   assert.equal(dwellMsFor(1), READING_WALK.MIN_DWELL_MS, 'a one-word line still needs the minimum');
-  assert.equal(dwellMsFor(8), 2000, '8 words at 4 words/s');
+  assert.equal(dwellMsFor(8), 1000, '8 words at 8 words/s');
   assert.equal(dwellMsFor(200), READING_WALK.MAX_DWELL_MS, 'long paragraphs are capped');
   assert.equal(dwellMsFor(8, 8), 1000, 'a faster reader: 8 words at 8 words/s');
   assert.equal(dwellMsFor(40, 0), READING_WALK.MIN_DWELL_MS, 'rate 0 = no length rule');
   assert.equal(countWords('The quick brown fox — jumps, over 2 lazy dogs.'), 9);
   assert.equal(countWords("Don't split e.g. or 3.5 or co-op"), 7);
   const walk = new ReadingWalk([{ key: 'long', words: 20, marks: [] }, { key: 'b', words: 2, marks: [] }], 0);
+  walk.setRate(4); // these cases were written at 4 words/s; the default is now 8
   walk.tick(4999);
   assert.deepEqual(seen(walk.drain()), [], '20 words need 5 s');
   assert.equal(walk.msUntilRead(4999), 1);
@@ -82,6 +83,7 @@ test('Step B3b: the dwell scales with the line\'s words (4 words/s, min 250 ms, 
 
 test('Step B3b: a line scrolled past faster than its reading time is skimmed (once), not seen', () => {
   const walk = new ReadingWalk([{ key: 'a', words: 12, marks: [] }, { key: 'b', words: 12, marks: [] }, { key: 'c', words: 12, marks: [] }, { key: 'd', words: 12, marks: [] }], 0);
+  walk.setRate(4); // these cases were written at 4 words/s; the default is now 8
   walk.moveTo(1, 1000, 'scroll'); // 12 words need 3 s: 1 s is a skim
   walk.moveTo(3, 1100, 'scroll'); // line 2 is jumped over: skimmed too
   let events = walk.drain();
@@ -96,12 +98,14 @@ test('Step B3b: a line scrolled past faster than its reading time is skimmed (on
   assert.deepEqual(seen(events), [1], 'reading it properly later makes it seen');
   assert.equal(walk.hasSkimmed('b'), false);
   const jump = new ReadingWalk([{ key: 'x', words: 12, marks: [] }, { key: 'y', words: 12, marks: [] }, { key: 'z', words: 12, marks: [] }], 0);
+  jump.setRate(4); // these cases were written at 4 words/s; the default is now 8
   jump.moveTo(2, 10, 'jump');
   assert.deepEqual(jump.drain().filter(e => e.type === 'skimmed'), [], 'a jump (Next issue) neither reads nor skims');
 });
 
 test('Step B3b: a per-reader rate changes the reading time', () => {
   const walk = new ReadingWalk([{ key: 'a', words: 24, marks: [] }, { key: 'b', words: 4, marks: [] }], 0);
+  walk.setRate(4); // these cases were written at 4 words/s; the default is now 8
   assert.equal(walk.dwellFor(0), 6000);
   walk.setRate(12);
   assert.equal(walk.dwellFor(0), 2000);
