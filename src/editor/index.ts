@@ -16,6 +16,7 @@ import { ReadingWalkUI } from '../ui/reading-walk';
 import { FoldingUI } from '../ui/folding';
 import { lineMarksViewPlugin } from './plugins/line-marks-view';
 import { foldViewPlugin } from './plugins/fold-view';
+import { askViewPlugin } from './plugins/ask-view';
 import { getReviewStyle, setReviewStyle } from './review-style';
 import { ReviewDecisionHistory, reconnectNativeUndoManager } from './review-decision-history';
 
@@ -1291,6 +1292,8 @@ class ProofEditorImpl implements ProofEditor {
       .use(lineMarksViewPlugin)
       // Proof Documents Step B2: folded sections (view-only node decorations)
       .use(foldViewPlugin)
+      // Proof Documents Step B3: {ask} tags and answer controls (view-only widgets)
+      .use(askViewPlugin)
       .use(marksSyncPlugin((actionMarks, view, actionMetadata) => {
         this.handleMarksChange(actionMarks, view, actionMetadata);
       }))
@@ -3733,6 +3736,7 @@ class ProofEditorImpl implements ProofEditor {
         viewUpdated: () => { this.readingWalk?.notifyViewUpdate(); this.folding?.queueRender(); },
         markScope: (lineIndex) => this.folding?.markScope(lineIndex) ?? null,
         revealLine: (lineIndex) => this.folding?.reveal(lineIndex) ?? false,
+        onAskAnswered: (lineIndex) => this.readingWalk?.askAnswered(lineIndex),
       });
       (window as unknown as { __proofLineMarks?: LineMarksUI }).__proofLineMarks = this.lineMarks;
       // Proof Documents Step 1b: the three-column reading layout and the reading walk.

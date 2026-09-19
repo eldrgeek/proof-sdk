@@ -40,8 +40,13 @@ import {
   verifyAuthoritativeMutationBaseStable,
 } from './collab.js';
 import { canonicalizeStoredMarks, type StoredMark } from '../src/formats/marks.js';
-import { buildIssueReport, writeAgentLineMark } from './line-marks.js';
+import { buildIssueReport, computeServerLines, resolveAgentLineTarget, writeAgentLineMark } from './line-marks.js';
 import { agentKeyActor } from '../src/shared/line-marks.js';
+import { answerAgentAsk, buildAskReport, createAskOnLine, createAgentAsk, listAgentAsks, listAsks, reaskAsk, withdrawAsk } from './asks.js';
+import { ASK_POLICY, askTeamActors, oneLine } from '../src/shared/asks.js';
+
+/** Step B3: edit/v2 conflicts that an insertAfter ask retries (a keystroke landed meanwhile). */
+const ASK_INSERT_RETRY_CODES = new Set(['STALE_REVISION', 'STALE_BASE', 'PROJECTION_STALE', 'LIVE_REF_DRIFT']);
 import {
   deriveCollabApplied,
   deriveCursorApplied,
@@ -2123,11 +2128,20 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
   // markdown this response returns (before span stripping, which the line parser does itself).
   if (typeof body.markdown === 'string' || typeof body.content === 'string') {
     try {
+      // Step B3: asks are evaluated against the same lines, and open ones are Issues.
+      let askReport: ReturnType<typeof buildAskReport> | null = null;
       const report = await buildIssueReport(
         slug,
         typeof body.markdown === 'string' ? body.markdown : String(body.content),
         isRecord(body.marks) ? body.marks : doc?.marks,
+        {
+          asks: (lines) => { const built = buildAskReport(slug, lines); askReport = built; return built.issueInputs; },
+          teamExtra: askTeamActors(listAsks(slug)),
+        },
       );
+      body.asks = (askReport as ReturnType<typeof buildAskReport> | null)?.asks ?? [];
+      links.asks = { method: 'GET', href: `/api/agent/${slug}/asks` };
+      links.createAsk = { method: 'POST', href: `/api/agent/${slug}/asks` };
       body.lineMarks = report.lineMarks;
       body.lines = report.lines;
       body.sections = report.sections;
@@ -2137,7 +2151,7 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
         team: report.team,
         owners: report.owners,
         counts: report.counts,
-        teamRule: 'Step 1: owner + everyone who has line-marked, commented, replied or suggested + active agent keys',
+        teamRule: 'Step 1: owner + everyone who has line-marked, commented, replied or suggested + active agent keys (Step B3: + askers and the people asked)',
       };
       links.lineMark = { method: 'POST', href: `/api/agent/${slug}/marks/line` };
     } catch (error) {
@@ -2320,6 +2334,111 @@ agentRoutes.get('/:slug/snapshot', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * After a successful edit/v2 commit: confirm the collab state and tell open pages. Shared by
+ * POST /edit/v2 and Step B3's POST /asks with insertAfter (an ask on a new line).
+ */
+async function settleEditV2Success(req: Request, slug: string, editV2Body: Record<string, unknown>, result: { status: number; body: unknown }): Promise<void> {
+  if (!(result.status >= 200 && result.status < 300 && isRecord(result.body))) return;
+  const participation = buildParticipationFromMutation(req, slug, editV2Body, { details: 'edit.v2' });
+  if (isSingleWriterEditEnabled()) {
+    const priorCollab = isRecord(result.body.collab) ? result.body.collab : {};
+    const collabApplied = priorCollab.status === 'confirmed';
+    let presenceApplied = false;
+    let cursorApplied = false;
+    if (collabApplied) {
+      const appliedParticipation = applyParticipationToLoadedCollab(slug, participation);
+      presenceApplied = appliedParticipation.presenceApplied;
+      cursorApplied = appliedParticipation.cursorApplied;
+    }
+    result.body = {
+      ...result.body,
+      collab: {
+        ...priorCollab,
+        canonicalStatus: typeof priorCollab.canonicalStatus === 'string'
+          ? priorCollab.canonicalStatus
+          : (collabApplied ? 'confirmed' : 'pending'),
+      },
+      presenceApplied,
+      cursorApplied,
+    };
+    if (collabApplied) {
+      broadcastToRoom(slug, { type: 'document.updated', source: 'agent-edit-v2', timestamp: new Date().toISOString() });
+    }
+  } else {
+    if (TEST_EDIT_V2_POST_COMMIT_DELAY_MS > 0) {
+      await sleep(TEST_EDIT_V2_POST_COMMIT_DELAY_MS);
+    }
+    const priorCollab = isRecord(result.body.collab) ? result.body.collab : {};
+    const priorConfirmed = priorCollab.status === 'confirmed';
+    const {
+      reason: _priorReason,
+      status: _priorStatus,
+      markdownStatus: _priorMarkdownStatus,
+      fragmentStatus: _priorFragmentStatus,
+      canonicalStatus: _priorCanonicalStatus,
+      canonicalExpectedHash: _priorCanonicalExpectedHash,
+      canonicalObservedHash: _priorCanonicalObservedHash,
+      ...priorCollabRest
+    } = priorCollab;
+    const includeCanonicalDiagnostics = shouldIncludeCanonicalDiagnostics();
+    const activeCollabClients = getActiveCollabClientCount(slug);
+    if (priorConfirmed && activeCollabClients === 0) {
+      result.body = {
+        ...result.body,
+        collab: {
+          ...priorCollabRest,
+          ...priorCollab,
+          canonicalStatus: typeof priorCollab.canonicalStatus === 'string' ? priorCollab.canonicalStatus : 'confirmed',
+          ...(includeCanonicalDiagnostics
+            ? {
+                canonicalExpectedHash: priorCollab.canonicalExpectedHash ?? null,
+                canonicalObservedHash: priorCollab.canonicalObservedHash ?? null,
+              }
+            : {}),
+        },
+      };
+      broadcastToRoom(slug, { type: 'document.updated', source: 'agent-edit-v2', timestamp: new Date().toISOString() });
+    } else {
+      const collabStatus = await notifyCollabMutation(
+        slug,
+        participation,
+        {
+          verify: true,
+          source: 'edit.v2',
+          stabilityMs: EDIT_COLLAB_STABILITY_MS,
+          fallbackBarrier: !priorConfirmed,
+          strictLiveDoc: true,
+          apply: false,
+        },
+      );
+      result.body = {
+        ...result.body,
+        collab: {
+          ...priorCollabRest,
+          status: collabStatus.confirmed ? 'confirmed' : 'pending',
+          markdownStatus: collabStatus.confirmed && collabStatus.markdownConfirmed ? 'confirmed' : 'pending',
+          fragmentStatus: collabStatus.confirmed && collabStatus.fragmentConfirmed ? 'confirmed' : 'pending',
+          canonicalStatus: collabStatus.canonicalConfirmed ? 'confirmed' : 'pending',
+          ...(includeCanonicalDiagnostics
+            ? {
+                canonicalExpectedHash: collabStatus.canonicalExpectedHash ?? null,
+                canonicalObservedHash: collabStatus.canonicalObservedHash ?? null,
+              }
+            : {}),
+          ...(collabStatus.confirmed ? {} : { reason: collabStatus.reason ?? 'sync_timeout' }),
+        },
+      };
+      result.status = collabStatus.confirmed ? 200 : 202;
+
+      if (collabStatus.confirmed) {
+        // Only broadcast document.updated after collab confirmation attempt is complete.
+        broadcastToRoom(slug, { type: 'document.updated', source: 'agent-edit-v2', timestamp: new Date().toISOString() });
+      }
+    }
+  }
+}
+
 agentRoutes.post('/:slug/edit/v2', async (req: Request, res: Response) => {
   const mutationRoute = 'POST /edit/v2';
   const slug = getSlug(req);
@@ -2353,103 +2472,7 @@ agentRoutes.post('/:slug/edit/v2', async (req: Request, res: Response) => {
     },
   });
   if (result.status >= 200 && result.status < 300 && isRecord(result.body)) {
-    const participation = buildParticipationFromMutation(req, slug, editV2Body, { details: 'edit.v2' });
-    if (isSingleWriterEditEnabled()) {
-      const priorCollab = isRecord(result.body.collab) ? result.body.collab : {};
-      const collabApplied = priorCollab.status === 'confirmed';
-      let presenceApplied = false;
-      let cursorApplied = false;
-      if (collabApplied) {
-        const appliedParticipation = applyParticipationToLoadedCollab(slug, participation);
-        presenceApplied = appliedParticipation.presenceApplied;
-        cursorApplied = appliedParticipation.cursorApplied;
-      }
-      result.body = {
-        ...result.body,
-        collab: {
-          ...priorCollab,
-          canonicalStatus: typeof priorCollab.canonicalStatus === 'string'
-            ? priorCollab.canonicalStatus
-            : (collabApplied ? 'confirmed' : 'pending'),
-        },
-        presenceApplied,
-        cursorApplied,
-      };
-      if (collabApplied) {
-        broadcastToRoom(slug, { type: 'document.updated', source: 'agent-edit-v2', timestamp: new Date().toISOString() });
-      }
-    } else {
-      if (TEST_EDIT_V2_POST_COMMIT_DELAY_MS > 0) {
-        await sleep(TEST_EDIT_V2_POST_COMMIT_DELAY_MS);
-      }
-      const priorCollab = isRecord(result.body.collab) ? result.body.collab : {};
-      const priorConfirmed = priorCollab.status === 'confirmed';
-      const {
-        reason: _priorReason,
-        status: _priorStatus,
-        markdownStatus: _priorMarkdownStatus,
-        fragmentStatus: _priorFragmentStatus,
-        canonicalStatus: _priorCanonicalStatus,
-        canonicalExpectedHash: _priorCanonicalExpectedHash,
-        canonicalObservedHash: _priorCanonicalObservedHash,
-        ...priorCollabRest
-      } = priorCollab;
-      const includeCanonicalDiagnostics = shouldIncludeCanonicalDiagnostics();
-      const activeCollabClients = getActiveCollabClientCount(slug);
-      if (priorConfirmed && activeCollabClients === 0) {
-        result.body = {
-          ...result.body,
-          collab: {
-            ...priorCollabRest,
-            ...priorCollab,
-            canonicalStatus: typeof priorCollab.canonicalStatus === 'string' ? priorCollab.canonicalStatus : 'confirmed',
-            ...(includeCanonicalDiagnostics
-              ? {
-                  canonicalExpectedHash: priorCollab.canonicalExpectedHash ?? null,
-                  canonicalObservedHash: priorCollab.canonicalObservedHash ?? null,
-                }
-              : {}),
-          },
-        };
-        broadcastToRoom(slug, { type: 'document.updated', source: 'agent-edit-v2', timestamp: new Date().toISOString() });
-      } else {
-        const collabStatus = await notifyCollabMutation(
-          slug,
-          participation,
-          {
-            verify: true,
-            source: 'edit.v2',
-            stabilityMs: EDIT_COLLAB_STABILITY_MS,
-            fallbackBarrier: !priorConfirmed,
-            strictLiveDoc: true,
-            apply: false,
-          },
-        );
-        result.body = {
-          ...result.body,
-          collab: {
-            ...priorCollabRest,
-            status: collabStatus.confirmed ? 'confirmed' : 'pending',
-            markdownStatus: collabStatus.confirmed && collabStatus.markdownConfirmed ? 'confirmed' : 'pending',
-            fragmentStatus: collabStatus.confirmed && collabStatus.fragmentConfirmed ? 'confirmed' : 'pending',
-            canonicalStatus: collabStatus.canonicalConfirmed ? 'confirmed' : 'pending',
-            ...(includeCanonicalDiagnostics
-              ? {
-                  canonicalExpectedHash: collabStatus.canonicalExpectedHash ?? null,
-                  canonicalObservedHash: collabStatus.canonicalObservedHash ?? null,
-                }
-              : {}),
-            ...(collabStatus.confirmed ? {} : { reason: collabStatus.reason ?? 'sync_timeout' }),
-          },
-        };
-        result.status = collabStatus.confirmed ? 200 : 202;
-
-        if (collabStatus.confirmed) {
-          // Only broadcast document.updated after collab confirmation attempt is complete.
-          broadcastToRoom(slug, { type: 'document.updated', source: 'agent-edit-v2', timestamp: new Date().toISOString() });
-        }
-      }
-    }
+    await settleEditV2Success(req, slug, editV2Body, result);
   } else if (isRecord(result.body)) {
     storeIdempotentMutationResult(replay, mutationRoute, slug, result.status, result.body);
   } else {
@@ -3503,6 +3526,163 @@ agentRoutes.post('/:slug/marks/line', async (req: Request, res: Response) => {
   if (result.status >= 200 && result.status < 300) {
     notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'line_mark.set' }), { apply: false });
   }
+  sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+});
+
+// ============================================================================
+// Proof Documents Step B3: {ask} decision lines
+// ============================================================================
+
+/** The actor an agent request acts as: explicit "by", else its key's AI. Humans need the owner credential. */
+function resolveAgentActor(req: Request, slug: string, payload: Record<string, unknown>, role: ShareRole):
+  { ok: true; by: string } | { ok: false; status: number; body: Record<string, unknown> } {
+  const tokenId = agentRequestTokenIds.get(req) ?? null;
+  const keyLabel = tokenId ? listDocumentAgentKeys(slug).find(key => key.tokenId === tokenId)?.label : undefined;
+  const explicitBy = typeof payload.by === 'string' && payload.by.trim() ? payload.by.trim() : null;
+  const by = explicitBy ?? (keyLabel ? agentKeyActor(keyLabel) : null);
+  if (!by) return { ok: false, status: 400, body: { success: false, code: 'INVALID_ACTOR', error: 'Pass "by", for example "ai:claude"' } };
+  if (role !== 'owner_bot' && !/^ai:/i.test(by)) {
+    return { ok: false, status: 403, body: { success: false, code: 'AI_ACTOR_REQUIRED', error: 'An agent key acts as an AI: "by" must start with "ai:"' } };
+  }
+  return { ok: true, by };
+}
+
+async function currentAgentMarkdown(slug: string): Promise<string> {
+  await recoverCanonicalDocumentIfNeeded(slug, 'state');
+  const state = await executeDocumentOperationAsync(slug, 'GET', '/state');
+  const stateBody = asPayload(state.body);
+  return typeof stateBody.markdown === 'string' ? stateBody.markdown : (getDocumentBySlug(slug)?.markdown ?? '');
+}
+
+// List every live ask with its answers, evaluated against the current text.
+agentRoutes.get('/:slug/asks', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  const result = await listAgentAsks(slug, await currentAgentMarkdown(slug));
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(result.status).json(result.body);
+});
+
+// Create an ask. Body: { recommend, to?, ifYes?, by?, <line target> } where the line target is
+// lineIndex | hash[, occurrence] | ref | quote (as for /marks/line), or { insertAfter, text } to
+// add a new line after a block and make it the ask in one call (needs edit access).
+agentRoutes.post('/:slug/asks', async (req: Request, res: Response) => {
+  const mutationRoute = 'POST /asks';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute }); return; }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body);
+  const actor = resolveAgentActor(req, slug, payload, role);
+  if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route: mutationRoute, slug }); return; }
+  const replay = await maybeReplayIdempotentMutation(req, res, slug, mutationRoute, mutationRoute);
+  if (replay.handled) return;
+  const finish = (status: number, body: Record<string, unknown>) => {
+    storeIdempotentMutationResult(replay, mutationRoute, slug, status, body);
+    if (status >= 200 && status < 300) {
+      notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'ask.create' }), { apply: false });
+    }
+    sendMutationResponse(res, status, body, { route: mutationRoute, slug });
+  };
+
+  if (payload.insertAfter === undefined) {
+    const result = await createAgentAsk(slug, await currentAgentMarkdown(slug), payload, actor.by);
+    finish(result.status, result.body);
+    return;
+  }
+
+  // insertAfter + text: one new line after a block, then the ask on it.
+  if (role !== 'editor' && role !== 'owner_bot') {
+    finish(403, { success: false, code: 'EDIT_REQUIRED', error: 'Adding a line needs edit access; ask on an existing line instead' });
+    return;
+  }
+  const text = oneLine(payload.text, 2000);
+  if (!text) { finish(400, { success: false, code: 'TEXT_REQUIRED', error: '"text" (the question line, one line) is required with insertAfter' }); return; }
+  if (!oneLine(payload.recommend, ASK_POLICY.maxRecommend)) {
+    finish(400, { success: false, code: 'RECOMMEND_REQUIRED', error: 'An ask carries one recommendation line ("recommend"): what you would do, not a menu' });
+    return;
+  }
+  const beforeLines = await computeServerLines(await currentAgentMarkdown(slug));
+  let blockRef: string | null = null;
+  if (typeof payload.insertAfter === 'string' && /^b\d+$/i.test(payload.insertAfter)) {
+    blockRef = payload.insertAfter.toLowerCase();
+  } else if (isRecord(payload.insertAfter)) {
+    const target = resolveAgentLineTarget(beforeLines, payload.insertAfter);
+    if (!target.ok) { finish(target.status, { success: false, code: target.code, error: `insertAfter: ${target.error}`, ...(target.candidates ? { candidates: target.candidates } : {}) }); return; }
+    blockRef = `b${target.line.block + 1}`;
+  }
+  if (!blockRef) { finish(400, { success: false, code: 'INVALID_INSERT_AFTER', error: '"insertAfter" must be a block ref like "b3" or a line target like {"quote": "..."}' }); return; }
+  const insertedBlock = Number(blockRef.slice(1)); // 0-based index of the new block
+  let edit: { status: number; body: unknown } | null = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const snapshot = await buildAgentSnapshot(slug);
+    const revision = isRecord(snapshot.body) && typeof snapshot.body.revision === 'number' ? snapshot.body.revision : null;
+    if (revision === null) { edit = { status: 409, body: { success: false, code: 'SNAPSHOT_UNAVAILABLE', error: 'The document is not ready for edits; retry shortly' } }; break; }
+    const editBody = { by: actor.by, baseRevision: revision, operations: [{ op: 'insert_after', ref: blockRef, blocks: [{ markdown: text }] }] };
+    edit = await applyAgentEditV2(slug, editBody);
+    if (edit.status >= 200 && edit.status < 300) {
+      await settleEditV2Success(req, slug, editBody, edit);
+      break;
+    }
+    const code = isRecord(edit.body) ? edit.body.code : null;
+    if (!ASK_INSERT_RETRY_CODES.has(String(code))) break;
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  if (!edit || edit.status < 200 || edit.status >= 300) {
+    finish(edit?.status ?? 500, { ...(isRecord(edit?.body) ? edit!.body as Record<string, unknown> : {}), success: false, stage: 'insert' });
+    return;
+  }
+  const afterLines = await computeServerLines(await currentAgentMarkdown(slug));
+  const wanted = afterLines.filter(line => line.block === insertedBlock);
+  const plain = text.replace(/[*_`~\[\]]/g, '').slice(0, 40);
+  const line = wanted.find(candidate => candidate.text.includes(plain)) ?? wanted[0];
+  if (!line) { finish(500, { success: false, code: 'INSERTED_LINE_NOT_FOUND', error: `The line was added but could not be found for the ask; ask on it with {"ref": "b${insertedBlock + 1}"}` }); return; }
+  const result = createAskOnLine(slug, line, afterLines, { by: actor.by, to: payload.to, recommend: payload.recommend, ifYes: payload.ifYes, source: 'agent' });
+  if (result.status === 200) result.body.inserted = { ref: `b${insertedBlock + 1}`, lineIndex: line.index, text: line.text };
+  finish(result.status, result.body);
+});
+
+// An AI answers an ask it was asked (or records its view). Body: { choice: yes|not_yet|no, words?, by? }.
+agentRoutes.post('/:slug/asks/:askId/answer', async (req: Request, res: Response) => {
+  const mutationRoute = 'POST /asks/:id/answer';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute }); return; }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body);
+  const actor = resolveAgentActor(req, slug, payload, role);
+  if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route: mutationRoute, slug }); return; }
+  const askId = String(req.params.askId ?? '');
+  const result = await answerAgentAsk(slug, await currentAgentMarkdown(slug), askId, payload, actor.by, true);
+  sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+});
+
+// The asker re-asks (reopens it for everyone; may update recommend / ifYes / to).
+agentRoutes.post('/:slug/asks/:askId/reask', async (req: Request, res: Response) => {
+  const mutationRoute = 'POST /asks/:id/reask';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute }); return; }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body);
+  const actor = resolveAgentActor(req, slug, payload, role);
+  if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route: mutationRoute, slug }); return; }
+  const result = reaskAsk(slug, { id: String(req.params.askId ?? ''), by: actor.by, isOwner: role === 'owner_bot', recommend: payload.recommend, ifYes: payload.ifYes, to: payload.to });
+  sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+});
+
+// The asker withdraws an ask (the line stays; its answers stay in the event log).
+agentRoutes.delete('/:slug/asks/:askId', async (req: Request, res: Response) => {
+  const mutationRoute = 'DELETE /asks/:id';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute }); return; }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body ?? {});
+  const actor = resolveAgentActor(req, slug, { ...payload, ...(typeof req.query.by === 'string' ? { by: req.query.by } : {}) }, role);
+  if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route: mutationRoute, slug }); return; }
+  const result = withdrawAsk(slug, { id: String(req.params.askId ?? ''), by: actor.by, isOwner: role === 'owner_bot' });
   sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
 });
 

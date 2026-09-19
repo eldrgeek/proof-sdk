@@ -175,22 +175,26 @@ export interface SectionIssueCount {
   total: number;
   lines: number;
   reviewMarks: number;
+  /** Step B3: open asks in the section. */
+  asks: number;
 }
 
 /** The Issues (same computation as the top bar) that sit inside the section, heading included. */
 export function sectionIssueCount(section: DocSection, lines: DocLine[], summary: IssueSummary | null): SectionIssueCount {
-  const count: SectionIssueCount = { total: 0, lines: 0, reviewMarks: 0 };
+  const count: SectionIssueCount = { total: 0, lines: 0, reviewMarks: 0, asks: 0 };
   if (!summary) return count;
   const from = lines[section.headingIndex]?.pos ?? 0;
   const to = section.lineEnd < lines.length ? lines[section.lineEnd].pos : Number.POSITIVE_INFINITY;
   for (const issue of summary.issues) {
     if (issue.type === 'line') {
       if (issue.lineIndex >= section.headingIndex && issue.lineIndex < section.lineEnd) count.lines += 1;
+    } else if (issue.type === 'ask') {
+      if (issue.lineIndex >= section.headingIndex && issue.lineIndex < section.lineEnd) count.asks += 1;
     } else if (typeof issue.pos === 'number' && issue.pos >= from && issue.pos < to) {
       count.reviewMarks += 1;
     }
   }
-  count.total = count.lines + count.reviewMarks;
+  count.total = count.lines + count.reviewMarks + count.asks;
   return count;
 }
 

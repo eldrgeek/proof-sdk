@@ -1263,6 +1263,40 @@ function initDatabase(): void {
   `);
   d.exec(`CREATE INDEX IF NOT EXISTS idx_document_line_marks_slug ON document_line_marks(document_slug, updated_at)`);
 
+  // Proof Documents Step B3: {ask} decision lines. Beside the document like line marks.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_asks (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      to_json TEXT NOT NULL DEFAULT '[]',
+      recommend TEXT NOT NULL,
+      if_yes TEXT,
+      line_hash TEXT NOT NULL,
+      line_occurrence INTEGER NOT NULL,
+      line_ordinal INTEGER NOT NULL,
+      line_kind TEXT NOT NULL,
+      line_excerpt TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      asked_at TEXT NOT NULL,
+      withdrawn_at TEXT
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_asks_slug ON document_asks(document_slug, created_at)`);
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_ask_answers (
+      id TEXT PRIMARY KEY,
+      ask_id TEXT NOT NULL,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      choice TEXT NOT NULL,
+      words TEXT NOT NULL DEFAULT '',
+      line_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_ask_answers_ask ON document_ask_answers(ask_id, created_at)`);
+
   d.exec(`
     CREATE TABLE IF NOT EXISTS document_y_updates (
       seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4062,4 +4096,95 @@ export function replaceDocumentLineMark(input: {
     return removed;
   });
   return tx();
+}
+
+
+// ============================================================================
+// Proof Documents Step B3: asks
+// ============================================================================
+
+export interface DocumentAskRow {
+  id: string;
+  document_slug: string;
+  by_actor: string;
+  to_json: string;
+  recommend: string;
+  if_yes: string | null;
+  line_hash: string;
+  line_occurrence: number;
+  line_ordinal: number;
+  line_kind: string;
+  line_excerpt: string;
+  created_at: string;
+  asked_at: string;
+  withdrawn_at: string | null;
+}
+
+export interface DocumentAskAnswerRow {
+  id: string;
+  ask_id: string;
+  document_slug: string;
+  by_actor: string;
+  choice: string;
+  words: string;
+  line_hash: string;
+  created_at: string;
+}
+
+export function listDocumentAsks(slug: string, options: { includeWithdrawn?: boolean } = {}): DocumentAskRow[] {
+  return getDb().prepare(`
+    SELECT * FROM document_asks WHERE document_slug = ? ${options.includeWithdrawn ? '' : 'AND withdrawn_at IS NULL'}
+    ORDER BY created_at ASC, id ASC
+  `).all(slug) as DocumentAskRow[];
+}
+
+export function getDocumentAsk(slug: string, id: string): DocumentAskRow | undefined {
+  return getDb().prepare(`SELECT * FROM document_asks WHERE document_slug = ? AND id = ?`).get(slug, id) as DocumentAskRow | undefined;
+}
+
+export function listDocumentAskAnswers(slug: string): DocumentAskAnswerRow[] {
+  return getDb().prepare(`
+    SELECT * FROM document_ask_answers WHERE document_slug = ? ORDER BY created_at ASC, id ASC
+  `).all(slug) as DocumentAskAnswerRow[];
+}
+
+export function insertDocumentAsk(row: DocumentAskRow): void {
+  assertWritesAllowed('insertDocumentAsk');
+  getDb().prepare(`
+    INSERT INTO document_asks (
+      id, document_slug, by_actor, to_json, recommend, if_yes, line_hash, line_occurrence, line_ordinal,
+      line_kind, line_excerpt, created_at, asked_at, withdrawn_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(row.id, row.document_slug, row.by_actor, row.to_json, row.recommend, row.if_yes, row.line_hash, row.line_occurrence,
+    row.line_ordinal, row.line_kind, row.line_excerpt, row.created_at, row.asked_at, row.withdrawn_at);
+}
+
+export function insertDocumentAskAnswer(row: DocumentAskAnswerRow): void {
+  assertWritesAllowed('insertDocumentAskAnswer');
+  getDb().prepare(`
+    INSERT INTO document_ask_answers (id, ask_id, document_slug, by_actor, choice, words, line_hash, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(row.id, row.ask_id, row.document_slug, row.by_actor, row.choice, row.words, row.line_hash, row.created_at);
+}
+
+/** The ask follows its line: store the line's current anchor (after an edit or a move). */
+export function updateDocumentAskAnchor(slug: string, id: string, anchor: { hash: string; occurrence: number; ordinal: number; kind: string; excerpt: string }): void {
+  assertWritesAllowed('updateDocumentAskAnchor');
+  getDb().prepare(`
+    UPDATE document_asks SET line_hash = ?, line_occurrence = ?, line_ordinal = ?, line_kind = ?, line_excerpt = ?
+    WHERE document_slug = ? AND id = ?
+  `).run(anchor.hash, anchor.occurrence, anchor.ordinal, anchor.kind, anchor.excerpt, slug, id);
+}
+
+export function updateDocumentAskFields(slug: string, id: string, fields: { asked_at?: string; withdrawn_at?: string | null; recommend?: string; if_yes?: string | null; to_json?: string }): void {
+  assertWritesAllowed('updateDocumentAskFields');
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  for (const [key, value] of Object.entries(fields)) {
+    if (value === undefined) continue;
+    sets.push(`${key} = ?`);
+    values.push(value);
+  }
+  if (sets.length === 0) return;
+  getDb().prepare(`UPDATE document_asks SET ${sets.join(', ')} WHERE document_slug = ? AND id = ?`).run(...values, slug, id);
 }

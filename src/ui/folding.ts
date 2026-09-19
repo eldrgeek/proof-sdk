@@ -326,7 +326,7 @@ export class FoldingUI {
       }
       const issuesText = !loaded ? 'Issues loading' : (count.total === 0
         ? 'no Issues: resolved'
-        : `${count.total} ${count.total === 1 ? 'Issue remains' : 'Issues remain'} (${count.lines} ${count.lines === 1 ? 'line' : 'lines'}, ${count.reviewMarks} open ${count.reviewMarks === 1 ? 'comment or suggestion' : 'comments or suggestions'})`);
+        : `${count.total} ${count.total === 1 ? 'Issue remains' : 'Issues remain'} (${count.lines} ${count.lines === 1 ? 'line' : 'lines'}, ${count.reviewMarks} open ${count.reviewMarks === 1 ? 'comment or suggestion' : 'comments or suggestions'}${count.asks ? `, ${count.asks} open ${count.asks === 1 ? 'ask' : 'asks'}` : ''})`);
       chip.setAttribute('aria-label', `${folded ? 'Unfold' : 'Fold'} section “${line.text.slice(0, 60)}”: ${issuesText}`);
       chip.title = `${folded ? `Folded: ${bodyLines} ${bodyLines === 1 ? 'line' : 'lines'} hidden. Click to unfold.` : 'Click to fold this section.'}\n${issuesText}`;
       const size = phone ? 36 : 24;

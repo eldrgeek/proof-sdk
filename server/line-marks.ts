@@ -31,6 +31,7 @@ import {
   isLineAnchor,
   isLineMarkStatus,
   normalizeLineText,
+  type AskIssueInput,
   type DocLine,
   type IssueSummary,
   type LineAnchor,
@@ -139,12 +140,13 @@ export function activeAgentKeyActors(slug: string): string[] {
   }
 }
 
-export function computeDocumentTeam(slug: string, lineMarks: LineMark[], reviewMarks: ReviewMarkLike[]): string[] {
+export function computeDocumentTeam(slug: string, lineMarks: LineMark[], reviewMarks: ReviewMarkLike[], extra: string[] = []): string[] {
   return computeStep1Team({
     owners: documentOwnerActors(slug),
     lineMarks,
     reviewMarks,
     agentKeyActors: activeAgentKeyActors(slug),
+    extra,
   });
 }
 
@@ -156,12 +158,18 @@ export interface IssueReport extends IssueSummary {
   sections: Array<{ headingIndex: number; ref: string; level: number; text: string; lineEnd: number; parent: number | null; issues: number }>;
 }
 
-export async function buildIssueReport(slug: string, markdown: string, rawMarks: unknown): Promise<IssueReport> {
+export async function buildIssueReport(slug: string, markdown: string, rawMarks: unknown, options: {
+  /** Step B3: the open asks, evaluated against these lines (server/asks.ts buildAskReport). */
+  asks?: (lines: DocLine[]) => AskIssueInput[];
+  /** Step B3: askers and the people asked are team members too. */
+  teamExtra?: string[];
+} = {}): Promise<IssueReport> {
   const lines = await computeServerLines(markdown);
   const lineMarks = listLineMarks(slug);
   const reviewMarks = reviewMarksFromStored(rawMarks);
-  const team = computeDocumentTeam(slug, lineMarks, reviewMarks);
-  const summary = computeIssues({ lines, lineMarks, team, reviewMarks });
+  const team = computeDocumentTeam(slug, lineMarks, reviewMarks, options.teamExtra);
+  const asks = options.asks ? options.asks(lines) : [];
+  const summary = computeIssues({ lines, lineMarks, team, reviewMarks, asks });
   const sections = computeSections(lines).map(section => ({
     headingIndex: section.headingIndex,
     ref: `b${section.block + 1}`,

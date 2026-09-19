@@ -15,10 +15,13 @@
  * gesture steps to the next mark; scrolling past a suggestion accepts it provisionally (only in
  * this browser tab and its session storage) until an explicit action commits it.
  * Keys, only while nobody is typing: A agree, R reject (reason field), J / ↓ next, K / ↑ back.
+ * Step B3: on a line that carries an ask, Y answers Yes, N No and T Not yet (N and T open the
+ * reason field first). Answering an ask is an explicit action (it commits scroll-accepts above).
  */
 import type { Mark, CommentData, ReplaceData } from '../formats/marks';
 import { getActorName, getMarkColor } from '../formats/marks';
 import { actorKey, type DocLine } from '../shared/line-marks';
+import { ASK_POLICY, type AskChoice } from '../shared/asks';
 import { GestureGate, READING_WALK, ReadingWalk, type WalkLine, type WalkMark, type WalkSnapshot } from '../shared/reading-walk';
 import type { LineMarksUI, MarkBox } from './line-marks';
 import { isOpenReviewMark, type PlayMakerReview, type ReviewAction } from './playmaker-review';
@@ -385,8 +388,30 @@ export class ReadingWalkUI {
     if (key === 'a' || key === 'A') { event.preventDefault(); this.markFocus('agreed'); return; }
     if (key === 'r' || key === 'R') { event.preventDefault(); this.openReason(); return; }
     if (key === 'j' || key === 'J' || key === 'ArrowDown') { event.preventDefault(); this.next(); return; }
-    if (key === 'k' || key === 'K' || key === 'ArrowUp') { event.preventDefault(); this.previous(); }
+    if (key === 'k' || key === 'K' || key === 'ArrowUp') { event.preventDefault(); this.previous(); return; }
+    // Step B3: Y / N / T answer the ask on the focus line (only when the line carries one).
+    const choice = (Object.keys(ASK_POLICY.keys) as AskChoice[]).find(c => ASK_POLICY.keys[c] === key.toLowerCase());
+    if (choice && this.host.lineMarks().askForLine(this.walk.focus)) {
+      event.preventDefault();
+      this.answerFocus(choice);
+    }
   };
+
+  /** Step B3: Y / N / T on the focus line's ask. */
+  private answerFocus(choice: AskChoice): void {
+    if (ASK_POLICY.reasonRequired[choice]) {
+      if (isPhone()) this.openSheet('right');
+      else if (document.body.classList.contains('prw-right-collapsed')) this.setCollapsed('right', false);
+    }
+    this.renderNow();
+    this.box?.ask?.choose(choice);
+  }
+
+  /** Step B3: the viewer answered the ask on `line` (from any control): an explicit action. */
+  askAnswered(line: number): void {
+    if (!ASK_POLICY.answerIsExplicitReadingAction) return;
+    this.explicit(line);
+  }
 
   /** A click on a review mark in the text is an explicit action on its line. */
   private onDocClick = (event: MouseEvent): void => {
@@ -689,7 +714,7 @@ export class ReadingWalkUI {
     const state = lm.lineState(walk.focus);
     const summary = lm.issueSummary();
     const marks = state ? [...state.marks.values()].map(e => `${e.mark.id}:${e.mark.status}:${e.current}:${e.mark.reason ?? ''}`).join(',') : '';
-    const sig = `${walk.focus}|${line.hash}|${line.occurrence}|${marks}|${summary?.team.join(',') ?? ''}|${lm.isLoaded()}`;
+    const sig = `${walk.focus}|${line.hash}|${line.occurrence}|${marks}|${summary?.team.join(',') ?? ''}|${lm.isLoaded()}|${lm.askSignature(walk.focus)}`;
     if (sig === this.boxSig && this.box) return;
     // Keep the box while the reader types a reason for this same line.
     const active = document.activeElement;
@@ -699,7 +724,9 @@ export class ReadingWalkUI {
       onExplicit: () => this.explicit(walk.focus),
     });
     const head = el('div', 'prw-box-head');
-    head.append(el('strong', undefined, 'Mark this line'), el('span', 'prw-keys', 'A agree · R reject · J/K move'));
+    const hasAsk = Boolean(lm.askForLine(walk.focus));
+    head.append(el('strong', undefined, 'Mark this line'),
+      el('span', 'prw-keys', hasAsk ? 'Y yes · N no · T not yet' : 'A agree · R reject · J/K move'));
     this.boxHost.replaceChildren(head, box.root);
     this.box = box;
   }

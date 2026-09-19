@@ -117,7 +117,7 @@ try {
         { id: 's2', kind: 'insert', by: 'ai:claude', open: false, pos: 60 },
       ],
     });
-    assert.deepEqual(result.issues.map(issue => issue.type === 'line' ? 'line' : issue.markId), ['c1', 's1']);
+    assert.deepEqual(result.issues.map(issue => issue.type === 'line' || issue.type === 'ask' ? issue.type : issue.markId), ['c1', 's1']);
   });
 
   await test('hash reset: editing a line makes every mark on it unseen (stale, shown as changed)', async () => {

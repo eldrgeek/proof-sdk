@@ -102,6 +102,7 @@ import {
 } from './mutation-stage.js';
 import { resolveExplicitAgentIdentity } from '../src/shared/agent-identity.js';
 import { activeAgentKeyActors, documentOwnerActors, isLibraryDocumentCreator, listLineMarks, writeLineMark, writeLineMarksBatch } from './line-marks.js';
+import { answerAsk, listAsks } from './asks.js';
 import { getLibrarySession, isLibraryEnabled } from './library/auth.js';
 import {
   buildProofSdkAgentDescriptor,
@@ -1893,6 +1894,8 @@ apiRoutes.get('/documents/:slug/line-marks', (req: Request, res: Response) => {
   res.json({
     success: true,
     lineMarks: listLineMarks(slug),
+    // Step B3: the page evaluates asks against its own lines (same poll, no extra request).
+    asks: listAsks(slug),
     owners: documentOwnerActors(slug),
     agentKeyActors: activeAgentKeyActors(slug),
     viewer: { canMark: access.canMark, canApprove: access.canApprove },
@@ -1936,6 +1939,50 @@ apiRoutes.post('/documents/:slug/line-marks', opsRateLimiter, (req: Request, res
     replaceAnchors: body.replaceAnchors,
     canApprove: access.canApprove,
     source: 'page',
+  });
+  res.status(result.status).json(result.body);
+});
+
+// Proof Documents Step B3: asks for the page. Reads need read access; answering needs comment access.
+apiRoutes.get('/documents/:slug/asks', (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) {
+    res.status(404).json({ success: false, error: 'Document not found' });
+    return;
+  }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canRead) {
+    res.status(403).json({ success: false, error: 'No read access' });
+    return;
+  }
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, asks: listAsks(slug) });
+});
+
+// Body: { by, choice: yes|not_yet|no, words?, anchor } where anchor is the question line as the
+// page sees it now (the same anchor shape as a line mark).
+apiRoutes.post('/documents/:slug/asks/:askId/answer', opsRateLimiter, (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) {
+    res.status(404).json({ success: false, error: 'Document not found' });
+    return;
+  }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canMark) {
+    res.status(403).json({ success: false, error: 'Answering needs comment access' });
+    return;
+  }
+  const body = isRecord(req.body) ? req.body : {};
+  const result = answerAsk(slug, {
+    id: String(req.params.askId ?? ''),
+    by: body.by,
+    choice: body.choice,
+    words: body.words,
+    line: body.anchor ? { anchor: body.anchor as never } : null,
+    source: 'page',
+    canMark: access.canMark,
   });
   res.status(result.status).json(result.body);
 });

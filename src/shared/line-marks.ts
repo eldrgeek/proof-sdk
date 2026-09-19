@@ -303,6 +303,19 @@ export type ProofIssue =
     rejectedBy: Array<{ by: string; reason: string | null }>;
   }
   | {
+    /** Step B3: an ask on this line that someone it was asked of has not answered. */
+    type: 'ask';
+    askId: string;
+    lineIndex: number;
+    pos: number;
+    kind: string;
+    excerpt: string;
+    by: string;
+    recommend: string;
+    openFor: string[];
+    snoozedFor: string[];
+  }
+  | {
     type: 'comment' | 'suggestion';
     markId: string;
     pos: number | null;
@@ -315,7 +328,17 @@ export interface IssueSummary {
   team: string[];
   issues: ProofIssue[];
   aligned: boolean;
-  counts: { lines: number; lineIssues: number; reviewMarkIssues: number; total: number };
+  counts: { lines: number; lineIssues: number; reviewMarkIssues: number; askIssues: number; total: number };
+}
+
+/** Step B3: an open ask, already evaluated (src/shared/asks.ts askIssueInputs). */
+export interface AskIssueInput {
+  id: string;
+  lineIndex: number;
+  by: string;
+  recommend: string;
+  openFor: string[];
+  snoozedFor: string[];
 }
 
 export function computeIssues(input: {
@@ -323,6 +346,7 @@ export function computeIssues(input: {
   lineMarks: LineMark[];
   team: string[];
   reviewMarks?: ReviewMarkLike[];
+  asks?: AskIssueInput[];
 }): IssueSummary {
   const states = buildLineStates(input.lines, input.lineMarks);
   const issues: ProofIssue[] = [];
@@ -373,14 +397,34 @@ export function computeIssues(input: {
       });
     }
   }
-  // Document order; review marks without a position go last.
-  issues.sort((a, b) => (a.pos ?? Number.MAX_SAFE_INTEGER) - (b.pos ?? Number.MAX_SAFE_INTEGER));
-  const lineIssues = issues.length - reviewMarkIssues;
+  let askIssues = 0;
+  for (const ask of input.asks ?? []) {
+    const line = input.lines[ask.lineIndex];
+    if (!line || ask.openFor.length === 0) continue;
+    askIssues += 1;
+    issues.push({
+      type: 'ask',
+      askId: ask.id,
+      lineIndex: line.index,
+      pos: line.pos,
+      kind: line.kind,
+      excerpt: line.text.slice(0, 120),
+      by: ask.by,
+      recommend: ask.recommend,
+      openFor: ask.openFor,
+      snoozedFor: ask.snoozedFor,
+    });
+  }
+  // Document order; review marks without a position go last. At one position an ask comes
+  // before the line's own Issue, so Next issue lands on the decision first.
+  const rank = (issue: ProofIssue) => (issue.type === 'ask' ? 0 : issue.type === 'line' ? 1 : 2);
+  issues.sort((a, b) => ((a.pos ?? Number.MAX_SAFE_INTEGER) - (b.pos ?? Number.MAX_SAFE_INTEGER)) || (rank(a) - rank(b)));
+  const lineIssues = issues.length - reviewMarkIssues - askIssues;
   return {
     team: input.team,
     issues,
     aligned: issues.length === 0,
-    counts: { lines: input.lines.length, lineIssues, reviewMarkIssues, total: issues.length },
+    counts: { lines: input.lines.length, lineIssues, reviewMarkIssues, askIssues, total: issues.length },
   };
 }
 

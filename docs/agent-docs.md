@@ -362,6 +362,35 @@ batch is recorded as one `line_mark.batch` event (`count`, `statuses`, `anchors`
 `POST /api/documents/<slug>/line-marks` takes the same batch as
 `{ by, status, lines: [{ anchor, status?, reason?, replaceIds? }] }`.
 
+## Asks: Decision Lines (Proof Documents, Step B3)
+
+An **ask** turns one line of the document into a decision for named people. It follows the Pulse Zero card standard: one decision per ask; the question line carries its own context; the asker brings a **recommendation**, not a menu (Completed Staff Work); an optional one-line **ifYes** previews the consequence; the answer is a real control (**Yes / Not yet / No**) recorded in the person's exact words. An ask is stored beside the document, like a line mark (never in the text), and follows its line through edits.
+
+Create an ask on an existing line (the target works like `/marks/line`: `lineIndex`, `hash`[+`occurrence`], `ref`, or `quote`):
+
+```bash
+curl -X POST "$BASE/api/agent/$SLUG/asks" -H "x-share-token: $KEY" -H 'Content-Type: application/json' \
+  -d '{"quote": "Ship the ask control tonight?", "to": ["human:Mike"], "recommend": "Yes: every check passes", "ifYes": "The COS deploys at 06:00 UTC"}'
+```
+
+Or add a new line and make it an ask in one call (needs edit access): `{"insertAfter": {"quote": "..."} | "b7", "text": "Can we retire PM /review this week?", "to": [...], "recommend": "..."}`. The response carries `inserted: {ref, lineIndex, text}`.
+
+- `to`: identities (`"human:Mike"`, `"ai:critic"`; a bare name means a human). Default: the document's human owners. An empty list means any human other than the asker.
+- `recommend` is required (400 `RECOMMEND_REQUIRED`). One ask per line (409 `ASK_EXISTS`: re-ask or withdraw instead).
+- `by` defaults to your key's AI; an agent key cannot act as a human.
+
+Read and act:
+
+- `GET /api/agent/$SLUG/asks` lists every live ask: `question`, `recommend`, `ifYes`, `to`, `lineIndex`, `ref`, `status` (`open` / `snoozed` / `yes` / `no` / `mixed`), `openFor`, `snoozedFor`, `people[]` (each person's state, choice and words), `answers` (latest counting answer per person) and `history` (every answer ever given).
+- `/state` includes the same list as `asks`; every open ask is an Issue of `type: "ask"` (`askId`, `openFor`, `recommend`), counted in `alignment.counts.askIssues` and in its section's count. Askers and the people asked join the team.
+- Each answer emits an `ask.answered` event (`GET /events/pending`): `data.choice`, `data.words` (exact), `data.question`, `data.recommend`, `data.askedOf`; `actor` is who answered. Harvest answers from these events.
+- `POST /asks/:id/answer` `{choice: "yes" | "not_yet" | "no", words}`: an AI answers an ask it was asked. `No` and `Not yet` need `words` (400 `REASON_REQUIRED`).
+- `POST /asks/:id/reask` (asker or owner; may change `recommend`, `ifYes`, `to`) reopens it for everyone. `DELETE /asks/:id` withdraws it.
+
+Rules (policy `ASK_POLICY` in `src/shared/asks.ts`): Yes and No close the ask for the person who answered. Not yet snoozes it for that person (not an Issue) until the question line's text changes or the asker re-asks. Any answer stops counting when the question line's text changes. An answer from someone not in `to` is recorded and shown but does not settle the ask. Answering marks the answerer's line Seen (never lowers a mark). A deleted question line leaves the ask `orphaned` (listed, not an Issue).
+
+In the page: the question line shows an **Ask** tag and, under it, the recommendation and the Yes / Not yet / No buttons with a words field; the right rail and the phone sheet show the same control for the focus line. Keys while reading: **Y** yes, **N** no, **T** not yet (N and T open the reason field). Answering is an explicit action for the reading walk: it commits the scroll-accepts above the line. The page answers through `POST /api/documents/$SLUG/asks/:id/answer` `{by, choice, words, anchor}`, and reads asks from the line-marks poll (`GET /api/documents/$SLUG/line-marks` returns `asks`).
+
 ## Presence And Event Polling
 
 Poll for changes:

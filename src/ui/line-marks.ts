@@ -30,6 +30,9 @@ import {
   type ReviewMarkLike,
 } from '../shared/line-marks';
 import { FOLDING, planSectionMark } from '../shared/folding';
+import { askIssueInputs, askTeamActors, evaluateAsks, type AskChoice, type AskView, type ProofAsk } from '../shared/asks';
+import { setAskDecorations, type AskDecorationSpec } from '../editor/plugins/ask-view';
+import { askControlSignature, buildAskControl, buildAskTag, type AskControl } from './asks';
 import { setLineMarksViewListener, peekPendingLocalLineEdits, takePendingLocalLineEdits } from '../editor/plugins/line-marks-view';
 import './line-marks.css';
 
@@ -50,6 +53,8 @@ export interface LineMarksHost {
   markScope?(lineIndex: number): { lines: number[]; heading: string } | null;
   /** Step B2: unfold whatever hides a line. Returns true when something unfolded. */
   revealLine?(lineIndex: number): boolean;
+  /** Step B3: the viewer is answering the ask on this line (the reading walk's explicit action). */
+  onAskAnswered?(lineIndex: number): void;
 }
 
 export interface MarkBoxOptions {
@@ -65,6 +70,8 @@ export interface MarkBox {
   openReason(): void;
   /** Sets a status as if its button was pressed (A). Returns false when marking is not allowed. */
   choose(status: StatusChoice): boolean;
+  /** Step B3: the line's ask control, when the line carries an ask (Y / N / T). */
+  ask?: AskControl;
 }
 
 export type StatusChoice = LineMarkStatus | 'unseen';
@@ -101,6 +108,11 @@ export class LineMarksUI {
   private lines: DocLine[] = [];
   private linesDoc: unknown = null;
   private serverMarks: LineMark[] = [];
+  /** Step B3: asks from the server (with every answer) and their evaluation against the lines. */
+  private serverAsks: ProofAsk[] = [];
+  private askViews: AskView[] = [];
+  private askDecoSig = '';
+  private askDecoQueued = false;
   private owners: string[] = [];
   private agentKeyActors: string[] = [];
   private canApprove = false;
@@ -184,12 +196,13 @@ export class LineMarksUI {
       });
       if (!response.ok) return;
       const body = await response.json() as {
-        lineMarks?: LineMark[]; owners?: string[]; agentKeyActors?: string[];
+        lineMarks?: LineMark[]; owners?: string[]; agentKeyActors?: string[]; asks?: ProofAsk[];
         viewer?: { canApprove?: boolean; canMark?: boolean };
       };
       // A newer fetch or a local write superseded this answer.
       if (seq !== this.fetchSeq || this.writesInFlight > 0) return;
       this.serverMarks = Array.isArray(body.lineMarks) ? body.lineMarks : [];
+      this.serverAsks = Array.isArray(body.asks) ? body.asks : [];
       this.owners = Array.isArray(body.owners) ? body.owners : [];
       this.agentKeyActors = Array.isArray(body.agentKeyActors) ? body.agentKeyActors : [];
       this.canApprove = body.viewer?.canApprove === true;
@@ -310,10 +323,12 @@ export class LineMarksUI {
         lineMarks: this.serverMarks,
         reviewMarks,
         agentKeyActors: this.agentKeyActors,
-        extra: [this.host.actor()],
+        extra: [this.host.actor(), ...askTeamActors(this.serverAsks)],
       });
       this.states = buildLineStates(this.lines, this.serverMarks);
-      this.summary = computeIssues({ lines: this.lines, lineMarks: this.serverMarks, team, reviewMarks });
+      this.askViews = evaluateAsks(this.serverAsks, this.lines);
+      this.summary = computeIssues({ lines: this.lines, lineMarks: this.serverMarks, team, reviewMarks, asks: askIssueInputs(this.askViews) });
+      this.queueAskDecorations();
     }
     this.renderBanner();
     this.queueRender();
@@ -359,6 +374,113 @@ export class LineMarksUI {
     let best = -1;
     for (const line of this.lines) if (line.pos <= pos) best = line.index;
     return best;
+  }
+
+  // --------------------------------------------------------------------------
+  // Step B3: asks
+  // --------------------------------------------------------------------------
+
+  /** The ask on a line (evaluated against the current text), or null. */
+  askForLine(index: number): AskView | null {
+    return this.askViews.find(view => view.lineIndex === index) ?? null;
+  }
+
+  askList(): AskView[] { return this.askViews; }
+
+  /** Changes whenever the line's ask control would look different (for the rail's box). */
+  askSignature(index: number): string {
+    const view = this.askForLine(index);
+    return view ? askControlSignature(view, this.host.actor(), this.canMark) : '';
+  }
+
+  /** Records the viewer's answer: Yes / Not yet / No in their own words. */
+  async answerAsk(askId: string, choice: AskChoice, words: string): Promise<boolean> {
+    const slug = this.host.slug();
+    const view = this.askViews.find(v => v.ask.id === askId);
+    if (!slug || !view || view.lineIndex === null || !this.canMark) return false;
+    this.host.onAskAnswered?.(view.lineIndex);
+    const line = this.lines[view.lineIndex] ?? null;
+    if (!line) return false;
+    const by = this.host.actor();
+    const anchor = anchorForLine(line);
+    // Optimistic: the answer shows at once.
+    const previous = this.serverAsks;
+    const at = new Date().toISOString();
+    this.serverAsks = this.serverAsks.map(ask => ask.id !== askId ? ask
+      : { ...ask, answers: [...ask.answers, { id: `local-${Date.now()}`, by, choice, words, at, lineHash: line.hash }] });
+    this.recompute();
+    this.writesInFlight += 1;
+    try {
+      const response = await fetch(`${this.host.apiBase()}/documents/${encodeURIComponent(slug)}/asks/${encodeURIComponent(askId)}/answer`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { ...this.host.authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ by, choice, words, anchor }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { error?: string };
+        this.serverAsks = previous;
+        this.recompute();
+        this.toast(body.error || 'Could not save the answer');
+        return false;
+      }
+      this.askAnswers += 1;
+      return true;
+    } catch {
+      this.serverAsks = previous;
+      this.recompute();
+      this.toast('Could not save the answer (offline?)');
+      return false;
+    } finally {
+      this.writesInFlight -= 1;
+      this.fetchSeq += 1;
+      void this.refresh();
+    }
+  }
+
+  /** Test hook: answers this page has saved. */
+  private askAnswers = 0;
+
+  private buildAskControlFor(view: AskView, place: 'inline' | 'box'): AskControl {
+    return buildAskControl(view, {
+      actor: this.host.actor(),
+      canAnswer: this.canMark && this.loaded,
+      place,
+      answer: (choice, words) => this.answerAsk(view.ask.id, choice, words),
+    });
+  }
+
+  /** Puts the inline ask widgets in the text (view-only decorations), when they changed. */
+  private queueAskDecorations(): void {
+    if (this.askDecoQueued) return;
+    this.askDecoQueued = true;
+    // Never dispatch from inside a view update: wait for the next frame.
+    requestAnimationFrame(() => {
+      this.askDecoQueued = false;
+      const view = this.view;
+      if (!view) return;
+      const specs: AskDecorationSpec[] = [];
+      const sigs: string[] = [];
+      for (const askView of this.askViews) {
+        if (askView.lineIndex === null) continue;
+        const line = this.lines[askView.lineIndex];
+        if (!line || line.kind === 'table_row') continue; // table rows: the rail and sheet only
+        const sig = askControlSignature(askView, this.host.actor(), this.canMark && this.loaded);
+        sigs.push(`${askView.ask.id}@${line.pos}:${line.nodeSize}:${sig}`);
+        specs.push({
+          askId: askView.ask.id,
+          pos: line.pos,
+          nodeSize: line.nodeSize,
+          sig: String(hashSig(sig)),
+          tag: () => buildAskTag(askView, this.host.actor()),
+          control: () => this.buildAskControlFor(askView, 'inline').root,
+        });
+      }
+      const signature = sigs.join('|');
+      if (signature === this.askDecoSig) return;
+      this.askDecoSig = signature;
+      try { setAskDecorations(view, specs); } catch (error) { console.warn('[plm] ask decorations failed', error); }
+    });
   }
 
   /** The viewer edited lines they had marked: their mark follows the new text (policy). */
@@ -443,7 +565,7 @@ export class LineMarksUI {
     this.countEl.textContent = n === 0 ? 'Aligned' : `${n} ${n === 1 ? 'issue' : 'issues'}`;
     this.countEl.title = n === 0
       ? `Every team member has seen every line and no one has rejected anything. Team: ${summary.team.map(actorLabel).join(', ')}`
-      : `${summary.counts.lineIssues} lines not yet seen by everyone or rejected; ${summary.counts.reviewMarkIssues} open comments or suggestions. Team: ${summary.team.map(actorLabel).join(', ')}`;
+      : `${summary.counts.lineIssues} lines not yet seen by everyone or rejected; ${summary.counts.reviewMarkIssues} open comments or suggestions; ${summary.counts.askIssues} unanswered ${summary.counts.askIssues === 1 ? 'ask' : 'asks'}. Team: ${summary.team.map(actorLabel).join(', ')}`;
     this.nextBtn.disabled = n === 0;
     this.setShort(n === 0 ? '✓ Aligned' : `${n} ›`);
     this.nextBtn.setAttribute('aria-label', n === 0 ? 'No issues: aligned' : `Next issue (${n} ${n === 1 ? 'issue' : 'issues'})`);
@@ -467,7 +589,7 @@ export class LineMarksUI {
     for (const el of Array.from(this.gutter.children) as HTMLButtonElement[]) existing.set(el.dataset.key ?? '', el);
     const used = new Set<string>();
     const issueLines = new Set<number>();
-    for (const issue of this.summary?.issues ?? []) if (issue.type === 'line') issueLines.add(issue.lineIndex);
+    for (const issue of this.summary?.issues ?? []) if (issue.type === 'line' || issue.type === 'ask') issueLines.add(issue.lineIndex);
     for (const state of this.states) {
       const line = state.line;
       const dom = view.nodeDOM(line.pos) as HTMLElement | null;
@@ -554,6 +676,11 @@ export class LineMarksUI {
     excerpt.className = 'plm-excerpt';
     excerpt.textContent = line.text.length > 140 ? `${line.text.slice(0, 140)}…` : line.text;
     root.append(excerpt);
+
+    // Step B3: the line's ask comes first: it is the decision the line carries.
+    const askView = this.askForLine(line.index);
+    const askControl = askView ? this.buildAskControlFor(askView, 'box') : undefined;
+    if (askControl) root.append(askControl.root);
 
     if (mine && !mine.current) {
       const changed = document.createElement('p');
@@ -684,7 +811,7 @@ export class LineMarksUI {
       list.append(li);
     }
     root.append(list);
-    return { root, openReason, choose: (status) => choose(status) };
+    return { root, openReason, choose: (status) => choose(status), ...(askControl ? { ask: askControl } : {}) };
   }
 
   private openMenu(line: DocLine, dot: HTMLElement): void {
@@ -769,7 +896,7 @@ export class LineMarksUI {
     if (!view || issues.length === 0) return;
     const next = issues.find(issue => (issue.pos as number) > this.lastIssuePos) ?? issues[0];
     this.lastIssuePos = next.pos as number;
-    const lineIndex = next.type === 'line' ? next.lineIndex : this.lineAtPos(next.pos as number);
+    const lineIndex = next.type === 'line' || next.type === 'ask' ? next.lineIndex : this.lineAtPos(next.pos as number);
     // Step B2: the next issue may sit in a folded section: unfold it first.
     if (lineIndex >= 0) this.host.revealLine?.(lineIndex);
     const target = this.issueElement(view, next);
@@ -780,15 +907,15 @@ export class LineMarksUI {
     }
     // Highlight with an overlay: ProseMirror re-reads its own DOM when attributes change on it.
     this.flash(target);
-    if (next.type === 'line') {
+    if (next.type === 'line' || next.type === 'ask') {
       const dot = this.gutter.querySelector(`.plm-dot[data-line="${next.lineIndex}"]`) as HTMLButtonElement | null;
       dot?.focus({ preventScroll: true });
     }
-    this.countEl.dataset.current = next.type === 'line' ? `line ${next.lineIndex + 1}` : next.type;
+    this.countEl.dataset.current = next.type === 'line' ? `line ${next.lineIndex + 1}` : next.type === 'ask' ? `ask ${next.lineIndex + 1}` : next.type;
   }
 
   private issueElement(view: EditorView, issue: ProofIssue): HTMLElement | null {
-    if (issue.type === 'line') {
+    if (issue.type === 'line' || issue.type === 'ask') {
       const line = this.lines[issue.lineIndex];
       return line ? view.nodeDOM(line.pos) as HTMLElement | null : null;
     }
@@ -938,8 +1065,11 @@ export class LineMarksUI {
   }
 
   /** Test and agent hook: the numbers the UI shows. */
-  debugState(): { loaded: boolean; issues: number; aligned: boolean; team: string[]; lines: number; marks: LineMark[]; sectionWrites: number } {
+  debugState(): { loaded: boolean; issues: number; aligned: boolean; team: string[]; lines: number; marks: LineMark[]; sectionWrites: number; askIssues: number; askAnswers: number; asks: Array<Record<string, unknown>> } {
     return {
+      askIssues: this.summary?.counts.askIssues ?? -1,
+      askAnswers: this.askAnswers,
+      asks: this.askViews.map(v => ({ id: v.ask.id, lineIndex: v.lineIndex, openFor: v.openFor, snoozedFor: v.snoozedFor, outcome: v.outcome, answers: v.answers.map(a => [a.by, a.choice, a.words]) })),
       sectionWrites: this.sectionWrites,
       loaded: this.loaded,
       issues: this.summary?.counts.total ?? -1,
@@ -949,4 +1079,10 @@ export class LineMarksUI {
       marks: this.serverMarks,
     };
   }
+}
+
+function hashSig(input: string): number {
+  let h = 0;
+  for (let i = 0; i < input.length; i += 1) h = (Math.imul(31, h) + input.charCodeAt(i)) | 0;
+  return h >>> 0;
 }
