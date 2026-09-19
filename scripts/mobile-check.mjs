@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Mobile usability check for the share page (Proof+ on a phone).
+// Mobile usability check for the share page (Accord on a phone).
 // Starts an isolated local server on the current dist/ build (run `npm run build` first),
 // creates throwaway documents on a temp SQLite database, and drives Chromium at phone
 // and desktop sizes. Screenshots go to .preview/. Exit code 0 only if every check passes.

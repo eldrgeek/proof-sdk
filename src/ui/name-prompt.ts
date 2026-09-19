@@ -4,6 +4,8 @@
  * Stores name in localStorage for future visits.
  */
 
+import { productName } from '../shared/product-identity';
+
 const STORAGE_KEY = 'proof-share-viewer-name';
 const MAX_VIEWER_NAME_LENGTH = 48;
 
@@ -83,7 +85,7 @@ export function promptForName(): Promise<string> {
     `;
 
     const wordmark = document.createElement('div');
-    wordmark.textContent = 'Proof';
+    wordmark.textContent = productName();
     wordmark.style.cssText = 'font-size: 15px; font-weight: 600; color: #333; letter-spacing: -0.3px; margin-bottom: 20px;';
 
     const title = document.createElement('h2');

@@ -1,4 +1,16 @@
-# Proof SDK
+# Accord
+
+**This fork is Accord, built on the open-source Proof SDK.** It is not the hosted Proof
+service operated by Every. Accord is the name of the standard, the editor, and each document:
+a document is "an Accord", and a document's group of people is an Accord Team. The upstream
+open-source project keeps its own name, `Proof SDK`; see [TRADEMARKS.md](TRADEMARKS.md).
+
+Every user-facing product string comes from one module, `src/shared/product-identity.ts`, so a
+later rename is a config change rather than a sweep. Nothing machine-visible (API paths,
+headers, field names, event types, error codes, table names, slugs, routes, CSS classes, test
+selectors) carries the product name.
+
+## Proof SDK
 
 Proof SDK is the open-source editor, collaboration server, provenance model, and agent HTTP bridge that power collaborative documents in Proof.
 

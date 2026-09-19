@@ -125,7 +125,7 @@ async function main(): Promise<void> {
   assert(signedOutHome.text.includes('Your team’s documents'), 'signed-out home has sign-in guidance');
   assert(!signedOutHome.text.includes('review-fixture') && !signedOutHome.text.includes('Review'), 'signed-out home leaks no document data');
   const signedInHome = await request('GET', '/', undefined, cookie);
-  assert(signedInHome.text.includes('Documents · Proof') && signedInHome.text.includes('New document'), 'signed-in home renders Documents UI');
+  assert(signedInHome.text.includes('Documents · Accord') && signedInHome.text.includes('New document'), 'signed-in home renders Documents UI');
   assert((await request('GET', '/library/client.js')).text.includes('loadDocuments'), 'library client is served without a build step');
   const injected = shareWeb.injectLibraryMemberIntoShareHtml('<html><head></head><body></body></html>', '</script><b>x');
   assert(injected.includes('window.__PROOF_LIBRARY_MEMBER__'), 'member global is injected');

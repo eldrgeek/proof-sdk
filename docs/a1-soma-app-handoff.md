@@ -1,4 +1,4 @@
-# A1 handoff — Proof+ as a SOMA app
+# A1 handoff — Accord as a SOMA app
 
 ## Result
 
@@ -7,7 +7,7 @@ Worked only on `codex/a1-soma-app`. Starting HEAD was `f88d25c`. The first repos
 Implementation commits:
 
 1. `526ffbb` — Sign in to the library with SOMA Auth and manage members.
-2. `69962da` — Send feedback from every Proof+ page to the app builder.
+2. `69962da` — Send feedback from every Accord page to the app builder.
 3. Final implementation commit — Report browser errors to the builder and show delivery in the editor.
 
 ## File-by-file changes
@@ -28,7 +28,7 @@ Implementation commits:
 | `server/library/soma-page.ts` | Sends public env configuration and ordered classic script tags with a pinned Supabase UMD version. |
 | `server/library/client.js` | Handles SOMA sign-out, admin-only member addition, read-only People for members, and legacy flag-off UI compatibility. |
 | `public/vendor/soma-auth/soma-auth.js` | Verbatim reference browser runtime copied from Legends. |
-| `public/vendor/soma-auth/soma-auth-config.js` | Proof+ identity config: magic link and Google only. |
+| `public/vendor/soma-auth/soma-auth-config.js` | Accord identity config: magic link and Google only. |
 | `public/vendor/soma-auth/proof-session.js` | Exchanges the browser access token, displays denial/errors, handles login methods, and schedules daily checks at the server's lease deadline. |
 | `public/vendor/soma-feedback/soma-feedback.js` | Verbatim canonical chip v4.1, copied 2026-09-15. |
 | `public/vendor/soma-feedback/soma-feedback.css` | Verbatim canonical chip stylesheet. |
@@ -88,7 +88,7 @@ Canonical byte equality was checked for the Auth runtime and both feedback asset
 ## Resolutions and departures
 
 - **Flag-off compatibility versus link removal:** the brief asks both to remove L1 link sign-in and to preserve base behavior with flags off. The old web paths and link helpers remain solely for the SOMA-auth-off fallback. With SOMA auth on, sign-in/device endpoints return 404 (including case/trailing-slash variants). The CLI command is removed unconditionally, as explicitly requested.
-- **PlayMaker method mismatch:** its checked-in config currently also enables passwords. Proof+ follows the brief's explicit magic-link-and-Google decision; it does not offer passwords.
+- **PlayMaker method mismatch:** its checked-in config currently also enables passwords. Accord follows the brief's explicit magic-link-and-Google decision; it does not offer passwords.
 - **Daily role checks without storing tokens:** the server cannot call the user-token RPC later without the browser supplying a token. It therefore gives admin authority a hard 24-hour lease; the browser renews at that deadline. A stale lease fails closed while ordinary active membership continues. The token is never stored in SQLite.
 - **Client type-check configuration:** `rootDir` now covers the existing server imports in client tests, preventing new path diagnostics without suppressing errors or emitting files.
 - **Error-forwarding failure:** failed reports remain recorded locally and are suppressed for the rest of that signature's 30-minute window. The editor never claims delivery for those failures. This follows the one-forward-per-window requirement; an automatic retry/outbox was not added.

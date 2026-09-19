@@ -4,6 +4,7 @@ import { getClientIp } from '../client-address.js';
 import { getCookie } from '../cookies.js';
 import { getDb } from '../db.js';
 import { getPublicOrigin, isSecureRequest } from '../public-origin.js';
+import { productName } from '../../src/shared/product-identity.js';
 
 export const LIBRARY_SESSION_COOKIE = 'proof_library_session';
 const SESSION_MAX_AGE_SECONDS = 180 * 24 * 60 * 60;
@@ -396,7 +397,7 @@ export async function exchangeSomaSession(req: Request): Promise<{
     };
     if (typeof user.email !== 'string' || !user.email.includes('@')) return { status: 401, message: 'A verified email is required.' };
     // Membership is granted by email, so only an email Supabase has confirmed may claim it.
-    // The shared project requires confirmation today; this keeps Proof+ safe if that setting changes.
+    // The shared project requires confirmation today; this keeps Accord safe if that setting changes.
     if (!user.email_confirmed_at) return { status: 401, message: 'Please confirm your email address, then sign in again.' };
     const email = normalizeEmail(user.email);
     let member = getLibraryMemberByEmail(email);
@@ -416,7 +417,7 @@ export async function exchangeSomaSession(req: Request): Promise<{
     // Invite person: an invited person may sign in while they still have a document invite.
     const invitedOnly = Boolean(member && !member.removedAt && member.scope === 'invited');
     if (!isAdmin && (!member || member.removedAt || (invitedOnly && !hasActiveDocumentInvite(member.id)))) {
-      return { status: 403, email, message: `You're signed in as ${email}, but this Proof+ isn't shared with that address. Ask Mike or Eric to add you.` };
+      return { status: 403, email, message: `You're signed in as ${email}, but this ${productName()} isn't shared with that address. Ask Mike or Eric to add you.` };
     }
     if (!member) {
       const metadataName = user.user_metadata?.full_name || user.user_metadata?.name;

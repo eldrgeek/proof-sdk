@@ -23,6 +23,7 @@ import {
 } from './auth.js';
 import { invitedSlugsFor } from '../document-team.js';
 import { attestedSlugsFor } from '../cross-invitation.js';
+import { productName } from '../../src/shared/product-identity.js';
 
 /**
  * Cross invitation (2026-09-19): an invited person sees the documents they were invited to, plus
@@ -70,7 +71,7 @@ libraryRoutes.get('/library/signin', (_req: Request, res: Response) => {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Sign in · Proof</title>
+  <title>Sign in · ${productName()}</title>
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png?v=20260310r">
   <style>
     body{margin:0;min-height:100vh;display:grid;place-items:center;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;color:#111;background:#fff}

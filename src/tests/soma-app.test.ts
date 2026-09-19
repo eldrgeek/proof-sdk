@@ -57,7 +57,7 @@ try {
   assert.equal(getDb().prepare('SELECT COUNT(*) AS n FROM library_sessions').get().n, 0);
   const stranger = await request('POST', '/library/api/session', { accessToken: 'stranger', email: 'admin@example.test', isOwner: true });
   assert.equal(stranger.status, 403);
-  assert.equal(stranger.json.message, "You're signed in as stranger@example.test, but this Proof+ isn't shared with that address. Ask Mike or Eric to add you.");
+  assert.equal(stranger.json.message, "You're signed in as stranger@example.test, but this Accord isn't shared with that address. Ask Mike or Eric to add you.");
   const signedIn = await request('POST', '/library/api/session', { accessToken: 'admin-token' });
   assert.equal(signedIn.status, 200);
   assert.equal(signedIn.json.refreshAfterMs, 24 * 60 * 60 * 1000);

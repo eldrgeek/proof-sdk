@@ -10,6 +10,8 @@
  * - Click to toggle follow
  */
 
+import { productName } from '../shared/product-identity';
+
 import type { AgentSession, AgentSessionStatus } from '../agent/session-manager';
 import { getSessionManager } from '../agent/session-manager';
 import {
@@ -98,7 +100,7 @@ function formatExternalAgentName(agentId: string): string {
   const known: Record<string, string> = {
     'claude-code': 'Claude Code',
     'claude': 'Claude',
-    'proof-agent': 'Proof Agent',
+    'proof-agent': `${productName()} Agent`,
   };
   if (known[agentId]) return known[agentId];
   // Convert kebab-case/snake_case to Title Case

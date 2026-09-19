@@ -1,3 +1,4 @@
+import { productName } from '../shared/product-identity';
 import { getActorName, getMarkColor, type Mark, type CommentData, type ReplaceData } from '../formats/marks';
 import { getReviewStyle, setReviewStyle, getReviewWalk, setReviewWalk, REVIEW_STYLE_EVENT, REVIEW_STYLE_POLICY } from '../editor/review-style';
 import './playmaker-review.css';
@@ -72,7 +73,7 @@ export class PlayMakerReview {
     // Mike 2026-09-19: Proof Documents is the only review behaviour; the selector is hidden.
     if (!REVIEW_STYLE_POLICY.locked) this.control.append('Review style ', this.select);
     this.select.setAttribute('aria-label', 'Review style');
-    for (const [value, label] of [['proof', 'Proof'], ['playmaker', 'PlayMaker']]) {
+    for (const [value, label] of [['proof', productName()], ['playmaker', 'PlayMaker']]) {
       const option = document.createElement('option'); option.value = value; option.textContent = label;
       this.select.append(option);
     }

@@ -3,6 +3,7 @@ import { readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { resolveShareMarkdownAuthMode } from './hosted-auth.js';
+import { aDocument, productName } from '../src/shared/product-identity.js';
 import {
   AGENT_DOCS_PATH,
   ALT_SHARE_TOKEN_HEADER_FORMAT,
@@ -86,7 +87,7 @@ discoveryRoutes.get('/.well-known/agent.json', (req: Request, res: Response) => 
 
   res.setHeader('Cache-Control', 'public, max-age=300');
   res.json({
-    name: 'Proof Editor',
+    name: productName(),
     description: 'Agent-native markdown editor with collaborative sharing and provenance tracking',
     api_base: apiBase,
     docs_url: docsUrl,
@@ -105,7 +106,7 @@ discoveryRoutes.get('/.well-known/agent.json', (req: Request, res: Response) => 
     },
     quickstart: {
       received_link: {
-        description: 'Given a Proof share URL, read it (and discover state/ops) in one step.',
+        description: `Given ${aDocument()} share URL, read it (and discover state/ops) in one step.`,
         method: 'GET',
         url: `${shareBase}/d/{slug}?token={token}`,
         headers: { Accept: 'application/json' },

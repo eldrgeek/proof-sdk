@@ -208,6 +208,7 @@ import {
   type MutationReservation,
 } from './mutation-idempotency.js';
 import { EXPORT_FORMATS, exportProofDocument, historyNotesForState, type ExportFormat } from './proof-dialect.js';
+import { productName } from '../src/shared/product-identity.js';
 
 export const agentRoutes = Router({ mergeParams: true });
 
@@ -961,7 +962,7 @@ function sendMutationResponse(
       ...existingHelp,
       reportBug: buildReportBugHelp({
         slug: context.slug,
-        suggestedSummary: `Proof API trouble on ${context.route}`,
+        suggestedSummary: `${productName()} API trouble on ${context.route}`,
         suggestedContext: 'Include what you were trying to do, the response code/message, and any requestId or slug you have.',
         suggestedEvidence: [
           'The failing request URL, method, status, and response body',
@@ -2134,7 +2135,7 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
   body._links = links;
   const agent: Record<string, unknown> = {
     ...(isRecord(body.agent) ? body.agent : {}),
-    what: 'Proof is a collaborative document editor. This is a shared doc.',
+    what: `${productName()} is a collaborative document editor. This is a shared doc.`,
     docs: AGENT_DOCS_PATH,
     createApi: CANONICAL_CREATE_API_PATH,
     stateApi: `/documents/${slug}/state`,
@@ -2181,7 +2182,7 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
       ...(isRecord(body.help) ? body.help : {}),
       reportBug: buildReportBugHelp({
         slug,
-        suggestedSummary: 'Proof projection looks stale while reading document state.',
+        suggestedSummary: `${productName()} projection looks stale while reading document state.`,
         suggestedContext: 'State or snapshot returned fallback content, stale metadata, or warned that projection repair is pending.',
         suggestedEvidence: [
           'The full /state or /snapshot response payload',
@@ -2477,7 +2478,7 @@ agentRoutes.get('/:slug/snapshot', async (req: Request, res: Response) => {
         ...(isRecord(result.body.help) ? result.body.help : {}),
         reportBug: buildReportBugHelp({
           slug,
-          suggestedSummary: 'Proof snapshot returned stale or inconsistent block data.',
+          suggestedSummary: `${productName()} snapshot returned stale or inconsistent block data.`,
           suggestedContext: 'Snapshot returned stale fallback content, a projection warning, or an internal read error.',
           suggestedEvidence: [
             'The full /snapshot response payload',
@@ -2497,7 +2498,7 @@ agentRoutes.get('/:slug/snapshot', async (req: Request, res: Response) => {
       help: {
         reportBug: buildReportBugHelp({
           slug,
-          suggestedSummary: 'Proof failed to build a snapshot for this document.',
+          suggestedSummary: `${productName()} failed to build a snapshot for this document.`,
           suggestedContext: 'The snapshot endpoint returned an internal error while I was trying to read the document.',
           suggestedEvidence: [
             'The failing /snapshot request URL and response body',
@@ -3219,7 +3220,7 @@ agentRoutes.post('/:slug/edit', async (req: Request, res: Response) => {
       docs: AGENT_DOCS_PATH,
     },
     agent: {
-      what: 'Proof is a collaborative document editor. This is a shared doc.',
+      what: `${productName()} is a collaborative document editor. This is a shared doc.`,
       docs: AGENT_DOCS_PATH,
       createApi: CANONICAL_CREATE_API_PATH,
       stateApi: `/documents/${slug}/state`,
@@ -3308,7 +3309,7 @@ agentRoutes.post('/:slug/presence', (req: Request, res: Response) => {
       docs: AGENT_DOCS_PATH,
     },
     agent: {
-      what: 'Proof is a collaborative document editor. This is a shared doc.',
+      what: `${productName()} is a collaborative document editor. This is a shared doc.`,
       docs: AGENT_DOCS_PATH,
       createApi: CANONICAL_CREATE_API_PATH,
       stateApi: `/documents/${slug}/state`,

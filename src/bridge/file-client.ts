@@ -3,6 +3,8 @@
  * Communicates with the file API server started by the CLI.
  */
 
+import { pageTitle } from '../shared/product-identity';
+
 interface FileConfig {
   file: string | null;
   fileName: string | null;
@@ -155,14 +157,14 @@ export class FileClient {
   private updateTitleSaved(): void {
     const fileName = this.getFileName();
     if (fileName) {
-      document.title = `${fileName} - Proof Editor`;
+      document.title = pageTitle(fileName, ' - ');
     }
   }
 
   private updateTitleUnsaved(): void {
     const fileName = this.getFileName();
     if (fileName) {
-      document.title = `● ${fileName} - Proof Editor`;
+      document.title = pageTitle(`● ${fileName}`, ' - ');
     }
   }
 
@@ -172,9 +174,9 @@ export class FileClient {
   setInitialTitle(): void {
     const fileName = this.getFileName();
     if (fileName) {
-      document.title = `${fileName} - Proof Editor`;
+      document.title = pageTitle(fileName, ' - ');
     } else {
-      document.title = 'Proof Editor';
+      document.title = pageTitle();
     }
   }
 }

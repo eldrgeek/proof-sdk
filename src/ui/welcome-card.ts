@@ -3,6 +3,8 @@
  * Shows when URL has ?welcome=1 and can be dismissed.
  */
 
+import { productName } from '../shared/product-identity';
+
 function buildDocUrl(): string {
   const url = new URL(window.location.href);
   url.searchParams.delete('welcome');
@@ -10,9 +12,9 @@ function buildDocUrl(): string {
 }
 
 function buildPrompt(docUrl: string): string {
-  return `Here's my Proof document: ${docUrl}
+  return `Here's my ${productName()} document: ${docUrl}
 
-Proof is a collaborative writing editor that tracks who wrote what (human vs AI). You can read the doc, suggest edits, leave comments, and rewrite content via its HTTP API. API docs: http://localhost:4000/agent-docs
+${productName()} is a collaborative writing editor that tracks who wrote what (human vs AI). You can read the doc, suggest edits, leave comments, and rewrite content via its HTTP API. API docs: http://localhost:4000/agent-docs
 
 Connect to this document and help me get started. Write something to kick things off - here are some ideas:
 

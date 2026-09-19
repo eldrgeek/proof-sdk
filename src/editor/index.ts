@@ -196,6 +196,7 @@ import {
 } from './share-suggestion-review';
 import { collabCursorBuilder, collabSelectionBuilder } from './plugins/collab-cursors';
 import { isAgentScopedId } from '../shared/agent-identity';
+import { documentNoun, pageTitle, productIdentity, productName } from '../shared/product-identity';
 import {
   assignDistinctAgentFamilies,
   createAgentFaceElement,
@@ -1521,7 +1522,7 @@ class ProofEditorImpl implements ProofEditor {
       }
 
       // Set title
-      document.title = doc.title ? `${doc.title} - Proof` : 'Shared Document - Proof';
+      document.title = pageTitle(typeof doc.title === 'string' && doc.title.trim() ? doc.title : 'Shared Document', ' - ');
       this.shareDocTitle = typeof doc.title === 'string' && doc.title.trim().length > 0
         ? doc.title.trim()
         : 'Untitled';
@@ -3610,7 +3611,7 @@ class ProofEditorImpl implements ProofEditor {
     const normalized = typeof title === 'string' ? title.trim() : '';
     const nextTitle = normalized.length > 0 ? normalized : 'Untitled';
     this.shareDocTitle = nextTitle;
-    document.title = `${nextTitle} - Proof`;
+    document.title = pageTitle(nextTitle, ' - ');
     this.updateShareBannerTitleDisplay();
   }
 
@@ -3692,8 +3693,8 @@ class ProofEditorImpl implements ProofEditor {
     this.closeAgentMenu();
 
     const wordmark = document.createElement('a');
-    wordmark.textContent = 'Proof';
-    wordmark.href = 'https://www.proofeditor.ai';
+    wordmark.textContent = productName();
+    wordmark.href = productIdentity().homeUrl;
     wordmark.target = '_blank';
     wordmark.rel = 'noopener';
     wordmark.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;min-height:44px;min-width:44px;padding:0 8px;border-radius:10px;font-weight:600;color:#333;font-size:13px;letter-spacing:-0.2px;flex-shrink:0;text-decoration:none;';
@@ -3978,12 +3979,12 @@ class ProofEditorImpl implements ProofEditor {
         item('Fold all', 'outline', () => this.folding?.foldAll());
         item('Unfold all', 'outline', () => this.folding?.unfoldAll());
       }
-      if (!REVIEW_STYLE_POLICY.locked) item('Review style', style === 'playmaker' ? 'PlayMaker' : 'Proof', () => {
+      if (!REVIEW_STYLE_POLICY.locked) item('Review style', style === 'playmaker' ? 'PlayMaker' : productName(), () => {
         setReviewStyle(style === 'playmaker' ? 'proof' : 'playmaker');
       });
       if (this.teamCanManage) item('Invite person', 'by email', () => { this.openInvitePersonDialog(); });
       item('Add agent', 'manage keys', () => { this.openAgentKeyDialog(); });
-      item('Download', 'Proof Document (.md)', () => { void this.downloadProofDocument(); });
+      item('Download', `${documentNoun()} (.md)`, () => { void this.downloadProofDocument(); });
       document.body.append(menu);
       btn.setAttribute('aria-expanded', 'true');
       document.addEventListener('pointerdown', outside, true);
@@ -4893,7 +4894,7 @@ class ProofEditorImpl implements ProofEditor {
       const toast = document.createElement('div');
       toast.className = 'proof-external-change-toast proof-export-failed-toast';
       toast.setAttribute('role', 'alert');
-      toast.textContent = 'Could not download the Proof Document. Try again.';
+      toast.textContent = `Could not download the ${documentNoun()}. Try again.`;
       document.body.append(toast);
       setTimeout(() => toast.remove(), 4000);
       return false;
@@ -4944,7 +4945,7 @@ class ProofEditorImpl implements ProofEditor {
 
     if (!slug) {
       return [
-        'Collaborate with me on this Proof doc.',
+        `Collaborate with me on this ${productName()} doc.`,
         '',
         `Doc: ${shareUrl}`,
       ].join('\n');
@@ -4957,7 +4958,7 @@ class ProofEditorImpl implements ProofEditor {
     const editUrl = `${origin}/api/agent/${encodedSlug}/edit`;
 
     return [
-      'Collaborate with me on this Proof doc.',
+      `Collaborate with me on this ${productName()} doc.`,
       '',
       `Doc: ${shareUrl}`,
       '',
@@ -5245,7 +5246,7 @@ class ProofEditorImpl implements ProofEditor {
         addActionItem('Invite person', () => { this.openInvitePersonDialog(); });
       }
       addDivider();
-      addActionItem('Download as Proof Document (.md)', () => { void this.downloadProofDocument(); });
+      addActionItem(`Download as ${documentNoun()} (.md)`, () => { void this.downloadProofDocument(); });
       addActionItem('View activity', () => this.openShareActivityModal());
 
       container.appendChild(menu);

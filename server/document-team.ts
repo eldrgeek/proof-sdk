@@ -30,6 +30,7 @@ import {
   type LibraryMember,
 } from './library/auth.js';
 import type { ShareRole } from './share-types.js';
+import { productIdentity, productName } from '../src/shared/product-identity.js';
 
 // ============================================================================
 // Policy (Mike's later rulings should be one-line changes here)
@@ -92,7 +93,7 @@ export const INVITE_MAIL_POLICY = {
   transportEnv: 'PROOF_INVITE_MAIL_TRANSPORT',
   captureFileEnv: 'PROOF_INVITE_MAIL_CAPTURE',
   fromEnv: 'PROOF_INVITE_MAIL_FROM',
-  defaultFrom: 'Proof+ <proof@mike-wolf.com>',
+  defaultFrom: `${productIdentity().emailFromName} <${productIdentity().emailFromAddress}>`,
   resendApiUrlEnv: 'PROOF_RESEND_API_URL',
   resendApiUrl: 'https://api.resend.com/emails',
   timeoutMs: 10_000,
@@ -484,7 +485,7 @@ export async function sendInviteEmail(input: {
     }).link + `&next=${encodeURIComponent(`/d/${input.invite.slug}`)}`;
   const subject = `${input.inviterName} invited you to “${input.title}”`;
   const text = [
-    `${input.inviterName} invited you to read and mark “${input.title}” in Proof+.`,
+    `${input.inviterName} invited you to read and mark “${input.title}” in ${productName()}.`,
     '',
     `Open it: ${link}`,
     '',
@@ -492,7 +493,7 @@ export async function sendInviteEmail(input: {
       ? `You'll sign in as ${input.invite.email} (Google or an emailed sign-in link). The link only works for that address.`
       : 'This sign-in link works once, only for you.',
   ].join('\n');
-  const html = `<p>${escapeHtml(input.inviterName)} invited you to read and mark <strong>${escapeHtml(input.title)}</strong> in Proof+.</p>`
+  const html = `<p>${escapeHtml(input.inviterName)} invited you to read and mark <strong>${escapeHtml(input.title)}</strong> in ${escapeHtml(productName())}.</p>`
     + `<p><a href="${escapeHtml(link)}">Open the document</a></p>`
     + `<p style="color:#666">${escapeHtml(isSomaAuthEnabled() ? `You'll sign in as ${input.invite.email}. The link only works for that address.` : 'This sign-in link works once, only for you.')}</p>`;
   try {

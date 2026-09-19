@@ -2,6 +2,7 @@ import { injectSomaFeedback } from '../soma-page.js';
 import type { Request, Response } from 'express';
 import { somaAuthHead } from './soma-page.js';
 import { getLibrarySession, isSomaAuthEnabled } from './auth.js';
+import { productName } from '../../src/shared/product-identity.js';
 
 function escapeHtml(value: string): string {
   return value
@@ -15,7 +16,7 @@ function escapeHtml(value: string): string {
 const sharedHead = `
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Documents · Proof</title>
+  <title>Documents · ${productName()}</title>
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png?v=20260310r">
   <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png?v=20260310r">
   <link rel="shortcut icon" href="/favicon.ico?v=20260310r">
@@ -38,7 +39,7 @@ const sharedHead = `
 
 function signedOutPage(): string {
   return `<!doctype html><html lang="en"><head>${sharedHead}${somaAuthHead()}</head><body>
-    <header class="topbar shell"><span class="wordmark">Proof</span></header>
+    <header class="topbar shell"><span class="wordmark">${productName()}</span></header>
     <main class="shell" style="max-width:680px;padding:48px 0 80px">
       <h1 style="font-size:42px;letter-spacing:-1.6px;margin:0 0 24px">Your team’s documents</h1>
       <p style="font-size:18px;line-height:1.6;color:var(--muted)">${isSomaAuthEnabled() ? 'Sign in with your SOMA account to open your library.' : 'To sign in, open the sign-in link a teammate sent you. Lost it? Ask a teammate for a new one.'}</p>
@@ -53,7 +54,7 @@ function signedInPage(name: string, isOwner: boolean, invited = false): string {
   const initials = name.split(/\s+/).slice(0, 2).map((part) => part[0] || '').join('').toUpperCase();
   return `<!doctype html><html lang="en"><head>${sharedHead}${somaAuthHead()}</head><body data-member-name="${escapeHtml(name)}" data-owner="${isOwner ? '1' : '0'}" data-soma="${isSomaAuthEnabled() ? '1' : '0'}" data-scope="${invited ? 'invited' : 'library'}">
     <header class="topbar shell">
-      <span class="wordmark">Proof</span>
+      <span class="wordmark">${productName()}</span>
       <div class="header-actions">
         <button class="btn primary" id="new-document"${invited ? ' hidden' : ''}><span class="new-label">New document</span><span aria-hidden="true"> +</span></button>
         <div class="menu-wrap">

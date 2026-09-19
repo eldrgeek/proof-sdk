@@ -33,6 +33,7 @@ import { getLibraryMemberById, getLibrarySession, isLibraryEnabled, isSomaAuthEn
 import { somaAuthHead } from './library/soma-page.js';
 import { isLibraryDocumentCreator } from './line-marks.js';
 import { IDENTITY_POLICY } from '../src/shared/identity.js';
+import { productName } from '../src/shared/product-identity.js';
 import {
   GUEST_ACCESS_POLICY,
   INVITE_POLICY,
@@ -320,7 +321,7 @@ const PAGE_STYLE = `
 
 function page(title: string, body: string, head = ''): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(title)} · Proof</title><meta name="robots" content="noindex"><style>${PAGE_STYLE}</style>${head}</head><body><main>${body}</main></body></html>`;
+<title>${escapeHtml(title)} · ${escapeHtml(productName())}</title><meta name="robots" content="noindex"><style>${PAGE_STYLE}</style>${head}</head><body><main>${body}</main></body></html>`;
 }
 
 /** The /d/<slug> page of a private document for someone who cannot open it. */

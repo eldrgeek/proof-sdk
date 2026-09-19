@@ -4,7 +4,7 @@
 // suggests, comments, flags, sets a time-to-live, reads with evidence and tags context) is
 // exported as a Proof Document, re-imported with the operator key, and the two documents' /state
 // are compared (every live mark the same, by the same identity, on the same line). The imported
-// document's export must equal the first export. Then the page: "Download as Proof Document (.md)"
+// document's export must equal the first export. Then the page: "Download as Accord (.md)"
 // from the Share menu at 1440 and from the ⋯ menu on a 390 phone, both review styles, downloads
 // the same file.
 // Authorship: Claude Opus 5 (worker proof-dialect), 2026-09-19, in the style of line-tiers-check.mjs.
@@ -249,10 +249,10 @@ async function run(browser, style) {
 
     // ------------------------------------------------------------ the page: Share menu download
     await openDoc(mike, base, slug);
-    await check(`${tag}: Share ▾ → "Download as Proof Document (.md)" saves the same file`, async () => {
+    await check(`${tag}: Share ▾ → "Download as Accord (.md)" saves the same file`, async () => {
       const share = mike.locator('#share-banner button', { hasText: 'Share' }).first();
       await share.click();
-      const item = mike.getByRole('menuitem', { name: /Download as Proof Document \(\.md\)/ });
+      const item = mike.getByRole('menuitem', { name: /Download as Accord \(\.md\)/ });
       await item.waitFor({ state: 'visible' });
       await mike.screenshot({ path: path.join(shots, `${tag}-1-menu.png`) });
       const [download] = await Promise.all([mike.waitForEvent('download'), item.click()]);
@@ -274,7 +274,7 @@ async function run(browser, style) {
     const phone = await signIn(phoneCtx, cli, base, MIKE_EMAIL);
     activePage = phone;
     await openDoc(phone, base, slug);
-    await check(`${ptag}: ⋯ → Download (Proof Document .md) saves the same file; touch-sized; no sideways scroll`, async () => {
+    await check(`${ptag}: ⋯ → Download (Accord .md) saves the same file; touch-sized; no sideways scroll`, async () => {
       await phone.locator('#share-banner .share-pill-overflow').tap();
       const item = phone.locator('.proof-share-overflow-menu [role="menuitem"]', { hasText: 'Download' });
       await item.waitFor({ state: 'visible' });

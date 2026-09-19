@@ -964,7 +964,7 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assertIncludes(body, '<meta property="og:title"', 'Expected og:title in Slack unfurl HTML');
       assertIncludes(body, '<meta property="og:image"', 'Expected og:image in Slack unfurl HTML');
       assertIncludes(body, '<meta name="twitter:description"', 'Expected twitter:description in Slack unfurl HTML');
-      assertIncludes(body, '<title>Validation test | Proof</title>', 'Expected document-specific title in Slack unfurl HTML');
+      assertIncludes(body, '<title>Validation test | Accord</title>', 'Expected document-specific title in Slack unfurl HTML');
     });
 
     await test('D2: /d/:slug content negotiation returns raw markdown', async () => {
@@ -988,11 +988,11 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assertIncludes(body, `<meta property="og:url" content="${baseUrl}/d/${slug}">`, 'Expected clean canonical og:url');
       assertIncludes(body, `${baseUrl}/og/share/${slug}.png?v=`, 'Expected versioned og:image URL');
       assertIncludes(body, '<meta name="twitter:image"', 'Expected twitter:image meta tag');
-      assertIncludes(body, '<title>Validation test | Proof</title>', 'Expected dynamic document title in HTML head');
+      assertIncludes(body, '<title>Validation test | Accord</title>', 'Expected dynamic document title in HTML head');
       const titleTags = body.match(/<title\b[^>]*>[\s\S]*?<\/title>/gi) || [];
       assertEqual(titleTags.length, 1, `Expected single title tag, got ${titleTags.length}`);
       assert(
-        !body.includes('<title>Proof Editor</title>'),
+        !body.includes('<title>Accord</title>'),
         'Expected template title to be replaced with document-specific title'
       );
       assert(
@@ -1063,7 +1063,7 @@ async function runRoutePayloadValidationTests(): Promise<void> {
         !body.includes('Paused doc'),
         'Expected paused share HTML to avoid leaking document title',
       );
-      assertIncludes(body, 'content="The shared Proof document is temporarily unavailable"', 'Expected generic unavailable metadata');
+      assertIncludes(body, 'content="The shared Accord is temporarily unavailable"', 'Expected generic unavailable metadata');
       assert(!body.includes('This should not leak while paused.'), 'Expected paused share HTML to avoid content excerpt');
     });
 
