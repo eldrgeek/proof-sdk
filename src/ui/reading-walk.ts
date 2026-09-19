@@ -30,6 +30,7 @@ import type { SinceItem, SinceYouReport, RingerItem } from '../shared/alignment'
 import type { LineMarksUI, MarkBox } from './line-marks';
 import { isOpenReviewMark, type PlayMakerReview, type ReviewAction } from './playmaker-review';
 import { editingRemainingMs, installEditingGuard, isEditing, onEditingActivity } from '../editor/editing-guard';
+import { ProxyMarksUI } from './proxy-marks';
 import './reading-walk.css';
 
 /**
@@ -170,7 +171,17 @@ export class ReadingWalkUI {
   private bundleErrorId: string | null = null;
   private readonly bundleDecisions: Array<{ id: string; action: string; ok: boolean; error?: string }> = [];
 
+  /** Familiar proxy marks: My Familiar (header), the brief (top of the rail), the phone pill. */
+  readonly proxy: ProxyMarksUI;
+
   constructor(private readonly host: ReadingWalkHost) {
+    this.proxy = new ProxyMarksUI({
+      lineMarks: () => this.host.lineMarks(),
+      // Ratify is an explicit action: the provisional (scroll) accepts are committed first.
+      beforeRatify: () => { const ids = this.walk?.commitAll() ?? []; if (ids.length) this.commit(ids); },
+      focusLine: (index) => { this.host.lineMarks().revealLine(index); this.focusLine(index); if (isPhone()) this.closeSheets(); },
+      openBrief: () => { if (isPhone()) this.openSheet('right'); else this.setCollapsed('right', false); },
+    });
     this.left.setAttribute('aria-label', 'Documents');
     this.right.setAttribute('aria-label', 'Reading: this line and its changes');
     this.focusEl.setAttribute('aria-hidden', 'true');
@@ -205,6 +216,10 @@ export class ReadingWalkUI {
     // Step B4f: blind marking (an Owner's switch) sits under "This sitting".
     const blind = this.host.lineMarks().blindEl;
     if (blind.parentElement !== this.rightBody) this.rightBody.insertBefore(blind, this.sinceHost);
+    // Familiar proxy marks: the brief is the first thing in the rail.
+    this.rightBody.prepend(this.proxy.briefEl);
+    this.proxy.start();
+    (window as unknown as { __proofProxy?: ProxyMarksUI }).__proofProxy = this.proxy;
     this.unsubscribe = this.host.lineMarks().subscribe(() => this.sync());
     installEditingGuard();
     this.unsubscribeEditing = onEditingActivity(() => {
@@ -229,6 +244,7 @@ export class ReadingWalkUI {
     document.removeEventListener('click', this.onDocClick, true);
     document.removeEventListener('visibilitychange', this.onVisibility);
     this.unsubscribe?.();
+    this.proxy.stop();
     this.unsubscribeEditing?.();
     this.unsubscribeEditing = null;
     this.resizeObserver?.disconnect();
@@ -246,6 +262,8 @@ export class ReadingWalkUI {
   /** Step B2: a tool (the outline fold controls) at the top of the right rail. */
   mountTool(node: HTMLElement): void {
     if (node.parentElement !== this.rightBody) this.rightBody.prepend(node);
+    // The Familiar's brief stays at the very top.
+    if (this.proxy.briefEl.parentElement === this.rightBody) this.rightBody.prepend(this.proxy.briefEl);
   }
 
   /** The editor view updated (cursor, marks, text): re-read pending marks if they changed. */
@@ -1384,7 +1402,7 @@ export class ReadingWalkUI {
     const rightToggle = el('button', 'prw-collapse');
     rightToggle.type = 'button';
     rightToggle.onclick = () => this.toggleRail('right');
-    rightHead.append(rightTitle, this.statusEl, rightToggle, this.meEl, this.rateEl);
+    rightHead.append(rightTitle, this.statusEl, rightToggle, this.meEl, this.proxy.familiarEl, this.rateEl);
     this.meEl.setAttribute('aria-live', 'polite');
     this.provisionalEl.hidden = true;
     this.provisionalEl.setAttribute('aria-live', 'polite');

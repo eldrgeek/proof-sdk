@@ -31,11 +31,18 @@ export const LINE_MARK_STATUSES: readonly LineMarkStatus[] = ['seen', 'agreed', 
  *   api     - an AI or a script through the agent API (or an older mark with no record).
  *   edit    - (2026-09-19) the TM changed the meaning of another's statement: their Agreed on the new text;
  *   correct - (2026-09-19) the TM corrected another's statement without changing its meaning.
+ *   proxy   - (2026-09-19) the TM ratified their Familiar's proxy mark ("Ratify all",
+ *             src/shared/proxy-marks.ts). Written only by the server's ratify route.
  */
-export type MarkVia = 'dwell' | 'click' | 'key' | 'section' | 'ask' | 'api' | 'edit' | 'correct';
-export const MARK_VIAS: readonly MarkVia[] = ['dwell', 'click', 'key', 'section', 'ask', 'api', 'edit', 'correct'];
-/** Earned without a deliberate choice about this one line (the ringer list watches these). */
-export const PASSIVE_VIAS: ReadonlySet<MarkVia> = new Set<MarkVia>(['dwell', 'section']);
+export type MarkVia = 'dwell' | 'click' | 'key' | 'section' | 'ask' | 'api' | 'edit' | 'correct' | 'proxy';
+export const MARK_VIAS: readonly MarkVia[] = ['dwell', 'click', 'key', 'section', 'ask', 'api', 'edit', 'correct', 'proxy'];
+/**
+ * Earned without a deliberate choice about this one line (the ringer list watches these). A
+ * ratified proxy is one click over many lines the person did not each read, so it is passive too.
+ */
+export const PASSIVE_VIAS: ReadonlySet<MarkVia> = new Set<MarkVia>(['dwell', 'section', 'proxy']);
+/** Vias only the server may write (a client that claims one is refused). */
+export const SERVER_ONLY_VIAS: ReadonlySet<MarkVia> = new Set<MarkVia>(['proxy']);
 
 export function isMarkVia(value: unknown): value is MarkVia {
   return typeof value === 'string' && (MARK_VIAS as readonly string[]).includes(value);
@@ -77,6 +84,14 @@ export interface LineMark {
   via?: MarkVia | null;
   /** Step B4c: an AI's one-line rationale for its mark (REVIEW_AIDS WHY_POLICY). */
   why?: string | null;
+  /**
+   * Proxy marks step: what the marker checked (one line). An AI mark without it shows as
+   * "claimed" (EVIDENCE_POLICY in src/shared/proxy-marks.ts). A ratified proxy copies the
+   * Familiar's evidence here.
+   */
+  evidence?: string | null;
+  /** Proxy marks step: set when the mark came from ratifying a Familiar's proxy (via "proxy"). */
+  proxy?: { familiar: string; proxyId: string; confidence: number; evidence: string; ratificationId: string } | null;
   /**
    * Step B4f (blind marking): a placeholder for someone else's mark on a line the viewer has not
    * marked yet. Its status reads as "seen" and its reason and why are removed; the UI shows

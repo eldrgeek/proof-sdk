@@ -82,6 +82,20 @@ import { disagreementCounts, disagreementLines } from '../shared/blind';
 import { EXPLAIN_POLICY, explainCommentText, termLinksFor, type TermUse } from '../shared/explain';
 import { TTL_POLICY, applyDecay, describeTtl, evaluateTtls, ttlIssueInputs, type ProofTtl, type TtlView } from '../shared/ttl';
 import { proofExtrasViewKey, setProofExtrasDecorations, termRange, type AltStackSpec, type TermLinkSpec } from '../editor/plugins/proof-extras-view';
+import {
+  PROXY_POLICY,
+  evaluateProxies,
+  familiarInitial,
+  flaggedWhy,
+  heldLines,
+  humanIssueLines,
+  isClaimedMark,
+  EVIDENCE_POLICY,
+  type FamiliarBinding,
+  type ProxyBrief,
+  type ProxyItem,
+  type ProxyMark,
+} from '../shared/proxy-marks';
 import './line-marks.css';
 
 export interface LineMarksHost {
@@ -174,6 +188,7 @@ const VIA_LABEL: Record<MarkVia, string> = {
   api: 'through the API',
   edit: 'by changing it',
   correct: 'by correcting it',
+  proxy: 'ratified from your Familiar',
 };
 const POLL_MS = 4000;
 /** Step B3c: while the page stays aligned with nothing new, re-ask the server at most this often. */
@@ -254,6 +269,18 @@ export class LineMarksUI {
   private extrasDecoSig = '';
   private extrasDecoQueued = false;
   private extrasWrites = 0;
+  /** Familiar proxy marks: my binding, my Familiar's proxies, my undoable ratifications. */
+  private serverFamiliar: FamiliarBinding | null = null;
+  private serverProxies: ProxyMark[] = [];
+  private serverRatifications: Array<{ id: string; at: string; count: number; familiar: string }> = [];
+  /** The names people gave the AIs present ("Add agent"): ai:<slug> -> "Claude COS". */
+  private agentKeyLabels: Record<string, string> = {};
+  private brief: ProxyBrief | null = null;
+  private briefByLine = new Map<number, ProxyItem>();
+  /** "Review the F flagged": Next issue walks only these lines (document order) until done. */
+  private walkOnly: { lines: number[]; visited: number[] } | null = null;
+  /** Test hook: familiar / ratify / undo requests this page made. */
+  private proxyWrites: Array<{ kind: string; ok: boolean; status: number }> = [];
   /** Step B6: who the server says this viewer is, and the directory that reads names. */
   private serverMe: ViewerIdentity | null = null;
   private directory: IdentityDirectory = EMPTY_DIRECTORY;
@@ -360,6 +387,8 @@ export class LineMarksUI {
         viewer?: { canApprove?: boolean; canMark?: boolean };
         identity?: { me?: ViewerIdentity; directory?: IdentityDirectory };
         alignedSnapshot?: { id: string; createdAt: string } | null;
+        familiar?: FamiliarBinding | null; proxies?: ProxyMark[]; ratifications?: LineMarksUI['serverRatifications'];
+        agentKeyLabels?: Record<string, string>;
       };
       // A newer fetch or a local write superseded this answer.
       if (seq !== this.fetchSeq || this.writesInFlight > 0) return;
@@ -389,6 +418,10 @@ export class LineMarksUI {
         : EMPTY_DIRECTORY;
       registerActorLabels(this.directory.labels);
       this.serverMe = body.identity?.me ?? null;
+      this.serverFamiliar = body.familiar && typeof body.familiar.familiar === 'string' ? body.familiar : null;
+      this.serverProxies = Array.isArray(body.proxies) ? body.proxies : [];
+      this.serverRatifications = Array.isArray(body.ratifications) ? body.ratifications : [];
+      this.agentKeyLabels = body.agentKeyLabels && typeof body.agentKeyLabels === 'object' ? body.agentKeyLabels : {};
       this.snapshot = body.alignedSnapshot && typeof body.alignedSnapshot.id === 'string' ? body.alignedSnapshot : null;
       this.loaded = true;
       this.recompute();
@@ -546,6 +579,7 @@ export class LineMarksUI {
         disagreementAlternatives: disagreementCounts(this.blind),
       });
       this.ranked = rankIssues(this.summary.issues, { viewer: this.me(), explicitFor: explicitPriorityLookup(this.serverNotes, this.lines) });
+      this.computeBrief(reviewMarks);
       this.selection = this.selection.filter(index => index < this.lines.length);
       this.queueAskDecorations();
       this.queueDoDecorations();
@@ -1174,6 +1208,10 @@ export class LineMarksUI {
       if (this.flagsByLine.has(line.index)) dot.dataset.uncertain = 'true'; else delete dot.dataset.uncertain;
       if (this.objectionsByLine.has(line.index)) dot.dataset.objection = 'true'; else delete dot.dataset.objection;
       if (this.selection.includes(line.index)) dot.dataset.selected = 'true'; else delete dot.dataset.selected;
+      // Familiar proxy marks: a lavender outlined dot with the Familiar's initial on a line I have
+      // not marked. It is not my mark (the glyph stays mine).
+      const proxyItem = this.briefByLine.get(line.index);
+      if (proxyItem) { dot.dataset.proxy = proxyItem.proxy.status; dot.dataset.proxyBucket = proxyItem.bucket; } else { delete dot.dataset.proxy; delete dot.dataset.proxyBucket; }
       const lineHeight = parseFloat(getComputedStyle(dom).lineHeight) || 24;
       const top = rect.top - containerRect.top + Math.max(0, (Math.min(lineHeight, rect.height) - dotSize) / 2);
       dot.style.top = `${Math.round(top)}px`;
@@ -1184,7 +1222,8 @@ export class LineMarksUI {
       const pipStatuses = others.slice(0, 4).map(([, entry]) => shownStatus(entry));
       // Rebuild the dot's children only when they change: a click whose target was replaced
       // between pointerdown and pointerup would be lost.
-      const sig = `${myStatus}|${pipStatuses.join(',')}`;
+      const proxyInitial = proxyItem ? familiarInitial(this.aiName(proxyItem.proxy.familiar)) : '';
+      const sig = `${myStatus}|${pipStatuses.join(',')}|${proxyInitial}`;
       if (dot.dataset.sig !== sig) {
         dot.dataset.sig = sig;
         const glyph = document.createElement('span');
@@ -1198,12 +1237,20 @@ export class LineMarksUI {
           pips.append(pip);
         }
         dot.replaceChildren(glyph, pips);
+        if (proxyInitial) {
+          const badge = document.createElement('span');
+          badge.className = 'plm-proxy';
+          badge.textContent = proxyInitial;
+          badge.setAttribute('aria-hidden', 'true');
+          dot.append(badge);
+        }
       }
       const othersText = others.map(([, e]) => `${actorLabel(e.mark.by)}: ${shownLabel(shownStatus(e))}`).join('; ');
       const carriedText = (mine?.carried ? ' (carried over a small edit)' : '')
         + (this.flagsByLine.has(line.index) ? '. Flagged uncertain by its writer' : '')
         + (this.objectionsByLine.has(line.index) ? '. Has an open objection' : '');
-      const extraText = (this.disagreement.has(line.index) ? '. The team disagrees on this line' : '')
+      const extraText = (proxyItem ? `. Your Familiar ${this.aiName(proxyItem.proxy.familiar)} ${proxyItem.proxy.status === 'rejected-suggested' ? 'recommends rejecting it' : proxyItem.proxy.status === 'seen' ? 'read it' : `agrees (${proxyItem.proxy.confidence})`}, not yet yours` : '')
+        + (this.disagreement.has(line.index) ? '. The team disagrees on this line' : '')
         + (this.altsByLine.has(line.index) ? '. Has competing wordings' : '')
         + (ttlView ? `. ${describeTtl(ttlView, Date.now() + this.clockSkewMs)}` : '');
       dot.setAttribute('aria-label', `Line ${line.index + 1}: your mark ${myStatus === 'changed' ? 'is out of date (the line changed)' : shownLabel(myStatus)}${carriedText}${extraText}${othersText ? `. ${othersText}` : ''}. Mark this line`);
@@ -1291,6 +1338,8 @@ export class LineMarksUI {
     const history = this.altHistoryFor(line.index);
     if (history.length) root.append(this.buildAltHistory(history));
 
+    const proxyItem = this.briefByLine.get(line.index);
+    if (proxyItem) root.append(this.buildProxyNote(proxyItem));
     if (mine && !mine.current) {
       const changed = document.createElement('p');
       changed.className = 'plm-changed';
@@ -1523,6 +1572,23 @@ export class LineMarksUI {
         why.textContent = `Why: ${entry.mark.why}`;
         li.append(why);
       }
+      // Evidence (Fable's rule): an AI mark shows what it checked, or reads "claimed".
+      if (entry?.current && !entry.mark.hidden && entry.mark.via === 'proxy' && entry.mark.proxy) {
+        what.textContent += ` (ratified from ${this.aiName(entry.mark.proxy.familiar)}, confidence ${entry.mark.proxy.confidence})`;
+        what.dataset.via = 'proxy';
+      }
+      if (entry?.current && entry.mark.evidence && !entry.mark.hidden) {
+        const ev = document.createElement('span');
+        ev.className = 'plm-evidence';
+        ev.textContent = `Evidence: ${entry.mark.evidence}`;
+        li.append(ev);
+      } else if (entry?.current && isClaimedMark(entry.mark)) {
+        const claimed = document.createElement('span');
+        claimed.className = 'plm-claimed';
+        claimed.textContent = EVIDENCE_POLICY.claimedLabel;
+        claimed.title = 'This AI gave no evidence for its mark: treat it as a claim, not a check.';
+        li.append(claimed);
+      }
       list.append(li);
     }
     root.append(list);
@@ -1602,6 +1668,175 @@ export class LineMarksUI {
   }
 
   // --------------------------------------------------------------------------
+  // Familiar proxy marks (Mike, 2026-09-19)
+  // --------------------------------------------------------------------------
+
+  /** My brief: my Familiar's current proxies, bucketed (null when I have no Familiar here). */
+  private computeBrief(reviewMarks: ReviewMarkLike[]): void {
+    const me = this.me();
+    const verified = this.serverMe?.trust === 'verified';
+    if (!verified || !this.serverFamiliar || !this.summary) {
+      this.brief = null;
+      this.briefByLine = new Map();
+      return;
+    }
+    const suggestionLines: number[] = [];
+    for (const mark of reviewMarks) {
+      if (!mark.open || mark.kind === 'comment' || typeof mark.pos !== 'number') continue;
+      const index = this.lineAtPos(mark.pos);
+      if (index >= 0) suggestionLines.push(index);
+    }
+    this.brief = evaluateProxies({
+      proxies: this.serverProxies,
+      human: me,
+      familiar: this.serverFamiliar.familiar,
+      lines: this.lines,
+      states: this.states,
+      held: heldLines({ issues: this.summary.issues, human: me, suggestionLines }),
+      humanIssueLines: humanIssueLines(this.summary.issues, me),
+    });
+    this.briefByLine = new Map(this.brief.items.map(item => [item.lineIndex, item]));
+  }
+
+  /** The proxy brief for this viewer (null: no Familiar, not signed in, or not loaded). */
+  proxyBrief(): ProxyBrief | null { return this.brief; }
+  /** The proxy on a line, when my Familiar marked it and I have not. */
+  proxyOnLine(index: number): ProxyItem | null { return this.briefByLine.get(index) ?? null; }
+  familiarBinding(): FamiliarBinding | null { return this.serverFamiliar; }
+  /** AIs present in the document (active agent keys): the choices for "My Familiar". */
+  familiarChoices(): Array<{ actor: string; label: string }> {
+    return this.agentKeyActors.map(actor => ({ actor, label: this.aiName(actor) }));
+  }
+  /** An AI's name as the person who added it typed it ("Claude COS"), else its actor label. */
+  aiName(actor: string): string {
+    return this.agentKeyLabels[actor] ?? this.agentKeyLabels[actorKey(actor)] ?? actorLabel(actor);
+  }
+  undoableRatifications(): Array<{ id: string; at: string; count: number; familiar: string }> { return this.serverRatifications; }
+  isVerifiedViewer(): boolean { return this.serverMe?.trust === 'verified'; }
+
+  private async proxyPost(kind: string, path: string, body: Record<string, unknown>): Promise<{ ok: boolean; status: number; body: Record<string, any> }> {
+    const slug = this.host.slug();
+    if (!slug) return { ok: false, status: 0, body: {} };
+    this.writesInFlight += 1;
+    try {
+      const response = await fetch(`${this.host.apiBase()}/documents/${encodeURIComponent(slug)}${path}`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { ...this.host.authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const json = await response.json().catch(() => ({})) as Record<string, any>;
+      this.proxyWrites.push({ kind, ok: response.ok, status: response.status });
+      if (!response.ok) this.toast(json.error || 'Could not save that');
+      return { ok: response.ok, status: response.status, body: json };
+    } catch {
+      this.proxyWrites.push({ kind, ok: false, status: 0 });
+      this.toast('Could not save that (offline?)');
+      return { ok: false, status: 0, body: {} };
+    } finally {
+      this.writesInFlight -= 1;
+      this.fetchSeq += 1;
+      await this.refresh();
+    }
+  }
+
+  /** "My Familiar": choose an AI present in the document, or none. */
+  async setFamiliar(actor: string | null): Promise<boolean> {
+    return (await this.proxyPost('familiar', '/familiar', { familiar: actor })).ok;
+  }
+
+  /**
+   * "Ratify all": my proxy-agreed lines in the brief become my Agreed marks (via proxy). The
+   * server re-checks each one; lines that stopped qualifying come back as skipped.
+   */
+  async ratifyAll(): Promise<{ ok: boolean; id?: string; count: number; skipped: number }> {
+    const ids = (this.brief?.ratify ?? []).map(item => item.proxy.id);
+    if (ids.length === 0) return { ok: false, count: 0, skipped: 0 };
+    const result = await this.proxyPost('ratify', '/proxy/ratify', { proxyIds: ids });
+    const r = result.body.ratification as { id?: string; count?: number } | undefined;
+    return { ok: result.ok, id: r?.id, count: r?.count ?? 0, skipped: Array.isArray(result.body.skipped) ? result.body.skipped.length : 0 };
+  }
+
+  async undoRatification(id: string): Promise<boolean> {
+    return (await this.proxyPost('undo', `/proxy/ratifications/${encodeURIComponent(id)}/undo`, {})).ok;
+  }
+
+  /** "Review the F flagged": Next issue walks only the flagged lines, then stops. */
+  reviewFlagged(): boolean {
+    const lines = (this.brief?.flagged ?? []).map(item => item.lineIndex);
+    if (lines.length === 0) return false;
+    this.walkOnly = { lines, visited: [] };
+    this.gotoNextIssue();
+    return true;
+  }
+
+  stopReviewFlagged(): void {
+    this.walkOnly = null;
+    this.notifyListeners();
+  }
+
+  /** While reviewing the flagged lines: how far along (null when not reviewing). */
+  flaggedWalk(): { total: number; visited: number; current: number | null } | null {
+    if (!this.walkOnly) return null;
+    const visited = this.walkOnly.visited;
+    return { total: this.walkOnly.lines.length, visited: visited.length, current: visited.length ? visited[visited.length - 1] : null };
+  }
+
+  private notifyListeners(): void {
+    for (const listener of this.listeners) {
+      try { listener(); } catch (error) { console.warn('[plm] listener failed', error); }
+    }
+  }
+
+  private gotoNextFlagged(): void {
+    const walk = this.walkOnly!;
+    const next = walk.lines.find(index => !walk.visited.includes(index));
+    if (next === undefined) {
+      this.walkOnly = null;
+      this.toast('You have been through every line your Familiar flagged.');
+      this.notifyListeners();
+      return;
+    }
+    walk.visited.push(next);
+    this.host.revealLine?.(next);
+    const view = this.view;
+    const line = this.lines[next];
+    if (!(this.host.focusLine?.(next)) && view && line) {
+      (view.nodeDOM(line.pos) as HTMLElement | null)?.scrollIntoView({ block: 'center', behavior: 'auto' });
+    }
+    const dom = view && line ? view.nodeDOM(line.pos) as HTMLElement | null : null;
+    if (dom) this.flash(dom);
+    this.countEl.dataset.current = `flagged ${next + 1}`;
+    this.notifyListeners();
+  }
+
+  /** The note in a line's mark box about my Familiar's proxy on it. */
+  private buildProxyNote(item: ProxyItem): HTMLElement {
+    const box = document.createElement('div');
+    box.className = 'plm-proxy-note';
+    box.dataset.bucket = item.bucket;
+    const familiar = this.aiName(item.proxy.familiar);
+    const head = document.createElement('p');
+    head.className = 'plm-proxy-head';
+    const verb = item.proxy.status === 'rejected-suggested' ? 'recommends rejecting this line'
+      : item.proxy.status === 'seen' ? 'read this line for you (no position)'
+      : `agrees for you (confidence ${item.proxy.confidence})`;
+    head.textContent = `Your Familiar ${familiar} ${verb}.`;
+    const evidence = document.createElement('p');
+    evidence.className = 'plm-evidence';
+    evidence.textContent = `Evidence: ${item.proxy.evidence}`;
+    const status = document.createElement('p');
+    status.className = 'plm-proxy-status';
+    status.textContent = item.bucket === 'ratify'
+      ? 'Not your mark until you ratify it (Ratify all at the top of the rail, or Agree here).'
+      : item.bucket === 'reject'
+        ? 'Not your mark: reject it yourself if you agree.'
+        : `Not your mark. ${flaggedWhy(item, PROXY_POLICY.ratifyThreshold).replace(/^./, c => c.toUpperCase())}.`;
+    box.append(head, evidence, status);
+    return box;
+  }
+
+  // --------------------------------------------------------------------------
   // Next issue
   // --------------------------------------------------------------------------
 
@@ -1610,6 +1845,7 @@ export class LineMarksUI {
    * budget, once the reader has visited that many Issues it stops and says what is left.
    */
   gotoNextIssue(): void {
+    if (this.walkOnly) { this.gotoNextFlagged(); return; }
     const ranked = this.ranked.filter(r => r.issue.pos !== null);
     const view = this.view;
     if (!view || ranked.length === 0) return;
@@ -2635,8 +2871,20 @@ export class LineMarksUI {
   private aidWrites = 0;
 
   /** Test and agent hook: the numbers the UI shows. */
-  debugState(): { extras: Record<string, unknown>; aids: Record<string, unknown>; loaded: boolean; issues: number; aligned: boolean; team: string[]; lines: number; marks: LineMark[]; sectionWrites: number; askIssues: number; askAnswers: number; asks: Array<Record<string, unknown>>; doIssues: number; doWrites: number; dos: Array<Record<string, unknown>>; skimWrites: number; snapshot: { id: string; createdAt: string } | null; carried: Array<{ line: number; by: string; from: string | null }> } {
+  debugState(): { proxy: Record<string, unknown>; extras: Record<string, unknown>; aids: Record<string, unknown>; loaded: boolean; issues: number; aligned: boolean; team: string[]; lines: number; marks: LineMark[]; sectionWrites: number; askIssues: number; askAnswers: number; asks: Array<Record<string, unknown>>; doIssues: number; doWrites: number; dos: Array<Record<string, unknown>>; skimWrites: number; snapshot: { id: string; createdAt: string } | null; carried: Array<{ line: number; by: string; from: string | null }> } {
     return {
+      proxy: {
+        familiar: this.serverFamiliar?.familiar ?? null,
+        proxies: this.serverProxies.length,
+        counts: this.brief?.counts ?? null,
+        ratify: (this.brief?.ratify ?? []).map(i => i.lineIndex),
+        flagged: (this.brief?.flagged ?? []).map(i => [i.lineIndex, i.bucket]),
+        seen: (this.brief?.seen ?? []).map(i => i.lineIndex),
+        reset: this.brief?.reset.length ?? 0,
+        walk: this.flaggedWalk(),
+        writes: this.proxyWrites,
+        ratifications: this.serverRatifications,
+      },
       aids: {
         flags: this.flagViews.map(v => ({ id: v.flag.id, by: v.flag.by, note: v.flag.note, line: v.lineIndex })),
         objections: this.objectionViews.map(v => ({ id: v.objection.id, by: v.objection.by, lines: v.lineIndices, repairPending: v.repairPending, deleted: v.deletedLines, condition: v.objection.condition })),

@@ -785,6 +785,71 @@ margin (click it to open the chat there). Page routes: `GET /api/documents/<slug
 `POST /api/documents/<slug>/chat` `{ by, text, lines: [anchor], mentions?, replyTo? }` (the actor is
 decided as for line marks: a signed-in session, an agent key's AI, or a guest's typed name).
 
+## Familiar proxy marks: your Familiar pre-marks, you ratify once
+
+_Added 2026-09-19 by Claude Opus 5 (worker proof-proxy) for Mike Wolf, who ruled Yes: "A proxy mark
+never counts as yours until you ratify it, and every AI mark must show its evidence." Rules in
+`PROXY_POLICY` and `EVIDENCE_POLICY` (`src/shared/proxy-marks.ts`); `/state` returns them in
+`proxyPolicy`._
+
+A **Familiar** is "an AI that has access to enough information to be a trusted advisor to that
+human". In a document, a signed-in person binds one AI present (an agent key, `ai:<key>`) as their
+Familiar. The Familiar may then post **proxy marks** for that person. Proxy marks live in their own
+table: they are never line marks, never Issues' answers, and never counted by `alignment`.
+
+Bind (a person, in the page: the rail header's "My Familiar" select, or
+`POST /api/documents/<slug>/familiar {familiar: "ai:<key>" | null}`, signed-in session only; guests and
+agent keys get 403 `SIGNED_IN_PERSON_REQUIRED`). Scripts with the owner credential:
+
+  POST /api/agent/<slug>/familiars   { for: "human:<email>", familiar: "ai:<key>" | null }   (403 OWNER_CREDENTIAL_REQUIRED otherwise)
+  GET  /api/agent/<slug>/familiars
+
+The Familiar must be an AI present in the document (400 `FAMILIAR_NOT_PRESENT`).
+
+Post proxy marks (the bound Familiar's own agent key only):
+
+  POST /api/agent/<slug>/marks/proxy
+  Body: { for: "human:<email>", lines: [{ target: {quote|lineIndex|ref|hash}, status, confidence, evidence }] }
+
+- `status`: `agreed`, `seen` or `rejected-suggested` (`unseen` withdraws your proxy on that line).
+  `approved` is 403 `PROXY_CANNOT_APPROVE`; `rejected` is 400 `PROXY_REJECT_IS_SUGGESTED`: the person
+  rejects themselves. A proxy never answers an ask.
+- `confidence`: 0..1 (400 `CONFIDENCE_REQUIRED`). `evidence` is required: one line, at least 12
+  characters, paraphrasing the line or naming the check you ran (400 `EVIDENCE_REQUIRED`).
+- One bad entry writes nothing; the error carries its `index`. A new proxy on a line replaces yours.
+- Another AI, the owner credential naming the Familiar, or a person without a Familiar: 403
+  (`NOT_THIS_PERSONS_FAMILIAR`, `AGENT_KEY_REQUIRED`, `NOT_BOUND`).
+- A proxy follows its line like any mark: a cosmetic change carries it (`carried: true`); a meaning
+  change resets it (listed under `reset`, shown nowhere).
+
+Read: `/state` has `familiars` and `proxies` (per person: `familiar`, `counts`, `items` with
+`proxyId, lineIndex, status, confidence, evidence, bucket, held, carried`, `reset`, `moot`);
+`alignment.unratifiedProxies` counts them and they are excluded from `alignment.counts`.
+`GET /api/agent/<slug>/marks/proxy?for=human:<email>` returns one person's brief.
+Events: `proxy.marked`, `proxy.ratified` (names every covered line with its evidence and confidence),
+`proxy.ratify_undone`, `familiar.bound`, `familiar.unbound`.
+
+The brief (what the person sees at the top of the right rail): "<Familiar> read N lines for you:
+agreed A, flagged F for you, K need you". Buckets: `ratify` (agreed, confidence at least
+`PROXY_POLICY.ratifyThreshold` = 0.9, line not held), `check` (agreed below the threshold: "suggest
+you check"), `reject` (rejected-suggested), `held` (agreed, but the line has an open objection, an open
+ask, an uncertain flag open for the person, a {do}, a rejection by someone else, or a pending
+suggestion), `seen` (read, no position). F = check + reject + held. K = the person's line Issues not
+in A or F. A proxy on a line the person already marked is moot and not shown.
+
+- **Ratify all** (`POST /api/documents/<slug>/proxy/ratify {proxyIds}`, the person only): each item
+  still in the ratify set becomes the person's Agreed with `via: "proxy"`, `evidence`, and
+  `proxy: {familiar, proxyId, confidence, evidence, ratificationId}`; the rest come back in `skipped`.
+  It is an explicit action: the reading walk's provisional accepts are committed first. `via: "proxy"`
+  is passive for the ringer list and can only be written by this route (400 `VIA_NOT_ALLOWED`).
+- **Undo** (`POST /api/documents/<slug>/proxy/ratifications/<id>/undo`): every line gets back exactly
+  what it held before, in one request; once; within `PROXY_POLICY.undoWindowMs`; a line the person
+  marked again since keeps the newer mark.
+- **Review the F flagged**: Next issue walks only those lines, then stops.
+
+Evidence on every AI mark: `/marks/line` also takes `evidence` (kept for AI actors). An AI mark
+without it is listed with `claimed: true` in `/state` and shown as "claimed" in the page.
+
 ## Presence And Event Polling
 
 Poll for changes:

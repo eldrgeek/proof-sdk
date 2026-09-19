@@ -1269,7 +1269,59 @@ function initDatabase(): void {
     if (!cols.has('line_text')) d.exec('ALTER TABLE document_line_marks ADD COLUMN line_text TEXT');
     // Step B4c: an AI's one-line rationale for its mark.
     if (!cols.has('why')) d.exec('ALTER TABLE document_line_marks ADD COLUMN why TEXT');
+    // Proxy marks step: what the marker checked, and (for a ratified proxy) where it came from.
+    if (!cols.has('evidence')) d.exec('ALTER TABLE document_line_marks ADD COLUMN evidence TEXT');
+    if (!cols.has('proxy_json')) d.exec('ALTER TABLE document_line_marks ADD COLUMN proxy_json TEXT');
   }
+
+  // Proof Documents, Familiar proxy marks (Mike, 2026-09-19): each person's Familiar AI per
+  // document, the Familiar's proxy marks (never counted as the person's), and ratifications
+  // (with what each ratified line held before, for Undo). Beside the document, never in its text.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_familiars (
+      document_slug TEXT NOT NULL,
+      human_key TEXT NOT NULL,
+      human_actor TEXT NOT NULL,
+      familiar_actor TEXT NOT NULL,
+      bound_at TEXT NOT NULL,
+      bound_by TEXT NOT NULL,
+      PRIMARY KEY (document_slug, human_key)
+    )
+  `);
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_proxy_marks (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      familiar_actor TEXT NOT NULL,
+      familiar_key TEXT NOT NULL,
+      for_actor TEXT NOT NULL,
+      for_key TEXT NOT NULL,
+      status TEXT NOT NULL,
+      confidence REAL NOT NULL,
+      evidence TEXT NOT NULL,
+      line_hash TEXT NOT NULL,
+      line_occurrence INTEGER NOT NULL,
+      line_ordinal INTEGER NOT NULL,
+      line_kind TEXT NOT NULL,
+      line_excerpt TEXT NOT NULL DEFAULT '',
+      line_text TEXT,
+      at TEXT NOT NULL
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_proxy_marks_slug ON document_proxy_marks(document_slug, for_key, at)`);
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_proxy_ratifications (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      human_actor TEXT NOT NULL,
+      human_key TEXT NOT NULL,
+      familiar_actor TEXT NOT NULL,
+      at TEXT NOT NULL,
+      entries_json TEXT NOT NULL DEFAULT '[]',
+      undone_at TEXT
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_proxy_ratifications_slug ON document_proxy_ratifications(document_slug, human_key, at)`);
 
   // Proof Documents Step B4c: review notes (an AI's why / reject hints / explicit priority on a
   // suggestion or a line) and uncertain flags. Beside the document like line marks.
@@ -4325,6 +4377,9 @@ export interface DocumentLineMarkRow {
   line_text?: string | null;
   /** Step B4c: an AI's rationale (null on older rows). */
   why?: string | null;
+  /** Proxy marks step: what the marker checked; a ratified proxy's origin (JSON). */
+  evidence?: string | null;
+  proxy_json?: string | null;
 }
 
 export function listDocumentLineMarks(slug: string): DocumentLineMarkRow[] {
@@ -4344,7 +4399,7 @@ export function replaceDocumentLineMark(input: {
   /** Further anchors whose marks by this actor are replaced (a line's text before an edit). */
   replaceAnchors?: Array<{ hash: string; occurrence: number }>;
   anchor: { hash: string; occurrence: number };
-  next: Omit<DocumentLineMarkRow, 'document_slug' | 'actor_key' | 'created_at' | 'updated_at'> & { at: string } | null;
+  next: Omit<DocumentLineMarkRow, 'document_slug' | 'actor_key' | 'created_at' | 'updated_at'> & { at: string; created_at?: string } | null;
 }): string[] {
   assertWritesAllowed('replaceDocumentLineMark');
   const d = getDb();
@@ -4367,10 +4422,11 @@ export function replaceDocumentLineMark(input: {
       d.prepare(`
         INSERT INTO document_line_marks (
           id, document_slug, by_actor, actor_key, status, reason, line_hash, line_occurrence,
-          line_ordinal, line_kind, line_excerpt, created_at, updated_at, via, line_text, why
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          line_ordinal, line_kind, line_excerpt, created_at, updated_at, via, line_text, why, evidence, proxy_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(n.id, input.slug, n.by_actor, input.actorKey, n.status, n.reason, n.line_hash, n.line_occurrence,
-        n.line_ordinal, n.line_kind, n.line_excerpt, n.at, n.at, n.via ?? null, n.line_text ?? null, n.why ?? null);
+        n.line_ordinal, n.line_kind, n.line_excerpt, n.created_at ?? n.at, n.at, n.via ?? null, n.line_text ?? null, n.why ?? null,
+        n.evidence ?? null, n.proxy_json ?? null);
     }
     return removed;
   });

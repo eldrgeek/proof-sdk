@@ -93,7 +93,7 @@ export interface RingerItem {
   hash: string;
   occurrence: number;
   excerpt: string;
-  /** How your Seen was earned (dwell = scrolling, section = a folded section). */
+  /** How your Seen was earned (dwell = scrolling, section = a folded section, proxy = ratified from your Familiar). */
   via: MarkVia;
   markedAt: string;
   why: string;
@@ -240,8 +240,10 @@ export function computeSinceYou(input: {
   }
   for (const state of states) {
     const entry = state.marks.get(me);
-    if (!entry || !entry.current || entry.mark.status !== 'seen') continue;
+    if (!entry || !entry.current) continue;
     const via = (entry.mark.via ?? 'api') as MarkVia;
+    // A ratified proxy Agreed is watched too: the person agreed without reading the line.
+    if (entry.mark.status !== 'seen' && !(via === 'proxy' && entry.mark.status === 'agreed')) continue;
     if (!PASSIVE_VIAS.has(via)) continue;
     const reasons: string[] = [];
     if (entry.carried) reasons.push('edited (small wording fix) after you scrolled past it');

@@ -41,6 +41,8 @@ import {
 } from './collab.js';
 import { canonicalizeStoredMarks, type StoredMark } from '../src/formats/marks.js';
 import { buildIssueReport, computeServerLines, listCanonicalLineMarks, resolveAgentLineTarget, writeAgentLineMark } from './line-marks.js';
+import { bindFamiliar, briefFor, issueReportFor, listFamiliars, proxyStateReport, resolveHuman, serializeBrief, writeAgentProxyMarks } from './proxy-marks.js';
+import { EVIDENCE_POLICY, PROXY_POLICY, isClaimedMark } from '../src/shared/proxy-marks.js';
 import { buildSinceYou, freezeIfAligned, listSnapshotInfos, scheduleAlignmentCheck, sendSnapshotFile } from './alignment.js';
 import { agentKeyActor, anchorForLine as anchorForDocLine } from '../src/shared/line-marks.js';
 import { decideActor } from './identity.js';
@@ -2255,11 +2257,33 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
           body.blind = { on: true, viewer, revealedLines: [...view.revealed].sort((a, b) => a - b), hiddenPositions: view.hidden };
         }
       }
+      // Familiar proxy marks: each person's Familiar and its current proxies, listed apart from
+      // lineMarks. They never count: `alignment` above is computed without them.
+      let unratifiedProxies = 0;
+      try {
+        const blindOn = report.settings.blind;
+        const viewer = blindOn ? blindViewer(req, slug, role) : undefined;
+        const proxyReport = proxyStateReport(slug, report, isRecord(body.marks) ? body.marks : doc?.marks, { viewer });
+        body.familiars = proxyReport.familiars;
+        body.proxies = proxyReport.proxies;
+        unratifiedProxies = proxyReport.unratified;
+        body.proxyPolicy = { ...PROXY_POLICY, evidence: EVIDENCE_POLICY };
+        links.proxyMarks = { method: 'POST', href: `/api/agent/${slug}/marks/proxy` };
+        links.familiars = { method: 'GET', href: `/api/agent/${slug}/familiars` };
+      } catch (error) {
+        console.warn('[agent-routes] proxy report failed', { slug, error: String(error) });
+      }
+      // Evidence: an AI line mark without evidence is "claimed".
+      if (Array.isArray(body.lineMarks)) {
+        body.lineMarks = (body.lineMarks as Array<Record<string, unknown>>).map(mark => (isClaimedMark(mark as { by: string; hidden?: boolean; evidence?: string | null }) ? { ...mark, claimed: true } : mark));
+      }
       body.alignment = {
         aligned: report.aligned,
         team: report.team,
         owners: report.owners,
         counts: report.counts,
+        unratifiedProxies,
+        proxyRule: 'Proxy marks from a Familiar never count until their person ratifies them',
         lastSnapshot: snapshot ? { ...snapshot, ledger: `/api/agent/${slug}/snapshots/${snapshot.id}.md` } : null,
         teamRule: 'Step 1: owner + everyone who has line-marked, commented, replied or suggested + active agent keys (Step B3: + askers and the people asked)',
       };
@@ -3639,6 +3663,81 @@ agentRoutes.post('/:slug/marks/line', async (req: Request, res: Response) => {
     notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'line_mark.set' }), { apply: false });
   }
   sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+});
+
+// ============================================================================
+// Familiar proxy marks (Mike, 2026-09-19)
+// ============================================================================
+
+/** The AI of the agent key this request presents (null when it presents none). */
+function presentedKeyActor(req: Request, slug: string): string | null {
+  const tokenId = agentRequestTokenIds.get(req) ?? null;
+  if (!tokenId) return null;
+  const key = listDocumentAgentKeys(slug).find(k => k.tokenId === tokenId && !k.revokedAt);
+  return key ? agentKeyActor(key.label) : null;
+}
+
+// The bound Familiar marks lines for its person. Body: { for: "human:<email>", lines: [{ target, status:
+// agreed | seen | rejected-suggested | unseen, confidence: 0..1, evidence }] }. Never counts until ratified.
+agentRoutes.post('/:slug/marks/proxy', async (req: Request, res: Response) => {
+  const route = 'POST /marks/proxy';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route }); return; }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body);
+  const actor = resolveAgentActor(req, slug, payload, role);
+  if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route, slug }); return; }
+  const keyActor = presentedKeyActor(req, slug);
+  const viaAgentKey = Boolean(keyActor) && keyActor === actor.by;
+  const result = await writeAgentProxyMarks(slug, await currentAgentMarkdown(slug), payload, { actor: actor.by, viaAgentKey });
+  sendMutationResponse(res, result.status, result.body, { route, slug });
+});
+
+// A person's brief: GET /marks/proxy?for=human:<email> (the Familiar, the owner credential, or any reader).
+agentRoutes.get('/:slug/marks/proxy', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  const role = checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const state = await currentAgentState(slug);
+  const report = await issueReportFor(slug, state.markdown, state.marks);
+  res.setHeader('Cache-Control', 'no-store');
+  if (typeof req.query.for === 'string') {
+    const human = resolveHuman(slug, req.query.for);
+    if (!human) { res.status(400).json({ success: false, code: 'INVALID_FOR', error: '"for" must name a verified person: human:<email>' }); return; }
+    res.json({ success: true, brief: serializeBrief(briefFor(slug, human, report, state.marks)), policy: PROXY_POLICY });
+    return;
+  }
+  const viewer = report.settings.blind ? blindViewer(req, slug, role) : undefined;
+  res.json({ success: true, ...proxyStateReport(slug, report, state.marks, { viewer }), policy: PROXY_POLICY });
+});
+
+agentRoutes.get('/:slug/familiars', (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, familiars: listFamiliars(slug), policy: { bindRequiresVerifiedSession: PROXY_POLICY.bindRequiresVerifiedSession, familiarMustBeActiveKey: PROXY_POLICY.familiarMustBeActiveKey } });
+});
+
+// Scripts: the owner credential binds a named person's Familiar: { for: "human:<email>", familiar: "ai:<key>" | null }.
+// People choose their own in the page; an agent key can never choose (it would pick itself).
+agentRoutes.post('/:slug/familiars', async (req: Request, res: Response) => {
+  const route = 'POST /familiars';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route }); return; }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body);
+  if (role !== 'owner_bot' || presentedKeyActor(req, slug)) {
+    sendMutationResponse(res, 403, { success: false, code: 'OWNER_CREDENTIAL_REQUIRED', error: 'A person chooses their own Familiar in the page (My Familiar); scripts need the owner credential' }, { route, slug });
+    return;
+  }
+  const human = resolveHuman(slug, payload.for);
+  if (!human) { sendMutationResponse(res, 400, { success: false, code: 'INVALID_FOR', error: '"for" must name a verified person: human:<email>' }, { route, slug }); return; }
+  const result = bindFamiliar(slug, { human, familiar: payload.familiar ?? null, by: 'owner-credential', source: 'agent' });
+  sendMutationResponse(res, result.status, result.body, { route, slug });
 });
 
 // ============================================================================

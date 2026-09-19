@@ -83,7 +83,7 @@ export function revealedLines(lines: DocLine[], lineMarks: LineMark[], viewer: s
 
 /** Someone else's mark as the viewer may see it before the line is revealed. */
 export function hiddenMark(mark: LineMark): LineMark {
-  return { ...mark, status: 'seen', reason: null, why: null, hidden: true };
+  return { ...mark, status: 'seen', reason: null, why: null, evidence: null, proxy: null, hidden: true };
 }
 
 /**

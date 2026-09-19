@@ -45,6 +45,8 @@ import {
 } from '../src/shared/line-marks.js';
 import { buildDirectory, clientDirectory } from './identity.js';
 import { WHY_POLICY, cleanWhy } from '../src/shared/review-aids.js';
+import { SERVER_ONLY_VIAS } from '../src/shared/line-marks.js';
+import { cleanEvidence } from '../src/shared/proxy-marks.js';
 import { annotateIssues, evaluateAids, objectionInputs, serializeFlag, serializeNote, serializeObjection, uncertainInputs } from './review-aids-eval.js';
 import { isAiActor } from '../src/shared/line-marks.js';
 import { canonicalizeLineMarks, isEmailAddress, resolveTargetActor, verifiedHumanActor, type IdentityDirectory } from '../src/shared/identity.js';
@@ -91,7 +93,25 @@ export function rowToLineMark(row: DocumentLineMarkRow): LineMark {
     anchor,
     via: isMarkVia(row.via) ? row.via : 'api',
     ...(row.why ? { why: row.why } : {}),
+    ...(row.evidence ? { evidence: row.evidence } : {}),
+    ...(row.proxy_json ? { proxy: parseProxyOrigin(row.proxy_json) } : {}),
   };
+}
+
+function parseProxyOrigin(raw: string): LineMark['proxy'] {
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed.familiar !== 'string') return null;
+    return {
+      familiar: parsed.familiar,
+      proxyId: String(parsed.proxyId ?? ''),
+      confidence: Number(parsed.confidence ?? 0),
+      evidence: String(parsed.evidence ?? ''),
+      ratificationId: String(parsed.ratificationId ?? ''),
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function listLineMarks(slug: string): LineMark[] {
@@ -317,6 +337,10 @@ type ValidEntry = {
   via: MarkVia;
   /** Step B4c: an AI's rationale (kept only from AI actors, WHY_POLICY). */
   why: string | null;
+  /** Proxy marks step: what an AI checked (kept from AI actors and ratified proxies). */
+  evidence: string | null;
+  /** Proxy marks step: a ratified proxy's origin (server-written only). */
+  proxy: LineMark['proxy'];
   reason: string;
   anchor: LineAnchor;
   replaceIds: string[];
@@ -333,6 +357,10 @@ function validateEntry(input: {
   replaceIds?: unknown;
   replaceAnchors?: unknown;
   canApprove: boolean;
+  evidence?: unknown;
+  proxy?: LineMark['proxy'];
+  /** Only the server's own routes (ratify) may write a server-only via such as "proxy". */
+  allowServerVias?: boolean;
 }): { ok: true; entry: ValidEntry } | { ok: false; result: LineMarkResult } {
   const clearing = input.status === 'unseen' || input.status === null;
   if (!clearing && !isLineMarkStatus(input.status)) {
@@ -360,7 +388,10 @@ function validateEntry(input: {
       .slice(0, 5)
     : [];
   const via: MarkVia = isMarkVia(input.via) ? input.via : 'api';
-  return { ok: true, entry: { status, via, why: cleanWhy(input.why), reason, anchor, replaceIds, replaceAnchors } };
+  if (SERVER_ONLY_VIAS.has(via) && !input.allowServerVias) {
+    return { ok: false, result: { status: 400, body: { success: false, code: 'VIA_NOT_ALLOWED', error: `"via": "${via}" is written only by the server (ratify your Familiar's proxy marks instead)` } } };
+  }
+  return { ok: true, entry: { status, via, why: cleanWhy(input.why), evidence: cleanEvidence(input.evidence), proxy: input.proxy ?? null, reason, anchor, replaceIds, replaceAnchors } };
 }
 
 /** Writes validated entries in one database transaction. Returns the new marks and removed ids. */
@@ -377,6 +408,9 @@ function applyEntries(slug: string, by: string, entries: ValidEntry[]): { marks:
       const lineText = typeof anchor.text === 'string' ? normalizeLineText(anchor.text).slice(0, LINE_TEXT_MAX) : '';
       const markReason = status === 'rejected' ? reason : (reason || null);
       const why = entry.why && (WHY_POLICY.lineMarkWhyFromHumans || isAiActor(by)) ? entry.why : null;
+      // Evidence belongs to AI marks and to ratified proxies (the Familiar's evidence).
+      const evidence = entry.evidence && (isAiActor(by) || entry.proxy) ? entry.evidence : null;
+      const proxy = status && entry.proxy ? entry.proxy : null;
       removed.push(...replaceDocumentLineMark({
         slug,
         actorKey: key,
@@ -398,10 +432,15 @@ function applyEntries(slug: string, by: string, entries: ValidEntry[]): { marks:
             via: entry.via,
             line_text: lineText || null,
             why,
+            evidence,
+            proxy_json: proxy ? JSON.stringify(proxy) : null,
           }
           : null,
       }));
-      marks.push(status ? { id, by, status, reason: markReason, at: now, anchor: { ...anchor, excerpt, ...(lineText ? { text: lineText } : {}) }, via: entry.via, ...(why ? { why } : {}) } : null);
+      marks.push(status ? {
+        id, by, status, reason: markReason, at: now, anchor: { ...anchor, excerpt, ...(lineText ? { text: lineText } : {}) }, via: entry.via,
+        ...(why ? { why } : {}), ...(evidence ? { evidence } : {}), ...(proxy ? { proxy } : {}),
+      } : null);
     }
   };
   if (entries.length === 1) run();
@@ -422,6 +461,8 @@ export function writeLineMark(slug: string, input: {
   via?: unknown;
   /** Step B4c: an AI's one-line rationale. */
   why?: unknown;
+  /** Proxy marks step: what an AI checked (kept for AI actors; otherwise "claimed"). */
+  evidence?: unknown;
   anchor: unknown;
   replaceIds?: unknown;
   replaceAnchors?: unknown;
@@ -440,7 +481,7 @@ export function writeLineMark(slug: string, input: {
     const blind = BLIND_POLICY.eventsOmitPositions && getProofSettings(slug).blind;
     addDocumentEvent(slug, 'line_mark.updated', {
       markId: mark?.id ?? null, removed,
-      ...(blind ? { blind: true } : { status: status ?? 'unseen', ...(mark?.why ? { why: mark.why } : {}) }),
+      ...(blind ? { blind: true } : { status: status ?? 'unseen', ...(mark?.why ? { why: mark.why } : {}), ...(mark?.evidence ? { evidence: mark.evidence } : {}) }),
       via: checked.entry.via, anchor: { hash: anchor.hash, excerpt: mark?.anchor.excerpt ?? anchor.excerpt }, source: input.source,
     }, by);
   } catch (error) {
@@ -457,6 +498,9 @@ function invalidActor(): LineMarkResult {
 export interface LineMarkBatchEntry {
   anchor: unknown;
   why?: unknown;
+  evidence?: unknown;
+  /** Server-built entries only (ratify): the proxy this mark comes from. */
+  proxy?: LineMark['proxy'];
   /** Overrides the batch's status for this line (an undo restores each line's own earlier mark). */
   status?: unknown;
   reason?: unknown;
@@ -478,8 +522,12 @@ export function writeLineMarksBatch(slug: string, input: {
   via?: unknown;
   /** Step B4c: default rationale for every entry (an AI's batch). */
   why?: unknown;
+  /** Proxy marks step: default evidence for every entry (an AI's batch). */
+  evidence?: unknown;
   lines: unknown;
   canApprove: boolean;
+  /** Server routes only (ratify): allows via "proxy" and per-entry proxy origins. */
+  allowServerVias?: boolean;
   source: 'page' | 'agent';
   /** Extra fields for the event and the response (for example the section heading). */
   context?: Record<string, unknown>;
@@ -504,6 +552,9 @@ export function writeLineMarksBatch(slug: string, input: {
       reason: raw.reason !== undefined ? raw.reason : input.reason,
       via: raw.via !== undefined ? raw.via : input.via,
       why: raw.why !== undefined ? raw.why : input.why,
+      evidence: raw.evidence !== undefined ? raw.evidence : input.evidence,
+      proxy: input.allowServerVias ? (raw.proxy ?? null) : null,
+      allowServerVias: input.allowServerVias === true,
       anchor: raw.anchor,
       replaceIds: raw.replaceIds,
       replaceAnchors: raw.replaceAnchors,
@@ -625,6 +676,7 @@ export async function writeAgentLineMark(slug: string, markdown: string, body: R
       status: body.status,
       reason: body.reason,
       why: body.why,
+      evidence: body.evidence,
       lines: members.map(line => ({ anchor: anchorForLine(line), replaceIds: staleIdsOnLine(lines, line, own) })),
       via: 'section',
       canApprove: options.canApprove,
@@ -651,6 +703,7 @@ export async function writeAgentLineMark(slug: string, markdown: string, body: R
         ...(item.status !== undefined ? { status: item.status } : {}),
         ...(item.reason !== undefined ? { reason: item.reason } : {}),
         ...(item.why !== undefined ? { why: item.why } : {}),
+        ...(item.evidence !== undefined ? { evidence: item.evidence } : {}),
         replaceIds: staleIdsOnLine(lines, target.line, own),
       });
     }
@@ -659,6 +712,7 @@ export async function writeAgentLineMark(slug: string, markdown: string, body: R
       status: body.status,
       reason: body.reason,
       why: body.why,
+      evidence: body.evidence,
       lines: entries,
       canApprove: options.canApprove,
       source: 'agent',
@@ -674,6 +728,7 @@ export async function writeAgentLineMark(slug: string, markdown: string, body: R
     status: body.status,
     reason: body.reason,
     why: body.why,
+    evidence: body.evidence,
     anchor: anchorForLine(target.line),
     replaceIds: staleIdsOnLine(lines, target.line, own),
     canApprove: options.canApprove,

@@ -108,6 +108,8 @@ import { approveDo, revokeDo, runDo } from './do.js';
 import { listDos } from './do-store.js';
 import { DO_POLICY, doTeamActors } from '../src/shared/do.js';
 import { buildSinceYou, checkAlignment, currentDocumentState, latestSnapshotInfo, listSnapshotInfos, scheduleAlignmentCheck, sendSnapshotFile } from './alignment.js';
+import { bindFamiliar, familiarOf, listFamiliars, listProxyMarks, ratifyProxies, undoableRatifications, undoRatification } from './proxy-marks.js';
+import { EVIDENCE_POLICY, PROXY_POLICY } from '../src/shared/proxy-marks.js';
 import { clearFlag, clearObjection, createObjection, keepObjection, writeFlag } from './review-aids.js';
 import { listFlags, listObjections, listReviewNotes } from './review-aids-store.js';
 import { clearTtl, decideAlternative, offerAlternative, pickAlternative, recordBundleDecision, recordExplain, setBlindSetting, setTtl, withdrawAlternative } from './proof-extras.js';
@@ -1979,6 +1981,11 @@ apiRoutes.get('/documents/:slug/line-marks', async (req: Request, res: Response)
   try { dos = listDos(slug); } catch { dos = []; }
   const blindView = await pageExtras(req, slug, doc, me, lineMarks, asks);
   const extras = blindView.extras;
+  // Familiar proxy marks: the viewer's own binding, their Familiar's current proxies (never
+  // counted as theirs) and the ratifications they can still undo. Other people's proxies stay off
+  // the page (PROXY_POLICY.pageShowsOnlyOwnProxies).
+  const binding = me.trust === 'verified' ? familiarOf(slug, me.actor) : null;
+  const proxies = binding ? listProxyMarks(slug, { for: me.actor }).filter(p => actorKey(p.familiar) === actorKey(binding.familiar)) : [];
   res.setHeader('Cache-Control', 'no-store');
   res.json({
     success: true,
@@ -1997,6 +2004,13 @@ apiRoutes.get('/documents/:slug/line-marks', async (req: Request, res: Response)
     flags,
     reviewNotes,
     objections,
+    familiar: binding,
+    familiarsBound: listFamiliars(slug).length,
+    // The names people gave the AIs present ("Add agent"), for "My Familiar" and the brief.
+    agentKeyLabels: Object.fromEntries(listDocumentAgentKeys(slug).filter(key => !key.revokedAt).map(key => [agentKeyActor(key.label), key.label])),
+    proxies,
+    ratifications: binding ? undoableRatifications(slug, me.actor) : [],
+    proxyPolicy: { ratifyThreshold: PROXY_POLICY.ratifyThreshold, hold: PROXY_POLICY.hold, evidence: EVIDENCE_POLICY },
     // Steps B4e + B4f: bundles, alternatives (open, plus recent history) and picks, settings,
     // Explain threads and times-to-live. The page evaluates them against its own lines; expiry
     // is judged at `serverNow` (lazy, no timer).
@@ -2088,6 +2102,44 @@ pageAidRoute('/documents/:slug/objections/:objectionId/keep', async ({ req, slug
   if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
   return keepObjection(slug, { id: String(req.params.objectionId ?? ''), by, ack: body.ack, markdown: state.markdown, rawMarks: state.marks, source: 'page' });
 });
+// ============================================================================
+// Familiar proxy marks: page routes (a signed-in person, for themselves only)
+// ============================================================================
+
+/** A route only a person signed in to this site may use, for themselves (never a guest or a key). */
+function pagePersonRoute(path: string, run: (ctx: { req: Request; slug: string; human: string; body: Record<string, unknown> }) => Promise<{ status: number; body: Record<string, unknown> }> | { status: number; body: Record<string, unknown> }): void {
+  apiRoutes.post(path, opsRateLimiter, async (req: Request, res: Response) => {
+    const slug = getSlugParam(req);
+    const doc = slug ? getDocumentBySlug(slug) : undefined;
+    if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+    const access = resolveLineMarkAccess(req, slug, doc);
+    if (!access.canMark) { res.status(403).json({ success: false, error: 'This needs comment access' }); return; }
+    const body = isRecord(req.body) ? req.body : {};
+    const actor = resolvePageActor(req, slug, access, body.by);
+    if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
+    if (PROXY_POLICY.bindRequiresVerifiedSession && (actor.source !== 'session' || actor.trust !== 'verified')) {
+      res.status(403).json({ success: false, code: 'SIGNED_IN_PERSON_REQUIRED', error: 'Only a person signed in to this site can choose a Familiar or ratify its marks' });
+      return;
+    }
+    const result = await run({ req, slug, human: actor.actor, body });
+    if (result.status === 200) scheduleAlignmentCheck(slug);
+    res.status(result.status).json({ ...result.body, actor: actor.actor, trust: actor.trust });
+  });
+}
+
+// { familiar: "ai:<key-name>" | null }: choose (or clear) my Familiar in this document.
+pagePersonRoute('/documents/:slug/familiar', ({ slug, human, body }) =>
+  bindFamiliar(slug, { human, familiar: body.familiar ?? null, by: human, source: 'page' }));
+// { proxyIds: [...] }: Ratify all (the proxy-agreed lines the brief showed me).
+pagePersonRoute('/documents/:slug/proxy/ratify', async ({ slug, human, body }) => {
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  return ratifyProxies(slug, { human, proxyIds: body.proxyIds, markdown: state.markdown, rawMarks: state.marks });
+});
+// Undo a ratification of mine: every line gets back what it held before.
+pagePersonRoute('/documents/:slug/proxy/ratifications/:ratificationId/undo', ({ req, slug, human }) =>
+  undoRatification(slug, { human, id: String(req.params.ratificationId ?? '') }));
+
 // ============================================================================
 // Proof Documents Steps B4e + B4f: page routes
 // ============================================================================
