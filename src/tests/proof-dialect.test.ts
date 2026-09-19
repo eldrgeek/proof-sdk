@@ -266,4 +266,68 @@ test('CriticMarkup export: outermost marks only, comments with authors, header s
   assert.equal(back.inline.length, 4);
 });
 
+/** A plain-text view of simple markdown (escapes, *emphasis*, [link](url)) with its offset map. */
+function plainView(body: string): d.StrippedText {
+  let stripped = '';
+  const map: number[] = [];
+  for (let i = 0; i < body.length; i += 1) {
+    const c = body[i];
+    if (c === '\\' && i + 1 < body.length) { stripped += body[i + 1]; map.push(i + 1); i += 1; continue; }
+    if (c === '*' || c === '[') continue;
+    if (c === ']' && body[i + 1] === '(') { i = body.indexOf(')', i); continue; }
+    stripped += c;
+    map.push(i);
+  }
+  return { stripped, map };
+}
+
+test('placeInsertions: interrupted typing is placed as a chain, never by first occurrence, never overlapping', () => {
+  const body = '# Waiting on Mike\n\nIt breaks nothing of ours. sk\\_live has no Roll Key option\n';
+  const at = (n: number) => `2026-09-18T02:00:${String(n).padStart(2, '0')}.000Z`;
+  const item = (id: string, content: string, n: number, expected: number | null = 2): d.InsertToPlace => ({ id, by: 'human:Mike', createdAt: at(n), content, quote: content.trim(), expected });
+  // Stale offsets point at the title, where "on" and "i" also occur.
+  const items = [item('a', ' sk', 1), item('b', '_live has no', 2), item('c', ' Roll', 3), item('d', ' Key o', 4), item('e', 'pt', 5), item('f', 'i', 6), item('g', 'on', 7)];
+  const placed = d.placeInsertions(body, plainView(body), items);
+  const text = (id: string) => { const p = placed.get(id)!; return body.slice(p.start, p.end); };
+  assert.equal(text('b'), '\\_live has no', 'the escape belongs to the span');
+  assert.equal(text('f'), 'i');
+  assert.ok(placed.get('g')!.start > body.indexOf('Roll Key'), '"on" is the end of "option", not the title');
+  const spans = [...placed.values()].map(p => p!).sort((x, y) => x.start - y.start);
+  for (let k = 1; k < spans.length; k += 1) assert.ok(spans[k - 1].end <= spans[k].start, 'no two insertions share characters');
+  assert.equal(spans.map(p => body.slice(p.start, p.end)).join(''), ' sk\\_live has no Roll Key option');
+  // Text that is nowhere is an orphan; a span may not cross a link's "](url)" or emphasis.
+  const md = 'See [the page](https://x.test) and *more* now.';
+  const out = d.placeInsertions(md, plainView(md), [item('x', 'jere to', 1, null), item('y', 'page and', 2, null), item('z', 'more now', 3, null), item('w', 'the pa', 4, null)]);
+  assert.equal(out.get('x'), null);
+  assert.equal(out.get('y'), null, 'crosses the link syntax');
+  assert.equal(out.get('z'), null, 'crosses the emphasis');
+  assert.equal(md.slice(out.get('w')!.start, out.get('w')!.end), 'the pa', 'inside link text is fine');
+  // Two insertions that could claim the same characters: each gets its own, the older one the nearer.
+  const two = 'Done. Done.';
+  const dd = d.placeInsertions(two, plainView(two), [item('p', 'Done', 1, 0), item('q', 'Done', 30, 0)]);
+  assert.notEqual(dd.get('p')!.start, dd.get('q')!.start);
+  assert.equal(dd.get('p')!.start, 0);
+});
+
+test('parse: marks inside a pure insertion are parsed (base keeps no inserted text); a change nested in one is its text', () => {
+  const p = d.parseProofDocument('Say [hello [big]{comment @mw text=x} world]{changed @mw} now.');
+  assert.equal(p.base, 'Say  now.');
+  assert.equal(p.current, 'Say hello big world now.');
+  const ins = p.inline.find(m => m.groups[0].type === 'changed')!;
+  assert.equal(ins.inserted, 'hello big world');
+  const c = p.inline.find(m => m.groups[0].type === 'comment')!;
+  assert.equal(p.current.slice(c.cstart, c.cend), 'big');
+  const n = d.parseProofDocument('A [b [c]{changed @mw}]{changed @mw}.');
+  assert.equal(n.current, 'A b c.');
+  assert.equal(n.inline.length, 1);
+});
+
+test('planInlineMarks: insertions stay inline; a comment crossing one becomes the line mark', () => {
+  const ins = { start: 5, end: 10, kind: 'insert' };
+  const com = { start: 2, end: 7, kind: 'comment' };
+  const plan = d.planInlineMarks([com, ins], m => m.kind === 'insert');
+  assert.deepEqual(plan.inline, [ins]);
+  assert.deepEqual(plan.overlapping, [com]);
+});
+
 console.log(`\n${passed} proof-dialect codec tests passed`);

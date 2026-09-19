@@ -1013,6 +1013,20 @@ whose front matter has a `proof:` block). The library's New document → upload 
 guests, warnings }`. Text marks become real suggestions and comments; line marks become stored line
 marks (`at` kept, never later than now).
 
+Pending insertions (updated 2026-09-19, worker fix/dialect-overlaps, after the Waiting on Mike
+export came out garbled): typing in suggestion mode leaves many small, adjacent insertions whose
+stored offsets go stale. Export places them together (`INSERT_PLACEMENT_POLICY` in the codec): an
+insertion made right after another by the same person is placed where that one ends; the stored
+offset only breaks ties; two insertions never share characters; a span never crosses markdown
+syntax (a link's `](url)`, emphasis, a heading's `#`), and a markdown escape stays inside it. Each
+becomes exactly one `[…]{changed @x at=…}`, side by side: `[I have ]{changed @mike at=…}[res]{changed @mike at=…}`.
+A suggestion whose text is nowhere in the document (an orphan) is a line mark with `orphan=1`
+(`{changed @mike kind=insert to="jere to " orphan=1 at=…}`) on the line of the same person's
+nearest-in-time placed insertion; import stores it as it is and never inserts its text. Import
+creates the document from the file's current text (insertions in, with their italics or link) and
+attaches each insertion to its words (`IMPORT_POLICY.createFromCurrent`), so export → import →
+export is byte-identical for typed insertions too.
+
 Whose name an import may write in (`IMPORT_POLICY`, `mayActAs`):
 - the direct-share API key (the operator credential): anyone in the file's handle table;
 - a signed-in library member: only themselves;

@@ -290,9 +290,90 @@ async function run(browser, style) {
       assert.equal(file, fresh.text);
     });
     await phoneCtx.close();
+
+    // ------------------------------------------------------------ typed insertions (2026-09-19)
+    // Interrupted typing in suggestion mode (the Waiting on Mike export): adjacent pieces, a
+    // whitespace-only one, pieces inside italics, a heading and link text, and an orphan. The file
+    // imports byte-identically, and in the editor every piece is one suggestion over its own words.
+    const typedFile = typedInsertionsFile();
+    const imp = await fetch(`${base}/share/markdown`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': OPERATOR_KEY }, body: JSON.stringify({ markdown: typedFile, format: 'proof-dialect' }) }).then(r => r.json());
+    const typedOwner = { ...clientHeaders, 'x-share-token': imp.ownerSecret };
+    await check(`dialect-${style}: typed insertions import as they are and export byte-identically`, async () => {
+      assert.equal(imp.success, true, JSON.stringify(imp).slice(0, 300));
+      assert.deepEqual(imp.import.warnings, []);
+      assert.equal(imp.import.created.suggestions, 17);
+      assert.equal(imp.import.created.orphans, 1);
+      const again = await exportText(base, imp.slug, typedOwner);
+      assert.equal(again.text, typedFile, diffHint(typedFile, again.text));
+    });
+    const changedOnly = text => (text.match(/\[[^\]\n]*\]\{changed [^}]*\}|\{changed [^}]*orphan=1[^}]*\}/g) ?? []).join('\n');
+    for (const [vtag, options] of [
+      ['desktop-1440', { viewport: { width: 1440, height: 900 } }],
+      ['phone-390x844', { ...devices['iPhone 13'], viewport: { width: 390, height: 844 }, screen: { width: 390, height: 844 }, hasTouch: true, isMobile: true }],
+    ]) {
+      const tctx = await newContext(browser, base, options);
+      const page = await tctx.newPage();
+      activePage = page;
+      await openDoc(page, base, `${imp.slug}?token=${encodeURIComponent(imp.ownerSecret)}`);
+      await check(`dialect-${style}-${vtag}: every typed insertion is one suggestion over its own words (italics, heading, link kept)`, async () => {
+        const st = (await agent(base, imp.slug, typedOwner, 'GET', '/state')).body;
+        const orphans = new Set((st.orphanedMarks ?? []).map(o => o.id));
+        const inserts = Object.entries(st.marks).filter(([id, m]) => m.kind === 'insert' && !orphans.has(id));
+        assert.equal(inserts.length, 16, JSON.stringify({ keys: Object.keys(st), n: Object.keys(st.marks ?? {}).length, orphans: [...orphans].length }));
+        await page.waitForFunction(n => (window.proof?.getAllMarks?.() ?? []).filter(m => m.kind === 'insert' && m.data?.status === 'pending').length >= n, 16, { timeout: 10_000 });
+        for (const [id, m] of inserts) {
+          const text = await page.evaluate(i => [...document.querySelectorAll(`.ProseMirror [data-mark-id="${i}"]`)].map(e => e.textContent).join(''), id);
+          assert.equal(text, m.content, `insertion ${JSON.stringify(m.content)} is decorated over exactly its words (got ${JSON.stringify(text)})`);
+        }
+        const editor = await page.evaluate(() => document.querySelector('.ProseMirror')?.innerText ?? '');
+        assert.ok(!/\{changed|\]\{/.test(editor), 'no dialect syntax in the editor');
+        assert.ok(await page.evaluate(() => [...document.querySelectorAll('.ProseMirror em')].some(e => e.textContent.includes('moves the ask to Done.'))), 'the insertion stays inside the italics');
+        assert.ok(await page.evaluate(() => [...document.querySelectorAll('.ProseMirror a')].some(e => e.textContent === 'add a webhook endpoint')), 'and inside the link text');
+        const sw = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+        assert.ok(sw[0] <= sw[1] + 1, `no sideways scroll ${sw}`);
+        const anonymous = page.getByRole('button', { name: 'Continue anonymously' });
+        if (await anonymous.count()) { await anonymous.first().click(); await page.waitForTimeout(300); }
+        await page.screenshot({ path: path.join(shots, `dialect-${style}-${vtag}-typed.png`) });
+        // Opening the page must not move any suggestion (it may add reading marks, and the editor
+        // writes "sk\_live" as the equivalent "sk_live", so escapes are not compared).
+        const after = await exportText(base, imp.slug, typedOwner);
+        const unescaped = t => changedOnly(t).replace(/\\(.)/g, '$1');
+        assert.equal(unescaped(after.text), unescaped(typedFile));
+      });
+      await tctx.close();
+    }
   } finally {
     await stop();
   }
+}
+
+/** A Proof Document with typed insertions, in the exact form export writes. */
+function typedInsertionsFile() {
+  const at = s => `at=2026-09-18T02:00:${String(s).padStart(2, '0')}.000Z`;
+  const c = (text, s) => `[${text}]{changed @mw ${at(s)}}`;
+  return [
+    '---',
+    'proof:',
+    '  version: 1',
+    '  title: Typed insertions',
+    '  handles:',
+    '    mw: "human:mw@mike-wolf.com"',
+    '---',
+    '',
+    '# Waiting on Mike',
+    '',
+    `*Everything that needs you. An AI moves the ask to${c(' Done', 20)}. Every action has a link.*`,
+    '',
+    `### Roll the ${c('full ', 21)}live key`,
+    '',
+    `It breaks nothing of ours.${c(' sk', 1)}${c('\\_live has no', 2)}${c(' Roll', 3)}${c(' Key o', 4)}${c('pt', 5)}${c('i', 6)}${c('on', 7)}`,
+    '',
+    `Ruled (typed inline):${c(' ', 10)}“${c('I have ', 11)}${c('res', 12)}${c('et my ', 13)}${c('usag', 14)}${c('e so we are OK', 15)}”`,
+    '',
+    // An orphan goes on the line of the same person's nearest-in-time placed insertion ("p").
+    `Then [add a webhook end${c('p', 22)}oint](https://example.test/webhooks) for the site. {changed @mw kind=insert to="jere to " orphan=1 ${at(32)}}`,
+    '',
+  ].join('\n');
 }
 
 const browser = await chromium.launch();

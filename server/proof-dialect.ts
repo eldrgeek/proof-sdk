@@ -34,8 +34,10 @@ import {
   getDocumentBySlug,
   replaceDocumentLineMark,
 } from './db.js';
-import { executeDocumentOperationAsync, patchStoredMarksAsync, stripMarkdownWithMapping } from './document-engine.js';
+import { mutateCanonicalDocument } from './canonical-document.js';
+import { buildStoredSelectionMetadata, executeDocumentOperationAsync, patchStoredMarksAsync, stripMarkdownWithMapping } from './document-engine.js';
 import { stripAllProofSpanTags } from './proof-span-strip.js';
+import { generateMarkId } from '../src/formats/marks.js';
 import { buildIssueReport, computeServerLines, listCanonicalLineMarks, type IssueReport } from './line-marks.js';
 import { answerAsk, buildAskReport, createAskOnLine, listCanonicalAsks } from './asks.js';
 import { askTeamActors } from '../src/shared/asks.js';
@@ -69,6 +71,7 @@ import {
   parseCriticMarkup,
   parseMarkGroup,
   parseProofDocument,
+  placeInsertions,
   planInlineMarks,
   serializeCriticMarkup,
   serializeFrontMatter,
@@ -81,6 +84,7 @@ import {
   type HandleTable,
   type InlineMark,
   type InlineMarkOut,
+  type InsertToPlace,
   type LineGroups,
   type MarkGroup,
   type MdNode,
@@ -109,6 +113,12 @@ export const EXPORT_POLICY = {
   blindHidesOthers: true,
   /** Chat is a conversation beside the document, not a mark: it is not exported. */
   exportsChat: false,
+  /**
+   * A pending suggestion whose text is nowhere in the document (an orphan, e.g. typing an AI later
+   * moved elsewhere) is written as a line mark with orphan=1 on the line of the same person's
+   * nearest-in-time placed insertion; import stores it as it is, never inserting its text.
+   */
+  orphanSuggestionsAsLineMarks: true,
 } as const;
 
 export const IMPORT_POLICY = {
@@ -122,6 +132,16 @@ export const IMPORT_POLICY = {
   operatorDefaultActor: 'ai:import',
   anonymousActor: 'guest:importer',
   maxBytes: 10 * 1024 * 1024,
+  /**
+   * The imported document is created from the file's current text (pending insertions in, as the
+   * editor stores them) and each insertion is attached to its text. Applying insertions one by one
+   * through /marks/suggest-insert could not keep them faithful: that inserts plain text (it drops
+   * the italics or link the typing was in), refuses a whitespace-only insertion, and turned an
+   * insertion at the start of a line into a replacement (2026-09-19, Waiting on Mike export).
+   */
+  createFromCurrent: true,
+  /** End every import with one canonical write of text + marks (see applyImportedMarks). */
+  seal: true,
 } as const;
 
 /** Who is importing, and so whose name the import may write marks in. */
@@ -444,6 +464,37 @@ export async function exportProofDocument(slug: string, input: {
   }
   const inline: Array<InlineMarkOut & { markId: string; lineIndex: number | null; critic: CriticMarkOut | null }> = [];
   const markEntries = Object.entries(stored).sort((a, b) => String(a[1].createdAt ?? '').localeCompare(String(b[1].createdAt ?? '')) || a[0].localeCompare(b[0]));
+  // Pending insertions are placed together (INSERT_PLACEMENT_POLICY): adjacency in creation order,
+  // never two on the same characters, never across markdown syntax.
+  const insertItems: InsertToPlace[] = [];
+  for (const [id, mark] of markEntries) {
+    if (String(mark.kind ?? '') !== 'insert' || (mark.status ?? 'pending') !== 'pending') continue;
+    const content = typeof mark.content === 'string' ? mark.content : String(mark.quote ?? '');
+    insertItems.push({ id, by: str(mark.by) ?? 'ai:unknown', createdAt: String(mark.createdAt ?? ''), content, quote: String(mark.quote ?? ''), expected: relOffset(mark.startRel) });
+  }
+  const insertPlacements = placeInsertions(body, stripped, insertItems);
+  /** body line → editor line index */
+  const bodyLineToIndex = new Map<number, number>();
+  for (const [index, block] of lineMap) for (let l = block.startLine; l <= block.endLine; l += 1) bodyLineToIndex.set(l, index);
+  /** Editor line of each placed insertion (an orphan goes on the line of the same person's nearest-in-time placed one). */
+  const insertLine = new Map<string, number | null>();
+  for (const item of insertItems) {
+    const span = insertPlacements.get(item.id);
+    if (span) insertLine.set(item.id, bodyLineToIndex.get(lineAtOffset(bodyStarts, span.start)) ?? null);
+  }
+  const orphanLine = (id: string): number | null => {
+    const at = insertItems.findIndex(item => item.id === id);
+    const me = insertItems[at];
+    for (let d = 1; d < insertItems.length; d += 1) {
+      for (const j of [at - d, at + d]) {
+        const other = insertItems[j];
+        if (!other || other.by !== me.by) continue;
+        const line = insertLine.get(other.id);
+        if (line !== undefined && line !== null) return line;
+      }
+    }
+    return null;
+  };
   for (const [id, mark] of markEntries) {
     const kind = String(mark.kind ?? '');
     const pending = (mark.status ?? 'pending') === 'pending';
@@ -452,16 +503,16 @@ export async function exportProofDocument(slug: string, input: {
     if (kind !== 'comment' && !isSuggestion && !(kind === 'authored' && input.authored)) continue;
     const by = str(mark.by) ?? 'ai:unknown';
     const quote = String(mark.quote ?? '');
-    const lineIndex = lineOfReviewMark(lines, { quote });
-    const block = lineIndex !== null ? lineMap.get(lineIndex) : undefined;
-    const within = block ? { from: bodyStarts[block.startLine] ?? 0, to: (bodyStarts[block.endLine + 1] ?? body.length + 1) - 1 } : undefined;
-    const span = locateQuote(body, stripped, quote, relOffset(mark.startRel), within) ?? locateQuote(body, stripped, quote, relOffset(mark.startRel));
-    if (span && kind === 'insert' && typeof mark.content === 'string') {
-      // The stored quote is trimmed; an inserted " Really." keeps its space inside the brackets.
-      const lead = /^[ \t]*/.exec(mark.content)?.[0] ?? '';
-      const trail = /[ \t]*$/.exec(mark.content)?.[0] ?? '';
-      if (lead && body.slice(span.start - lead.length, span.start) === lead) span.start -= lead.length;
-      if (trail && trail.length < mark.content.length && body.slice(span.end, span.end + trail.length) === trail) span.end += trail.length;
+    let lineIndex: number | null;
+    let span: { start: number; end: number } | null;
+    if (kind === 'insert') {
+      span = insertPlacements.get(id) ?? null;
+      lineIndex = span ? (insertLine.get(id) ?? null) : (orphanLine(id) ?? lineOfReviewMark(lines, { quote }));
+    } else {
+      lineIndex = lineOfReviewMark(lines, { quote });
+      const block = lineIndex !== null ? lineMap.get(lineIndex) : undefined;
+      const within = block ? { from: bodyStarts[block.startLine] ?? 0, to: (bodyStarts[block.endLine + 1] ?? body.length + 1) - 1 } : undefined;
+      span = locateQuote(body, stripped, quote, relOffset(mark.startRel), within) ?? locateQuote(body, stripped, quote, relOffset(mark.startRel));
     }
     let group: MarkGroup;
     const extra: MarkGroup[] = [];
@@ -493,8 +544,11 @@ export async function exportProofDocument(slug: string, input: {
       bump('authored');
     }
     if (!span || span.end <= span.start) {
-      // Not placeable in the text: a line mark with quote= on the line (or the first line).
-      const fallback: MarkGroup = { ...group, fields: { ...fields([['quote', quote], ['kind', isSuggestion ? kind : null], ['to', kind === 'replace' || kind === 'insert' ? String(mark.content ?? '') : null]]), ...group.fields } };
+      // Not placeable in the text. A suggestion whose text is nowhere in the document (an orphan)
+      // is a line mark with orphan=1: import stores it as it is, without touching the text. Any
+      // other mark is a line mark with quote= on the line (or the first line).
+      const orphan = isSuggestion && EXPORT_POLICY.orphanSuggestionsAsLineMarks;
+      const fallback: MarkGroup = { ...group, fields: { ...fields([['quote', kind === 'insert' && orphan ? null : quote], ['kind', isSuggestion ? kind : null], ['to', kind === 'replace' || kind === 'insert' ? String(mark.content ?? '') : null], ['orphan', orphan]]), ...group.fields } };
       addLine(lineIndex ?? (lines.length ? 0 : null), fallback);
       for (const g of extra) addLine(lineIndex ?? 0, g);
       bump('placedOnLine');
@@ -512,7 +566,7 @@ export async function exportProofDocument(slug: string, input: {
     };
     inline.push(out);
   }
-  const plan = planInlineMarks(inline);
+  const plan = planInlineMarks(inline, m => m.kind === 'insert');
   for (const mark of plan.overlapping) {
     const quote = body.slice(mark.start, mark.end);
     const [first, ...rest] = mark.groups;
@@ -687,11 +741,27 @@ export function hasProofMarks(text: string): boolean {
 }
 
 /** Parses an import: the base markdown to create the document from, and every mark. */
+/** Several blank lines in a row (outside fenced code) become one: a block insertion's own
+ * line breaks ("{++\n\nNew paragraph.\n\n++}") would otherwise leave extra empty lines. */
+function collapseBlankLineRuns(text: string): string {
+  const out: string[] = [];
+  let fence: string | null = null;
+  for (const line of text.split('\n')) {
+    const open = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (fence) { if (open && open[1][0] === fence[0] && open[1].length >= fence.length && !line.trim().slice(open[1].length).trim()) fence = null; out.push(line); continue; }
+    if (open) fence = open[1];
+    if (!line.trim() && out.length && !out[out.length - 1].trim()) continue;
+    out.push(line);
+  }
+  return out.join('\n');
+}
+
 export function parseImport(text: string, format: 'auto' | 'proof-dialect' | 'criticmarkup'): { parsed: ParsedProofDocument; format: 'proof-dialect' | 'criticmarkup'; markdown: string } {
   const f = format === 'auto' ? detectImportFormat(text) : format;
   const parsed = f === 'criticmarkup' ? parseCriticMarkup(text) : parseProofDocument(text);
   const front = serializeFrontMatter({ otherLines: parsed.frontMatter.otherLines, proof: null });
-  const markdown = `${front}${parsed.base.replace(/^\n+/, '')}`;
+  const source = IMPORT_POLICY.createFromCurrent ? collapseBlankLineRuns(parsed.current) : parsed.base;
+  const markdown = `${front}${source.replace(/^\n+/, '')}`;
   return { parsed, format: f, markdown };
 }
 
@@ -759,7 +829,10 @@ export async function applyImportedMarks(slug: string, input: {
   };
   let docNow = readDoc();
   const initialLines = await computeServerLines(docNow.markdown);
-  const baseBody = parsed.base;
+  // The document was created from the file's CURRENT text (pending insertions in, with their
+  // formatting: IMPORT_POLICY.createFromCurrent), so every text mark is located by its current
+  // offsets (cstart, cend). "base" below names that source text.
+  const baseBody = parsed.current;
   const baseBlocks = blockLinesOf(baseBody);
   const baseMap = alignLines(initialLines, baseBlocks);
   const storedBody = splitFrontMatter(docNow.markdown).body;
@@ -774,13 +847,14 @@ export async function applyImportedMarks(slug: string, input: {
   // --- text marks -----------------------------------------------------------------------------
   const commentPatches: Array<{ markId: string; at: string | null; replies: Array<{ by: string; text: string; at: string }>; resolved: boolean; by: string }> = [];
   const suggestionPatches: Array<{ markId: string; at: string | null }> = [];
+  const storedPatches: Array<{ id: string; mark: Record<string, unknown> }> = [];
   const bundleMembers = new Map<string, { by: string; ids: string[] }>();
   const bundleMeta = (parsed.frontMatter.proof?.bundles ?? {}) as Record<string, YamlValue>;
 
-  /** Where a base offset sits: its editor line and the raw anchor to use against the stored text. */
-  const anchorFor = (start: number, end: number): { anchor: string; occurrence: number; lineIndex: number | null; visible: string } | null => {
+  /** Where a source offset sits: its editor line and the raw anchor to use against the stored text. */
+  const anchorFor = (start: number, end: number, allowBlank = false): { anchor: string; occurrence: number; lineIndex: number | null; visible: string } | null => {
     const raw = baseBody.slice(start, end);
-    if (!raw.trim()) return null;
+    if (!raw.trim() && !(allowBlank && raw)) return null;
     const baseLine = lineAtOffset(baseStarts, start);
     const lineIndex = baseLineToDoc.get(baseLine) ?? null;
     const block = lineIndex !== null ? storedMap.get(lineIndex) : undefined;
@@ -805,7 +879,11 @@ export async function applyImportedMarks(slug: string, input: {
   };
 
   const pendingLineGroups: Array<{ lineIndex: number; groups: MarkGroup[] }> = [];
-  const inlineMarks = [...parsed.inline].sort((a, b) => b.start - a.start || a.end - b.end);
+  // Reverse document order, so earlier anchors never move. Insertions at the same point (typing
+  // interrupted into pieces, [I have ]{…}[res]{…}) are applied right to left too: each goes in
+  // right after the same words, so the last one applied ends up first.
+  const inlineOrder = new Map(parsed.inline.map((m, i) => [m, i]));
+  const inlineMarks = [...parsed.inline].sort((a, b) => b.cstart - a.cstart || a.cend - b.cend || inlineOrder.get(b)! - inlineOrder.get(a)!);
   for (const mark of inlineMarks) {
     const [group, ...extra] = mark.groups;
     if (!group) continue;
@@ -813,7 +891,7 @@ export async function applyImportedMarks(slug: string, input: {
   }
 
   async function importTextMark(mark: InlineMark, group: MarkGroup, extra: MarkGroup[]): Promise<void> {
-    const baseLine = lineAtOffset(baseStarts, mark.start);
+    const baseLine = lineAtOffset(baseStarts, mark.cstart);
     const lineIndex = baseLineToDoc.get(baseLine) ?? null;
     const lineAnchor = lineIndex !== null ? anchorForLine(initialLines[lineIndex]) : null;
     if (IMPORT_POLICY.alwaysHistory.includes(group.type) || (group.type !== 'changed' && group.type !== 'comment')) {
@@ -826,7 +904,7 @@ export async function applyImportedMarks(slug: string, input: {
     if (group.type === 'comment') {
       const text = group.fields.text ?? '';
       if (!text.trim()) { warnings.push('A comment with no text was skipped'); return; }
-      const at = anchorFor(mark.start, mark.end);
+      const at = anchorFor(mark.cstart, mark.cend);
       const result = await placeText('/marks/comment', { by, text }, at);
       if (result.status >= 300) { warnings.push(`A comment on "${mark.raw.slice(0, 40)}" could not be placed (${String(result.body.code ?? result.status)})`); history(group, lineAnchor, 'unplaced'); return; }
       const markId = String(result.body.markId ?? '');
@@ -840,12 +918,12 @@ export async function applyImportedMarks(slug: string, input: {
     const inserted = mark.inserted ?? '';
     let result: { status: number; body: Record<string, unknown> };
     if (deleted !== null && deleted.length > 0) {
-      const at = anchorFor(mark.start, mark.end);
+      const at = anchorFor(mark.cstart, mark.cend);
       result = inserted.length > 0
         ? await placeText('/marks/suggest-replace', { by, content: inserted }, at)
         : await placeText('/marks/suggest-delete', { by }, at);
     } else if (inserted.length > 0) {
-      result = await importInsertion(mark.start, inserted, by);
+      result = attachInsertion(mark.cstart, mark.cend, inserted, by, validTime(group.fields.at) ?? now);
     } else {
       warnings.push('An empty change was skipped');
       return;
@@ -872,45 +950,43 @@ export async function applyImportedMarks(slug: string, input: {
     bump('suggestions');
   }
 
-  /** A pure insertion at a base offset: inline after the words before it, a new block, or a replace of the next word. */
-  async function importInsertion(at: number, inserted: string, by: string): Promise<{ status: number; body: Record<string, unknown> }> {
-    const baseLine = lineAtOffset(baseStarts, at);
-    const lineStart = baseStarts[baseLine] ?? 0;
-    const lineEnd = (baseStarts[baseLine + 1] ?? baseBody.length + 1) - 1;
-    const lineText = baseBody.slice(lineStart, lineEnd);
-    const prefix = baseBody.slice(lineStart, at).replace(/^\s*(?:(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?|>\s*|#{1,6}\s+)*/, '');
-    if (!lineText.trim() || !prefix.trim()) {
-      const blockLike = !lineText.trim() || /\n\s*\n/.test(inserted);
-      if (blockLike) {
-        // A new block: after the previous line's last words.
-        let prevIndex: number | null = null;
-        for (let l = baseLine - 1; l >= 0; l -= 1) { const idx = baseLineToDoc.get(l); if (idx !== undefined) { prevIndex = idx; break; } }
-        if (prevIndex === null) return { status: 409, body: { code: 'NO_BLOCK_BEFORE' } };
-        const prevBlock = baseMap.get(prevIndex)!;
-        const prevEndLine = prevBlock.endLine;
-        const prevStart = baseStarts[prevEndLine] ?? 0;
-        const prevEnd = (baseStarts[prevEndLine + 1] ?? baseBody.length + 1) - 1;
-        const tail = lastWords(baseBody.slice(prevStart, prevEnd));
-        if (!tail) return { status: 409, body: { code: 'NO_BLOCK_BEFORE' } };
-        const anchor = anchorFor(prevEnd - tail.length, prevEnd);
-        return placeText('/marks/suggest-insert', { by, content: `\n\n${inserted.replace(/^\n+|\n+$/g, '')}` }, anchor);
-      }
-      // At the start of a line: replace its first word with the insertion plus that word.
-      const rest = baseBody.slice(at, lineEnd);
-      const word = /^\S+/.exec(rest)?.[0];
-      if (!word) return { status: 409, body: { code: 'ANCHOR_NOT_FOUND' } };
-      warnings.push(`An insertion at the start of "${word}" was imported as a replacement of that word`);
-      return placeText('/marks/suggest-replace', { by, content: `${inserted}${word}` }, anchorFor(at, at + word.length));
+  /**
+   * A pure insertion: its text is already in the document (created from the current text, with
+   * its formatting), so the suggestion is attached to that text as it stands, the way the editor
+   * stores typing in suggestion mode. Written with the other stored-mark patches at the end.
+   */
+  function attachInsertion(cstart: number, cend: number, inserted: string, by: string, at: string): { status: number; body: Record<string, unknown> } {
+    let s0 = cstart;
+    let e0 = cend;
+    while (s0 < e0 && baseBody[s0] === '\n') s0 += 1;
+    while (e0 > s0 && baseBody[e0 - 1] === '\n') e0 -= 1;
+    const located = anchorFor(s0, e0, true);
+    if (!located) return { status: 409, body: { code: 'ANCHOR_NOT_FOUND' } };
+    // The same occurrence of the text in the stored markdown.
+    let from = -1;
+    for (let k = 0, i = storedBody.indexOf(located.anchor); i >= 0; k += 1, i = storedBody.indexOf(located.anchor, i + located.anchor.length)) {
+      if (k === located.occurrence) { from = i; break; }
     }
-    const tail = lastWords(baseBody.slice(lineStart, at));
-    return placeText('/marks/suggest-insert', { by, content: inserted }, anchorFor(at - tail.length, at));
-  }
-
-  function lastWords(text: string): string {
-    // Up to 40 characters ending exactly at the point, starting on a word boundary.
-    const t = text.slice(-60);
-    const m = /\S.*$/s.exec(t.length > 40 ? t.slice(t.indexOf(' ', t.length - 40) + 1) : t);
-    return m ? text.slice(text.length - m[0].length) : text.trimStart();
+    if (from < 0) return { status: 409, body: { code: 'ANCHOR_NOT_FOUND' } };
+    const prefix = docNow.markdown.length - storedBody.length;
+    const meta = buildStoredSelectionMetadata(docNow.markdown, { sourceStart: prefix + from, sourceEnd: prefix + from + located.anchor.length }, located.anchor);
+    // A whole new paragraph is a block insertion (rejecting it removes the block).
+    const lineStartAt = baseStarts[lineAtOffset(baseStarts, s0)] ?? 0;
+    const lineEndAt = (baseStarts[lineAtOffset(baseStarts, e0) + 1] ?? baseBody.length + 1) - 1;
+    const block = s0 === lineStartAt && e0 === lineEndAt && (s0 === 0 || baseBody.slice(Math.max(0, s0 - 2), s0) === '\n\n');
+    const quote = meta.quote || located.anchor;
+    const id = generateMarkId();
+    storedPatches.push({
+      id,
+      mark: {
+        kind: 'insert', by, createdAt: at, status: 'pending', quote,
+        // Stored as the editor stores typing: the visible words ("_live", not the markdown "\\_live").
+        content: block ? `\n\n${inserted.replace(/^\n+|\n+$/g, '')}` : visibleFragment(inserted),
+        ...(meta.startRel ? { startRel: meta.startRel, endRel: meta.endRel } : {}),
+        insertStructure: block ? 'block' : 'inline',
+      },
+    });
+    return { status: 200, body: { markId: id } };
   }
 
   // --- line marks (after the text marks: lines as stored with the pending insertions) ----------
@@ -940,6 +1016,10 @@ export async function applyImportedMarks(slug: string, input: {
     let lastAsk: string | null = null;
     for (const group of groups) {
       if (IMPORT_POLICY.alwaysHistory.includes(group.type)) { history(group, anchor, group.type === 'history' ? 'history' : 'never-imported-live'); continue; }
+      if (group.type === 'changed' && (group.fields.orphan === '1' || group.fields.orphan === 'true')) {
+        importOrphanSuggestion(group);
+        continue;
+      }
       if ((group.type === 'comment' || group.type === 'changed') && group.fields.quote) {
         await importLineTextMark(line, group, groups.filter(g => g.type === 'reply'));
         continue;
@@ -1044,6 +1124,27 @@ export async function applyImportedMarks(slug: string, input: {
     bump('lineMarks');
   }
 
+  /** An orphaned suggestion (its text is nowhere in the document): stored as it is, text untouched. */
+  function importOrphanSuggestion(group: MarkGroup): void {
+    const kind = group.fields.kind === 'delete' ? 'delete' : group.fields.kind === 'replace' ? 'replace' : 'insert';
+    const content = group.fields.to ?? '';
+    const quote = group.fields.quote ?? content.trim();
+    if (!quote.trim() && !content) { warnings.push('An orphaned change with no text was skipped'); return; }
+    storedPatches.push({
+      id: generateMarkId(),
+      mark: {
+        kind,
+        by: textActor(group),
+        createdAt: validTime(group.fields.at) ?? now,
+        status: 'pending',
+        quote,
+        ...(kind !== 'delete' ? { content } : {}),
+      },
+    });
+    bump('suggestions');
+    bump('orphans');
+  }
+
   async function importLineTextMark(line: DocLine, group: MarkGroup, replies: MarkGroup[]): Promise<void> {
     const by = textActor(group);
     const quote = group.fields.quote ?? '';
@@ -1063,7 +1164,15 @@ export async function applyImportedMarks(slug: string, input: {
     if (result.status >= 300) { warnings.push(`A ${group.type} on "${quote.slice(0, 40)}" could not be placed`); history(group, anchorForLine(line), 'unplaced'); }
   }
 
-  // --- bundles, then timestamps and replies (one write of the stored marks), then resolves -----
+  // --- insertions and orphans (stored as they are), bundles, then timestamps and replies ------
+  if (storedPatches.length) {
+    const stored = await patchStoredMarksAsync(slug, (marks) => {
+      const next = marks as unknown as Record<string, Record<string, unknown>>;
+      for (const entry of storedPatches) next[entry.id] = entry.mark;
+      return next as never;
+    }, importer);
+    if (stored.status >= 300) warnings.push(`${storedPatches.length} insertion(s) could not be stored (${stored.status})`);
+  }
   for (const [id, entry] of bundleMembers) {
     const meta = bundleMeta[id];
     const title = meta && typeof meta === 'object' && typeof meta.title === 'string' ? meta.title : id;
@@ -1094,6 +1203,23 @@ export async function applyImportedMarks(slug: string, input: {
       if (!patch.resolved) continue;
       const r = await op('/marks/resolve', { markId: patch.markId, by: patch.by });
       if (r.status < 300) bump('resolved');
+    }
+  }
+  // Seal: one canonical write of the text with every stored mark, so the collaborative document
+  // carries them. Without it, suggestions stored beside the text only (replacements, deletions,
+  // attached insertions) were dropped when the first reader opened the page (IMPORT_POLICY.seal).
+  if (IMPORT_POLICY.seal) {
+    const final = getDocumentBySlug(slug);
+    if (final) {
+      const sealed = await mutateCanonicalDocument({
+        slug,
+        nextMarkdown: final.markdown ?? '',
+        nextMarks: parseStoredMarks(final.marks),
+        source: `dialect.import.seal:${importer}`,
+        ...(typeof final.revision === 'number' ? { baseRevision: final.revision } : {}),
+        guardPathologicalGrowth: true,
+      });
+      if (!sealed.ok) warnings.push(`The imported marks were not sealed into the live document (${sealed.code ?? sealed.status})`);
     }
   }
   try {

@@ -1274,7 +1274,7 @@ function resolveMutationAnchor(
   };
 }
 
-function buildStoredSelectionMetadata(
+export function buildStoredSelectionMetadata(
   markdown: string,
   selection: { sourceStart: number; sourceEnd: number },
   fallbackQuote: string,

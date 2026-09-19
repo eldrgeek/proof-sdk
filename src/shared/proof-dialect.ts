@@ -649,9 +649,18 @@ function parseInlineSegment(text: string): InlineParse {
           if (groups[0].type === 'changed') {
             const split = splitChangedContent(content);
             const inner = split.deleted === null ? null : parseInlineSegment(split.deleted);
+            let inserted = split.inserted;
             if (inner) addInner(inner);
-            else current += split.inserted;
-            marks.push({ start, end: base.length, cstart, cend: current.length, deleted: inner ? inner.base : null, inserted: split.inserted, groups, raw: content });
+            else {
+              // A pure insertion may carry marks of its own (a comment on the inserted words): they
+              // sit in current only (base has no inserted text, so their base span is the point).
+              const ins = parseInlineSegment(split.inserted);
+              // A change nested in an insertion is part of that insertion's text, not a second one.
+              for (const m of ins.marks) if (m.groups[0]?.type !== 'changed') marks.push({ ...m, start, end: start, cstart: m.cstart + cstart, cend: m.cend + cstart });
+              inserted = ins.current;
+              current += ins.current;
+            }
+            marks.push({ start, end: base.length, cstart, cend: current.length, deleted: inner ? inner.base : null, inserted, groups, raw: content });
           } else {
             addInner(parseInlineSegment(content));
             marks.push({ start, end: base.length, cstart, cend: current.length, deleted: null, inserted: null, groups, raw: content });
@@ -884,7 +893,26 @@ export function serializeProofDocument(input: SerializeInput): string {
  * Chooses which text marks can be written inline: nested or disjoint spans are fine; a mark that
  * partly overlaps an earlier one is returned in `overlapping` (write it as a line mark with quote=).
  */
-export function planInlineMarks<T extends { start: number; end: number }>(marks: T[]): { inline: T[]; overlapping: T[] } {
+export function planInlineMarks<T extends { start: number; end: number }>(marks: T[], mustInline?: (mark: T) => boolean): { inline: T[]; overlapping: T[] } {
+  if (mustInline) {
+    // Marks that must stay in the text (a pending insertion: its text IS the document's) are
+    // placed first; any other mark that crosses one of them (overlaps without nesting) goes out.
+    const first = marks.filter(mustInline);
+    const firstPlan = planInlineMarks(first);
+    const kept = firstPlan.inline;
+    const crosses = (a: T, b: { start: number; end: number }) => a.start < b.end && b.start < a.end
+      && !(a.start >= b.start && a.end <= b.end) && !(b.start >= a.start && b.end <= a.end);
+    const rest = marks.filter(m => !mustInline(m));
+    const outside = rest.filter(m => kept.some(k => crosses(m, k)));
+    const restPlan = planInlineMarks(rest.filter(m => !outside.includes(m)));
+    const restOut: T[] = [];
+    const inline = [...kept];
+    for (const m of restPlan.inline) (inline.some(k => crosses(m, k)) ? restOut : inline).push(m);
+    return {
+      inline: inline.sort((a, b) => a.start - b.start || b.end - a.end),
+      overlapping: [...firstPlan.overlapping, ...outside, ...restPlan.overlapping, ...restOut],
+    };
+  }
   const sorted = [...marks].sort((a, b) => a.start - b.start || b.end - a.end);
   const inline: T[] = [];
   const overlapping: T[] = [];
@@ -898,6 +926,190 @@ export function planInlineMarks<T extends { start: number; end: number }>(marks:
     stack.push(mark);
   }
   return { inline, overlapping };
+}
+
+// ============================================================================
+// Placing pending insertions (export)
+// ============================================================================
+
+/**
+ * How export finds the text of each pending insertion. The stored offsets of a suggestion
+ * (startRel, range) go stale as soon as the document changes before it, and its quote is often a
+ * fragment of interrupted typing ("jer", " M", "i") that occurs dozens of times. Searching each
+ * quote alone put "on", " M" and "i" into the title "Waiting on Mike" of the live Waiting on Mike
+ * document (ttq18nc1, 2026-09-19) and nested one insertion inside another. So insertions are placed
+ * together: a person types in order, so an insertion made right after another by the same person
+ * most likely starts where that one ends. A Viterbi pass over the insertions in creation order
+ * chooses one occurrence each, rewarding such adjacency; the stale offset only breaks ties.
+ * Two insertions never claim the same characters.
+ */
+export const INSERT_PLACEMENT_POLICY = {
+  /** Score for an insertion that starts exactly where the previous one (same person) ends. */
+  adjacentBonus: 100,
+  /** Score when a few untracked characters (maxGap or fewer) sit between them. */
+  nearBonus: 50,
+  maxGap: 2,
+  /** Penalty per character of distance from the stored offset (startRel): a tie-breaker only. */
+  distanceWeight: 0.002,
+  /** Penalty for matching the trimmed text instead of the exact inserted text. */
+  trimmedPenalty: 5,
+  /** Most re-plans while resolving two insertions that claim the same characters. */
+  maxRounds: 400,
+} as const;
+
+export interface InsertToPlace {
+  id: string;
+  by: string;
+  createdAt: string;
+  /** The inserted text exactly (leading and trailing spaces included). */
+  content: string;
+  /** The stored quote (usually the trimmed content). */
+  quote: string;
+  /** The stored offset into the document's plain text (startRel), or null. */
+  expected: number | null;
+}
+
+export interface StrippedText { stripped: string; map: number[] }
+
+export interface InsertPlacement { start: number; end: number }
+
+function unescapeMarkdown(text: string): string {
+  return text.replace(/\\([!-/:-@[-`{-~])/g, '$1');
+}
+
+/** Every legal occurrence of `text` in the markdown (through the plain-text view), as markdown spans. */
+function insertCandidates(body: string, view: StrippedText, text: string): Array<{ s: number; e: number; start: number; end: number }> {
+  const out: Array<{ s: number; e: number; start: number; end: number }> = [];
+  if (!text) return out;
+  for (let at = view.stripped.indexOf(text); at >= 0; at = view.stripped.indexOf(text, at + 1)) {
+    const lastIdx = at + text.length - 1;
+    if (lastIdx >= view.map.length) break;
+    let start = view.map[at];
+    const end = view.map[lastIdx] + 1;
+    if (start === undefined || end === undefined || end <= start) continue;
+    // A markdown escape belongs to the character it escapes ("sk\_live": the span starts at "\").
+    if (start > 0 && body[start - 1] === '\\' && !isEscaped(body, start - 1)) start -= 1;
+    const slice = body.slice(start, end);
+    // The span must hold exactly the inserted text: no markdown syntax (emphasis delimiters, a
+    // link's "](url)", a heading's "#") and no line break the insertion did not type.
+    if (unescapeMarkdown(slice) !== text || /\n[ \t]*\n/.test(slice)) continue;
+    out.push({ s: at, e: at + text.length, start, end });
+  }
+  return out;
+}
+
+/**
+ * Chooses the markdown span of each pending insertion (null: its text is nowhere in the document,
+ * an orphan). Pure; see INSERT_PLACEMENT_POLICY.
+ */
+export function placeInsertions(body: string, view: StrippedText, items: InsertToPlace[]): Map<string, InsertPlacement | null> {
+  const P = INSERT_PLACEMENT_POLICY;
+  const result = new Map<string, InsertPlacement | null>();
+  const ordered = [...items].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  const cands = new Map<string, Array<{ s: number; e: number; start: number; end: number; penalty: number }>>();
+  for (const item of ordered) {
+    // Line breaks at the edges are the block's own (a new paragraph): the brackets hold the words.
+    const tries = [item.content.replace(/^\n+|\n+$/g, ''), item.content.trim(), item.quote, item.quote.trim()].filter((t, i, all) => t && all.indexOf(t) === i);
+    // Every occurrence of the exact text, and of the trimmed text (the stored content's edge space
+    // may be the document's own, e.g. after an opening quote mark), the latter slightly penalised.
+    const found: Array<{ s: number; e: number; start: number; end: number; penalty: number }> = [];
+    tries.forEach((t, rank) => {
+      for (const c of insertCandidates(body, view, t)) {
+        if (!found.some(f => f.start === c.start && f.end === c.end)) found.push({ ...c, penalty: rank === 0 ? 0 : P.trimmedPenalty });
+      }
+    });
+    cands.set(item.id, found);
+  }
+  for (let round = 0; round < P.maxRounds; round += 1) {
+    const live = ordered.filter(item => (cands.get(item.id) ?? []).length > 0);
+    // Viterbi over `live` in creation order.
+    const score: number[][] = [];
+    const back: number[][] = [];
+    const linked: boolean[][] = [];
+    for (let i = 0; i < live.length; i += 1) {
+      const list = cands.get(live[i].id)!;
+      const emit = (c: { s: number; penalty: number }) => -c.penalty - (live[i].expected === null ? 0 : P.distanceWeight * Math.abs(c.s - live[i].expected!));
+      score[i] = [];
+      back[i] = [];
+      linked[i] = [];
+      if (i === 0) {
+        list.forEach((c, k) => { score[0][k] = emit(c); back[0][k] = -1; linked[0][k] = false; });
+        continue;
+      }
+      const prevList = cands.get(live[i - 1].id)!;
+      let bestPrev = 0;
+      for (let k = 1; k < prevList.length; k += 1) if (score[i - 1][k] > score[i - 1][bestPrev]) bestPrev = k;
+      const sameAuthor = live[i - 1].by === live[i].by;
+      const byEnd = new Map<number, number>();
+      if (sameAuthor) {
+        prevList.forEach((c, k) => {
+          const had = byEnd.get(c.e);
+          if (had === undefined || score[i - 1][k] > score[i - 1][had]) byEnd.set(c.e, k);
+        });
+      }
+      list.forEach((c, k) => {
+        let best = score[i - 1][bestPrev];
+        let from = bestPrev;
+        let link = false;
+        if (sameAuthor) {
+          for (let gap = 0; gap <= P.maxGap; gap += 1) {
+            const pk = byEnd.get(c.s - gap);
+            if (pk === undefined) continue;
+            const v = score[i - 1][pk] + (gap === 0 ? P.adjacentBonus : P.nearBonus);
+            if (v > best) { best = v; from = pk; link = true; }
+          }
+        }
+        score[i][k] = best + emit(c);
+        back[i][k] = from;
+        linked[i][k] = link;
+      });
+    }
+    const choice: number[] = new Array(live.length).fill(-1);
+    if (live.length) {
+      const last = live.length - 1;
+      let k = 0;
+      for (let j = 1; j < score[last].length; j += 1) if (score[last][j] > score[last][k]) k = j;
+      for (let i = last; i >= 0; i -= 1) { choice[i] = k; k = back[i][k]; }
+    }
+    // Two insertions may not claim the same characters: drop the weaker claim and re-plan.
+    const chosen = live.map((item, i) => {
+      const c = cands.get(item.id)![choice[i]];
+      const links = (linked[i][choice[i]] ? 1 : 0) + (i + 1 < live.length && linked[i + 1][choice[i + 1]] ? 1 : 0);
+      return { item, i, c, links };
+    }).sort((a, b) => a.c.start - b.c.start || a.c.end - b.c.end);
+    let conflict: { item: InsertToPlace; c: { s: number } } | null = null;
+    for (let j = 1; j < chosen.length && !conflict; j += 1) {
+      for (let q = j - 1; q >= 0; q -= 1) {
+        const a = chosen[q];
+        const b = chosen[j];
+        if (a.c.end <= b.c.start) continue;
+        // Keep the better-linked one; on a tie keep the older one.
+        const loser = a.links !== b.links ? (a.links < b.links ? a : b) : (a.item.createdAt.localeCompare(b.item.createdAt) > 0 || (a.item.createdAt === b.item.createdAt && a.item.id > b.item.id) ? a : b);
+        conflict = { item: loser.item, c: loser.c };
+        break;
+      }
+    }
+    if (!conflict) {
+      for (const { item, c } of chosen) result.set(item.id, { start: c.start, end: c.end });
+      break;
+    }
+    const lostId = conflict.item.id;
+    const lostS = conflict.c.s;
+    cands.set(lostId, cands.get(lostId)!.filter(c => c.s !== lostS));
+  }
+  if (!result.size) {
+    // Rounds exhausted (pathological input): greedy, oldest first, nearest free occurrence.
+    const claimed: InsertPlacement[] = [];
+    for (const item of ordered) {
+      const free = (cands.get(item.id) ?? []).filter(c => claimed.every(x => x.end <= c.start || c.end <= x.start));
+      if (!free.length) continue;
+      const pick = free.reduce((a, b) => (item.expected !== null && Math.abs(b.s - item.expected) < Math.abs(a.s - item.expected) ? b : a));
+      claimed.push({ start: pick.start, end: pick.end });
+      result.set(item.id, { start: pick.start, end: pick.end });
+    }
+  }
+  for (const item of ordered) if (!result.has(item.id)) result.set(item.id, null);
+  return result;
 }
 
 // ============================================================================

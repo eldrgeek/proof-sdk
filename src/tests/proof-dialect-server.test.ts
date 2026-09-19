@@ -321,6 +321,101 @@ try {
     assert.equal(plainDoc.body.import, undefined, 'plain markdown without format or a proof block is not imported');
   });
 
+  // ------------------------------------------------------------------ interrupted typing
+  // The shapes of the live Waiting on Mike document (ttq18nc1, 2026-09-19): about 35 pending
+  // insertions from typing in suggestion mode, in pieces, many adjacent, some whitespace only, some
+  // inside a heading, a link or italics, two whose text is gone (orphans), and stored offsets that
+  // went stale when the document changed before them. Synthetic text: the live document is private.
+  const typed = `# Waiting on Mike
+
+*Everything that needs you, in one place. An AI records your words and moves the ask to Done. Every action has a link to the exact page.*
+
+## Needs your hands
+
+### Roll the full live Stripe key
+
+[Open the API keys](https://example.test/keys), find the Secret key (it starts with sk\\_live\\_), and choose Roll key. It breaks nothing of ours. sk\\_live has no Roll Key option
+
+Ruled 2026-09-19 (typed inline): “I have reset my usage so we are OK for a while”
+
+Ruled 2026-09-19 (typed inline): “Key is deleted, but I don't see how to turn off the worker”
+
+Then [add a webhook endpoint](https://example.test/webhooks) for the site.
+`;
+  const typedSlug = 'dialect-typed';
+  const typedMarks: Record<string, Record<string, unknown>> = {};
+  let typedN = 0;
+  const typedAt = (sec: number) => new Date(Date.UTC(2026, 8, 18, 2, 0, sec)).toISOString();
+  const ins = (content: string, sec: number, startRel: number | null) => {
+    typedN += 1;
+    typedMarks[`m1789700000000_typed_${String(typedN).padStart(2, '0')}`] = {
+      kind: 'insert', by: 'human:Mike', createdAt: typedAt(sec), status: 'pending', content,
+      quote: content.trim() || content, ...(startRel === null ? {} : { startRel: `char:${startRel}`, endRel: `char:${startRel + content.length}` }),
+    };
+  };
+  // A chain typed into the Stripe paragraph; its offsets are stale (they point at the title,
+  // where "on" and "i" also occur).
+  ins(' sk', 1, 3); ins('_live has no', 2, 5); ins(' Roll', 3, 8); ins(' Key o', 4, 9); ins('pt', 5, 10); ins('i', 6, 11); ins('on', 7, 12);
+  // A whitespace-only insertion, then a chain inside the quotation marks (one untracked "“" between).
+  ins(' ', 10, 40); ins('I have ', 11, 41); ins('res', 12, 900); ins('et my ', 13, 42); ins('usag', 14, 43); ins('e so we are OK ', 15, 44); ins('fo', 16, 45); ins('r a while', 17, 46);
+  // Inside italics, inside a heading and inside link text (offsets close to right).
+  const plainAt = (needle: string) => typed.indexOf(needle);
+  ins(' Done', 20, plainAt(' Done.'));
+  ins('full ', 21, plainAt('full live') - 4);
+  ins('p', 22, plainAt('point]') - 3);
+  // Two insertions at the same stored offset whose text is gone (orphans), between placed ones.
+  ins('Key is deleted, but ', 30, 300); ins("I don't see ", 31, 300); ins('jere to ', 32, 320); ins('jer', 33, 320); ins('how to turn of', 34, 320); ins('f ', 35, 330);
+  const TYPED_INSERTS = typedN;
+  let typedExport = '';
+
+  await test('interrupted typing: every insertion is exactly one well-formed [..]{changed} in its place', async () => {
+    db.createDocument(typedSlug, typed, typedMarks, 'Waiting on Mike', 'owner-typed', 'owner-secret-typed');
+    // A comment on words inside one insertion nests inside it.
+    ok(await call(`/api/agent/${typedSlug}/marks/comment`, 'POST', { by: MIKE, quote: 'a while', text: 'How long?' }, { 'x-share-token': 'owner-secret-typed' }), 'comment in an insertion');
+    const r = await call(`/api/agent/${typedSlug}/export?format=proof-dialect`, 'GET', undefined, { 'x-share-token': 'owner-secret-typed' });
+    assert.equal(r.status, 200, r.text);
+    typedExport = r.text;
+    const x = typedExport;
+    const g = (sec: number) => `\\{changed @mike at=${typedAt(sec).replace(/\./g, '\\.')}\\}`;
+    assert.ok(/^# Waiting on Mike$/m.test(x), `the title carries no marks:\n${x}`);
+    assert.ok(new RegExp(`ours\\.\\[ sk\\]${g(1)}\\[\\\\_live has no\\]${g(2)}\\[ Roll\\]${g(3)}\\[ Key o\\]${g(4)}\\[pt\\]${g(5)}\\[i\\]${g(6)}\\[on\\]${g(7)}$`, 'm').test(x), `the Stripe chain, in order, each piece its own mark, the escape inside:\n${x}`);
+    assert.ok(new RegExp(`\\(typed inline\\):\\[ \\]${g(10)}“\\[I have \\]${g(11)}\\[res\\]${g(12)}\\[et my \\]${g(13)}\\[usag\\]${g(14)}\\[e so we are OK \\]${g(15)}\\[fo\\]${g(16)}\\[r \\[a while\\]\\{comment @mw text="How long\\?" at=\\S+\\}\\]${g(17)}”`).test(x), `the quoted chain (and the comment nested in its last piece):\n${x}`);
+    assert.ok(new RegExp(`moves the ask to\\[ Done\\]${g(20)}\\. Every action`).test(x), 'inside italics');
+    assert.ok(new RegExp(`^### Roll the \\[full \\]${g(21)}live Stripe key$`, 'm').test(x), 'inside a heading, after its "### "');
+    assert.ok(new RegExp(`\\[add a webhook end\\[p\\]${g(22)}oint\\]\\(https://example\\.test/webhooks\\)`).test(x), 'inside link text');
+    assert.ok(new RegExp(`“\\[Key is deleted, but \\]${g(30)}\\[I don't see \\]${g(31)}\\[how to turn of\\]${g(34)}\\[f \\]${g(35)}the worker” \\{changed @mike kind=insert to="jere to " orphan=1 at=\\S+\\} \\{changed @mike kind=insert to=jer orphan=1 at=\\S+\\}$`, 'm').test(x), `same-offset insertions in creation order; orphans on their neighbours' line:\n${x}`);
+    assert.ok(!/quote=/.test(x), 'no quote= fallbacks');
+    assert.ok(!/\[\[[^\]]*\]\{changed/.test(x), 'no insertion nested in another');
+    const parsed = dialect.parseProofDocument(x);
+    const inlineChanged = parsed.inline.filter(m => m.groups[0].type === 'changed');
+    const lineChanged = parsed.lines.flatMap(l => l.groups).filter(gr => gr.type === 'changed');
+    assert.equal(inlineChanged.length + lineChanged.length, TYPED_INSERTS, 'one group per suggestion');
+    assert.equal(lineChanged.length, 2, 'only the two orphans are line marks');
+    assert.equal(parsed.current.replace(/^\n/, ''), typed, 'the file\'s current text is the document');
+  });
+
+  await test('interrupted typing: import keeps every insertion (formatting too); export → import → export is byte-identical', async () => {
+    const r = await call('/api/share/markdown', 'POST', { markdown: typedExport, format: 'proof-dialect' }, OPERATOR);
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.body.import.created.suggestions, TYPED_INSERTS, JSON.stringify(r.body.import));
+    assert.equal(r.body.import.created.orphans, 2);
+    assert.deepEqual(r.body.import.warnings, []);
+    const H2 = { 'x-share-token': r.body.ownerSecret };
+    const st = await call(`/api/agent/${r.body.slug}/state`, 'GET', undefined, H2);
+    assert.equal(st.body.markdown, typed, 'the imported text is the original, italics and link included');
+    const again = await call(`/api/agent/${r.body.slug}/export?format=proof-dialect`, 'GET', undefined, H2);
+    assert.equal(again.text, typedExport, diffHint(typedExport, again.text));
+    const third = await call('/api/share/markdown', 'POST', { markdown: again.text, format: 'auto' }, OPERATOR);
+    const thirdExport = await call(`/api/agent/${third.body.slug}/export`, 'GET', undefined, { 'x-share-token': third.body.ownerSecret });
+    assert.equal(thirdExport.text, typedExport, diffHint(typedExport, thirdExport.text));
+    // The attached insertions are real suggestions: rejecting one inside italics removes its text.
+    const marks = st.body.marks as Record<string, { kind: string; content?: string }>;
+    const done = Object.entries(marks).find(([, m]) => m.kind === 'insert' && m.content === ' Done')![0];
+    ok(await call(`/api/agent/${r.body.slug}/marks/reject`, 'POST', { markId: done, by: MIKE }, H2), 'reject the insertion in italics');
+    const after = await call(`/api/agent/${r.body.slug}/state`, 'GET', undefined, H2);
+    assert.ok(after.body.markdown.includes('*Everything that needs you, in one place. An AI records your words and moves the ask to. Every action has a link to the exact page.*'), after.body.markdown.slice(0, 300));
+  });
+
   console.log(`\n${passed} proof-dialect server tests passed`);
 } finally {
   server.close();
