@@ -35,7 +35,7 @@ import {
 import type { SinceYouReport } from '../shared/alignment';
 import { FOLDING, planSectionMark } from '../shared/folding';
 import { askIssueInputs, askTeamActors, evaluateAsks, type AskChoice, type AskView, type ProofAsk } from '../shared/asks';
-import { setAskDecorations, type AskDecorationSpec } from '../editor/plugins/ask-view';
+import { askViewKey, setAskDecorations, type AskDecorationSpec } from '../editor/plugins/ask-view';
 import { askControlSignature, buildAskControl, buildAskTag, type AskControl } from './asks';
 import { setLineMarksViewListener, peekPendingLocalLineEdits, takePendingLocalLineEdits } from '../editor/plugins/line-marks-view';
 import { EMPTY_DIRECTORY, actorTrust, isGuestActor, normalizeActorString, resolveTargetActor, type IdentityDirectory, type ViewerIdentity } from '../shared/identity';
@@ -809,7 +809,12 @@ export class LineMarksUI {
         });
       }
       const signature = sigs.join('|');
-      if (signature === this.askDecoSig) return;
+      // A remote Yjs update replaces the whole document, which drops mapped decorations even when
+      // every position is unchanged (an edit below the asks): rebuild whenever some are missing.
+      // Each ask on a text block has two widgets, its tag and its control.
+      const expected = 2 * specs.filter(spec => view.state.doc.nodeAt(spec.pos)?.isTextblock).length;
+      const present = askViewKey.getState(view.state)?.find().length ?? 0;
+      if (signature === this.askDecoSig && present >= expected) return;
       this.askDecoSig = signature;
       try { setAskDecorations(view, specs); } catch (error) { console.warn('[plm] ask decorations failed', error); }
     });
