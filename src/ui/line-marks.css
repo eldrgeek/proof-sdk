@@ -248,3 +248,12 @@ body.plm-on #editor { padding-left:calc(var(--provenance-bar-width, 6px) + 48px)
   .plm-blind-setting { min-height:44px; }
   .pdx-alt { min-height:36px; align-items:center; }
 }
+
+/* Proof Documents Step B7: a speech bubble on a line that chat messages point at. */
+.plm-chat-bubble {
+  position:absolute; z-index:2; min-width:16px; height:14px; padding:0 3px; box-sizing:border-box;
+  display:inline-flex; align-items:center; justify-content:center; border:1px solid #6366f1; border-radius:7px 7px 7px 2px;
+  background:#eef2ff; color:#3730a3; font:700 9px/1 system-ui,-apple-system,sans-serif; cursor:pointer;
+}
+.plm-chat-bubble:hover, .plm-chat-bubble:focus-visible { background:#6366f1; color:#fff; outline:none; }
+@media (max-width:700px) { .plm-chat-bubble { min-width:20px; height:18px; font-size:11px; } }

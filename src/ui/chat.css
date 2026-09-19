@@ -1,0 +1,113 @@
+/* Proof Documents Step B7: chat in the right rail and the phone's bottom sheet (Claude Opus 5, 2026-09-19). */
+.pch { display: flex; flex-direction: column; gap: 6px; min-width: 0; font: 13px/1.45 system-ui, -apple-system, sans-serif; color: #26303c; }
+.pch-head { display: flex; align-items: center; }
+.pch-toggle { display: flex; align-items: center; gap: 6px; flex: 1; min-height: 32px; padding: 0; border: none; background: none; color: inherit; font: inherit; cursor: pointer; text-align: left; }
+.pch-toggle strong { font-size: 14px; }
+.pch-caret::before { content: "▾"; color: #6366f1; font-size: 15px; line-height: 1; }
+.pch[data-collapsed="true"] .pch-caret::before { content: "▸"; }
+.pch-count { margin-left: auto; padding: 1px 7px; border-radius: 999px; background: #f3f4f6; color: #4b5563; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.pch-count:empty { display: none; }
+.pch-count[data-unread="true"] { background: #dc2626; color: #fff; }
+.pch[data-collapsed="true"] > :not(.pch-head) { display: none !important; }
+.pch-empty { margin: 0; color: #646b73; font-size: 12px; }
+/* In the rail the placeholder says it; the empty note shows only in the phone sheet. */
+.prw-chat .pch-empty { display: none; }
+.pch-empty[hidden] { display: none; }
+.pch-list { list-style: none; margin: 0; padding: 0 2px 0 0; display: flex; flex-direction: column; gap: 8px; max-height: min(46vh, 520px); overflow-y: auto; overscroll-behavior: contain; }
+.pch-list:empty { display: none; }
+.pch-msg { padding: 7px 9px; border: 1px solid #e7e5df; border-radius: 10px; background: #fff; overflow-wrap: anywhere; }
+.pch-msg[data-mine="true"] { background: #f8faff; border-color: #dbe4ff; }
+.pch-msg[data-mentions-me="true"] { border-left: 3px solid #dc2626; }
+.pch-msg[data-kind="explain"], .pch-msg[data-kind="why"] { background: #fbfaff; }
+.pch-flash { animation: pch-flash 1.2s ease; }
+@keyframes pch-flash { 0%, 40% { box-shadow: 0 0 0 3px #6366f1; } 100% { box-shadow: 0 0 0 0 transparent; } }
+.pch-msg-head { display: flex; align-items: baseline; gap: 6px; font-size: 12px; }
+.pch-who { display: inline-flex; align-items: baseline; gap: 4px; min-width: 0; }
+.pch-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 14em; }
+.pch-verified { color: #15803d; font-weight: 700; }
+.pch-ai { padding: 0 5px; border-radius: 999px; background: #ede9fe; color: #5b21b6; font-size: 10px; font-weight: 700; }
+.pch-guest { padding: 0 5px; border-radius: 999px; background: #fef3c7; color: #92400e; font-size: 10px; }
+.pch-kind { padding: 0 5px; border-radius: 4px; background: #e0e7ff; color: #3730a3; font-size: 10px; font-weight: 600; }
+.pch-time { margin-left: auto; color: #8a9099; font-size: 11px; white-space: nowrap; }
+.pch-text { margin: 3px 0 0; white-space: pre-wrap; }
+.pch-text code { padding: 0 3px; border-radius: 4px; background: #f3f4f6; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.pch-text a { color: #2563eb; }
+.pch-mention { color: #4338ca; font-weight: 600; }
+.pch-mention[data-me="true"] { padding: 0 2px; border-radius: 3px; background: #fee2e2; color: #991b1b; }
+.pch-quote { display: block; width: 100%; margin: 3px 0 0; padding: 2px 6px; border: none; border-left: 2px solid #c7d2fe; background: #f8faff; color: #4b5563; font: 12px/1.35 system-ui, sans-serif; text-align: left; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pch-pointers { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.pch-pointer { max-width: 100%; min-height: 26px; padding: 2px 8px; border: 1px solid #c7d2fe; border-radius: 999px; background: #eef2ff; color: #3730a3; font: 12px/1.3 system-ui, sans-serif; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.pch-pointer:hover:not(:disabled) { background: #e0e7ff; }
+.pch-pointer:disabled { opacity: .6; cursor: default; }
+.pch-proposal { margin-top: 6px; padding: 6px 8px; border: 1px dashed #16a34a; border-radius: 8px; background: #f0fdf4; font-size: 12px; }
+.pch-proposal[data-status="accepted"] { border-style: solid; }
+.pch-proposal[data-status="rejected"], .pch-proposal[data-status="gone"] { border-color: #d1d5db; background: #f9fafb; }
+.pch-proposal-head { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; font-weight: 600; color: #166534; }
+.pch-proposal-body { margin: 4px 0; }
+.pch-proposal-body del { color: #991b1b; }
+.pch-proposal-body ins { text-decoration: none; background: rgba(34, 197, 94, .18); }
+.pch-after { color: #4b5563; }
+.pch-why { margin: 2px 0; padding: 4px 6px; border-radius: 6px; background: #f5f3ff; color: #4c1d95; }
+.pch-why-label { font-weight: 600; }
+.pch-proposal-status { margin: 2px 0 0; color: #4b5563; }
+.pch-thread { margin-top: 6px; padding: 5px 8px; border-left: 2px solid #c7d2fe; background: #fafaff; font-size: 12px; }
+.pch-thread-head { display: flex; justify-content: space-between; gap: 6px; color: #4b5563; }
+.pch-thread-reply { margin-top: 3px; }
+.pch-msg-actions { display: flex; gap: 10px; margin-top: 3px; }
+.pch-link { border: none; background: none; padding: 0; color: #2563eb; cursor: pointer; font: 12px system-ui, sans-serif; }
+.pch-link:hover { text-decoration: underline; }
+.pch-link:disabled { color: #9ca3af; cursor: default; text-decoration: none; }
+.pch-composer { display: flex; flex-direction: column; gap: 5px; margin: 2px 0 0; }
+.pch-composer[hidden] { display: none; }
+.pch-replybar { display: flex; justify-content: space-between; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 6px; background: #eef2ff; color: #3730a3; font-size: 12px; }
+.pch-replybar[hidden], .pch-attached[hidden] { display: none; }
+.pch-replybar > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pch-attached { display: flex; flex-wrap: wrap; gap: 4px; }
+.pch-chip { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; padding: 1px 2px 1px 8px; border-radius: 999px; background: #eef2ff; color: #3730a3; font-size: 12px; }
+.pch-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pch-chip-x { width: 22px; height: 22px; border: none; border-radius: 50%; background: none; color: inherit; cursor: pointer; font: 600 14px/1 system-ui, sans-serif; }
+.pch-chip-x:hover { background: #e0e7ff; }
+.pch-field { position: relative; }
+.pch-input { box-sizing: border-box; width: 100%; height: 38px; min-height: 38px; max-height: 160px; padding: 7px 9px; border: 1px solid #949ca8; border-radius: 8px; resize: vertical; background: #fff; color: #26303c; font: 13px/1.4 system-ui, -apple-system, sans-serif; }
+.pch-input.pch-has-text { height: 64px; }
+.pch-input:focus { outline: 2px solid #6366f1; outline-offset: 0; border-color: #6366f1; }
+.pch-suggest { position: absolute; left: 0; right: 0; bottom: calc(100% + 4px); z-index: 5; list-style: none; margin: 0; padding: 4px; border: 1px solid #d4d4cf; border-radius: 8px; background: #fff; box-shadow: 0 6px 20px #1622381f; }
+.pch-suggest[hidden] { display: none; }
+.pch-suggest-item { display: flex; justify-content: space-between; gap: 8px; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+.pch-suggest-item[aria-selected="true"], .pch-suggest-item:hover { background: #eef2ff; }
+.pch-suggest-name { font-weight: 600; }
+.pch-suggest-kind { color: #6b7280; font-size: 11px; }
+.pch-row { display: flex; justify-content: space-between; gap: 6px; }
+.pch-pin, .pch-send { min-height: 32px; padding: 0 10px; border: 1px solid #d4d4cf; border-radius: 8px; background: #fff; color: inherit; font: 600 12px system-ui, sans-serif; cursor: pointer; }
+.pch-send { border-color: #4f46e5; background: #4f46e5; color: #fff; }
+.pch-send:disabled { opacity: .6; cursor: default; }
+.pch-status { margin: 0; color: #b91c1c; font-size: 12px; }
+.pch-status:empty { display: none; }
+.ProseMirror .pch-mark-flash { outline: 3px solid #6366f1 !important; outline-offset: 2px; border-radius: 2px; transition: outline-color 1.2s ease; }
+
+/* The ⋯ button's unread badge (phones). */
+#share-banner .share-pill-overflow { position: relative; }
+.pch-overflow-badge { position: absolute; top: 4px; right: 2px; min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box; border-radius: 999px; background: #dc2626; color: #fff; font: 700 10px/16px system-ui, sans-serif; text-align: center; pointer-events: none; }
+
+/* Phones: a bottom sheet with the composer above the on-screen keyboard. */
+.pch-sheet { display: none; }
+@media (max-width: 700px) {
+  .pch-sheet:not([hidden]) {
+    display: flex; flex-direction: column; position: fixed; left: 0; right: 0; bottom: var(--proof-keyboard-offset, 0px); z-index: 10003;
+    max-height: min(80dvh, 640px); box-sizing: border-box; padding: 0 12px max(10px, env(safe-area-inset-bottom));
+    border-radius: 16px 16px 0 0; background: #fffefb; box-shadow: 0 -8px 32px #16223833;
+  }
+  .pch-sheet-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 0 4px; flex-shrink: 0; }
+  .pch-sheet-head strong { font-size: 16px; }
+  .pch-sheet-close { width: 44px; height: 44px; border: none; background: none; color: #4b5563; font: 400 26px/1 system-ui, sans-serif; cursor: pointer; }
+  .pch.pch-in-sheet { flex: 1; min-height: 0; font-size: 15px; }
+  .pch.pch-in-sheet .pch-head { display: none; }
+  .pch.pch-in-sheet .pch-list { flex: 1; min-height: 80px; max-height: none; }
+  .pch.pch-in-sheet .pch-composer { flex-shrink: 0; }
+  .pch-in-sheet .pch-input { font-size: 16px; height: 64px; min-height: 48px; }
+  .pch-in-sheet .pch-pin, .pch-in-sheet .pch-send { min-height: 44px; padding: 0 14px; font-size: 15px; }
+  .pch-in-sheet .pch-pointer { min-height: 36px; font-size: 14px; }
+  .pch-in-sheet .pch-link { min-height: 32px; font-size: 14px; }
+  .pch-in-sheet .pch-chip-x { width: 32px; height: 32px; }
+  .pch-in-sheet .pch-suggest-item { padding: 10px; }
+}

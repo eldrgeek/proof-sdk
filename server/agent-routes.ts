@@ -42,7 +42,7 @@ import {
 import { canonicalizeStoredMarks, type StoredMark } from '../src/formats/marks.js';
 import { buildIssueReport, computeServerLines, listCanonicalLineMarks, resolveAgentLineTarget, writeAgentLineMark } from './line-marks.js';
 import { buildSinceYou, freezeIfAligned, listSnapshotInfos, scheduleAlignmentCheck, sendSnapshotFile } from './alignment.js';
-import { agentKeyActor } from '../src/shared/line-marks.js';
+import { agentKeyActor, anchorForLine as anchorForDocLine } from '../src/shared/line-marks.js';
 import { decideActor } from './identity.js';
 import { answerAgentAsk, buildAskReport, createAskOnLine, createAgentAsk, listAgentAsks, listCanonicalAsks, reaskAsk, withdrawAsk } from './asks.js';
 import { ASK_POLICY, askTeamActors, oneLine } from '../src/shared/asks.js';
@@ -103,6 +103,8 @@ import { ALT_POLICY } from '../src/shared/alternatives.js';
 import { BLIND_POLICY } from '../src/shared/blind.js';
 import { EXPLAIN_POLICY, TERM_POLICY } from '../src/shared/explain.js';
 import { TTL_POLICY } from '../src/shared/ttl.js';
+import { getChatMessage, listChatMessages, mentionCandidates, postChatMessage, serializeChatMessage } from './chat.js';
+import { CHAT_POLICY, type ChatSuggestionRef } from '../src/shared/chat.js';
 import type { DocLine as ProofDocLine } from '../src/shared/line-marks.js';
 import {
   recordAgentMutation,
@@ -4410,6 +4412,152 @@ agentRoutes.post('/:slug/marks/suggest-delete', async (req: Request, res: Respon
     notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'suggestion.add.delete' }), { apply: false });
   }
   sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+});
+
+// ============================================================================
+// Proof Documents Step B7: chat beside the document. Messages never touch the document's text or
+// Yjs state. A message with `suggestion` first creates a normal suggestion (the same checks as
+// /marks/suggest-*, including WHY_POLICY) and links to it.
+// ============================================================================
+
+/** A Response stand-in that records what a helper would have sent (status, body, headers). */
+function captureResponse(): { res: Response; sent: () => { status: number; body: unknown } | null; headers: Record<string, string> } {
+  let status = 200;
+  let sent: { status: number; body: unknown } | null = null;
+  const headers: Record<string, string> = {};
+  const fake = {
+    headersSent: false,
+    status(code: number) { status = code; return fake; },
+    json(body: unknown) { sent = { status, body }; return fake; },
+    setHeader(name: string, value: string) { headers[name] = String(value); return fake; },
+    getHeader(name: string) { return headers[name]; },
+  };
+  return { res: fake as unknown as Response, sent: () => sent, headers };
+}
+
+const CHAT_SUGGESTION_KINDS = new Set(['replace', 'insert', 'delete']);
+
+/** Creates the suggestion a chat message proposes. Returns the result the suggest route would send. */
+async function chatSuggestion(req: Request, slug: string, by: string, raw: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown>; headers: Record<string, string>; ref?: ChatSuggestionRef; quote?: string }> {
+  const kind = typeof raw.kind === 'string' ? raw.kind : '';
+  if (!CHAT_SUGGESTION_KINDS.has(kind)) return { status: 400, headers: {}, body: { success: false, code: 'INVALID_SUGGESTION', error: '"suggestion.kind" is "replace", "insert" or "delete"' } };
+  const quote = typeof raw.quote === 'string' ? raw.quote : '';
+  if (!quote.trim()) return { status: 400, headers: {}, body: { success: false, code: 'INVALID_SUGGESTION', error: '"suggestion.quote" (the text as the page shows it) is required' } };
+  if (kind !== 'delete' && typeof raw.content !== 'string') return { status: 400, headers: {}, body: { success: false, code: 'INVALID_SUGGESTION', error: '"suggestion.content" is required for replace and insert' } };
+  const payload: Record<string, unknown> = { ...raw, by };
+  delete payload.kind;
+  const route = `POST /chat (suggestion.${kind})`;
+  const capture = captureResponse();
+  const gate = suggestionWhyGate(req, capture.res, slug, payload, route);
+  if (!gate) {
+    const sent = capture.sent();
+    return { status: sent?.status ?? 400, body: isRecord(sent?.body) ? sent!.body as Record<string, unknown> : { success: false }, headers: capture.headers };
+  }
+  const context = await enforceMutationPrecondition(capture.res, slug, route, 'suggestion.add', payload);
+  if (!context) {
+    const sent = capture.sent();
+    return { status: sent?.status ?? 409, body: isRecord(sent?.body) ? sent!.body as Record<string, unknown> : { success: false }, headers: capture.headers };
+  }
+  const result = await executeDocumentOperationAsync(slug, 'POST', `/marks/suggest-${kind}`, payload, context);
+  finishSuggestionNote(capture.res, slug, gate, result);
+  await finishSuggestionBundle(slug, gate, result);
+  const body = isRecord(result.body) ? result.body as Record<string, unknown> : {};
+  if (result.status < 200 || result.status >= 300) return { status: result.status, body, headers: capture.headers };
+  notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: `suggestion.add.${kind}` }), { apply: false });
+  const markId = typeof body.markId === 'string' ? body.markId : '';
+  const why = typeof payload.why === 'string' && payload.why.trim() ? payload.why.trim().slice(0, 300) : null;
+  return {
+    status: result.status, body, headers: capture.headers, quote,
+    ref: { markId, kind: kind as ChatSuggestionRef['kind'], quote: quote.slice(0, 2000), content: typeof raw.content === 'string' ? raw.content.slice(0, 4000) : null, why },
+  };
+}
+
+// GET ?after=<id>&limit=<n>: messages after the cursor, oldest first (or the newest page), each
+// with `pointers` resolved against the current lines.
+agentRoutes.get('/:slug/chat', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  const afterRaw = typeof req.query.after === 'string' ? Number(req.query.after) : NaN;
+  const limitRaw = typeof req.query.limit === 'string' ? Number(req.query.limit) : NaN;
+  const after = Number.isFinite(afterRaw) && afterRaw >= 0 ? afterRaw : null;
+  const messages = listChatMessages(slug, { after, limit: Number.isFinite(limitRaw) ? limitRaw : undefined });
+  const lines = await computeServerLines(await currentAgentMarkdown(slug));
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    success: true,
+    messages: messages.map(message => serializeChatMessage(message, lines)),
+    cursor: messages.length ? messages[messages.length - 1].id : (after ?? 0),
+    mentionable: mentionCandidates(slug),
+    policy: CHAT_POLICY,
+  });
+});
+
+// POST { text, lines?: [<line target>], replyTo?, mentions?, suggestion?: { kind, quote, content, why, ... } }
+agentRoutes.post('/:slug/chat', async (req: Request, res: Response) => {
+  const route = 'POST /chat';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route }); return; }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body);
+  const actor = resolveAgentActor(req, slug, payload, role);
+  if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route, slug }); return; }
+  if (payload.lines !== undefined && !Array.isArray(payload.lines)) {
+    sendMutationResponse(res, 400, { success: false, code: 'INVALID_LINES', error: '"lines" is a list of line targets ({"quote": ...}, {"lineIndex": 3}, {"ref": "b4"})' }, { route, slug });
+    return;
+  }
+  const targets = Array.isArray(payload.lines) ? payload.lines : [];
+  if (targets.length > CHAT_POLICY.maxLines) {
+    sendMutationResponse(res, 400, { success: false, code: 'TOO_MANY_LINES', error: `At most ${CHAT_POLICY.maxLines} line pointers per message` }, { route, slug });
+    return;
+  }
+  if (payload.replyTo !== undefined && payload.replyTo !== null && !getChatMessage(slug, Number(payload.replyTo))) {
+    sendMutationResponse(res, 404, { success: false, code: 'REPLY_TARGET_NOT_FOUND', error: '"replyTo" names no message in this document\'s chat' }, { route, slug });
+    return;
+  }
+  let lines = await computeServerLines(await currentAgentMarkdown(slug));
+  const anchors: unknown[] = [];
+  for (const [index, raw] of targets.entries()) {
+    const target = Number.isInteger(raw) ? { lineIndex: raw } : typeof raw === 'string' && /^b\d+$/i.test(raw) ? { ref: raw } : raw;
+    if (!isRecord(target)) { sendMutationResponse(res, 400, { success: false, code: 'INVALID_LINES', error: `lines[${index}] is not a line target`, index }, { route, slug }); return; }
+    const found = resolveAgentLineTarget(lines, target);
+    if (!found.ok) {
+      sendMutationResponse(res, found.status, { success: false, code: found.code, error: `lines[${index}]: ${found.error}`, index, ...(found.candidates ? { candidates: found.candidates } : {}) }, { route, slug });
+      return;
+    }
+    anchors.push(anchorForDocLine(found.line));
+  }
+  let suggestion: ChatSuggestionRef | null = null;
+  let suggestionBody: Record<string, unknown> | null = null;
+  if (payload.suggestion !== undefined && payload.suggestion !== null) {
+    if (!isRecord(payload.suggestion)) {
+      sendMutationResponse(res, 400, { success: false, code: 'INVALID_SUGGESTION', error: '"suggestion" is an object: { kind, quote, content, why }' }, { route, slug });
+      return;
+    }
+    const made = await chatSuggestion(req, slug, actor.by, payload.suggestion as Record<string, unknown>);
+    for (const [name, value] of Object.entries(made.headers)) res.setHeader(name, value);
+    if (!made.ref || made.status < 200 || made.status >= 300) {
+      sendMutationResponse(res, made.status, { ...made.body, success: false, stage: 'suggestion' }, { route, slug });
+      return;
+    }
+    suggestion = made.ref;
+    suggestionBody = made.body;
+    lines = await computeServerLines(await currentAgentMarkdown(slug));
+    // The message points at the suggestion's line when it names no line itself.
+    if (anchors.length === 0 && CHAT_POLICY.suggestionPointsAtItsLine && made.quote) {
+      const found = resolveAgentLineTarget(lines, { quote: made.quote.split('\n')[0].slice(0, 200) });
+      if (found.ok) anchors.push(anchorForDocLine(found.line));
+    }
+  }
+  const result = postChatMessage(slug, {
+    by: actor.by, text: payload.text, anchors, mentions: payload.mentions, replyTo: payload.replyTo, suggestion, source: 'agent', lines,
+  });
+  if (result.status === 200) {
+    notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'chat.message' }), { apply: false });
+    if (suggestionBody) result.body.suggestion = { markId: suggestion?.markId, status: 'pending', ...(suggestionBody.note ? { note: suggestionBody.note } : {}), ...(suggestionBody.warnings ? { warnings: suggestionBody.warnings } : {}), ...(suggestionBody.bundle ? { bundle: suggestionBody.bundle } : {}) };
+  }
+  sendMutationResponse(res, result.status, result.body, { route, slug });
 });
 
 agentRoutes.post('/:slug/marks/accept', async (req: Request, res: Response) => {

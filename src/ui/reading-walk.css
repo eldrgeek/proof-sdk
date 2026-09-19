@@ -191,3 +191,16 @@ body.prw-right-collapsed .prw-right .prw-rail-head { padding: 6px 2px; justify-c
 .prw-bundle-note { margin: 0 0 6px; padding: 6px 8px; border-radius: 6px; background: #f3f4f6; color: #374151; font-size: 12px; }
 .prw-bundle-status { margin: 0 0 6px; color: #4b5563; font-size: 12px; }
 .prw-bundle-fallback { margin: 6px 0 0; color: #92400e; font-size: 12px; font-weight: 600; }
+
+/* Proof Documents Step B7: the chat's place in the rail, and the unread-mention badge on the toggle. */
+.prw-chat { flex: 0 1 auto; display: flex; flex-direction: column; min-height: 0; max-height: 50%; padding: 8px 12px 10px; border-top: 1px solid #e3e2dc; }
+.prw-chat:empty { display: none; }
+.prw-chat > .pch { flex: 1 1 auto; min-height: 0; }
+.prw-chat .pch-list { flex: 1 1 auto; min-height: 0; max-height: none; }
+body.prw-right-collapsed .prw-right .prw-chat { display: none; }
+@media (max-width: 700px) { .prw-chat { display: none; } }
+.prw-collapse { position: relative; }
+.prw-badge {
+  position: absolute; top: -6px; right: -6px; min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box;
+  border-radius: 999px; background: #dc2626; color: #fff; font: 700 10px/16px system-ui, sans-serif; text-align: center;
+}

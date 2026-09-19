@@ -119,6 +119,10 @@ import { isGuestActor, normalizeActorString } from '../src/shared/identity.js';
 import { buildDirectory, clientDirectory, decideActor, sessionIdentity } from './identity.js';
 import { IDENTITY_POLICY, actorsIn, isEmailAddress, verifiedHumanActor, type IdentityDirectory, type ViewerIdentity } from '../src/shared/identity.js';
 import { actorKey, agentKeyActor } from '../src/shared/line-marks.js';
+import { chatAuthors, listChatMessages, mentionCandidates, postChatMessage } from './chat.js';
+import { CHAT_POLICY } from '../src/shared/chat.js';
+import { EXPLAIN_POLICY } from '../src/shared/explain.js';
+import { WHY_POLICY } from '../src/shared/review-aids.js';
 import { getPublicOrigin } from './public-origin.js';
 import { getLibrarySession, isLibraryEnabled } from './library/auth.js';
 import {
@@ -2119,7 +2123,20 @@ pageAidRoute('/documents/:slug/settings', ({ slug, by, access, body }) =>
 pageAidRoute('/documents/:slug/explain', async ({ slug, by, body }) => {
   const state = await currentDocumentState(slug);
   if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
-  return recordExplain(slug, { by, anchor: body.anchor, question: body.question, commentMarkId: body.commentMarkId, markdown: state.markdown, source: 'page' });
+  const result = await recordExplain(slug, { by, anchor: body.anchor, question: body.question, commentMarkId: body.commentMarkId, markdown: state.markdown, source: 'page' });
+  // Step B7: the Explain question also appears in the chat, linked to its comment thread.
+  if (result.status === 200 && CHAT_POLICY.mirrorExplain) {
+    const explain = result.body.explain as { question?: string; commentMarkId?: string | null; anchor?: unknown } | undefined;
+    try {
+      const chat = postChatMessage(slug, {
+        by, kind: 'explain', text: `${EXPLAIN_POLICY.commentPrefix} ${explain?.question ?? EXPLAIN_POLICY.defaultQuestion}`,
+        anchors: explain?.anchor ? [explain.anchor] : [], mentions: activeAgentKeyActors(slug),
+        commentMarkId: explain?.commentMarkId ?? null, source: 'page',
+      });
+      if (chat.status === 200) result.body.chatMessageId = chat.body.cursor;
+    } catch (error) { console.warn('[chat] explain mirror failed', String(error)); }
+  }
+  return result;
 });
 // Step B4f: a line's time-to-live: { anchor, ttl: "7d" }; the setter or an Owner clears it.
 pageAidRoute('/documents/:slug/ttl', async ({ slug, by, body }) => {
@@ -2137,7 +2154,68 @@ pageAidRoute('/documents/:slug/why-asked', ({ slug, by, body }) => {
   if (!markId) return { status: 400, body: { success: false, error: 'Missing markId' } };
   const author = typeof body.author === 'string' ? body.author.slice(0, 120) : null;
   try { addDocumentEvent(slug, 'review.why_asked', { markId, author }, by); } catch { /* optional */ }
-  return { status: 200, body: { success: true } };
+  // Step B7: "Ask why" also appears in the chat, linked to the change's thread and its line.
+  let chatMessageId: unknown = null;
+  if (CHAT_POLICY.mirrorAskWhy) {
+    try {
+      const authorActor = author ? normalizeActorString(author) : '';
+      const name = authorActor ? (mentionCandidates(slug).find(c => actorKey(c.actor) === actorKey(authorActor))?.names[0] ?? authorActor.replace(/^(human|ai|guest):/i, '')) : '';
+      const chat = postChatMessage(slug, {
+        by, kind: 'why', text: `${name ? `@${name} ` : ''}${WHY_POLICY.askWhyText}`,
+        anchors: body.anchor ? [body.anchor] : [], mentions: authorActor ? [authorActor] : [],
+        commentMarkId: markId, source: 'page',
+      });
+      if (chat.status === 200) chatMessageId = chat.body.cursor;
+    } catch (error) { console.warn('[chat] why mirror failed', String(error)); }
+  }
+  return { status: 200, body: { success: true, chatMessageId } };
+});
+
+// ============================================================================
+// Proof Documents Step B7: chat beside the document (never in its text or Yjs state)
+// ============================================================================
+
+// GET ?after=<id>&limit=<n>: messages after the cursor (oldest first), or the newest page.
+apiRoutes.get('/documents/:slug/chat', (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canRead) { res.status(403).json({ success: false, error: 'No read access' }); return; }
+  const afterRaw = typeof req.query.after === 'string' ? Number(req.query.after) : NaN;
+  const limitRaw = typeof req.query.limit === 'string' ? Number(req.query.limit) : NaN;
+  const after = Number.isFinite(afterRaw) && afterRaw >= 0 ? afterRaw : null;
+  const messages = listChatMessages(slug, { after, limit: Number.isFinite(limitRaw) ? limitRaw : undefined });
+  const candidates = mentionCandidates(slug);
+  const dir = buildDirectory(slug);
+  const directory = clientDirectory(dir, [...chatAuthors(slug), ...messages.flatMap(m => m.mentions), ...candidates.map(c => c.actor)]);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    success: true,
+    messages,
+    cursor: messages.length ? messages[messages.length - 1].id : (after ?? 0),
+    candidates,
+    labels: directory.labels,
+    policy: { maxText: CHAT_POLICY.maxText, maxLines: CHAT_POLICY.maxLines, pollMs: CHAT_POLICY.pollMs },
+    canPost: access.canMark,
+  });
+});
+
+// POST { by, text, lines: [anchor], mentions?: [actor], replyTo? }. Comment access; the actor is
+// decided as for line marks (a signed-in session wins over a typed guest name).
+apiRoutes.post('/documents/:slug/chat', opsRateLimiter, (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canMark) { res.status(403).json({ success: false, error: 'This needs comment access' }); return; }
+  const body = isRecord(req.body) ? req.body : {};
+  const actor = resolvePageActor(req, slug, access, body.by);
+  if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
+  const result = postChatMessage(slug, {
+    by: actor.actor, text: body.text, anchors: body.lines, mentions: body.mentions, replyTo: body.replyTo, source: 'page',
+  });
+  res.status(result.status).json({ ...result.body, actor: actor.actor, trust: actor.trust });
 });
 
 // Step B3c: "Since you" for the viewer (a signed-in person, an agent key's AI, or the guest who

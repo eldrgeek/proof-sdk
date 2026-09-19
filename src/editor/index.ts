@@ -13,6 +13,7 @@ import { markApiView, isOwnHumanMarkChange, withHumanReviewWrite } from './revie
 import { PlayMakerReview, type ReviewAction } from '../ui/playmaker-review';
 import { LineMarksUI } from '../ui/line-marks';
 import { ReadingWalkUI } from '../ui/reading-walk';
+import { ChatUI } from '../ui/chat';
 import { FoldingUI } from '../ui/folding';
 import { lineMarksViewPlugin } from './plugins/line-marks-view';
 import { foldViewPlugin } from './plugins/fold-view';
@@ -1125,6 +1126,9 @@ class ProofEditorImpl implements ProofEditor {
   private playmakerReview: PlayMakerReview | null = null;
   private lineMarks: LineMarksUI | null = null;
   private readingWalk: ReadingWalkUI | null = null;
+  /** Proof Documents Step B7: chat in the right rail (desktop) or a bottom sheet (phone). */
+  private chat: ChatUI | null = null;
+  private chatUnread = 0;
   private folding: FoldingUI | null = null;
   private reviewDecisionHistory: ReviewDecisionHistory | null = null;
   private reviewDecisionIds = new Set<string>();
@@ -2574,6 +2578,10 @@ class ProofEditorImpl implements ProofEditor {
       this.lineMarks?.notifyRemoteChange();
       return;
     }
+    if (type === 'chat.updated') {
+      this.chat?.notifyRemoteChange();
+      return;
+    }
     if (type === 'document.title.updated') {
       if (typeof message.title === 'string') {
         this.applyShareTitle(message.title);
@@ -2639,6 +2647,10 @@ class ProofEditorImpl implements ProofEditor {
   private handlePendingShareEvent(event: SharePendingEvent): void {
     if (event.type === 'line_mark.updated') {
       this.lineMarks?.notifyRemoteChange();
+      return;
+    }
+    if (event.type === 'chat.message') {
+      this.chat?.notifyRemoteChange();
       return;
     }
     if (this.isMarksPendingShareEvent(event)) {
@@ -3747,6 +3759,9 @@ class ProofEditorImpl implements ProofEditor {
         anchorLine: () => this.readingWalk?.focusIndex() ?? 0,
         // Step B4c: the sitting budget was used (the rail shows it; phones get the sheet).
         onBudgetReached: () => this.readingWalk?.budgetReached(),
+        // Step B7: chat messages that point at a line show as a speech bubble in the margin.
+        chatCounts: () => this.chat?.lineCounts() ?? new Map<number, number>(),
+        onChatBubble: (lineIndex) => { this.readingWalk?.focusLine(lineIndex); this.chat?.showLine(lineIndex); },
         // Step B4f: Explain posts a comment thread on the whole line (its first text block).
         commentOnLine: (line, text) => {
           let id: string | null = null;
@@ -3803,10 +3818,35 @@ class ProofEditorImpl implements ProofEditor {
       const walkUi = this.readingWalk;
       this.folding.subscribe(() => walkUi.onFoldChange());
       walkUi.mountTool(this.folding.controlsEl);
+      // Proof Documents Step B7: chat beside the document (its own table; never the text or Yjs).
+      this.chat = new ChatUI({
+        slug: () => shareClient.getSlug(),
+        apiBase: () => shareClient.getApiBaseUrl(),
+        authHeaders: () => shareClient.getShareAuthHeaders(),
+        lineMarks: () => lineMarks,
+        focusIndex: () => walkUi.focusIndex(),
+        focusLine: (lineIndex) => walkUi.focusLine(lineIndex),
+        marks: () => {
+          let marks: Mark[] = [];
+          this.editor?.action(ctx => { marks = getMarks(ctx.get(editorViewCtx).state); });
+          return marks;
+        },
+        railOpen: () => walkUi.isRightRailOpen(),
+        openRail: () => walkUi.openRightRail(),
+        onUnread: (count) => {
+          this.chatUnread = count;
+          walkUi.setChatUnread(count);
+          this.updateShareOverflowBadge();
+        },
+        closeOtherSheets: () => { walkUi.closeSheets(); this.playmakerReview?.closePanel(); },
+      });
+      this.chat.mountIn(walkUi.chatSlot);
+      (window as unknown as { __proofChat?: ChatUI }).__proofChat = this.chat;
     }
     this.lineMarks.start();
     this.folding?.start();
     this.readingWalk?.start();
+    this.chat?.start();
     return this.lineMarks;
   }
 
@@ -3817,6 +3857,7 @@ class ProofEditorImpl implements ProofEditor {
     btn.className = 'share-pill-overflow';
     btn.textContent = '⋯';
     btn.setAttribute('aria-label', 'More options');
+    this.renderShareOverflowBadge(btn);
     btn.setAttribute('aria-haspopup', 'menu');
     btn.setAttribute('aria-expanded', 'false');
     btn.onclick = () => {
@@ -3853,8 +3894,11 @@ class ProofEditorImpl implements ProofEditor {
       if (style === 'playmaker' && this.playmakerReview) {
         item('Marks', 'review', () => this.playmakerReview?.openPanel());
       }
+      if (this.chat) {
+        item('Chat', this.chatUnread > 0 ? `${this.chatUnread} @you` : 'team', () => this.chat?.open(true));
+      }
       if (this.readingWalk) {
-        item('This line', 'mark · changes', () => this.readingWalk?.openSheet('right'));
+        item('This line', 'mark · changes', () => { this.chat?.closeSheet(); this.readingWalk?.openSheet('right'); });
         item('Documents', 'list', () => this.readingWalk?.openSheet('left'));
       }
       if (this.folding && this.folding.sectionList().length > 0) {
@@ -3873,6 +3917,24 @@ class ProofEditorImpl implements ProofEditor {
       (menu.querySelector('button') as HTMLButtonElement | null)?.focus();
     };
     return btn;
+  }
+
+  /** Step B7: the unread chat @mention count on the phone's ⋯ button. */
+  private updateShareOverflowBadge(): void {
+    const btn = document.querySelector('#share-banner .share-pill-overflow') as HTMLButtonElement | null;
+    if (btn) this.renderShareOverflowBadge(btn);
+  }
+
+  private renderShareOverflowBadge(btn: HTMLButtonElement): void {
+    btn.querySelector('.pch-overflow-badge')?.remove();
+    const n = this.chatUnread;
+    btn.setAttribute('aria-label', n > 0 ? `More options (${n} unread chat ${n === 1 ? 'mention' : 'mentions'})` : 'More options');
+    if (n <= 0) return;
+    const badge = document.createElement('span');
+    badge.className = 'pch-overflow-badge';
+    badge.textContent = String(n);
+    badge.setAttribute('aria-hidden', 'true');
+    btn.append(badge);
   }
 
   private createReviewStyleControl(): HTMLElement {

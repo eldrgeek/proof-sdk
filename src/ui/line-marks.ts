@@ -108,6 +108,10 @@ export interface LineMarksHost {
    * comment's id, or null when the editor could not place it.
    */
   commentOnLine?(line: DocLine, text: string): string | null;
+  /** Step B7: how many chat messages point at each line (the margin's speech bubbles). */
+  chatCounts?(): Map<number, number>;
+  /** Step B7: a speech bubble in the margin was clicked. */
+  onChatBubble?(lineIndex: number): void;
 }
 
 export interface MarkBoxOptions {
@@ -309,6 +313,11 @@ export class LineMarksUI {
     this.closeMenu();
     this.resizeObserver?.disconnect();
     this.gutter.remove();
+  }
+
+  /** Step B7: chat messages arrived or were sent (the margin's speech bubbles follow them). */
+  notifyChatChanged(): void {
+    this.queueRender();
   }
 
   /** A room broadcast or event said line marks changed somewhere. */
@@ -1045,6 +1054,8 @@ export class LineMarksUI {
     const used = new Set<string>();
     const issueLines = new Set<number>();
     for (const issue of this.summary?.issues ?? []) if ('lineIndex' in issue && issue.lineIndex !== null) issueLines.add(issue.lineIndex);
+    let chatCounts = new Map<number, number>();
+    try { chatCounts = this.host.chatCounts?.() ?? chatCounts; } catch { /* chat is optional */ }
     for (const state of this.states) {
       const line = state.line;
       const dom = view.nodeDOM(line.pos) as HTMLElement | null;
@@ -1053,6 +1064,27 @@ export class LineMarksUI {
       if (rect.height === 0) continue;
       const key = `${line.hash}:${line.occurrence}`;
       used.add(key);
+      // Step B7: a speech bubble with the number of chat messages that point at this line.
+      const chatCount = chatCounts.get(line.index) ?? 0;
+      if (chatCount > 0) {
+        const bubbleKey = `chat:${key}`;
+        used.add(bubbleKey);
+        let bubble = existing.get(bubbleKey);
+        if (!bubble) {
+          bubble = document.createElement('button');
+          bubble.type = 'button';
+          bubble.className = 'plm-chat-bubble';
+          bubble.dataset.key = bubbleKey;
+          this.gutter.append(bubble);
+        }
+        bubble.dataset.line = String(line.index);
+        bubble.textContent = String(chatCount);
+        bubble.setAttribute('aria-label', `${chatCount} chat ${chatCount === 1 ? 'message' : 'messages'} about line ${line.index + 1}`);
+        bubble.title = `${chatCount} chat ${chatCount === 1 ? 'message points' : 'messages point'} at this line`;
+        const lh = parseFloat(getComputedStyle(dom).lineHeight) || 24;
+        bubble.style.top = `${Math.round(rect.top - containerRect.top + Math.max(0, (Math.min(lh, rect.height) - dotSize) / 2) - (phone ? 8 : 6))}px`;
+        bubble.style.left = `${Math.round(Math.max(0, leftEdge) + dotSize - (phone ? 12 : 8))}px`;
+      }
       let dot = existing.get(key);
       if (!dot) {
         dot = document.createElement('button');
@@ -1121,6 +1153,13 @@ export class LineMarksUI {
   // --------------------------------------------------------------------------
 
   private onGutterClick = (event: MouseEvent): void => {
+    const bubble = (event.target as HTMLElement).closest('.plm-chat-bubble') as HTMLButtonElement | null;
+    if (bubble) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.host.onChatBubble?.(Number(bubble.dataset.line));
+      return;
+    }
     const dot = (event.target as HTMLElement).closest('.plm-dot') as HTMLButtonElement | null;
     if (!dot) return;
     event.preventDefault();
@@ -1850,8 +1889,10 @@ export class LineMarksUI {
   }
 
   /** Step B4c: "Ask why" was tapped on a change (the reply itself goes through the editor). */
-  noteWhyAsked(markId: string, author: string | null): void {
-    void this.postAid('/why-asked', { markId, author });
+  noteWhyAsked(markId: string, author: string | null, lineIndex?: number): void {
+    // Step B7: the line lets the chat's mirror of the question point at it.
+    const line = typeof lineIndex === 'number' ? this.lines[lineIndex] : undefined;
+    void this.postAid('/why-asked', { markId, author, ...(line ? { anchor: anchorForLine(line) } : {}) });
   }
 
   private buildFlagRow(line: DocLine): HTMLElement {

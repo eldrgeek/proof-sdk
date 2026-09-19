@@ -1537,6 +1537,25 @@ function initDatabase(): void {
     )
   `);
 
+  // Proof Documents Step B7: chat beside the document (never in its text or Yjs state). The
+  // INTEGER id is the page's and the agent API's cursor (GET /chat?after=<id>).
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_chat_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'message',
+      text TEXT NOT NULL,
+      lines_json TEXT NOT NULL DEFAULT '[]',
+      mentions_json TEXT NOT NULL DEFAULT '[]',
+      reply_to INTEGER,
+      suggestion_json TEXT,
+      comment_mark_id TEXT,
+      created_at TEXT NOT NULL
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_chat_slug ON document_chat_messages(document_slug, id)`);
+
   // Proof Documents Step B6: explicit identity merges (a typed-name actor -> a verified person).
   // Made only by the COS on request (server/library/cli.ts merge-identity); rows are never
   // rewritten, the merge applies when marks and answers are read. scope = a slug or '*'.

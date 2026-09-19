@@ -114,6 +114,10 @@ export class ReadingWalkUI {
   private readonly boxHost = el('section', 'prw-linebox');
   private readonly changesHost = el('section', 'prw-changes');
   private readonly dockHost = el('div', 'prw-dock');
+  /** Step B7: the chat pane's place in the right rail (below the line's box and changes). */
+  readonly chatSlot = el('div', 'prw-chat');
+  /** Step B7: unread @mentions of the viewer in the chat (a badge on the rail toggle). */
+  private chatUnread = 0;
   private readonly focusEl = el('div', 'prw-focus');
   private readonly styleEl = el('style');
   private readonly gate = new GestureGate();
@@ -1243,7 +1247,7 @@ export class ReadingWalkUI {
         ask.title = `Posts “${WHY_POLICY.askWhyText}” to ${getActorName(mark.by)} on this change`;
         ask.onclick = () => {
           this.decide(mark, 'reply', `@${getActorName(mark.by)} ${WHY_POLICY.askWhyText}`);
-          this.host.lineMarks().noteWhyAsked(mark.id, mark.by ?? null);
+          this.host.lineMarks().noteWhyAsked(mark.id, mark.by ?? null, typeof mark.range?.from === 'number' ? this.host.lineMarks().lineAtPos(mark.range.from) : undefined);
           ask.disabled = true;
           ask.textContent = 'Asked';
           this.whyAsked.push(mark.id);
@@ -1318,7 +1322,9 @@ export class ReadingWalkUI {
     this.sinceHost.setAttribute('aria-label', 'Since you last marked');
     this.buildRate();
     this.rightBody.append(this.sinceHost, this.provisionalEl, this.boxHost, this.changesHost, this.dockHost);
-    this.right.append(rightHead, this.rightBody);
+    // Step B7: the chat is a pane at the bottom of the rail, below the line's box: it keeps its
+    // composer in view while the rail body above it scrolls.
+    this.right.append(rightHead, this.rightBody, this.chatSlot);
     this.right.setAttribute('role', 'complementary');
     this.left.setAttribute('role', 'navigation');
   }
@@ -1379,11 +1385,29 @@ export class ReadingWalkUI {
       const name = side === 'left' ? 'documents' : 'reading panel';
       if (phone) { btn.textContent = '×'; btn.setAttribute('aria-label', `Close ${name}`); btn.removeAttribute('aria-expanded'); continue; }
       btn.textContent = side === 'left' ? (collapsed ? '»' : '«') : (collapsed ? '«' : '»');
-      btn.setAttribute('aria-label', `${collapsed ? 'Show' : 'Hide'} ${name}`);
+      btn.setAttribute('aria-label', `${collapsed ? 'Show' : 'Hide'} ${name}${side === 'right' && this.chatUnread > 0 ? ` (${this.chatUnread} unread chat ${this.chatUnread === 1 ? 'mention' : 'mentions'})` : ''}`);
+      if (side === 'right' && this.chatUnread > 0) {
+        const badge = el('span', 'prw-badge', String(this.chatUnread));
+        badge.setAttribute('aria-hidden', 'true');
+        btn.append(badge);
+      }
       btn.setAttribute('aria-expanded', String(!collapsed));
       rail.dataset.collapsed = String(collapsed);
     }
   }
+
+  /** Step B7: the chat's unread @mention count, shown as a badge on the right rail's toggle. */
+  setChatUnread(count: number): void {
+    if (count === this.chatUnread) return;
+    this.chatUnread = count;
+    this.updateToggleLabels();
+  }
+
+  /** Step B7: desktop — the right rail is open (not collapsed). */
+  isRightRailOpen(): boolean { return !document.body.classList.contains('prw-right-collapsed'); }
+
+  /** Step B7: desktop — opens the right rail (the chat lives there). */
+  openRightRail(): void { if (!isPhone()) this.setCollapsed('right', false); }
 
   /** Phones: a rail opens as a bottom sheet (from the ⋯ menu). */
   openSheet(side: 'left' | 'right'): void {

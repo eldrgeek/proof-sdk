@@ -712,6 +712,68 @@ An approved {do} waits on nobody while execution is disabled (`waiting-on-others
 6. Turn `DO_POLICY.executionEnabled` on and replace `NullExecutor` in one reviewed change, then run
    one attended Google authorization end to end.
 
+## Chat beside the document (Proof Documents, Step B7)
+
+_Added 2026-09-19 by Claude Opus 5 (worker proof-chat) for Mike Wolf. Rules in `CHAT_POLICY`
+(`src/shared/chat.ts`)._
+
+Every document has a chat: in the page it is a pane at the bottom of the right rail (it folds; the
+rail folds too), and on a phone it is a bottom sheet opened from the ⋯ menu, with its composer above
+the keyboard. Any team member, human or AI, posts. Messages are stored beside the document in their
+own table: **chat never writes the document's text or its Yjs state**. Chat is never an Issue, and
+chatting does not make someone a team member.
+
+Read (any access; oldest first):
+
+  GET /api/agent/<slug>/chat?after=<cursor>&limit=<n>
+
+Each message: `id` (an increasing integer: the cursor), `by`, `text`, `kind` (`message`, `explain`
+or `why`), `lines` (line anchors) and `pointers` (`[{ lineIndex, ref, text, current }]` against the
+current text), `mentions` (actors), `replyTo`, `suggestion` (`{ markId, kind, quote, content, why }`
+or null), `commentMarkId` (the comment thread it mirrors), `createdAt`. Without `after` you get the
+newest page. The response also has `cursor` (pass it as `after` next time) and `mentionable`
+(`[{ actor, names }]`).
+
+Post (comment access; an agent key always posts as its own AI, 403 `ACTOR_MISMATCH` otherwise):
+
+  POST /api/agent/<slug>/chat
+  Body: { "text": "...", "lines"?: [<line target>, ...], "replyTo"?: <id>, "mentions"?: ["human:<email>", ...],
+          "suggestion"?: { "kind": "replace" | "insert" | "delete", "quote": "...", "content": "...", "why": "..." } }
+
+- A line target is `{"quote": "..."}`, `{"lineIndex": 3}`, `{"ref": "b4", "quote": "..."}`, a bare
+  line index or a bare `"b4"`, as for `/marks/line`. At most 20. Errors as for line marks (`409
+  ANCHOR_NOT_FOUND`, `409 AMBIGUOUS_LINE`); `404 REPLY_TARGET_NOT_FOUND`; `400 TEXT_REQUIRED`.
+- `@Name` in the text mentions a team member (a person's profile name, an AI's key label such as
+  `@Claude COS`, or `@claude-cos`); `mentions` adds actors explicitly. A person sees an unread
+  mention of them as a badge on the rail toggle and on the phone's ⋯ button.
+- `suggestion`: the server first creates a normal suggestion, exactly as `/marks/suggest-<kind>`
+  would (the same `why` rule: an agent key without `why` gets 400 `WHY_REQUIRED`; `rejectHints`,
+  `priority` and `bundle` work too), then posts the message linked to it. If the suggestion is
+  refused, nothing is posted and the error carries `stage: "suggestion"`. Readers see a card
+  "<you> proposed a change → View" in the chat and the change in the text, to accept or reject there.
+  With no `lines`, the message points at the suggestion's line. The response has `suggestion.markId`.
+- Not idempotent: do not retry a 200.
+
+Events: every message is a `chat.message` event (`GET /events/pending`): `data.messageId`, `text`,
+`mentions`, `lines` (resolved pointers), `replyTo`, `suggestion`, `commentMarkId`, `kind`, and
+`howToAnswer`. A Familiar answers a message that mentions it with `POST /chat` and
+`"replyTo": <messageId>`. The page is woken by a `chat.updated` room broadcast and polls every 4 s.
+
+Explain and Ask why also appear in the chat: E (or "Explain…") still posts its comment thread on the
+line and records `explain.requested`, and now also posts a chat message (`kind: "explain"`,
+mentioning every AI collaborator, `commentMarkId` = the thread). "Ask why" on a change posts
+`kind: "why"` (`@<author> Why this change?`, `commentMarkId` = the suggestion). Answer on the thread
+(`POST /marks/reply`) as before, or in the chat with `replyTo`; the chat card shows the thread's
+replies.
+
+In the page: the composer's `@` suggests team members (people and AIs); "📍 this line" attaches the
+focus line, or the lines selected with shift-click on margin dots; Enter sends, Shift+Enter is a new
+line; the reading keys (A R J K Y N T E 1-9) never fire while typing in chat. A pointer is a chip
+that moves the focus line; a line that chat points at shows a speech bubble with the count in the
+margin (click it to open the chat there). Page routes: `GET /api/documents/<slug>/chat?after=`,
+`POST /api/documents/<slug>/chat` `{ by, text, lines: [anchor], mentions?, replyTo? }` (the actor is
+decided as for line marks: a signed-in session, an agent key's AI, or a guest's typed name).
+
 ## Presence And Event Polling
 
 Poll for changes:
