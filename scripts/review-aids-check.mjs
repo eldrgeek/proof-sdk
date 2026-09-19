@@ -129,7 +129,7 @@ async function run(browser, style) {
     assert.ok(created.status === 200 || created.status === 201, JSON.stringify(created));
     const slug = created.body.slug;
     const key = await mike.evaluate(async ({ s, h }) => {
-      const r = await fetch(`/api/documents/${s}/agent-keys`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...h }, body: JSON.stringify({ label: 'Claude' }) });
+      const r = await fetch(`/api/documents/${s}/agent-keys`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...h }, body: JSON.stringify({ label: 'Claude', runtime: 'Claude Opus 5 (Anthropic)' }) });
       return { status: r.status, body: await r.json() };
     }, { s: slug, h: clientHeaders });
     assert.equal(key.status, 201, JSON.stringify(key));

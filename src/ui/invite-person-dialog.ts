@@ -19,11 +19,51 @@ export interface TeamInvite {
   link: string;
 }
 
+/** Cross invitation (2026-09-19): an AI on this document, and the human who added it. */
+export interface TeamAgent {
+  tokenId: string;
+  actor: string;
+  name: string;
+  sponsorName: string | null;
+  runtime: string | null;
+  suspended: boolean;
+  allowDirectInvite: boolean;
+  provenance: string;
+}
+
+/** A person an AI proposed. Nothing was emailed; an Owner confirms or declines. */
+export interface TeamNomination {
+  id: string;
+  by: string;
+  byName: string;
+  email: string;
+  name: string | null;
+  why: string;
+  status: 'pending' | 'confirmed' | 'declined' | 'withdrawn';
+  createdAt: string;
+  decidedByName: string | null;
+}
+
+/** What an AI stated about a person's identity: read and comment only. */
+export interface TeamAttestation {
+  id: string;
+  by: string;
+  byName: string;
+  email: string;
+  basis: string;
+  confidence: string;
+  createdAt: string;
+}
+
 export interface TeamState {
   guestAccess: string;
   guestAccessOptions: Array<{ mode: string; label: string }>;
   invites: TeamInvite[];
   mail: { transport: string };
+  agents?: TeamAgent[];
+  nominations?: TeamNomination[];
+  attestations?: TeamAttestation[];
+  provenance?: Array<{ actor: string; kind: string; label: string; counts: boolean }>;
 }
 
 export interface InviteResult {
@@ -40,6 +80,11 @@ export function showInvitePersonDialog(actions: {
   remove: (id: string) => Promise<TeamState>;
   setGuestAccess: (mode: string) => Promise<TeamState>;
   copy: (text: string) => Promise<boolean>;
+  /** Cross invitation: an Owner answers what an AI proposed, and grants or withdraws standing permission. */
+  confirmNomination?: (id: string) => Promise<{ team: TeamState; emailed?: boolean }>;
+  declineNomination?: (id: string) => Promise<TeamState>;
+  revokeAttestation?: (id: string) => Promise<TeamState>;
+  setDirectInvite?: (tokenId: string, allow: boolean) => Promise<TeamState>;
 }): void {
   const existing = document.querySelector<HTMLDialogElement>('#invite-person-dialog');
   if (existing) { existing.focus(); return; }
@@ -68,6 +113,11 @@ export function showInvitePersonDialog(actions: {
       #invite-person-dialog .ip-link input { flex:1;min-width:0;box-sizing:border-box;font:inherit;padding:10px;border:1px solid #9ca3af;border-radius:8px;min-height:44px; }
       #invite-person-dialog .ip-guest label { display:flex;gap:10px;align-items:flex-start;font-weight:400;padding:8px 0;min-height:32px;cursor:pointer; }
       #invite-person-dialog .ip-guest input { margin-top:4px;width:18px;height:18px; }
+      #invite-person-dialog .ip-note { color:#4b5563;margin:2px 0 8px;font-size:13px; }
+      #invite-person-dialog .ip-why { display:block;margin-top:4px;color:#111827;font-style:italic;overflow-wrap:anywhere; }
+      #invite-person-dialog .ip-provenance { display:block;color:#4b5563;overflow-wrap:anywhere; }
+      #invite-person-dialog .ip-row[data-suspended="1"] .ip-provenance { color:#9a3412; }
+      #invite-person-dialog .ip-confirm { background:#111827;color:white; }
     </style>
     <header style="display:flex;align-items:center;justify-content:space-between;gap:12px">
       <h2 id="invite-person-title" style="margin:0;font-size:20px">Invite person</h2>
@@ -89,6 +139,21 @@ export function showInvitePersonDialog(actions: {
     </section>
     <h3>People invited to this document</h3>
     <div data-people>Loading…</div>
+    <section data-nominations hidden>
+      <h3>People an AI put forward</h3>
+      <p class="ip-note">Nothing was emailed and nobody has access yet. Read what the AI says, then decide. An AI can be talked into this by text it read in the document, so you are the check.</p>
+      <div data-nomination-rows></div>
+    </section>
+    <section data-attestations hidden>
+      <h3>People an AI vouched for</h3>
+      <p class="ip-note">They can read and comment once signed in with that address. Nothing they mark counts until you invite them.</p>
+      <div data-attestation-rows></div>
+    </section>
+    <section data-agents hidden>
+      <h3>AIs on this document</h3>
+      <p class="ip-note">Every AI is bound to the person who added it, and goes quiet if that person leaves.</p>
+      <div data-agent-rows></div>
+    </section>
     <h3>People who are not signed in</h3>
     <div class="ip-guest" data-guest role="radiogroup" aria-label="People who are not signed in"></div>
   `;
@@ -102,6 +167,12 @@ export function showInvitePersonDialog(actions: {
   const resultNote = dialog.querySelector<HTMLElement>('[data-result-note]')!;
   const people = dialog.querySelector<HTMLElement>('[data-people]')!;
   const guest = dialog.querySelector<HTMLElement>('[data-guest]')!;
+  const nominationsBox = dialog.querySelector<HTMLElement>('[data-nominations]')!;
+  const nominationRows = dialog.querySelector<HTMLElement>('[data-nomination-rows]')!;
+  const attestationsBox = dialog.querySelector<HTMLElement>('[data-attestations]')!;
+  const attestationRows = dialog.querySelector<HTMLElement>('[data-attestation-rows]')!;
+  const agentsBox = dialog.querySelector<HTMLElement>('[data-agents]')!;
+  const agentRows = dialog.querySelector<HTMLElement>('[data-agent-rows]')!;
   let closed = false;
 
   const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : '');
@@ -115,8 +186,136 @@ export function showInvitePersonDialog(actions: {
     return 'Email is not set up on this server. Copy the invite link and send it yourself.';
   };
 
+  /** One row: a name, a provenance line under it, and its buttons. */
+  const makeRow = (parent: HTMLElement, id: string, title: string, lines: Array<string | null>, buttons: HTMLButtonElement[], suspended = false) => {
+    const row = document.createElement('div');
+    row.className = 'ip-row';
+    row.dataset.rowId = id;
+    if (suspended) row.dataset.suspended = '1';
+    const details = document.createElement('div');
+    details.className = 'ip-details';
+    const who = document.createElement('strong');
+    who.textContent = title;
+    details.append(who);
+    for (const line of lines) {
+      if (!line) continue;
+      const small = document.createElement('small');
+      small.className = 'ip-provenance';
+      small.textContent = line;
+      details.append(small);
+    }
+    const actions = document.createElement('div');
+    actions.className = 'ip-actions';
+    actions.append(...buttons);
+    row.append(details, actions);
+    parent.appendChild(row);
+    return row;
+  };
+
+  const button = (text: string, ariaLabel: string, onClick: () => void | Promise<void>, className = ''): HTMLButtonElement => {
+    const element = document.createElement('button');
+    element.type = 'button';
+    element.textContent = text;
+    element.setAttribute('aria-label', ariaLabel);
+    if (className) element.className = className;
+    element.onclick = async () => {
+      element.disabled = true;
+      try { await onClick(); } finally { if (!closed) element.disabled = false; }
+    };
+    return element;
+  };
+
+  /** Cross invitation: what AIs have proposed, what they have vouched for, and who added them. */
+  const renderCrossInvitation = (state: TeamState) => {
+    const open = (state.nominations ?? []).filter(n => n.status === 'pending');
+    nominationsBox.hidden = open.length === 0;
+    nominationRows.replaceChildren();
+    for (const nomination of open) {
+      const buttons: HTMLButtonElement[] = [];
+      if (actions.confirmNomination) {
+        buttons.push(button('Confirm', `Confirm ${nomination.name || nomination.email} and send the invitation`, async () => {
+          try {
+            const result = await actions.confirmNomination!(nomination.id);
+            status.textContent = result.emailed === false
+              ? `${nomination.email} was invited. The email could not be sent — copy their invite link below and send it yourself.`
+              : `${nomination.email} was invited, and the invitation was emailed.`;
+            render(result.team);
+          } catch (error) {
+            status.textContent = error instanceof Error ? error.message : 'Could not confirm. Try again.';
+          }
+        }, 'ip-confirm'));
+      }
+      if (actions.declineNomination) {
+        buttons.push(button('Decline', `Decline ${nomination.name || nomination.email}`, async () => {
+          try {
+            render(await actions.declineNomination!(nomination.id));
+            status.textContent = `Declined. ${nomination.email} was never emailed and has no access.`;
+          } catch (error) {
+            status.textContent = error instanceof Error ? error.message : 'Could not decline. Try again.';
+          }
+        }));
+      }
+      const row = makeRow(nominationRows, nomination.id, nomination.name || nomination.email,
+        [`${nomination.email} · put forward by ${nomination.byName} on ${when(nomination.createdAt)}`], buttons);
+      const why = document.createElement('small');
+      why.className = 'ip-why';
+      why.textContent = `“${nomination.why}”`;
+      row.querySelector('.ip-details')!.append(why);
+    }
+
+    const attestations = state.attestations ?? [];
+    attestationsBox.hidden = attestations.length === 0;
+    attestationRows.replaceChildren();
+    for (const attestation of attestations) {
+      const buttons: HTMLButtonElement[] = [];
+      if (actions.revokeAttestation) {
+        buttons.push(button('End access', `End ${attestation.email}'s attested access`, async () => {
+          try {
+            render(await actions.revokeAttestation!(attestation.id));
+            status.textContent = `${attestation.email} can no longer open this document.`;
+          } catch (error) {
+            status.textContent = error instanceof Error ? error.message : 'Could not end that access. Try again.';
+          }
+        }));
+      }
+      const row = makeRow(attestationRows, attestation.id, attestation.email,
+        [`${attestation.byName} states this is them (${attestation.confidence} confidence) on ${when(attestation.createdAt)} · read and comment only`], buttons);
+      const basis = document.createElement('small');
+      basis.className = 'ip-why';
+      basis.textContent = `“${attestation.basis}”`;
+      row.querySelector('.ip-details')!.append(basis);
+    }
+
+    const agents = state.agents ?? [];
+    agentsBox.hidden = agents.length === 0;
+    agentRows.replaceChildren();
+    for (const agent of agents) {
+      const buttons: HTMLButtonElement[] = [];
+      if (actions.setDirectInvite) {
+        buttons.push(button(agent.allowDirectInvite ? 'Require my confirmation' : 'Let it invite directly',
+          `${agent.allowDirectInvite ? 'Require confirmation for' : 'Allow direct invitations from'} ${agent.name}`, async () => {
+            try {
+              render(await actions.setDirectInvite!(agent.tokenId, !agent.allowDirectInvite));
+              status.textContent = agent.allowDirectInvite
+                ? `${agent.name} will put people forward for you to confirm.`
+                : `${agent.name} may now invite people here without asking. Its name is on every invitation it sends.`;
+            } catch (error) {
+              status.textContent = error instanceof Error ? error.message : 'Could not change that. Try again.';
+            }
+          }));
+      }
+      makeRow(agentRows, agent.tokenId, agent.name, [
+        agent.provenance,
+        agent.runtime ? `Runs on ${agent.runtime}` : 'Runtime not recorded',
+        agent.suspended ? 'Suspended: the person who added it is no longer on this document.' : null,
+        agent.allowDirectInvite ? 'May invite people here without asking you.' : null,
+      ], buttons, agent.suspended);
+    }
+  };
+
   const render = (state: TeamState) => {
     if (closed) return;
+    renderCrossInvitation(state);
     people.replaceChildren();
     if (state.invites.length === 0) people.textContent = 'Nobody invited yet.';
     for (const invite of state.invites) {
@@ -136,6 +335,14 @@ export function showInvitePersonDialog(actions: {
         ? `${invite.email} · last seen ${when(invite.lastSeenAt)}`
         : `${invite.email} · invited ${when(invite.createdAt)}${invite.lastSentAt ? ` · emailed ${when(invite.lastSentAt)}` : ''}`;
       details.append(who, badge, meta);
+      // Cross invitation: how this person got in — invited, or nominated by an AI and confirmed.
+      const trail = (state.provenance ?? []).find(entry => entry.actor.toLowerCase() === `human:${invite.email.toLowerCase()}`);
+      if (trail) {
+        const line = document.createElement('small');
+        line.className = 'ip-provenance';
+        line.textContent = trail.label;
+        details.append(line);
+      }
       const buttons = document.createElement('div');
       buttons.className = 'ip-actions';
       const copy = document.createElement('button');

@@ -15,7 +15,18 @@
  * Authorship: Claude Opus 5 (worker proof-invite), 2026-09-19.
  */
 import { Router, type Request, type Response } from 'express';
-import { canMutateByOwnerIdentity, getDocumentBySlug, resolveDocumentAccess } from './db.js';
+import { canMutateByOwnerIdentity, getDocumentBySlug, resolveDocumentAccess, setAgentKeyDirectInvite } from './db.js';
+import {
+  activeAttestations,
+  confirmNomination,
+  displayName as crossDisplayName,
+  documentProvenance,
+  getNomination,
+  listAgentKeyViews,
+  listNominations,
+  revokeAttestation,
+  settleNomination,
+} from './cross-invitation.js';
 import { getClientIp } from './client-address.js';
 import { getPublicOrigin } from './public-origin.js';
 import { getLibraryMemberById, getLibrarySession, isLibraryEnabled, isSomaAuthEnabled } from './library/auth.js';
@@ -110,6 +121,21 @@ function teamBody(slug: string, origin: string) {
     guestAccessOptions: GUEST_ACCESS_POLICY.modes.map(mode => ({ mode, label: GUEST_ACCESS_POLICY.labels[mode] })),
     invites: listDocumentInvites(slug).map(invite => inviteView(invite, origin)),
     mail: { transport: inviteMailTransport() },
+    // Cross invitation (2026-09-19): the AIs on this document with the human who added each one,
+    // the people AIs have nominated (waiting on an owner), what AIs have attested, and the whole
+    // provenance chain: how everyone here got in.
+    agents: listAgentKeyViews(slug).filter(key => !key.revokedAt).map(key => ({
+      tokenId: key.tokenId, actor: key.actor, name: key.label, sponsor: key.sponsorActor,
+      sponsorName: key.sponsorName, runtime: key.runtime, suspended: key.suspended,
+      allowDirectInvite: key.allowDirectInvite, provenance: key.provenanceLabel, createdAt: key.createdAt,
+    })),
+    nominations: listNominations(slug).map(nomination => ({
+      ...nomination,
+      byName: crossDisplayName(nomination.by, slug),
+      decidedByName: nomination.decidedBy ? crossDisplayName(nomination.decidedBy, slug) : null,
+    })),
+    attestations: activeAttestations(slug).map(attestation => ({ ...attestation, byName: crossDisplayName(attestation.by, slug) })),
+    provenance: documentProvenance(slug),
   };
 }
 
@@ -182,6 +208,77 @@ documentTeamRoutes.post('/api/documents/:slug/team/invites/:id/remove', (req: Re
     return;
   }
   res.json(teamBody(slug, getPublicOrigin(req)));
+});
+
+/**
+ * Cross invitation (2026-09-19): an Owner answers what an AI proposed.
+ *
+ *   POST /team/nominations/:id/confirm   sends the real invitation, and records who confirmed it
+ *   POST /team/nominations/:id/decline   closes it; nothing is ever emailed
+ *   POST /team/attestations/:id/revoke   ends the read-and-comment access an AI granted
+ *   PUT  /team/agents/:tokenId/direct-invite  { allow }  standing permission for one AI, off by default
+ *
+ * Confirm is the step that makes a nomination safe: an AI can be talked into proposing someone by
+ * text it read in the document, and the person who confirms reads the AI's own "why" first.
+ */
+documentTeamRoutes.post('/api/documents/:slug/team/nominations/:id/confirm', async (req: Request, res: Response) => {
+  const slug = slugParam(req);
+  const owner = teamOwner(req, slug, true);
+  if (!owner.ok) { res.status(owner.status).json(owner.body); return; }
+  const nomination = getNomination(slug, String(req.params.id ?? ''));
+  if (!nomination) { res.status(404).json({ success: false, error: 'Nomination not found' }); return; }
+  if (nomination.status !== 'pending') {
+    res.status(409).json({ success: false, code: 'ALREADY_DECIDED', error: `This nomination was already ${nomination.status}.` });
+    return;
+  }
+  if (!allowInvite([
+    [`doc:${slug}`, INVITE_POLICY.perDocumentPerHour],
+    [`inviter:${owner.actor}`, INVITE_POLICY.perInviterPerHour],
+    [`ip:${getClientIp(req)}`, INVITE_POLICY.perAddressPerHour],
+  ])) {
+    res.status(429).json({ success: false, code: 'RATE_LIMITED', error: 'Too many invitations in the last hour. Try again later.' });
+    return;
+  }
+  const doc = getDocumentBySlug(slug);
+  const result = await confirmNomination({
+    slug, nomination, by: owner.actor, byMemberId: owner.memberId,
+    origin: getPublicOrigin(req), inviterName: owner.inviterName,
+    title: doc?.title?.trim() || 'Untitled document',
+  });
+  res.status(result.status).json({ ...result.body, team: teamBody(slug, getPublicOrigin(req)) });
+});
+
+documentTeamRoutes.post('/api/documents/:slug/team/nominations/:id/decline', (req: Request, res: Response) => {
+  const slug = slugParam(req);
+  const owner = teamOwner(req, slug, true);
+  if (!owner.ok) { res.status(owner.status).json(owner.body); return; }
+  const reason = typeof req.body?.reason === 'string' ? req.body.reason.replace(/[\x00-\x1f\x7f<>]/g, ' ').trim().slice(0, 300) : null;
+  const settled = settleNomination(slug, String(req.params.id ?? ''), 'declined', owner.actor, { reason });
+  if (!settled) { res.status(404).json({ success: false, error: 'No open nomination with that id' }); return; }
+  res.json({ ...teamBody(slug, getPublicOrigin(req)), nomination: settled });
+});
+
+documentTeamRoutes.post('/api/documents/:slug/team/attestations/:id/revoke', (req: Request, res: Response) => {
+  const slug = slugParam(req);
+  const owner = teamOwner(req, slug, true);
+  if (!owner.ok) { res.status(owner.status).json(owner.body); return; }
+  if (!revokeAttestation(slug, String(req.params.id ?? ''), owner.actor)) {
+    res.status(404).json({ success: false, error: 'No live attestation with that id' });
+    return;
+  }
+  res.json(teamBody(slug, getPublicOrigin(req)));
+});
+
+documentTeamRoutes.put('/api/documents/:slug/team/agents/:tokenId/direct-invite', (req: Request, res: Response) => {
+  const slug = slugParam(req);
+  const owner = teamOwner(req, slug, true);
+  if (!owner.ok) { res.status(owner.status).json(owner.body); return; }
+  const allow = req.body?.allow === true;
+  if (!setAgentKeyDirectInvite(slug, String(req.params.tokenId ?? ''), allow)) {
+    res.status(404).json({ success: false, error: 'Agent key not found' });
+    return;
+  }
+  res.json({ ...teamBody(slug, getPublicOrigin(req)), allowDirectInvite: allow });
 });
 
 documentTeamRoutes.put('/api/documents/:slug/team/guest-access', (req: Request, res: Response) => {

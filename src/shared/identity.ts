@@ -249,4 +249,9 @@ export interface ViewerIdentity {
   signInUrl: string | null;
   /** Invite person: this guest can read, comment and chat, but marks need signing in. */
   markNeedsSignIn?: boolean;
+  /**
+   * Cross invitation: an AI attested to this signed-in person. They read and comment; their marks
+   * do not count until a human invites them. Carries the AI's actor and what it said.
+   */
+  attestedBy?: { actor: string; name: string; basis: string; at: string };
 }

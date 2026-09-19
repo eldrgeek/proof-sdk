@@ -295,6 +295,8 @@ export class LineMarksUI {
   private serverRatifications: Array<{ id: string; at: string; count: number; familiar: string }> = [];
   /** The names people gave the AIs present ("Add agent"): ai:<slug> -> "Claude COS". */
   private agentKeyLabels: Record<string, string> = {};
+  /** Cross invitation: who added each AI and what runs it: ai:<slug> -> { sponsorName, runtime }. */
+  private agentSponsors: Record<string, { label: string; sponsorName: string | null; runtime: string | null; suspended: boolean }> = {};
   private brief: ProxyBrief | null = null;
   private briefByLine = new Map<number, ProxyItem>();
   /** "Review the F flagged": Next issue walks only these lines (document order) until done. */
@@ -424,6 +426,7 @@ export class LineMarksUI {
         alignedSnapshot?: { id: string; createdAt: string } | null;
         familiar?: FamiliarBinding | null; proxies?: ProxyMark[]; ratifications?: LineMarksUI['serverRatifications'];
         agentKeyLabels?: Record<string, string>;
+        agentSponsors?: Record<string, { label: string; sponsorName: string | null; runtime: string | null; suspended: boolean }>;
         tiers?: TierRecord[]; tierSignals?: { reads?: TierRead[]; flags?: TierFlag[] };
       };
       // A newer fetch or a local write superseded this answer.
@@ -458,6 +461,7 @@ export class LineMarksUI {
       this.serverProxies = Array.isArray(body.proxies) ? body.proxies : [];
       this.serverRatifications = Array.isArray(body.ratifications) ? body.ratifications : [];
       this.agentKeyLabels = body.agentKeyLabels && typeof body.agentKeyLabels === 'object' ? body.agentKeyLabels : {};
+      this.agentSponsors = body.agentSponsors && typeof body.agentSponsors === 'object' ? body.agentSponsors : {};
       this.serverTiers = Array.isArray(body.tiers) ? body.tiers : [];
       this.serverTierSignals = {
         reads: Array.isArray(body.tierSignals?.reads) ? body.tierSignals!.reads! : [],
@@ -677,14 +681,18 @@ export class LineMarksUI {
   /** Step B6: what the right rail header shows about the viewer. */
   viewerIdentity(): ViewerIdentity {
     const actor = this.me();
-    const trust = this.serverMe?.actor ? this.serverMe.trust : actorTrust(actor);
+    // Cross invitation: an attested person is signed in but is not verified here, so the server's
+    // own answer decides — never the actor the page guessed from the signed-in name.
+    const attestedBy = this.serverMe?.attestedBy;
+    const trust = this.serverMe?.actor || attestedBy ? this.serverMe!.trust : actorTrust(actor);
     return {
-      actor,
+      actor: attestedBy ? (this.serverMe?.actor ?? '') : actor,
       trust,
       name: this.serverMe?.name || actor.replace(/^(human|ai|guest):/i, ''),
       ...(this.serverMe?.email ? { email: this.serverMe.email } : {}),
       signInUrl: this.serverMe?.signInUrl ?? null,
       ...(this.serverMe?.markNeedsSignIn ? { markNeedsSignIn: true } : {}),
+      ...(attestedBy ? { attestedBy } : {}),
     };
   }
 
@@ -1652,6 +1660,13 @@ export class LineMarksUI {
       const li = document.createElement('li');
       const who = document.createElement('span');
       who.textContent = actorKey(member) === me ? `${actorLabel(member)} (you)` : actorLabel(member);
+      // Cross invitation: an AI is shown with the human who added it — "Izzy — added by Eric".
+      const sponsor = this.agentSponsors[member] ?? this.agentSponsors[actorKey(member)];
+      if (sponsor?.sponsorName) {
+        who.textContent = `${this.aiName(member)} — added by ${sponsor.sponsorName}`;
+        who.dataset.sponsor = sponsor.sponsorName;
+        if (sponsor.runtime) who.title = `${this.aiName(member)} runs on ${sponsor.runtime}; ${sponsor.sponsorName} added it to this document.`;
+      }
       const what = document.createElement('span');
       what.className = 'plm-team-status';
       const status = !entry ? 'unseen' : shownStatus(entry);

@@ -399,7 +399,7 @@ shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
 
   const doc = slug ? (getCanonicalReadableDocumentSync(slug, 'share') ?? null) : null;
   const pageAccess = resolveSharePageAccess(req, res, slug, doc);
-  const { librarySession, token, tokenSource, roleFromToken } = pageAccess;
+  const { librarySession, attestedSession, token, tokenSource, roleFromToken } = pageAccess;
 
   // Invite person: a private document opened without access. No snapshot fallback, no content.
   if (doc && pageAccess.signInRequired) {
@@ -676,6 +676,10 @@ shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
   res.type('html').send(
     librarySession
       ? injectSomaFeedback(injectLibraryMemberIntoShareHtml(responseHtml, librarySession.member.name, slug), 'editor', librarySession.member)
-      : injectSomaFeedback(responseHtml, 'editor'),
+      // Cross invitation: an attested person is signed in, so the page uses their name rather than
+      // asking them to choose one. It still grants them nothing a guest does not have.
+      : attestedSession
+        ? injectSomaFeedback(injectLibraryMemberIntoShareHtml(responseHtml, attestedSession.member.name, ''), 'editor', attestedSession.member)
+        : injectSomaFeedback(responseHtml, 'editor'),
   );
 });

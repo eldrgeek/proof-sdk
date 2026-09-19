@@ -54,6 +54,13 @@ export const GUEST_ACCESS_POLICY = {
    * be mistaken for a counted mark later.
    */
   guestMarksCountIn: ['edit'] as readonly GuestAccessMode[],
+  /**
+   * Cross invitation (Mike, 2026-09-19): an AI may attest to a person's identity. That grants
+   * exactly what a guest gets — read and comment — once they sign in with the attested address.
+   * Their marks never count until a human-grade factor lands (an owner-confirmed invitation, or
+   * their sign-in matching an invited address).
+   */
+  attestedRole: 'commenter' as ShareRole,
   /** Tightening the setting closes guests' open editor connections at once (they reconnect with
    *  the new role); members' and invited people's connections are untouched. */
   closeGuestSessionsOnChange: true,
@@ -354,12 +361,35 @@ export function documentSession(req: Request, slug: string, res?: Response): Doc
 
 export type TokenlessAccess = {
   role: ShareRole | null;
-  via: 'library' | 'invite' | 'guest';
+  via: 'library' | 'invite' | 'attested' | 'guest';
   guestMode: GuestAccessMode;
   /** Collab sessions of invited people carry this so removal revokes them. */
   collabTokenId: string | null;
   documentSession: DocumentSession | null;
+  /** Cross invitation: the AI that attested to this signed-in person, when that is why they are in. */
+  attestedBy?: { actor: string; basis: string; at: string } | null;
+  /**
+   * Cross invitation: the session of an attested person. Deliberately NOT `documentSession`: an
+   * attestation is presence, not authority, so nothing that reads `documentSession` may treat
+   * them as a verified member. Only the page's own "who am I" display uses this.
+   */
+  attestedSession?: NonNullable<ReturnType<typeof getLibrarySession>> | null;
 };
+
+export const ATTESTED_COLLAB_TOKEN_PREFIX = 'attested:';
+
+/**
+ * Cross invitation (2026-09-19): server/cross-invitation.ts registers how to look up the live
+ * attestation for a signed-in email. Kept as a hook so that this module imports nothing from it
+ * (cross-invitation.ts reads the invites and the guest setting from here).
+ */
+let attestedAccessCheck: ((slug: string, email: string) => { actor: string; basis: string; at: string; id: string } | null) | null = null;
+
+export function registerAttestedAccessCheck(check: (slug: string, email: string) => { actor: string; basis: string; at: string; id: string } | null): void {
+  attestedAccessCheck = check;
+}
+
+registerCollabTokenCheck(ATTESTED_COLLAB_TOKEN_PREFIX, (slug, email) => Boolean(attestedAccessCheck?.(slug, email)));
 
 /** Access for a request that presents no share token. */
 export function resolveTokenlessAccess(req: Request, slug: string, res?: Response): TokenlessAccess {
@@ -374,8 +404,36 @@ export function resolveTokenlessAccess(req: Request, slug: string, res?: Respons
       documentSession: docSession,
     };
   }
+  // Cross invitation: an AI attested to this signed-in person. That is presence, not authority:
+  // they read and comment like a guest, and their marks never count (GUEST_ACCESS_POLICY's
+  // refusal applies to them too, with its own code NOT_VERIFIED).
+  const attested = attestedFor(req, slug, res);
+  if (attested) {
+    let session: ReturnType<typeof getLibrarySession> = null;
+    try { session = getLibrarySession(req, res); } catch { session = null; }
+    return {
+      role: GUEST_ACCESS_POLICY.attestedRole,
+      via: 'attested',
+      guestMode,
+      collabTokenId: `${ATTESTED_COLLAB_TOKEN_PREFIX}${attested.email}`,
+      documentSession: null,
+      attestedBy: { actor: attested.actor, basis: attested.basis, at: attested.at },
+      attestedSession: session,
+    };
+  }
   const role = GUEST_ACCESS_POLICY.guestRole[guestMode];
   return { role, via: 'guest', guestMode, collabTokenId: role ? `${GUEST_COLLAB_TOKEN_PREFIX}${guestMode}` : null, documentSession: null };
+}
+
+/** The live attestation covering the signed-in person on this request, if there is one. */
+export function attestedFor(req: Request, slug: string, res?: Response): { email: string; actor: string; basis: string; at: string; id: string } | null {
+  if (!attestedAccessCheck || !isLibraryEnabled()) return null;
+  let session: ReturnType<typeof getLibrarySession> = null;
+  try { session = getLibrarySession(req, res); } catch { session = null; }
+  const email = session?.member.email?.trim().toLowerCase();
+  if (!email) return null;
+  const found = attestedAccessCheck(slug, email);
+  return found ? { email, ...found } : null;
 }
 
 // ============================================================================

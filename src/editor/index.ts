@@ -4930,6 +4930,14 @@ class ProofEditorImpl implements ProofEditor {
       remove: id => this.teamRequest<TeamState>('POST', `/invites/${encodeURIComponent(id)}/remove`, {}),
       setGuestAccess: mode => this.teamRequest<TeamState>('PUT', '/guest-access', { mode }),
       copy: text => this.copyTextToClipboard(text),
+      // Cross invitation (2026-09-19): the Owner answers what an AI proposed.
+      confirmNomination: async id => {
+        const body = await this.teamRequest<{ team: TeamState; emailed?: boolean }>('POST', `/nominations/${encodeURIComponent(id)}/confirm`, {});
+        return { team: body.team, emailed: body.emailed };
+      },
+      declineNomination: id => this.teamRequest<TeamState>('POST', `/nominations/${encodeURIComponent(id)}/decline`, {}),
+      revokeAttestation: id => this.teamRequest<TeamState>('POST', `/attestations/${encodeURIComponent(id)}/revoke`, {}),
+      setDirectInvite: (tokenId, allow) => this.teamRequest<TeamState>('PUT', `/agents/${encodeURIComponent(tokenId)}/direct-invite`, { allow }),
     });
     return true;
   }
@@ -4938,7 +4946,7 @@ class ProofEditorImpl implements ProofEditor {
     showAgentKeyDialog({
       // A2 will add team-only documents; today this notice depends on member sign-in.
       isSignedInMember: Boolean(window.__PROOF_LIBRARY_MEMBER__),
-      create: label => shareClient.createAgentKey(label),
+      create: (label, runtime) => shareClient.createAgentKey(label, runtime),
       list: () => shareClient.listAgentKeys(),
       revoke: id => shareClient.revokeAgentKey(id),
       invite: token => this.getAgentInviteMessage(token),

@@ -50,6 +50,20 @@ import { agentKeyActor, anchorForLine as anchorForDocLine } from '../src/shared/
 import { decideActor } from './identity.js';
 import { answerAgentAsk, buildAskReport, createAskOnLine, createAgentAsk, listAgentAsks, listCanonicalAsks, reaskAsk, withdrawAsk } from './asks.js';
 import { ASK_POLICY, askTeamActors, oneLine } from '../src/shared/asks.js';
+import { getPublicOrigin } from './public-origin.js';
+import {
+  CROSS_INVITE_POLICY,
+  activeAttestations,
+  agentKeyViewForToken,
+  allowCrossInvite,
+  confirmNomination,
+  createAttestation,
+  createNomination,
+  displayName as crossDisplayName,
+  documentProvenance,
+  listAgentKeyViews,
+  listNominations,
+} from './cross-invitation.js';
 import { createAgentDo, listAgentDos, reviseDo, revokeDo, runDo, withdrawDo } from './do.js';
 import { DO_POLICY, DO_OPERATIONS } from '../src/shared/do.js';
 import {
@@ -2299,6 +2313,23 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
         teamRule: 'Step 1: owner + everyone who has line-marked, commented, replied or suggested + active agent keys (Step B3: + askers and the people asked)',
       };
       links.lineMark = { method: 'POST', href: `/api/agent/${slug}/marks/line` };
+      // Cross invitation: who is on this document and how each of them got in. An open nomination
+      // is an Issue above; the chain here is what an audit system reads (actor, authority, basis,
+      // evidence, time).
+      try {
+        body.nominations = listNominations(slug);
+        body.attestations = activeAttestations(slug);
+        body.agents = listAgentKeyViews(slug).filter(key => !key.revokedAt).map(key => ({
+          actor: key.actor, name: key.label, sponsor: key.sponsorActor, sponsorName: key.sponsorName,
+          runtime: key.runtime, suspended: key.suspended, allowDirectInvite: key.allowDirectInvite,
+        }));
+        body.provenance = documentProvenance(slug);
+        links.team = { method: 'GET', href: `/api/agent/${slug}/team` };
+        links.nominate = { method: 'POST', href: `/api/agent/${slug}/team/nominations` };
+        links.attest = { method: 'POST', href: `/api/agent/${slug}/team/attestations` };
+      } catch (error) {
+        console.warn('[agent-routes] provenance failed', { slug, error: String(error) });
+      }
     } catch (error) {
       console.warn('[agent-routes] line-mark report failed', { slug, error: String(error) });
     }
@@ -4194,6 +4225,169 @@ agentRoutes.delete('/:slug/asks/:askId', async (req: Request, res: Response) => 
   const result = withdrawAsk(slug, { id: String(req.params.askId ?? ''), by: actor.by, isOwner: role === 'owner_bot' });
   if (result.status === 200) scheduleAlignmentCheck(slug);
   sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+});
+
+// ============================================================================
+// Cross invitation (Mike Wolf, 2026-09-19): an AI brings a human in.
+//
+// Two moves, and the difference between them is the whole point:
+//   POST /team/nominations   proposes a person. Nothing is emailed and the person gets no access
+//                            until a human owner confirms (or an Owner granted this AI standing
+//                            permission to invite directly on this document).
+//   POST /team/attestations  states who someone is. That grants read and comment once they sign
+//                            in with that address, and never a mark that counts.
+//
+// Both always need the AI's own agent key (not the owner credential, not another share token),
+// are rate-limited, are shown in the people dialog, and carry the AI's own words for the human
+// who reads them. An AI acting on instructions it found inside a document is exactly the risk the
+// confirm step exists for: text in a document can never, by itself, cause an invitation.
+// ============================================================================
+
+/** The AI making this call: its agent key, its key row, and its sponsor. Never a person. */
+/** Standing permission only: an Owner already said this AI may invite here without being asked. */
+async function confirmNominationAsInvitation(req: Request, slug: string, nomination: Parameters<typeof confirmNomination>[0]['nomination'], by: string) {
+  const result = await confirmNomination({
+    slug, nomination, by, byMemberId: null,
+    origin: getPublicOrigin(req),
+    inviterName: `${crossDisplayName(by, slug)} (an AI on this document)`,
+    title: getDocumentBySlug(slug)?.title?.trim() || 'Untitled document',
+  });
+  return { status: result.status, body: { ...result.body, directInvite: true, note: 'An owner of this document gave you standing permission to invite people here, so the invitation was sent. It is recorded with your name.' } };
+}
+
+function agentKeyCaller(req: Request, res: Response, slug: string, route: string): { actor: string; key: ReturnType<typeof agentKeyViewForToken> } | null {
+  const tokenId = agentRequestTokenIds.get(req) ?? null;
+  const key = agentKeyViewForToken(slug, tokenId);
+  if (!key || key.revokedAt) {
+    sendMutationResponse(res, 403, {
+      success: false, code: 'AGENT_KEY_REQUIRED',
+      error: 'This is an AI\'s own move: send it with the agent key a person created for you ("Add agent"), not with a share token or the owner credential.',
+    }, { route, slug });
+    return null;
+  }
+  return { actor: key.actor, key };
+}
+
+agentRoutes.get('/:slug/team', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    success: true,
+    provenance: documentProvenance(slug),
+    agents: listAgentKeyViews(slug).filter(key => !key.revokedAt).map(key => ({
+      actor: key.actor, name: key.label, sponsor: key.sponsorActor, sponsorName: key.sponsorName,
+      runtime: key.runtime, suspended: key.suspended, allowDirectInvite: key.allowDirectInvite,
+      provenance: key.provenanceLabel,
+    })),
+    nominations: listNominations(slug),
+    attestations: activeAttestations(slug),
+    policy: {
+      aiMayAdmitAi: CROSS_INVITE_POLICY.aiMayAdmitAi,
+      attestedRole: CROSS_INVITE_POLICY.attestedRole,
+      attestedMarksCount: CROSS_INVITE_POLICY.attestedMarksCount,
+      confidences: CROSS_INVITE_POLICY.confidences,
+    },
+  });
+});
+
+agentRoutes.get('/:slug/team/nominations', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, nominations: listNominations(slug) });
+});
+
+// Body: { email, name?, why }. Creates a nomination, never an invitation — unless an Owner gave
+// this AI standing permission to invite directly on this document (allowDirectInvite).
+agentRoutes.post('/:slug/team/nominations', async (req: Request, res: Response) => {
+  const mutationRoute = 'POST /team/nominations';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute }); return; }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const caller = agentKeyCaller(req, res, slug, mutationRoute);
+  if (!caller) return;
+  const payload = asPayload(req.body);
+  if (!allowCrossInvite([
+    [`nom:doc:${slug}`, CROSS_INVITE_POLICY.nominationsPerDocumentPerHour],
+    [`nom:ai:${slug}:${caller.actor}`, CROSS_INVITE_POLICY.nominationsPerAiPerHour],
+  ])) {
+    sendMutationResponse(res, 429, { success: false, code: 'RATE_LIMITED', error: 'Too many nominations in the last hour. Try again later.' }, { route: mutationRoute, slug });
+    return;
+  }
+  const created = createNomination({ slug, by: caller.actor, email: payload.email, name: payload.name, why: payload.why });
+  if (!created.ok) {
+    sendMutationResponse(res, created.status, { success: false, code: created.code, error: created.error }, { route: mutationRoute, slug });
+    return;
+  }
+  // Standing permission: an Owner said this AI may invite on this document without being asked.
+  if (caller.key?.allowDirectInvite) {
+    const invited = await confirmNominationAsInvitation(req, slug, created.nomination, caller.actor);
+    sendMutationResponse(res, invited.status, invited.body, { route: mutationRoute, slug });
+    return;
+  }
+  scheduleAlignmentCheck(slug);
+  sendMutationResponse(res, created.created ? 201 : 200, {
+    success: true,
+    nomination: created.nomination,
+    created: created.created,
+    invited: false,
+    emailed: false,
+    note: 'Nothing was emailed and nobody gained access. An owner of this document sees this as an Issue and decides: Confirm sends the invitation, Decline closes it.',
+  }, { route: mutationRoute, slug });
+});
+
+agentRoutes.get('/:slug/team/attestations', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, attestations: activeAttestations(slug) });
+});
+
+// Body: { email, basis, confidence }. Presence, not authority: read and comment, never a mark
+// that counts. Only an AI whose sponsor is still a member of this document may attest.
+agentRoutes.post('/:slug/team/attestations', async (req: Request, res: Response) => {
+  const mutationRoute = 'POST /team/attestations';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute }); return; }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const caller = agentKeyCaller(req, res, slug, mutationRoute);
+  if (!caller) return;
+  if (CROSS_INVITE_POLICY.attestationNeedsLiveSponsor && (!caller.key?.sponsorActor || !caller.key.sponsorActive)) {
+    sendMutationResponse(res, 403, {
+      success: false, code: 'SPONSOR_NOT_A_MEMBER',
+      error: 'You can vouch for someone only while the person who added you is a member of this document.',
+    }, { route: mutationRoute, slug });
+    return;
+  }
+  const payload = asPayload(req.body);
+  if (!allowCrossInvite([
+    [`att:doc:${slug}`, CROSS_INVITE_POLICY.attestationsPerDocumentPerHour],
+    [`att:ai:${slug}:${caller.actor}`, CROSS_INVITE_POLICY.attestationsPerAiPerHour],
+  ])) {
+    sendMutationResponse(res, 429, { success: false, code: 'RATE_LIMITED', error: 'Too many attestations in the last hour. Try again later.' }, { route: mutationRoute, slug });
+    return;
+  }
+  const created = createAttestation({ slug, by: caller.actor, email: payload.email, basis: payload.basis, confidence: payload.confidence });
+  if (!created.ok) {
+    sendMutationResponse(res, created.status, { success: false, code: created.code, error: created.error }, { route: mutationRoute, slug });
+    return;
+  }
+  sendMutationResponse(res, created.created ? 201 : 200, {
+    success: true,
+    attestation: created.attestation,
+    created: created.created,
+    grants: {
+      role: CROSS_INVITE_POLICY.attestedRole,
+      marksCount: CROSS_INVITE_POLICY.attestedMarksCount,
+      note: `${created.attestation.email} can read and comment on this document once signed in with that address. Their marks, answers, picks and approvals are refused (NOT_VERIFIED) until a person invites them.`,
+    },
+  }, { route: mutationRoute, slug });
 });
 
 // ============================================================================

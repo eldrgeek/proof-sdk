@@ -1285,11 +1285,23 @@ export class ReadingWalkUI {
    */
   private renderMe(): void {
     const me = this.host.lineMarks().viewerIdentity();
-    const sig = JSON.stringify([me.actor, me.trust, me.name, me.email ?? '', me.signInUrl ?? '', me.markNeedsSignIn === true]);
+    const sig = JSON.stringify([me.actor, me.trust, me.name, me.email ?? '', me.signInUrl ?? '', me.markNeedsSignIn === true, me.attestedBy?.actor ?? '']);
     if (this.meEl.dataset.sig === sig) return;
     this.meEl.dataset.sig = sig;
     this.meEl.dataset.trust = me.trust;
     this.meEl.replaceChildren();
+    // Cross invitation (2026-09-19): an AI vouched for this signed-in person. They read and
+    // comment; nothing they mark counts until a person invites them, so the rail names the AI
+    // instead of calling them verified or asking them to sign in again.
+    if (me.attestedBy) {
+      this.meEl.dataset.attestedBy = me.attestedBy.actor;
+      this.meEl.append(
+        el('span', 'prw-me-name', me.name || 'You'),
+        el('span', 'prw-me-guest', `vouched for by ${me.attestedBy.name}`),
+      );
+      this.meEl.title = `${me.attestedBy.name} states this is you: “${me.attestedBy.basis}”. You can read and comment. Marks, answers, picks and approvals need a person to invite you.`;
+      return;
+    }
     if (me.trust === 'verified') {
       const badge = el('span', 'prw-me-badge', '✓');
       badge.setAttribute('aria-hidden', 'true');

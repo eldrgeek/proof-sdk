@@ -651,6 +651,24 @@ export type ProofIssue =
     repairPending: boolean;
   }
   | {
+    /**
+     * Cross invitation (2026-09-19): an AI nominated a person and no human owner has answered.
+     * It sits on no line (lineIndex/pos null): it is a decision about the team, not about the
+     * text. Confirm sends the real invitation; Decline closes it. Nothing is emailed until then.
+     */
+    type: 'nomination';
+    nominationId: string;
+    lineIndex: null;
+    pos: null;
+    kind: 'nomination';
+    excerpt: string;
+    by: string;
+    email: string;
+    name: string | null;
+    why: string;
+    openFor: string[];
+  }
+  | {
     type: 'comment' | 'suggestion';
     markId: string;
     pos: number | null;
@@ -665,7 +683,7 @@ export interface IssueSummary {
   team: string[];
   issues: ProofIssue[];
   aligned: boolean;
-  counts: { lines: number; lineIssues: number; reviewMarkIssues: number; askIssues: number; uncertainIssues: number; objectionIssues: number; alternativeIssues: number; ttlIssues: number; doIssues: number; total: number }
+  counts: { lines: number; lineIssues: number; reviewMarkIssues: number; askIssues: number; uncertainIssues: number; objectionIssues: number; alternativeIssues: number; ttlIssues: number; doIssues: number; nominationIssues: number; total: number }
     /** Line tiers: present when the caller applied tiers (decision vs context lines and their line Issues). */
     & Partial<TierCounts>;
 }
@@ -678,6 +696,17 @@ export interface DoIssueInputLike {
   state: string;
   openFor: string[];
   label: string;
+}
+
+/** Cross invitation: an open nomination (server/cross-invitation.ts nominationIssueInputs). */
+export interface NominationIssueInput {
+  id: string;
+  by: string;
+  email: string;
+  name: string | null;
+  why: string;
+  at: string;
+  openFor: string[];
 }
 
 /** Step B4f: a line with open alternatives (src/shared/alternatives.ts alternativeIssueInputs). */
@@ -787,6 +816,8 @@ export function computeIssues(input: {
   ttl?: TtlIssueInput[];
   /** `{do}` action lines not yet done (src/shared/do.ts doIssueInputs). */
   dos?: DoIssueInputLike[];
+  /** Cross invitation: people an AI nominated whom no human owner has answered. */
+  nominations?: NominationIssueInput[];
   /** Step B4f (blind marking): lines whose revealed marks disagree, when that counts for priority. */
   disagreementLines?: ReadonlySet<number>;
   /** Step B4f: alternatives whose open-for list disagrees get `disagreement` too (blind on). */
@@ -1002,19 +1033,39 @@ export function computeIssues(input: {
       openFor: item.openFor,
     });
   }
+  // Cross invitation: an open nomination waits on the document's human owners. It has no line, so
+  // it sorts with the review marks at the end (rank 6 below, pos null).
+  let nominationIssues = 0;
+  for (const nomination of input.nominations ?? []) {
+    if (nomination.openFor.length === 0) continue;
+    nominationIssues += 1;
+    issues.push({
+      type: 'nomination',
+      nominationId: nomination.id,
+      lineIndex: null,
+      pos: null,
+      kind: 'nomination',
+      excerpt: `${nomination.name || nomination.email} — nominated by ${nomination.by}`,
+      by: nomination.by,
+      email: nomination.email,
+      name: nomination.name,
+      why: nomination.why,
+      openFor: nomination.openFor,
+    });
+  }
   // Document order; review marks without a position go last. At one position an ask comes
   // before the line's own Issue, so Next issue lands on the decision first (then an objection,
   // then open alternatives, then an uncertain flag, then an expired time-to-live).
   const rank = (issue: ProofIssue) => (issue.type === 'ask' || issue.type === 'do' ? 0 : issue.type === 'objection' ? 1 : issue.type === 'alternative' ? 2
     : issue.type === 'uncertain' ? 3 : issue.type === 'ttl' ? 4 : issue.type === 'line' ? 5 : 6);
   issues.sort((a, b) => ((a.pos ?? Number.MAX_SAFE_INTEGER) - (b.pos ?? Number.MAX_SAFE_INTEGER)) || (rank(a) - rank(b)));
-  const lineIssues = issues.length - reviewMarkIssues - askIssues - uncertainIssues - objectionIssues - alternativeIssues - ttlIssues - doIssues;
+  const lineIssues = issues.length - reviewMarkIssues - askIssues - uncertainIssues - objectionIssues - alternativeIssues - ttlIssues - doIssues - nominationIssues;
   return {
     team: input.team,
     issues,
     aligned: issues.length === 0,
     counts: {
-      lines: input.lines.length, lineIssues, reviewMarkIssues, askIssues, uncertainIssues, objectionIssues, alternativeIssues, ttlIssues, doIssues, total: issues.length,
+      lines: input.lines.length, lineIssues, reviewMarkIssues, askIssues, uncertainIssues, objectionIssues, alternativeIssues, ttlIssues, doIssues, nominationIssues, total: issues.length,
       ...(input.tiers ? tierCounts : {}),
     },
   };

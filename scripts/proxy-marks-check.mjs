@@ -127,7 +127,7 @@ async function aiReadsAll(base, slug, KEY, evidence = true) {
 
 async function mintKey(page, slug, label) {
   const key = await page.evaluate(async ({ s, h, label }) => {
-    const r = await fetch(`/api/documents/${s}/agent-keys`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...h }, body: JSON.stringify({ label }) });
+    const r = await fetch(`/api/documents/${s}/agent-keys`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...h }, body: JSON.stringify({ label, runtime: 'Claude Opus 5 (Anthropic)' }) });
     return { status: r.status, body: await r.json() };
   }, { s: slug, h: clientHeaders, label });
   assert.equal(key.status, 201, JSON.stringify(key));
@@ -328,7 +328,8 @@ async function run(browser, style) {
       await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.CLOSING);
       await waitFor(mike, () => !!document.querySelector('.prw-right .plm-box .plm-claimed'));
       const team = await mike.locator('.prw-right .plm-box .plm-team').innerText();
-      assert.match(team, /critic\s*Agreed\s*claimed/i);
+      // Cross invitation: an AI's row now reads "Critic — added by <the human who added it>".
+      assert.match(team, /critic(\s*—\s*added by[^\n]*)?\s*Agreed\s*claimed/i);
       assert.match(team, /claude[\s\S]*Evidence: Read the cancelled closing line/i);
       await mike.evaluate(() => window.__proofReadingWalk.focusLine(0));
     });

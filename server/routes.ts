@@ -120,9 +120,17 @@ import { getProofSettings, listAlternatives, listBundles, listExplains, listPick
 import { blindViewFor } from './proof-extras-eval.js';
 import { lineEditor } from './agent-routes.js';
 import { ASK_POLICY, evaluateAsks } from '../src/shared/asks.js';
-import { isGuestActor, normalizeActorString } from '../src/shared/identity.js';
+import { guestActor, isGuestActor, normalizeActorString } from '../src/shared/identity.js';
 import { buildDirectory, clientDirectory, decideActor, sessionIdentity, type ActorDecision } from './identity.js';
-import { documentSession, getGuestAccessMode, guestMarksCount, resolveTokenlessAccess } from './document-team.js';
+import { attestedFor, documentSession, getGuestAccessMode, guestMarksCount, resolveTokenlessAccess } from './document-team.js';
+import {
+  CROSS_INVITE_POLICY,
+  agentProvenanceMap,
+  displayName as crossDisplayName,
+  documentProvenance,
+  listNominations,
+  activeAttestations,
+} from './cross-invitation.js';
 import { IDENTITY_POLICY, actorsIn, isEmailAddress, verifiedHumanActor, type IdentityDirectory, type ViewerIdentity } from '../src/shared/identity.js';
 import { actorKey, agentKeyActor } from '../src/shared/line-marks.js';
 import { chatAuthors, listChatMessages, mentionCandidates, postChatMessage } from './chat.js';
@@ -1978,8 +1986,12 @@ function resolveLineMarkAccess(req: Request, slug: string, doc: NonNullable<Retu
   // A guest (no session, no key, no share token) marks only where the guest setting lets marks count.
   const isPlainGuest = !ownerAuthorized && !library && !getPresentedSecret(req);
   const guestMustSignIn = isPlainGuest && !guestMarksCount(slug);
-  const canMark = canComment && !guestMustSignIn;
-  return { role, canRead, canComment, canMark, canApprove, ownerAuthorized, library, guestMustSignIn };
+  // Cross invitation (2026-09-19): an AI attested to this signed-in person. They read and comment;
+  // nothing they mark counts until a human invites them. The refusal is NOT_VERIFIED, and it is a
+  // refusal — never an unverified mark that could be mistaken for a counted one later.
+  const attestation = isPlainGuest ? attestedFor(req, slug) : null;
+  const canMark = canComment && !guestMustSignIn && !attestation;
+  return { role, canRead, canComment, canMark, canApprove, ownerAuthorized, library, guestMustSignIn, attestation };
 }
 
 /** Invite person: what a guest is told when a mark, answer, pick or approval needs sign-in. */
@@ -1989,6 +2001,19 @@ function signInToMarkBody(): Record<string, unknown> {
     code: 'SIGN_IN_TO_MARK',
     error: 'Sign in to mark. Without signing in you can read, comment and chat; marks, answers, picks and approvals need a signed-in person.',
     signInUrl: isLibraryEnabled() ? '/' : null,
+  };
+}
+
+/**
+ * Cross invitation: what an attested person is told. They are signed in, so "sign in" would be
+ * wrong: an AI vouched for them, and that is presence, not authority.
+ */
+function notVerifiedBody(attestedBy: string): Record<string, unknown> {
+  return {
+    success: false,
+    code: 'NOT_VERIFIED',
+    error: CROSS_INVITE_POLICY.notVerifiedMessage,
+    attestedBy,
   };
 }
 
@@ -2017,6 +2042,9 @@ function resolvePageActor(req: Request, slug: string, access: ReturnType<typeof 
     sessionOriginOk: !origin || origin === getPublicOrigin(req),
     ownerCredential: access.ownerAuthorized,
   });
+  if (kind === 'mark' && decision.ok && decision.source === 'guest' && access.attestation) {
+    return { ok: false, status: 403, body: notVerifiedBody(access.attestation.actor) };
+  }
   if (kind === 'mark' && decision.ok && decision.source === 'guest' && access.guestMustSignIn) {
     return { ok: false, status: 403, body: signInToMarkBody() };
   }
@@ -2035,6 +2063,16 @@ function viewerIdentity(req: Request, slug: string, access: ReturnType<typeof re
   if (member?.email && isEmailAddress(member.email)) {
     const actor = verifiedHumanActor(member.email);
     return { actor, trust: 'verified', name: member.name || dir.labels[actorKey(actor)] || member.email, email: member.email.toLowerCase(), signInUrl: null };
+  }
+  // Cross invitation: an attested person is signed in already, so they are not asked to sign in —
+  // the rail names the AI that vouched for them and says their marks do not count yet.
+  if (access.attestation) {
+    // Their actor is a guest actor, not human:<email>: an attestation is presence, not authority,
+    // so nothing they do may be recorded as a verified person.
+    return {
+      actor: guestActor(access.attestation.email), trust: 'guest', name: access.attestation.email, signInUrl: null,
+      attestedBy: { actor: access.attestation.actor, name: crossDisplayName(access.attestation.actor, slug), basis: access.attestation.basis, at: access.attestation.at },
+    };
   }
   // A guest: the page supplies the typed name (guest:<name>). Invite person: where the guest
   // setting keeps guests' marks from counting, the page says "Sign in to mark".
@@ -2137,6 +2175,10 @@ apiRoutes.get('/documents/:slug/line-marks', async (req: Request, res: Response)
     familiarsBound: listFamiliars(slug).length,
     // The names people gave the AIs present ("Add agent"), for "My Familiar" and the brief.
     agentKeyLabels: Object.fromEntries(listDocumentAgentKeys(slug).filter(key => !key.revokedAt).map(key => [agentKeyActor(key.label), key.label])),
+    // Cross invitation: who added each AI and what runs it, so a mark reads "Izzy — added by Eric".
+    agentSponsors: agentProvenanceMap(slug),
+    // Cross invitation: how everyone on this document got in (the provenance chain).
+    provenance: documentProvenance(slug),
     proxies,
     ratifications: binding ? undoableRatifications(slug, me.actor) : [],
     proxyPolicy: { ratifyThreshold: PROXY_POLICY.ratifyThreshold, hold: PROXY_POLICY.hold, evidence: EVIDENCE_POLICY },

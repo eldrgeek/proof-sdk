@@ -665,21 +665,28 @@ export class ShareClient {
     return Boolean(this.shareToken?.trim());
   }
 
-  async listAgentKeys(): Promise<import('../ui/agent-key-dialog').AgentKey[]> {
+  async listAgentKeys(): Promise<import('../ui/agent-key-dialog').AgentKeyList> {
     const response = await fetch(`${this.getApiBase()}/documents/${this.slug}/agent-keys`, {
       headers: this.getShareAuthHeaders(),
     });
     if (!response.ok) throw new Error('Could not load agent keys');
-    return (await response.json()).keys;
+    const body = await response.json();
+    // Cross invitation: older servers answer with keys only; treat the runtime field as optional.
+    return { keys: body.keys ?? [], runtimeRequired: body.runtimeRequired === true, runtimeSuggestions: body.runtimeSuggestions ?? [] };
   }
 
-  async createAgentKey(label: string): Promise<import('../ui/agent-key-dialog').AgentKey & { token: string }> {
+  /** Cross invitation: the sponsor names the AI and says what is running it. */
+  async createAgentKey(label: string, runtime = ''): Promise<import('../ui/agent-key-dialog').AgentKey & { token: string }> {
     const response = await fetch(`${this.getApiBase()}/documents/${this.slug}/agent-keys`, {
       method: 'POST', headers: { ...this.getShareAuthHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ label }),
+      body: JSON.stringify({ label, runtime }),
     });
-    if (!response.ok) throw new Error(response.status === 429
-      ? 'Too many keys requested; try again in a minute.' : 'Could not create an agent key. Check your editing access.');
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({})) as { error?: string };
+      throw new Error(response.status === 429
+        ? 'Too many keys requested; try again in a minute.'
+        : body.error || 'Could not create an agent key. Check your editing access.');
+    }
     return response.json();
   }
 

@@ -23,6 +23,9 @@ export function resolveSharePageAccess(req: Request, res: Response, slug: string
   // document; without a token everyone else gets the document's guest setting.
   const tokenless = resolveTokenlessAccess(req, slug, res);
   const librarySession = tokenless.documentSession?.session ?? null;
+  // Cross invitation: an attested person is signed in but is not a member here. The page shows
+  // their name (so it never asks a signed-in person to type one); nothing else may use this.
+  const attestedSession = tokenless.attestedSession ?? null;
   const query = typeof req.query.token === 'string' ? req.query.token.trim() : '';
   const cookie = getCookie(req, shareTokenCookieName(slug)) ?? '';
   const header = (req.header('x-share-token') || req.header('x-bridge-token')
@@ -57,7 +60,7 @@ export function resolveSharePageAccess(req: Request, res: Response, slug: string
   const capabilities = role
     ? deriveShareCapabilities(role, doc?.share_state ?? 'MISSING')
     : { canRead: false, canEdit: false, canComment: false };
-  return { librarySession, token, tokenSource, invalidCredential, role, roleFromToken: resolved?.role ?? null,
+  return { librarySession, attestedSession, token, tokenSource, invalidCredential, role, roleFromToken: resolved?.role ?? null,
     tokenId: resolved?.tokenId ?? null, capabilities,
     /** True when the page is closed only because the document is private and nobody signed in. */
     signInRequired: !resolved && !role && doc?.share_state === 'ACTIVE',

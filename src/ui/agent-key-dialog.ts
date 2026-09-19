@@ -4,12 +4,28 @@ export interface AgentKey {
   createdAt: string;
   lastUsedAt: string | null;
   revokedAt: string | null;
+  /**
+   * Cross invitation (2026-09-19): the verified human who added this AI, what they said is
+   * running it, and whether it is suspended because that person lost access to the document.
+   */
+  sponsor?: string | null;
+  sponsorName?: string | null;
+  runtime?: string | null;
+  suspended?: boolean;
+  provenance?: string | null;
+}
+
+export interface AgentKeyList {
+  keys: AgentKey[];
+  /** True where a key needs a sponsor and a declared runtime (every document with sign-in). */
+  runtimeRequired: boolean;
+  runtimeSuggestions: string[];
 }
 
 export function showAgentKeyDialog(actions: {
   isSignedInMember: boolean;
-  create: (label: string) => Promise<AgentKey & { token: string }>;
-  list: () => Promise<AgentKey[]>;
+  create: (label: string, runtime: string) => Promise<AgentKey & { token: string }>;
+  list: () => Promise<AgentKeyList>;
   revoke: (id: string) => Promise<void>;
   invite: (token: string) => string;
   copy: (text: string) => Promise<boolean>;
@@ -38,10 +54,14 @@ export function showAgentKeyDialog(actions: {
       <h2 id="agent-key-title" style="margin:0;font-size:20px">Add agent</h2>
       <button type="button" data-close aria-label="Close agent dialog">Close</button>
     </header>
-    <p>The key lets your AI edit this document, and you can revoke it here at any time.</p>
+    <p>The key lets your AI edit this document, and you can revoke it here at any time. The AI is bound to you: everything it marks says “added by you”, and it goes quiet if you leave the document.</p>
     <form>
       <label for="agent-key-label">Agent name</label>
       <input id="agent-key-label" name="label" value="AI assistant" maxlength="80" required autocomplete="off">
+      <label for="agent-key-runtime" style="margin-top:12px">What is running it? <span data-runtime-hint style="font-weight:400;color:#6b7280"></span></label>
+      <input id="agent-key-runtime" name="runtime" maxlength="120" autocomplete="off" list="agent-key-runtimes" placeholder="Claude Opus 5 (Anthropic)">
+      <datalist id="agent-key-runtimes"></datalist>
+      <small style="margin-top:4px">Its model or operator, in your words. It is shown next to everything this AI does.</small>
       <button type="submit" style="margin-top:12px;background:#111827;color:white">Create agent key</button>
     </form>
     <p data-status role="status" aria-live="polite"></p>
@@ -56,7 +76,10 @@ export function showAgentKeyDialog(actions: {
     ${actions.isSignedInMember ? '' : '<p data-revocation-note>Revoking stops that key from working. While this document can be opened from its link without signing in, anyone who has the link can still edit it.</p>'}
   `;
   const form = dialog.querySelector('form')!;
-  const label = dialog.querySelector<HTMLInputElement>('input')!;
+  const label = dialog.querySelector<HTMLInputElement>('#agent-key-label')!;
+  const runtime = dialog.querySelector<HTMLInputElement>('#agent-key-runtime')!;
+  const runtimeHint = dialog.querySelector<HTMLElement>('[data-runtime-hint]')!;
+  const runtimes = dialog.querySelector<HTMLDataListElement>('#agent-key-runtimes')!;
   const create = dialog.querySelector<HTMLButtonElement>('button[type=submit]')!;
   const status = dialog.querySelector<HTMLElement>('[data-status]')!;
   const invite = dialog.querySelector<HTMLElement>('[data-invite]')!;
@@ -68,20 +91,38 @@ export function showAgentKeyDialog(actions: {
   const clearInvite = () => { instructions.value = ''; invite.hidden = true; currentId = null; };
   const refresh = async () => {
     try {
-      const rows = await actions.list();
+      const listed = await actions.list();
       if (closed) return;
+      const rows = listed.keys ?? [];
+      runtime.required = listed.runtimeRequired === true;
+      runtimeHint.textContent = listed.runtimeRequired === true ? '' : '(optional here)';
+      runtimes.replaceChildren();
+      for (const suggestion of listed.runtimeSuggestions ?? []) {
+        const option = document.createElement('option');
+        option.value = suggestion;
+        runtimes.appendChild(option);
+      }
       keys.replaceChildren();
       if (rows.length === 0) keys.textContent = 'No agent keys yet.';
       for (const key of rows) {
         const row = document.createElement('div');
         row.className = 'key-row';
+        row.dataset.tokenId = key.tokenId;
         const details = document.createElement('div');
         details.className = 'key-details';
         const name = document.createElement('strong');
         name.textContent = key.label;
+        // Cross invitation: who added this AI and what runs it, on the row itself.
+        const who = document.createElement('small');
+        who.className = 'key-sponsor';
+        who.textContent = [
+          key.sponsorName ? `Added by ${key.sponsorName}` : 'Added before AIs had sponsors',
+          key.runtime ? `runs on ${key.runtime}` : null,
+          key.suspended && !key.revokedAt ? 'suspended: the person who added it left this document' : null,
+        ].filter(Boolean).join(' · ');
         const dates = document.createElement('small');
         dates.textContent = `Created ${new Date(key.createdAt).toLocaleString()} · Last used ${key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleString() : 'Never'}`;
-        details.append(name, dates);
+        details.append(name, who, dates);
         const revoke = document.createElement('button');
         revoke.type = 'button';
         revoke.textContent = key.revokedAt ? 'Revoked' : 'Revoke';
@@ -113,15 +154,17 @@ export function showAgentKeyDialog(actions: {
     create.disabled = true;
     status.textContent = 'Creating key…';
     try {
-      const key = await actions.create(label.value.trim());
+      const key = await actions.create(label.value.trim(), runtime.value.trim());
       if (closed) return;
       currentId = key.tokenId;
       instructions.value = actions.invite(key.token);
       invite.hidden = false;
       status.textContent = 'Key created. Copy the instructions to your AI.';
       await refresh();
-    } catch {
-      if (!closed) status.textContent = 'Could not create a key. Check your editing access, or wait a minute and try again.';
+    } catch (error) {
+      if (!closed) status.textContent = error instanceof Error && error.message
+        ? error.message
+        : 'Could not create a key. Check your editing access, or wait a minute and try again.';
     } finally {
       create.disabled = false;
     }

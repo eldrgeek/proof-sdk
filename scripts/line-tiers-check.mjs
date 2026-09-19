@@ -129,7 +129,7 @@ const dot = (page, i) => page.evaluate(i => {
 
 async function mintKey(page, slug, label) {
   const key = await page.evaluate(async ({ s, h, label }) => {
-    const r = await fetch(`/api/documents/${s}/agent-keys`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...h }, body: JSON.stringify({ label }) });
+    const r = await fetch(`/api/documents/${s}/agent-keys`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...h }, body: JSON.stringify({ label, runtime: 'Claude Opus 5 (Anthropic)' }) });
     return { status: r.status, body: await r.json() };
   }, { s: slug, h: clientHeaders, label });
   assert.equal(key.status, 201, JSON.stringify(key));

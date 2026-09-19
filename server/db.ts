@@ -1076,7 +1076,10 @@ function initDatabase(): void {
     )
   `);
   const accessColumns = new Set((d.prepare('PRAGMA table_info(document_access)').all() as Array<{ name: string }>).map(column => column.name));
-  for (const column of ['label', 'requested_by', 'requested_from', 'last_used_at']) {
+  // Cross invitation (2026-09-19): every agent key is bound to the verified human who created it
+  // (its sponsor) and carries the runtime that human declared. Keys made before this step are read
+  // as sponsored by the document's owner (server/cross-invitation.ts backfillAgentKeySponsors).
+  for (const column of ['label', 'requested_by', 'requested_from', 'last_used_at', 'sponsor_actor', 'sponsor_member_id', 'runtime', 'allow_direct_invite']) {
     if (!accessColumns.has(column)) d.exec(`ALTER TABLE document_access ADD COLUMN ${column} TEXT`);
   }
   d.exec('CREATE INDEX IF NOT EXISTS idx_document_access_slug ON document_access(document_slug)');
@@ -1873,6 +1876,44 @@ function initDatabase(): void {
       updated_by TEXT
     )
   `);
+  // Cross invitation (2026-09-19): an AI nominates a person (nothing is emailed; an Owner
+  // confirms or declines) and attests to a person's identity (read and comment only, marks
+  // never count). Both always come from the AI's own API call with its key, are rate-limited,
+  // are visible in the people dialog, and carry the AI's own words for the human who reads them.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_nominations (
+      id TEXT PRIMARY KEY,
+      slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      email TEXT NOT NULL,
+      name TEXT,
+      why TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      decided_at TEXT,
+      decided_by TEXT,
+      decline_reason TEXT,
+      invite_id TEXT
+    )
+  `);
+  d.exec('CREATE INDEX IF NOT EXISTS idx_document_nominations_slug ON document_nominations(slug, status)');
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_attestations (
+      id TEXT PRIMARY KEY,
+      slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      email TEXT NOT NULL,
+      member_id TEXT,
+      basis TEXT NOT NULL,
+      confidence TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      revoked_at TEXT,
+      revoked_by TEXT
+    )
+  `);
+  d.exec('CREATE INDEX IF NOT EXISTS idx_document_attestations_slug ON document_attestations(slug, revoked_at)');
+  d.exec('CREATE INDEX IF NOT EXISTS idx_document_attestations_email ON document_attestations(email, revoked_at)');
+
   d.exec(`CREATE TABLE IF NOT EXISTS client_errors (
     signature TEXT PRIMARY KEY,
     count INTEGER NOT NULL,
@@ -2819,28 +2860,59 @@ export function createDocumentAccessToken(
   slug: string,
   role: ShareRole,
   providedSecret?: string,
-  agent?: { label: string; requestedBy: string; requestedFrom: string },
+  agent?: {
+    label: string; requestedBy: string; requestedFrom: string;
+    /** Cross invitation: the verified human who added this AI, and what they said is running it. */
+    sponsorActor?: string | null; sponsorMemberId?: string | null; runtime?: string | null;
+  },
 ): { tokenId: string; role: ShareRole; secret: string; createdAt: string } {
   assertWritesAllowed('createDocumentAccessToken');
   const now = new Date().toISOString();
   const secret = providedSecret ?? randomUUID();
   const tokenId = randomUUID();
   getDb().prepare(`
-    INSERT INTO document_access (token_id, document_slug, role, secret_hash, created_at, revoked_at, label, requested_by, requested_from)
-    VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)
-  `).run(tokenId, slug, role, hashSecret(secret), now, agent?.label ?? null, agent?.requestedBy ?? null, agent?.requestedFrom ?? null);
+    INSERT INTO document_access (token_id, document_slug, role, secret_hash, created_at, revoked_at, label, requested_by, requested_from, sponsor_actor, sponsor_member_id, runtime)
+    VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+  `).run(tokenId, slug, role, hashSecret(secret), now, agent?.label ?? null, agent?.requestedBy ?? null, agent?.requestedFrom ?? null,
+    agent?.sponsorActor ?? null, agent?.sponsorMemberId ?? null, agent?.runtime ?? null);
   return { tokenId, role, secret, createdAt: now };
 }
 
-export function listDocumentAgentKeys(slug: string): Array<{
+export interface DocumentAgentKey {
   tokenId: string; label: string; createdAt: string; lastUsedAt: string | null; revokedAt: string | null;
-}> {
-  return getDb().prepare(`
+  /** Cross invitation (2026-09-19): who added this AI, what runs it, and its standing permissions. */
+  sponsorActor: string | null; sponsorMemberId: string | null; runtime: string | null;
+  allowDirectInvite: boolean;
+}
+
+export function listDocumentAgentKeys(slug: string): DocumentAgentKey[] {
+  const rows = getDb().prepare(`
     SELECT token_id AS tokenId, label, created_at AS createdAt,
-      last_used_at AS lastUsedAt, revoked_at AS revokedAt
+      last_used_at AS lastUsedAt, revoked_at AS revokedAt,
+      sponsor_actor AS sponsorActor, sponsor_member_id AS sponsorMemberId, runtime,
+      allow_direct_invite AS allowDirectInvite
     FROM document_access WHERE document_slug = ? AND label IS NOT NULL
     ORDER BY created_at DESC, token_id
-  `).all(slug) as ReturnType<typeof listDocumentAgentKeys>;
+  `).all(slug) as Array<Omit<DocumentAgentKey, 'allowDirectInvite'> & { allowDirectInvite: string | null }>;
+  return rows.map(row => ({ ...row, allowDirectInvite: row.allowDirectInvite === '1' }));
+}
+
+/** Cross invitation: an Owner grants (or withdraws) one AI's standing permission to invite. */
+export function setAgentKeyDirectInvite(slug: string, tokenId: string, allow: boolean): boolean {
+  assertWritesAllowed('setAgentKeyDirectInvite');
+  return getDb().prepare(`
+    UPDATE document_access SET allow_direct_invite = ?
+    WHERE document_slug = ? AND token_id = ? AND label IS NOT NULL AND revoked_at IS NULL
+  `).run(allow ? '1' : null, slug, tokenId).changes > 0;
+}
+
+/** Cross invitation: records the sponsor of a key that predates sponsors (a one-time backfill). */
+export function setAgentKeySponsor(tokenId: string, sponsorActor: string, sponsorMemberId: string | null): void {
+  assertWritesAllowed('setAgentKeySponsor');
+  getDb().prepare(`
+    UPDATE document_access SET sponsor_actor = ?, sponsor_member_id = COALESCE(sponsor_member_id, ?)
+    WHERE token_id = ? AND label IS NOT NULL AND sponsor_actor IS NULL
+  `).run(sponsorActor, sponsorMemberId, tokenId);
 }
 
 export function revokeDocumentAgentKey(slug: string, tokenId: string): boolean {
@@ -2907,6 +2979,16 @@ export function revokeDocumentAccessTokens(
   return changes;
 }
 
+/**
+ * Cross invitation: server/cross-invitation.ts registers how to tell whether an agent key is
+ * suspended (its sponsor lost access). Kept as a hook so that db.ts imports nothing from it.
+ */
+let agentKeySuspensionCheck: ((slug: string, tokenId: string) => boolean) | null = null;
+
+export function registerAgentKeySuspensionCheck(check: (slug: string, tokenId: string) => boolean): void {
+  agentKeySuspensionCheck = check;
+}
+
 export type DocumentAccessResolution = {
   role: ShareRole;
   tokenId: string | null;
@@ -2932,6 +3014,10 @@ export function resolveDocumentAccess(slug: string, presentedSecret: string): Do
   `).get(slug, hashed) as { token_id?: string; role?: ShareRole; label?: string | null } | undefined;
   if (!row?.role) return null;
   if (row.label != null) {
+    // Cross invitation (2026-09-19): an AI whose sponsor lost access to the document is suspended
+    // with them. The key is not revoked (a re-invited sponsor brings their AI back), but it opens
+    // nothing while the suspension stands.
+    if (row.token_id && agentKeySuspensionCheck?.(slug, row.token_id)) return null;
     getDb().prepare('UPDATE document_access SET last_used_at = ? WHERE token_id = ?')
       .run(new Date().toISOString(), row.token_id);
   }

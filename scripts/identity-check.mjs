@@ -169,7 +169,7 @@ async function run(browser, style) {
 
     // An agent key, minted in Mike's page the way "Add agent" mints it.
     const key = await mike.evaluate(async ({ s, h }) => {
-      const r = await fetch(`/api/documents/${s}/agent-keys`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...h }, body: JSON.stringify({ label: 'Claude COS' }) });
+      const r = await fetch(`/api/documents/${s}/agent-keys`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...h }, body: JSON.stringify({ label: 'Claude COS', runtime: 'Claude Opus 5 (Anthropic)' }) });
       return { status: r.status, body: await r.json() };
     }, { s: slug, h: clientHeaders });
     assert.equal(key.status, 201, JSON.stringify(key));

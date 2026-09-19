@@ -22,6 +22,15 @@ import {
   setLibrarySessionCookie,
 } from './auth.js';
 import { invitedSlugsFor } from '../document-team.js';
+import { attestedSlugsFor } from '../cross-invitation.js';
+
+/**
+ * Cross invitation (2026-09-19): an invited person sees the documents they were invited to, plus
+ * any an AI attested to them on (read and comment there, and nothing they mark counts).
+ */
+function visibleSlugsFor(member: { id: string; email: string | null }): string[] {
+  return [...new Set([...invitedSlugsFor(member.id), ...attestedSlugsFor(member.email)])];
+}
 import {
   allowLibraryDocumentCreation,
   archiveLibraryDocument,
@@ -200,7 +209,7 @@ libraryRoutes.get(
     const member = librarySessionFromResponse(res).member;
     const result = listLibraryDocuments({
       memberId: member.id,
-      onlySlugs: member.scope === 'invited' ? invitedSlugsFor(member.id) : null,
+      onlySlugs: member.scope === 'invited' ? visibleSlugsFor(member) : null,
       query: typeof req.query.q === 'string' ? req.query.q : '',
       filter,
       sort,
@@ -292,7 +301,7 @@ libraryRoutes.post(
       return;
     }
     const visitor = librarySessionFromResponse(res).member;
-    if (visitor.scope === 'invited' && !invitedSlugsFor(visitor.id).includes(stringParam(req.params.slug))) {
+    if (visitor.scope === 'invited' && !visibleSlugsFor(visitor).includes(stringParam(req.params.slug))) {
       res.status(404).json({ code: 'NOT_FOUND', message: 'Document not found.' });
       return;
     }

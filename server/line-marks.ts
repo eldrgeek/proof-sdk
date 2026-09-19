@@ -17,6 +17,7 @@ import {
   replaceDocumentLineMark,
   type DocumentLineMarkRow,
 } from './db.js';
+import { agentProvenanceMap, listNominations, nominationIssueInputs } from './cross-invitation.js';
 import { getHeadlessMilkdownParser, parseMarkdownWithHtmlFallback } from './milkdown-headless.js';
 import { stripAllProofSpanTags } from './proof-span-strip.js';
 import { broadcastToRoom } from './ws.js';
@@ -236,6 +237,9 @@ export interface IssueReport extends IssueSummary {
   ttls: Array<Record<string, unknown>>;
   /** `{do}` action lines (evaluated now). */
   dos: Array<Record<string, unknown>>;
+  /** Cross invitation: people AIs nominated, and who added each AI (the provenance chain). */
+  nominations: Array<Record<string, unknown>>;
+  agentSponsors: Record<string, unknown>;
   explains: Array<Record<string, unknown>>;
   terms: Array<Record<string, unknown>>;
   settings: { blind: boolean; blindSetBy: string | null; blindSetAt: string | null };
@@ -277,9 +281,12 @@ export async function buildIssueReport(slug: string, markdown: string, rawMarks:
   // Line tiers: a context line an AI read (and nothing open on it) is not an Issue for people.
   let tierEvaluation: TierEvaluation | undefined;
   try { tierEvaluation = evaluateDocumentTiers(slug, lines, lineMarks); } catch { tierEvaluation = undefined; }
+  // Cross invitation: a person an AI nominated, waiting on a human owner, is an Issue too.
+  let nominations: ReturnType<typeof nominationIssueInputs> = [];
+  try { nominations = nominationIssueInputs(slug, documentOwnerActors(slug)); } catch { nominations = []; }
   const computed = computeIssues({
     lines, lineMarks, team, reviewMarks, asks, uncertain: uncertainInputs(aids, states, team), objections: objectionInputs(aids),
-    alternatives: alternativeInputs(extras, team), ttl: ttlInputs(extras), dos: doReport.issueInputs,
+    alternatives: alternativeInputs(extras, team), ttl: ttlInputs(extras), dos: doReport.issueInputs, nominations,
     disagreementLines: extras.disagreement, disagreementAlternatives: extras.countsDisagreement,
     tiers: tierIssueInput(tierEvaluation),
   });
@@ -316,6 +323,8 @@ export async function buildIssueReport(slug: string, markdown: string, rawMarks:
     alternatives: extras.altViews.map(view => serializeAltSet(view, lines)),
     ttls: extras.ttlViews.map(view => serializeTtl(view, lines, now)),
     dos: doReport.dos,
+    nominations: listNominations(slug) as unknown as Array<Record<string, unknown>>,
+    agentSponsors: agentProvenanceMap(slug),
     explains: extrasPre.explains.map(serializeExplain),
     terms: termsReport(lines),
     settings: extrasPre.settings,
