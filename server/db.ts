@@ -216,7 +216,7 @@ function assertDatabaseEnvironmentCompatibility(context: 'startup' | 'write', op
   );
 }
 
-function assertWritesAllowed(operation: string): void {
+export function assertWritesAllowed(operation: string): void {
   assertDatabaseEnvironmentCompatibility('write', operation);
 }
 
@@ -1267,7 +1267,78 @@ function initDatabase(): void {
     const cols = new Set((d.prepare('PRAGMA table_info(document_line_marks)').all() as Array<{ name: string }>).map(c => c.name));
     if (!cols.has('via')) d.exec('ALTER TABLE document_line_marks ADD COLUMN via TEXT');
     if (!cols.has('line_text')) d.exec('ALTER TABLE document_line_marks ADD COLUMN line_text TEXT');
+    // Step B4c: an AI's one-line rationale for its mark.
+    if (!cols.has('why')) d.exec('ALTER TABLE document_line_marks ADD COLUMN why TEXT');
   }
+
+  // Proof Documents Step B4c: review notes (an AI's why / reject hints / explicit priority on a
+  // suggestion or a line) and uncertain flags. Beside the document like line marks.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_review_notes (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      actor_key TEXT NOT NULL,
+      target_kind TEXT NOT NULL,
+      mark_id TEXT,
+      line_hash TEXT,
+      line_occurrence INTEGER,
+      line_ordinal INTEGER,
+      line_kind TEXT,
+      line_excerpt TEXT,
+      line_text TEXT,
+      why TEXT,
+      reject_hints_json TEXT NOT NULL DEFAULT '[]',
+      priority INTEGER,
+      priority_reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_review_notes_slug ON document_review_notes(document_slug, updated_at)`);
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_line_flags (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      actor_key TEXT NOT NULL,
+      note TEXT,
+      line_hash TEXT NOT NULL,
+      line_occurrence INTEGER NOT NULL,
+      line_ordinal INTEGER NOT NULL,
+      line_kind TEXT NOT NULL,
+      line_excerpt TEXT NOT NULL DEFAULT '',
+      line_text TEXT,
+      created_at TEXT NOT NULL,
+      cleared_at TEXT,
+      cleared_by TEXT
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_line_flags_slug ON document_line_flags(document_slug, created_at)`);
+
+  // Proof Documents Step B4d: objections ("I'd agree if…"), independent of the text anchors.
+  // lines_json keeps each covered line's original and current anchor; ack_json what the objector
+  // has seen. Never deleted: a cleared or overridden objection keeps its record.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_objections (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      actor_key TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      condition TEXT,
+      lines_json TEXT NOT NULL,
+      ack_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      created_at TEXT NOT NULL,
+      closed_at TEXT,
+      closed_by TEXT,
+      override_reason TEXT,
+      kept_at TEXT,
+      repair_notified_json TEXT
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_objections_slug ON document_objections(document_slug, created_at)`);
 
   // Proof Documents Step B3c: aligned snapshots. Frozen when a document's Issue count reaches 0:
   // its markdown, every line mark, the asks with answers and the team. Rows are never changed.
@@ -4084,6 +4155,8 @@ export interface DocumentLineMarkRow {
   /** Step B3b (null on older rows). */
   via?: string | null;
   line_text?: string | null;
+  /** Step B4c: an AI's rationale (null on older rows). */
+  why?: string | null;
 }
 
 export function listDocumentLineMarks(slug: string): DocumentLineMarkRow[] {
@@ -4126,10 +4199,10 @@ export function replaceDocumentLineMark(input: {
       d.prepare(`
         INSERT INTO document_line_marks (
           id, document_slug, by_actor, actor_key, status, reason, line_hash, line_occurrence,
-          line_ordinal, line_kind, line_excerpt, created_at, updated_at, via, line_text
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          line_ordinal, line_kind, line_excerpt, created_at, updated_at, via, line_text, why
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(n.id, input.slug, n.by_actor, input.actorKey, n.status, n.reason, n.line_hash, n.line_occurrence,
-        n.line_ordinal, n.line_kind, n.line_excerpt, n.at, n.at, n.via ?? null, n.line_text ?? null);
+        n.line_ordinal, n.line_kind, n.line_excerpt, n.at, n.at, n.via ?? null, n.line_text ?? null, n.why ?? null);
     }
     return removed;
   });

@@ -44,6 +44,9 @@ import {
   type ReviewMarkLike,
 } from '../src/shared/line-marks.js';
 import { buildDirectory, clientDirectory } from './identity.js';
+import { WHY_POLICY, cleanWhy } from '../src/shared/review-aids.js';
+import { annotateIssues, evaluateAids, objectionInputs, serializeFlag, serializeNote, serializeObjection, uncertainInputs } from './review-aids-eval.js';
+import { isAiActor } from '../src/shared/line-marks.js';
 import { canonicalizeLineMarks, isEmailAddress, resolveTargetActor, verifiedHumanActor, type IdentityDirectory } from '../src/shared/identity.js';
 import { FOLDING, computeSections, sectionByHeading, sectionIssueCount, sectionLineIndices } from '../src/shared/folding.js';
 
@@ -69,6 +72,7 @@ export function rowToLineMark(row: DocumentLineMarkRow): LineMark {
     at: row.updated_at,
     anchor,
     via: isMarkVia(row.via) ? row.via : 'api',
+    ...(row.why ? { why: row.why } : {}),
   };
 }
 
@@ -181,6 +185,11 @@ export interface IssueReport extends IssueSummary {
   carried: Array<{ markId: string; by: string; status: string; lineIndex: number; from: string | null; to: string }>;
   /** Step B2: the document's outline, with each section's Issue count (same Issues as above). */
   sections: Array<{ headingIndex: number; ref: string; level: number; text: string; lineEnd: number; parent: number | null; issues: number }>;
+  /** Step B4c: open uncertain flags, AI review notes (why / reject hints / priority). */
+  flags: Array<Record<string, unknown>>;
+  reviewNotes: Array<Record<string, unknown>>;
+  /** Step B4d: open objections. */
+  objections: Array<Record<string, unknown>>;
 }
 
 export async function buildIssueReport(slug: string, markdown: string, rawMarks: unknown, options: {
@@ -193,9 +202,14 @@ export async function buildIssueReport(slug: string, markdown: string, rawMarks:
   const dir = buildDirectory(slug);
   const lineMarks = listCanonicalLineMarks(slug, dir);
   const reviewMarks = reviewMarksFromStored(rawMarks);
-  const team = computeDocumentTeam(slug, lineMarks, reviewMarks, options.teamExtra, dir);
+  // Step B4c/B4d: flags and objections are Issues too; flaggers and objectors join the team.
+  const aids = evaluateAids(slug, lines, reviewMarks);
+  const team = computeDocumentTeam(slug, lineMarks, reviewMarks, [...(options.teamExtra ?? []), ...aids.teamExtra], dir);
   const asks = options.asks ? options.asks(lines) : [];
-  const summary = computeIssues({ lines, lineMarks, team, reviewMarks, asks });
+  const states = buildLineStates(lines, lineMarks);
+  const computed = computeIssues({ lines, lineMarks, team, reviewMarks, asks, uncertain: uncertainInputs(aids, states, team), objections: objectionInputs(aids) });
+  // Step B4c: each Issue carries its team-neutral priority (rules + explicit AI priorities).
+  const summary = { ...computed, issues: annotateIssues(computed.issues, aids.notes, lines) as typeof computed.issues };
   const sections = computeSections(lines).map(section => ({
     headingIndex: section.headingIndex,
     ref: `b${section.block + 1}`,
@@ -207,7 +221,7 @@ export async function buildIssueReport(slug: string, markdown: string, rawMarks:
   }));
   const owners = documentOwnerActors(slug);
   const carried: IssueReport['carried'] = [];
-  for (const state of buildLineStates(lines, lineMarks)) {
+  for (const state of states) {
     for (const entry of state.marks.values()) {
       if (entry.carried) carried.push({ markId: entry.mark.id, by: entry.mark.by, status: entry.mark.status, lineIndex: state.line.index, from: entry.carriedFrom ?? null, to: state.line.text.slice(0, 200) });
     }
@@ -220,6 +234,9 @@ export async function buildIssueReport(slug: string, markdown: string, rawMarks:
     // Step B6: display names for the actors above (a verified human's actor is their email).
     actorLabels: clientDirectory(dir, [...team, ...owners, ...lineMarks.map(mark => mark.by)]).labels,
     lineMarks,
+    flags: aids.flagViews.map(view => serializeFlag(view, lines)),
+    reviewNotes: aids.notes.map(note => serializeNote(note, lines)),
+    objections: aids.objectionViews.map(view => serializeObjection(view, lines)),
     lines: lines.map(line => ({
       index: line.index,
       kind: line.kind,
@@ -242,6 +259,8 @@ function cleanActor(value: unknown): string | null {
 type ValidEntry = {
   status: LineMark['status'] | null;
   via: MarkVia;
+  /** Step B4c: an AI's rationale (kept only from AI actors, WHY_POLICY). */
+  why: string | null;
   reason: string;
   anchor: LineAnchor;
   replaceIds: string[];
@@ -252,6 +271,7 @@ type ValidEntry = {
 function validateEntry(input: {
   status: unknown;
   reason?: unknown;
+  why?: unknown;
   via?: unknown;
   anchor: unknown;
   replaceIds?: unknown;
@@ -284,7 +304,7 @@ function validateEntry(input: {
       .slice(0, 5)
     : [];
   const via: MarkVia = isMarkVia(input.via) ? input.via : 'api';
-  return { ok: true, entry: { status, via, reason, anchor, replaceIds, replaceAnchors } };
+  return { ok: true, entry: { status, via, why: cleanWhy(input.why), reason, anchor, replaceIds, replaceAnchors } };
 }
 
 /** Writes validated entries in one database transaction. Returns the new marks and removed ids. */
@@ -300,6 +320,7 @@ function applyEntries(slug: string, by: string, entries: ValidEntry[]): { marks:
       const excerpt = normalizeLineText(String(anchor.excerpt ?? '')).slice(0, 80);
       const lineText = typeof anchor.text === 'string' ? normalizeLineText(anchor.text).slice(0, LINE_TEXT_MAX) : '';
       const markReason = status === 'rejected' ? reason : (reason || null);
+      const why = entry.why && (WHY_POLICY.lineMarkWhyFromHumans || isAiActor(by)) ? entry.why : null;
       removed.push(...replaceDocumentLineMark({
         slug,
         actorKey: key,
@@ -320,10 +341,11 @@ function applyEntries(slug: string, by: string, entries: ValidEntry[]): { marks:
             at: now,
             via: entry.via,
             line_text: lineText || null,
+            why,
           }
           : null,
       }));
-      marks.push(status ? { id, by, status, reason: markReason, at: now, anchor: { ...anchor, excerpt, ...(lineText ? { text: lineText } : {}) }, via: entry.via } : null);
+      marks.push(status ? { id, by, status, reason: markReason, at: now, anchor: { ...anchor, excerpt, ...(lineText ? { text: lineText } : {}) }, via: entry.via, ...(why ? { why } : {}) } : null);
     }
   };
   if (entries.length === 1) run();
@@ -342,6 +364,8 @@ export function writeLineMark(slug: string, input: {
   reason?: unknown;
   /** Step B3b: how the mark was earned (MarkVia; default "api"). */
   via?: unknown;
+  /** Step B4c: an AI's one-line rationale. */
+  why?: unknown;
   anchor: unknown;
   replaceIds?: unknown;
   replaceAnchors?: unknown;
@@ -356,7 +380,7 @@ export function writeLineMark(slug: string, input: {
   const mark = marks[0];
   const { status, anchor } = checked.entry;
   try {
-    addDocumentEvent(slug, 'line_mark.updated', { markId: mark?.id ?? null, removed, status: status ?? 'unseen', via: checked.entry.via, anchor: { hash: anchor.hash, excerpt: mark?.anchor.excerpt ?? anchor.excerpt }, source: input.source }, by);
+    addDocumentEvent(slug, 'line_mark.updated', { markId: mark?.id ?? null, removed, status: status ?? 'unseen', via: checked.entry.via, ...(mark?.why ? { why: mark.why } : {}), anchor: { hash: anchor.hash, excerpt: mark?.anchor.excerpt ?? anchor.excerpt }, source: input.source }, by);
   } catch (error) {
     console.warn('[line-marks] failed to record event', { slug, error: String(error) });
   }
@@ -370,6 +394,7 @@ function invalidActor(): LineMarkResult {
 
 export interface LineMarkBatchEntry {
   anchor: unknown;
+  why?: unknown;
   /** Overrides the batch's status for this line (an undo restores each line's own earlier mark). */
   status?: unknown;
   reason?: unknown;
@@ -389,6 +414,8 @@ export function writeLineMarksBatch(slug: string, input: {
   reason?: unknown;
   /** Step B3b: default via for every entry (a section batch is "section"). */
   via?: unknown;
+  /** Step B4c: default rationale for every entry (an AI's batch). */
+  why?: unknown;
   lines: unknown;
   canApprove: boolean;
   source: 'page' | 'agent';
@@ -414,6 +441,7 @@ export function writeLineMarksBatch(slug: string, input: {
       status: raw.status !== undefined ? raw.status : input.status,
       reason: raw.reason !== undefined ? raw.reason : input.reason,
       via: raw.via !== undefined ? raw.via : input.via,
+      why: raw.why !== undefined ? raw.why : input.why,
       anchor: raw.anchor,
       replaceIds: raw.replaceIds,
       replaceAnchors: raw.replaceAnchors,
@@ -533,6 +561,7 @@ export async function writeAgentLineMark(slug: string, markdown: string, body: R
       by: options.by,
       status: body.status,
       reason: body.reason,
+      why: body.why,
       lines: members.map(line => ({ anchor: anchorForLine(line), replaceIds: staleIdsOnLine(lines, line, own) })),
       via: 'section',
       canApprove: options.canApprove,
@@ -558,6 +587,7 @@ export async function writeAgentLineMark(slug: string, markdown: string, body: R
         anchor: anchorForLine(target.line),
         ...(item.status !== undefined ? { status: item.status } : {}),
         ...(item.reason !== undefined ? { reason: item.reason } : {}),
+        ...(item.why !== undefined ? { why: item.why } : {}),
         replaceIds: staleIdsOnLine(lines, target.line, own),
       });
     }
@@ -565,6 +595,7 @@ export async function writeAgentLineMark(slug: string, markdown: string, body: R
       by: options.by,
       status: body.status,
       reason: body.reason,
+      why: body.why,
       lines: entries,
       canApprove: options.canApprove,
       source: 'agent',
@@ -579,6 +610,7 @@ export async function writeAgentLineMark(slug: string, markdown: string, body: R
     by: options.by,
     status: body.status,
     reason: body.reason,
+    why: body.why,
     anchor: anchorForLine(target.line),
     replaceIds: staleIdsOnLine(lines, target.line, own),
     canApprove: options.canApprove,

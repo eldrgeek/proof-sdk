@@ -200,7 +200,7 @@ async function desktop(browser, base, style, width) {
     assert.equal(await dotStatus(page, 1), 'agreed');
     await page.keyboard.press('j'); // line 2
     await page.keyboard.press('r');
-    const input = page.locator('.prw-right .plm-reason input');
+    const input = page.locator('.prw-right .plm-reason input:not(.plm-condition)');
     await input.waitFor({ state: 'visible' });
     assert.ok(await input.evaluate(e => e === document.activeElement), 'R did not focus the reason field');
     await page.keyboard.type('Needs a source, ask Jake');

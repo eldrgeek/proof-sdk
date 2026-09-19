@@ -127,10 +127,10 @@ try {
     const reviewMarks = [{ id: 'c1', kind: 'comment', by: 'human:A', quote: 'Detail', pos: lines[DETAIL + 1].pos + 2, open: true }];
     const summary = shared.computeIssues({ lines, lineMarks, team, reviewMarks });
     const count = (i: number) => folding.sectionIssueCount(folding.sectionByHeading(sections, i)!, lines, summary);
-    assert.deepEqual(count(GOALS), { total: 2, lines: 1, reviewMarks: 1, asks: 0 });
-    assert.deepEqual(count(DETAIL), { total: 1, lines: 0, reviewMarks: 1, asks: 0 });
-    assert.deepEqual(count(PLAN), { total: 1, lines: 1, reviewMarks: 0, asks: 0 });
-    assert.deepEqual(count(TITLE), { total: 3, lines: 2, reviewMarks: 1, asks: 0 }, 'a parent counts its sub-sections');
+    assert.deepEqual(count(GOALS), { total: 2, lines: 1, reviewMarks: 1, asks: 0, aids: 0 });
+    assert.deepEqual(count(DETAIL), { total: 1, lines: 0, reviewMarks: 1, asks: 0, aids: 0 });
+    assert.deepEqual(count(PLAN), { total: 1, lines: 1, reviewMarks: 0, asks: 0, aids: 0 });
+    assert.deepEqual(count(TITLE), { total: 3, lines: 2, reviewMarks: 1, asks: 0, aids: 0 }, 'a parent counts its sub-sections');
     assert.equal(count(APPENDIX).total, 0, 'resolved section: ✓');
   });
 

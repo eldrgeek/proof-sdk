@@ -73,6 +73,8 @@ export interface LineMark {
   anchor: LineAnchor;
   /** Step B3b: how the mark was earned (absent on older marks: read as "api"). */
   via?: MarkVia | null;
+  /** Step B4c: an AI's one-line rationale for its mark (REVIEW_AIDS WHY_POLICY). */
+  why?: string | null;
 }
 
 export interface DocLine {
@@ -455,6 +457,40 @@ export type ProofIssue =
     snoozedFor: string[];
   }
   | {
+    /**
+     * Step B4c: a writer flagged the line uncertain. An Issue for each member (not the flagger)
+     * who has not taken a deliberate position on the line since the flag (review-aids.ts).
+     */
+    type: 'uncertain';
+    flagId: string;
+    lineIndex: number;
+    pos: number;
+    kind: string;
+    excerpt: string;
+    by: string;
+    note: string | null;
+    openFor: string[];
+  }
+  | {
+    /**
+     * Step B4d: an open objection ("I'd agree if…") over one or more lines (objections.ts).
+     * An Issue for everyone while open. lineIndex/pos are its first line still found (null when
+     * every covered line was deleted).
+     */
+    type: 'objection';
+    objectionId: string;
+    lineIndex: number | null;
+    lineIndices: number[];
+    pos: number | null;
+    kind: string;
+    excerpt: string;
+    by: string;
+    reason: string;
+    condition: string | null;
+    deletedLines: number;
+    repairPending: boolean;
+  }
+  | {
     type: 'comment' | 'suggestion';
     markId: string;
     pos: number | null;
@@ -467,7 +503,27 @@ export interface IssueSummary {
   team: string[];
   issues: ProofIssue[];
   aligned: boolean;
-  counts: { lines: number; lineIssues: number; reviewMarkIssues: number; askIssues: number; total: number };
+  counts: { lines: number; lineIssues: number; reviewMarkIssues: number; askIssues: number; uncertainIssues: number; objectionIssues: number; total: number };
+}
+
+/** Step B4c: an uncertain flag that is an Issue (src/shared/review-aids.ts uncertainIssueInputs). */
+export interface UncertainIssueInput {
+  id: string;
+  lineIndex: number;
+  by: string;
+  note: string | null;
+  openFor: string[];
+}
+
+/** Step B4d: an open objection (src/shared/objections.ts objectionIssueInputs). */
+export interface ObjectionIssueInput {
+  id: string;
+  lineIndices: number[];
+  by: string;
+  reason: string;
+  condition: string | null;
+  deletedLines: number;
+  repairPending: boolean;
 }
 
 /** Step B3: an open ask, already evaluated (src/shared/asks.ts askIssueInputs). */
@@ -486,6 +542,10 @@ export function computeIssues(input: {
   team: string[];
   reviewMarks?: ReviewMarkLike[];
   asks?: AskIssueInput[];
+  /** Step B4c: uncertain flags that are Issues. */
+  uncertain?: UncertainIssueInput[];
+  /** Step B4d: open objections. */
+  objections?: ObjectionIssueInput[];
 }): IssueSummary {
   const states = buildLineStates(input.lines, input.lineMarks);
   const issues: ProofIssue[] = [];
@@ -557,16 +617,54 @@ export function computeIssues(input: {
       snoozedFor: ask.snoozedFor,
     });
   }
+  let uncertainIssues = 0;
+  for (const flag of input.uncertain ?? []) {
+    const line = input.lines[flag.lineIndex];
+    if (!line || flag.openFor.length === 0) continue;
+    uncertainIssues += 1;
+    issues.push({
+      type: 'uncertain',
+      flagId: flag.id,
+      lineIndex: line.index,
+      pos: line.pos,
+      kind: line.kind,
+      excerpt: line.text.slice(0, 120),
+      by: flag.by,
+      note: flag.note,
+      openFor: flag.openFor,
+    });
+  }
+  let objectionIssues = 0;
+  for (const objection of input.objections ?? []) {
+    const found = objection.lineIndices.map(index => input.lines[index]).filter((line): line is DocLine => Boolean(line));
+    const first = found[0] ?? null;
+    objectionIssues += 1;
+    issues.push({
+      type: 'objection',
+      objectionId: objection.id,
+      lineIndex: first ? first.index : null,
+      lineIndices: found.map(line => line.index),
+      pos: first ? first.pos : null,
+      kind: first ? first.kind : 'deleted',
+      excerpt: first ? first.text.slice(0, 120) : '(the lines it covered were deleted)',
+      by: objection.by,
+      reason: objection.reason,
+      condition: objection.condition,
+      deletedLines: objection.deletedLines,
+      repairPending: objection.repairPending,
+    });
+  }
   // Document order; review marks without a position go last. At one position an ask comes
-  // before the line's own Issue, so Next issue lands on the decision first.
-  const rank = (issue: ProofIssue) => (issue.type === 'ask' ? 0 : issue.type === 'line' ? 1 : 2);
+  // before the line's own Issue, so Next issue lands on the decision first (then an objection,
+  // then an uncertain flag).
+  const rank = (issue: ProofIssue) => (issue.type === 'ask' ? 0 : issue.type === 'objection' ? 1 : issue.type === 'uncertain' ? 2 : issue.type === 'line' ? 3 : 4);
   issues.sort((a, b) => ((a.pos ?? Number.MAX_SAFE_INTEGER) - (b.pos ?? Number.MAX_SAFE_INTEGER)) || (rank(a) - rank(b)));
-  const lineIssues = issues.length - reviewMarkIssues - askIssues;
+  const lineIssues = issues.length - reviewMarkIssues - askIssues - uncertainIssues - objectionIssues;
   return {
     team: input.team,
     issues,
     aligned: issues.length === 0,
-    counts: { lines: input.lines.length, lineIssues, reviewMarkIssues, askIssues, total: issues.length },
+    counts: { lines: input.lines.length, lineIssues, reviewMarkIssues, askIssues, uncertainIssues, objectionIssues, total: issues.length },
   };
 }
 

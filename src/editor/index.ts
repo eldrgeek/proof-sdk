@@ -3737,6 +3737,10 @@ class ProofEditorImpl implements ProofEditor {
         markScope: (lineIndex) => this.folding?.markScope(lineIndex) ?? null,
         revealLine: (lineIndex) => this.folding?.reveal(lineIndex) ?? false,
         onAskAnswered: (lineIndex) => this.readingWalk?.askAnswered(lineIndex),
+        // Step B4d: shift-click ranges start at the reading walk's focus line.
+        anchorLine: () => this.readingWalk?.focusIndex() ?? 0,
+        // Step B4c: the sitting budget was used (the rail shows it; phones get the sheet).
+        onBudgetReached: () => this.readingWalk?.budgetReached(),
       });
       (window as unknown as { __proofLineMarks?: LineMarksUI }).__proofLineMarks = this.lineMarks;
       // Proof Documents Step 1b: the three-column reading layout and the reading walk.

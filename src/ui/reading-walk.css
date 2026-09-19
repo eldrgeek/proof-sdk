@@ -164,3 +164,11 @@ body.prw-right-collapsed .prw-right .prw-rail-head { padding: 6px 2px; justify-c
   .prw-since-item { padding: 10px; font-size: 14px; }
   .prw-rate select { min-height: 36px; font-size: 14px; }
 }
+
+/* Proof Documents Step B4c: an AI change's rationale and "Ask why" (Claude Opus 5, 2026-09-19). */
+.prw-why { margin: 0 0 6px; padding: 6px 8px; border-radius: 6px; background: #f5f3ff; color: #4c1d95; font-size: 12px; }
+.prw-why-label { font-weight: 600; }
+.prw-why-by { color: #6b7280; }
+.prw-ask-why { display: inline-block; margin: 0 0 6px; font-size: 12px; }
+.prw-ask-why:disabled { color: #6b7280; text-decoration: none; cursor: default; }
+.prw-since-group[data-kind="repairs"] h4 { color: #1d4ed8; }

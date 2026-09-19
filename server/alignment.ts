@@ -20,7 +20,10 @@ import {
   type DocumentAlignedSnapshotRow,
 } from './db.js';
 import { broadcastToRoom } from './ws.js';
-import { buildIssueReport, computeServerLines, listCanonicalLineMarks, type IssueReport } from './line-marks.js';
+import { buildIssueReport, computeServerLines, listCanonicalLineMarks, reviewMarksFromStored, type IssueReport } from './line-marks.js';
+import { ownObjections } from './review-aids.js';
+import { serverSuggestionsOnLine } from './review-aids-eval.js';
+import { evaluateObjection } from '../src/shared/objections.js';
 import { buildAskReport, listCanonicalAsks } from './asks.js';
 import { buildDirectory } from './identity.js';
 import { recoverCanonicalDocumentIfNeeded } from './canonical-document.js';
@@ -213,7 +216,7 @@ export async function buildSinceYou(slug: string, actor: string, state?: { markd
   const latest = latestAlignedSnapshot(slug);
   const payload = latest ? parsePayload(latest) : null;
   const me = actorKey(actor);
-  return computeSinceYou({
+  const report = computeSinceYou({
     actor,
     lines,
     lineMarks: listCanonicalLineMarks(slug, dir),
@@ -222,6 +225,40 @@ export async function buildSinceYou(slug: string, actor: string, state?: { markd
     snapshot: latest && payload ? { id: latest.id, createdAt: latest.created_at, team: payload.team, lines: payload.lines } : null,
     isMe: (by) => Boolean(by) && actorKey(resolveTargetActor(String(by), dir)) === me,
   });
+  // Step B4d: "a repair was proposed" to each of your open objections whose lines changed,
+  // were deleted, or gained a suggestion since you objected (or last chose Keep).
+  try {
+    const onLine = serverSuggestionsOnLine(lines, reviewMarksFromStored(current.marks));
+    for (const objection of ownObjections(slug, actor)) {
+      const view = evaluateObjection(objection, lines, onLine);
+      if (!view.repairPending) continue;
+      const first = view.lineIndices.find((index): index is number => index !== null) ?? null;
+      const line = first === null ? null : lines[first];
+      const what: string[] = [];
+      const edited = view.changed.filter((c, i) => c && view.lineIndices[i] !== null).length;
+      if (edited) what.push(`${edited} ${edited === 1 ? 'line' : 'lines'} edited`);
+      if (view.deletedLines) what.push(`${view.deletedLines} deleted`);
+      const fresh = view.suggestions.filter(id => !objection.ack.suggestions.includes(id)).length;
+      if (fresh) what.push(`${fresh} new ${fresh === 1 ? 'suggestion' : 'suggestions'}`);
+      report.repairs.push({
+        type: 'repair',
+        lineIndex: first,
+        hash: line?.hash ?? null,
+        occurrence: line?.occurrence ?? null,
+        excerpt: line ? line.text.slice(0, 160) : (objection.lines[0]?.original.excerpt ?? ''),
+        objectionId: objection.id,
+        by: objection.by,
+        at: objection.keptAt ?? objection.createdAt,
+        reason: objection.reason,
+        detail: `${objection.condition ? `You'd agree if: ${objection.condition}. ` : ''}${what.join(', ')}`,
+      });
+    }
+  } catch (error) {
+    console.warn('[alignment] since-you repairs failed', { slug, error: String(error) });
+  }
+  report.counts.repairs = report.repairs.length;
+  report.counts.total += report.repairs.length;
+  return report;
 }
 
 /** Step B3c: one snapshot as its markdown ledger (<id>.md) or JSON (<id>). */

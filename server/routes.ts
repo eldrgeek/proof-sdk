@@ -102,9 +102,11 @@ import {
   validateOpPrecondition,
 } from './mutation-stage.js';
 import { resolveExplicitAgentIdentity } from '../src/shared/agent-identity.js';
-import { activeAgentKeyActors, documentOwnerActors, isLibraryDocumentCreator, listCanonicalLineMarks, listLineMarks, reviewMarksFromStored, writeLineMark, writeLineMarksBatch } from './line-marks.js';
+import { activeAgentKeyActors, computeServerLines, documentOwnerActors, isLibraryDocumentCreator, listCanonicalLineMarks, listLineMarks, reviewMarksFromStored, writeLineMark, writeLineMarksBatch } from './line-marks.js';
 import { answerAsk, listCanonicalAsks, reaskAsk, withdrawAsk } from './asks.js';
-import { buildSinceYou, checkAlignment, latestSnapshotInfo, listSnapshotInfos, scheduleAlignmentCheck, sendSnapshotFile } from './alignment.js';
+import { buildSinceYou, checkAlignment, currentDocumentState, latestSnapshotInfo, listSnapshotInfos, scheduleAlignmentCheck, sendSnapshotFile } from './alignment.js';
+import { clearFlag, clearObjection, createObjection, keepObjection, writeFlag } from './review-aids.js';
+import { listFlags, listObjections, listReviewNotes } from './review-aids-store.js';
 import { buildDirectory, clientDirectory, decideActor, sessionIdentity } from './identity.js';
 import { IDENTITY_POLICY, actorsIn, isEmailAddress, verifiedHumanActor, type IdentityDirectory, type ViewerIdentity } from '../src/shared/identity.js';
 import { actorKey, agentKeyActor } from '../src/shared/line-marks.js';
@@ -1949,9 +1951,14 @@ apiRoutes.get('/documents/:slug/line-marks', (req: Request, res: Response) => {
   // Comment and suggestion authors in the stored document: the page resolves them to people for
   // the team (a comment typed as "Mike Wolf" counts as the member of that name).
   const reviewAuthors = reviewMarksFromStored(doc.marks).flatMap(mark => [mark.by, ...(mark.replies ?? []).map(reply => reply.by)]);
+  // Step B4c/B4d: flags, AI review notes and open objections (the page evaluates them).
+  const flags = listFlags(slug);
+  const reviewNotes = listReviewNotes(slug);
+  const objections = listObjections(slug);
   const directory = clientDirectory(dir, [
     ...actorsIn(lineMarks, asks, [...owners, ...agentKeyActors, ...reviewAuthors, me.actor]),
     ...listLineMarks(slug).map(mark => mark.by),
+    ...flags.map(flag => flag.by), ...reviewNotes.map(note => note.by), ...objections.map(objection => objection.by),
   ]);
   res.setHeader('Cache-Control', 'no-store');
   res.json({
@@ -1966,7 +1973,62 @@ apiRoutes.get('/documents/:slug/line-marks', (req: Request, res: Response) => {
     identity: { me, directory },
     // Step B3c: the latest aligned snapshot (the top bar's "Aligned as of").
     alignedSnapshot: latestSnapshotInfo(slug),
+    flags,
+    reviewNotes,
+    objections,
   });
+});
+
+// Proof Documents Steps B4c + B4d: flags and objections from the page. Writes need comment
+// access; the actor is decided as for line marks (a signed-in session wins over a typed name).
+function pageAidRoute(path: string, run: (ctx: { req: Request; slug: string; by: string; access: ReturnType<typeof resolveLineMarkAccess>; body: Record<string, unknown> }) => Promise<{ status: number; body: Record<string, unknown> }> | { status: number; body: Record<string, unknown> }): void {
+  apiRoutes.post(path, opsRateLimiter, async (req: Request, res: Response) => {
+    const slug = getSlugParam(req);
+    const doc = slug ? getDocumentBySlug(slug) : undefined;
+    if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+    const access = resolveLineMarkAccess(req, slug, doc);
+    if (!access.canMark) { res.status(403).json({ success: false, error: 'This needs comment access' }); return; }
+    const body = isRecord(req.body) ? req.body : {};
+    const actor = resolvePageActor(req, slug, access, body.by);
+    if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
+    const result = await run({ req, slug, by: actor.actor, access, body });
+    if (result.status === 200) scheduleAlignmentCheck(slug);
+    res.status(result.status).json({ ...result.body, actor: actor.actor, trust: actor.trust });
+  });
+}
+
+// Body: { by, anchor, note? }: flag a line uncertain (or update your note on your flag there).
+pageAidRoute('/documents/:slug/flags', ({ slug, by, body }) => writeFlag(slug, { by, anchor: body.anchor, note: body.note, source: 'page' }));
+// The flagger (or an Owner) clears a flag.
+pageAidRoute('/documents/:slug/flags/:flagId/clear', ({ req, slug, by, access }) =>
+  clearFlag(slug, { id: String(req.params.flagId ?? ''), by, isOwner: access.canApprove, source: 'page' }));
+// Body: { by, lines: [anchor, ...], reason, condition?, suggestions?: [markId, ...] }.
+pageAidRoute('/documents/:slug/objections', async ({ slug, by, access, body }) => {
+  const state = await currentDocumentState(slug);
+  return createObjection(slug, {
+    by, anchors: body.lines, reason: body.reason, condition: body.condition,
+    suggestions: Array.isArray(body.suggestions) ? body.suggestions.filter((id): id is string => typeof id === 'string' && id.length <= 100) : [],
+    lines: state ? await computeServerLines(state.markdown) : undefined,
+    source: 'page', canMark: access.canMark,
+  });
+});
+// The objector clears it; an Owner overrides it with { reason } (recorded).
+pageAidRoute('/documents/:slug/objections/:objectionId/clear', ({ req, slug, by, access, body }) =>
+  clearObjection(slug, { id: String(req.params.objectionId ?? ''), by, isOwner: access.canApprove, reason: body.reason, source: 'page' }));
+// The objector saw the repair and still objects: { by, ack: { hashes, suggestions } }.
+pageAidRoute('/documents/:slug/objections/:objectionId/keep', async ({ req, slug, by, body }) => {
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  return keepObjection(slug, { id: String(req.params.objectionId ?? ''), by, ack: body.ack, markdown: state.markdown, rawMarks: state.marks, source: 'page' });
+});
+// Step B4c: the reader tapped "Ask why" on a change (the page also posts the reply itself):
+// recorded as review.why_asked so the author's Familiar sees the question. Body: { by, markId, author }.
+pageAidRoute('/documents/:slug/why-asked', ({ slug, by, body }) => {
+  const markId = typeof body.markId === 'string' ? body.markId.slice(0, 100) : '';
+  if (!markId) return { status: 400, body: { success: false, error: 'Missing markId' } };
+  const author = typeof body.author === 'string' ? body.author.slice(0, 120) : null;
+  try { addDocumentEvent(slug, 'review.why_asked', { markId, author }, by); } catch { /* optional */ }
+  return { status: 200, body: { success: true } };
 });
 
 // Step B3c: "Since you" for the viewer (a signed-in person, an agent key's AI, or the guest who

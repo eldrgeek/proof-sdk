@@ -37,7 +37,37 @@ import { askIssueInputs, askTeamActors, evaluateAsks, type AskChoice, type AskVi
 import { setAskDecorations, type AskDecorationSpec } from '../editor/plugins/ask-view';
 import { askControlSignature, buildAskControl, buildAskTag, type AskControl } from './asks';
 import { setLineMarksViewListener, peekPendingLocalLineEdits, takePendingLocalLineEdits } from '../editor/plugins/line-marks-view';
-import { EMPTY_DIRECTORY, actorTrust, normalizeActorString, resolveTargetActor, type IdentityDirectory, type ViewerIdentity } from '../shared/identity';
+import { EMPTY_DIRECTORY, actorTrust, isGuestActor, normalizeActorString, resolveTargetActor, type IdentityDirectory, type ViewerIdentity } from '../shared/identity';
+import {
+  PRIORITY_LABEL,
+  REJECT_CHIPS,
+  SITTING_BUDGET,
+  UNCERTAIN_POLICY,
+  evaluateFlags,
+  explicitPriorityLookup,
+  flaggedLines,
+  nextRankedIssue,
+  noteLineIndex,
+  rankIssues,
+  rejectChipsFor,
+  sittingSummary,
+  uncertainIssueInputs,
+  type FlagView,
+  type RankedIssue,
+  type ReviewNote,
+  type SittingSummary,
+  type UncertainFlag,
+} from '../shared/review-aids';
+import {
+  OBJECTION_POLICY,
+  ackFor,
+  describeObjection,
+  evaluateObjections,
+  objectedLines,
+  objectionIssueInputs,
+  type ObjectionView,
+  type ProofObjection,
+} from '../shared/objections';
 import './line-marks.css';
 
 export interface LineMarksHost {
@@ -59,6 +89,10 @@ export interface LineMarksHost {
   revealLine?(lineIndex: number): boolean;
   /** Step B3: the viewer is answering the ask on this line (the reading walk's explicit action). */
   onAskAnswered?(lineIndex: number): void;
+  /** Step B4d: the line a shift-click range starts from (the reading walk's focus line). */
+  anchorLine?(): number;
+  /** Step B4c: the sitting budget was used when the reader asked for the next issue. */
+  onBudgetReached?(summary: SittingSummary): void;
 }
 
 export interface MarkBoxOptions {
@@ -76,6 +110,8 @@ export interface MarkBox {
   choose(status: StatusChoice, via?: MarkVia): boolean;
   /** Step B3: the line's ask control, when the line carries an ask (Y / N / T). */
   ask?: AskControl;
+  /** Step B4d: the lines a Reject from this box covers (the selection, or the line). */
+  scope?: number[];
 }
 
 export type StatusChoice = LineMarkStatus | 'unseen';
@@ -135,6 +171,27 @@ export class LineMarksUI {
   private askDecoQueued = false;
   private owners: string[] = [];
   private agentKeyActors: string[] = [];
+  /** Step B4c/B4d: flags, AI review notes and open objections from the server, evaluated here. */
+  private serverFlags: UncertainFlag[] = [];
+  private serverNotes: ReviewNote[] = [];
+  private serverObjections: ProofObjection[] = [];
+  private flagViews: FlagView[] = [];
+  private flagsByLine = new Map<number, UncertainFlag[]>();
+  private objectionViews: ObjectionView[] = [];
+  private objectionsByLine = new Map<number, ObjectionView[]>();
+  private reviewMarkCache: ReviewMarkLike[] = [];
+  /** Step B4c: this viewer's Issues in priority order (then document order). */
+  private ranked: RankedIssue[] = [];
+  /** Step B4d: lines selected in the margin (shift-click) for a Reject that covers several lines. */
+  private selection: number[] = [];
+  /** Step B4c: the sitting (Issues visited with Next issue) and its budget. */
+  private sittingVisited = new Set<string>();
+  private sittingStopped = false;
+  private budget = loadBudget();
+  private lastIssueKey: string | null = null;
+  private lastIssuePlace: { priority: number; pos: number } | null = null;
+  /** Step B4c: the "This sitting" setting and its status, shown in the reading rail. */
+  readonly budgetEl = document.createElement('div');
   /** Step B6: who the server says this viewer is, and the directory that reads names. */
   private serverMe: ViewerIdentity | null = null;
   private directory: IdentityDirectory = EMPTY_DIRECTORY;
@@ -150,7 +207,6 @@ export class LineMarksUI {
   private writesInFlight = 0;
   private menu: HTMLElement | null = null;
   private menuCleanup: (() => void) | null = null;
-  private lastIssuePos = -1;
   private started = false;
   private resizeObserver: ResizeObserver | null = null;
   private readonly listeners = new Set<() => void>();
@@ -174,6 +230,7 @@ export class LineMarksUI {
     this.gutter.className = 'plm-gutter';
     this.gutter.setAttribute('aria-label', 'Line marks');
     this.gutter.addEventListener('click', this.onGutterClick);
+    this.budgetEl.className = 'plm-budget';
     this.renderBanner();
   }
 
@@ -184,6 +241,7 @@ export class LineMarksUI {
       update: (view, prevState) => this.onViewUpdate(view, prevState),
     });
     document.body.classList.add('plm-on');
+    this.loadSitting();
     document.addEventListener('visibilitychange', this.onVisibility);
     window.addEventListener('resize', this.queueRender);
     void this.refresh();
@@ -224,6 +282,7 @@ export class LineMarksUI {
       if (!response.ok) return;
       const body = await response.json() as {
         lineMarks?: LineMark[]; owners?: string[]; agentKeyActors?: string[]; asks?: ProofAsk[];
+        flags?: UncertainFlag[]; reviewNotes?: ReviewNote[]; objections?: ProofObjection[];
         viewer?: { canApprove?: boolean; canMark?: boolean };
         identity?: { me?: ViewerIdentity; directory?: IdentityDirectory };
         alignedSnapshot?: { id: string; createdAt: string } | null;
@@ -232,6 +291,9 @@ export class LineMarksUI {
       if (seq !== this.fetchSeq || this.writesInFlight > 0) return;
       this.serverMarks = Array.isArray(body.lineMarks) ? body.lineMarks : [];
       this.serverAsks = Array.isArray(body.asks) ? body.asks : [];
+      this.serverFlags = Array.isArray(body.flags) ? body.flags : [];
+      this.serverNotes = Array.isArray(body.reviewNotes) ? body.reviewNotes : [];
+      this.serverObjections = Array.isArray(body.objections) ? body.objections : [];
       this.owners = Array.isArray(body.owners) ? body.owners : [];
       this.agentKeyActors = Array.isArray(body.agentKeyActors) ? body.agentKeyActors : [];
       this.canApprove = body.viewer?.canApprove === true;
@@ -354,21 +416,34 @@ export class LineMarksUI {
         this.linesDoc = view.state.doc;
       }
       const reviewMarks = this.host.reviewMarks(view);
+      this.reviewMarkCache = reviewMarks;
       const team = computeStep1Team({
         owners: this.owners,
         lineMarks: this.serverMarks,
         reviewMarks,
         agentKeyActors: this.agentKeyActors,
-        extra: [this.me(), ...askTeamActors(this.serverAsks)],
+        extra: [this.me(), ...askTeamActors(this.serverAsks), ...this.serverFlags.map(f => f.by), ...this.serverObjections.map(o => o.by)],
         identity: { target: actor => resolveTargetActor(actor, this.directory) },
       });
       this.states = buildLineStates(this.lines, this.serverMarks);
       this.askViews = evaluateAsks(this.serverAsks, this.lines);
-      this.summary = computeIssues({ lines: this.lines, lineMarks: this.serverMarks, team, reviewMarks, asks: askIssueInputs(this.askViews) });
+      // Step B4c/B4d: flags and objections, evaluated against this page's lines and positions.
+      this.flagViews = evaluateFlags(this.serverFlags, this.lines);
+      this.flagsByLine = flaggedLines(this.flagViews);
+      this.objectionViews = evaluateObjections(this.serverObjections, this.lines, index => this.suggestionsOnLine(index));
+      this.objectionsByLine = objectedLines(this.objectionViews);
+      this.summary = computeIssues({
+        lines: this.lines, lineMarks: this.serverMarks, team, reviewMarks, asks: askIssueInputs(this.askViews),
+        uncertain: uncertainIssueInputs(this.flagViews, this.states, team),
+        objections: objectionIssueInputs(this.objectionViews),
+      });
+      this.ranked = rankIssues(this.summary.issues, { viewer: this.me(), explicitFor: explicitPriorityLookup(this.serverNotes, this.lines) });
+      this.selection = this.selection.filter(index => index < this.lines.length);
       this.queueAskDecorations();
       this.maybeCheckAlignment();
     }
     this.renderBanner();
+    this.renderBudget();
     this.queueRender();
     for (const listener of this.listeners) {
       try { listener(); } catch (error) { console.warn('[plm] listener failed', error); }
@@ -744,7 +819,7 @@ export class LineMarksUI {
     this.countEl.textContent = n === 0 ? 'Aligned' : `${n} ${n === 1 ? 'issue' : 'issues'}`;
     this.countEl.title = n === 0
       ? `Every team member has seen every line and no one has rejected anything. Team: ${summary.team.map(actorLabel).join(', ')}`
-      : `${summary.counts.lineIssues} lines not yet seen by everyone or rejected; ${summary.counts.reviewMarkIssues} open comments or suggestions; ${summary.counts.askIssues} unanswered ${summary.counts.askIssues === 1 ? 'ask' : 'asks'}. Team: ${summary.team.map(actorLabel).join(', ')}`;
+      : `${summary.counts.lineIssues} lines not yet seen by everyone or rejected; ${summary.counts.reviewMarkIssues} open comments or suggestions; ${summary.counts.askIssues} unanswered ${summary.counts.askIssues === 1 ? 'ask' : 'asks'}; ${summary.counts.uncertainIssues} uncertain ${summary.counts.uncertainIssues === 1 ? 'line' : 'lines'}; ${summary.counts.objectionIssues} open ${summary.counts.objectionIssues === 1 ? 'objection' : 'objections'}. Next issue goes by stakes: ${this.ranked.filter(r => r.urgent).length} urgent. Team: ${summary.team.map(actorLabel).join(', ')}`;
     this.nextBtn.disabled = n === 0;
     this.setShort(n === 0 ? '✓ Aligned' : `${n} ›`);
     this.nextBtn.setAttribute('aria-label', n === 0 ? 'No issues: aligned' : `Next issue (${n} ${n === 1 ? 'issue' : 'issues'})`);
@@ -783,7 +858,7 @@ export class LineMarksUI {
     for (const el of Array.from(this.gutter.children) as HTMLButtonElement[]) existing.set(el.dataset.key ?? '', el);
     const used = new Set<string>();
     const issueLines = new Set<number>();
-    for (const issue of this.summary?.issues ?? []) if (issue.type === 'line' || issue.type === 'ask') issueLines.add(issue.lineIndex);
+    for (const issue of this.summary?.issues ?? []) if ('lineIndex' in issue && issue.lineIndex !== null) issueLines.add(issue.lineIndex);
     for (const state of this.states) {
       const line = state.line;
       const dom = view.nodeDOM(line.pos) as HTMLElement | null;
@@ -807,6 +882,11 @@ export class LineMarksUI {
       dot.dataset.issue = issueLines.has(line.index) ? 'true' : 'false';
       // Step B3b: your mark survived a small edit (the rail shows what changed).
       if (mine?.carried) dot.dataset.carried = 'true'; else delete dot.dataset.carried;
+      // Step B4c: an amber tick for a line its writer flagged uncertain; B4d: a red tick for an
+      // open objection; a selected line (shift-click) for a Reject that covers several lines.
+      if (this.flagsByLine.has(line.index)) dot.dataset.uncertain = 'true'; else delete dot.dataset.uncertain;
+      if (this.objectionsByLine.has(line.index)) dot.dataset.objection = 'true'; else delete dot.dataset.objection;
+      if (this.selection.includes(line.index)) dot.dataset.selected = 'true'; else delete dot.dataset.selected;
       const lineHeight = parseFloat(getComputedStyle(dom).lineHeight) || 24;
       const top = rect.top - containerRect.top + Math.max(0, (Math.min(lineHeight, rect.height) - dotSize) / 2);
       dot.style.top = `${Math.round(top)}px`;
@@ -833,7 +913,9 @@ export class LineMarksUI {
         dot.replaceChildren(glyph, pips);
       }
       const othersText = others.map(([, e]) => `${actorLabel(e.mark.by)}: ${e.current ? STATUS_LABEL[e.mark.status] : 'changed since marked'}`).join('; ');
-      const carriedText = mine?.carried ? ' (carried over a small edit)' : '';
+      const carriedText = (mine?.carried ? ' (carried over a small edit)' : '')
+        + (this.flagsByLine.has(line.index) ? '. Flagged uncertain by its writer' : '')
+        + (this.objectionsByLine.has(line.index) ? '. Has an open objection' : '');
       dot.setAttribute('aria-label', `Line ${line.index + 1}: your mark ${myStatus === 'changed' ? 'is out of date (the line changed)' : STATUS_LABEL[myStatus as StatusChoice]}${carriedText}${othersText ? `. ${othersText}` : ''}. Mark this line`);
       dot.title = othersText ? `You: ${myStatus === 'changed' ? 'changed since you marked it' : STATUS_LABEL[myStatus as StatusChoice]}\n${othersText.replace(/; /g, '\n')}` : 'Mark this line';
     }
@@ -852,6 +934,12 @@ export class LineMarksUI {
     const index = Number(dot.dataset.line);
     const line = this.lines[index];
     if (!line) return;
+    // Step B4d: shift-click selects a range of lines (from the focus line) for one Reject.
+    if (event.shiftKey) {
+      const from = this.selection.length ? this.selection[0] : (this.host.anchorLine?.() ?? index);
+      this.selectLines(from, index);
+      return;
+    }
     if (this.host.onDotActivate?.(index)) { this.closeMenu(); return; }
     if (this.menu && this.menu.dataset.line === String(index)) { this.closeMenu(); return; }
     this.openMenu(line, dot);
@@ -878,6 +966,10 @@ export class LineMarksUI {
     const askView = this.askForLine(line.index);
     const askControl = askView ? this.buildAskControlFor(askView, 'box') : undefined;
     if (askControl) root.append(askControl.root);
+    // Step B4d: open objections on this line (with Clear / Keep for the objector).
+    for (const objection of this.objectionsByLine.get(line.index) ?? []) root.append(this.buildObjectionCard(objection));
+    // Step B4c: the writer's uncertainty (flag, note, Clear), or "Flag uncertain…".
+    root.append(this.buildFlagRow(line));
 
     if (mine && !mine.current) {
       const changed = document.createElement('p');
@@ -961,29 +1053,89 @@ export class LineMarksUI {
     const reasonRow = document.createElement('form');
     reasonRow.className = 'plm-reason';
     reasonRow.hidden = true;
+    // Step B4d: a Reject covers the selected lines when this line is one of them.
+    const coverage = this.selection.length > 1 && this.selection.includes(line.index) ? [...this.selection] : [line.index];
+    if (coverage.length > 1) {
+      const scopeNote = document.createElement('p');
+      scopeNote.className = 'plm-reject-scope';
+      scopeNote.textContent = `This Reject covers lines ${coverage[0] + 1}–${coverage[coverage.length - 1] + 1} (${coverage.length} lines).`;
+      const clearSel = document.createElement('button');
+      clearSel.type = 'button';
+      clearSel.className = 'plm-link';
+      clearSel.textContent = 'Only this line';
+      clearSel.onclick = () => this.clearSelection();
+      scopeNote.append(' ', clearSel);
+      reasonRow.append(scopeNote);
+    }
     const reasonInput = document.createElement('input');
     reasonInput.type = 'text';
     reasonInput.maxLength = 500;
     reasonInput.placeholder = 'Reason (one line)';
     reasonInput.setAttribute('aria-label', 'Reason for rejecting this line');
     if (mine?.current && mine.mark.status === 'rejected' && mine.mark.reason) reasonInput.value = mine.mark.reason;
+    // Step B4c: reason chips (static defaults, and hints an AI author gave for this line).
+    const chips = document.createElement('div');
+    chips.className = 'plm-chips';
+    chips.setAttribute('role', 'group');
+    chips.setAttribute('aria-label', 'Common reasons');
+    for (const chip of this.rejectChips(line.index)) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'plm-chip';
+      b.dataset.source = chip.source;
+      b.textContent = chip.label;
+      if (chip.by) b.title = `Suggested by ${actorLabel(chip.by)}`;
+      b.onclick = () => {
+        reasonInput.value = REJECT_CHIPS.fill === 'append' && reasonInput.value.trim() ? `${reasonInput.value.trim()}; ${chip.label}` : chip.label;
+        reasonInput.removeAttribute('aria-invalid');
+        reasonInput.focus({ preventScroll: true });
+      };
+      chips.append(b);
+    }
+    // Step B4d: "I'd agree if…" turns the Reject into an objection only you can clear.
+    const conditionInput = document.createElement('input');
+    conditionInput.type = 'text';
+    conditionInput.maxLength = OBJECTION_POLICY.maxCondition;
+    conditionInput.className = 'plm-condition';
+    conditionInput.placeholder = 'I’d agree if… (optional)';
+    conditionInput.setAttribute('aria-label', 'I would agree if (optional): what would change your mind');
     const reasonSave = document.createElement('button');
     reasonSave.type = 'submit';
-    reasonSave.textContent = 'Reject';
-    reasonRow.append(reasonInput, reasonSave);
+    reasonSave.textContent = coverage.length > 1 ? `Reject ${coverage.length} lines` : 'Reject';
+    const hint = document.createElement('p');
+    hint.className = 'plm-reject-hint';
+    hint.setAttribute('role', 'status');
+    hint.hidden = true;
+    reasonRow.append(reasonInput, chips, conditionInput, reasonSave, hint);
     reasonRow.onsubmit = (event) => {
       event.preventDefault();
       const reason = reasonInput.value.trim();
       if (!reason) { reasonInput.focus(); reasonInput.setAttribute('aria-invalid', 'true'); return; }
+      const condition = conditionInput.value.trim();
+      if (condition || coverage.length > 1) {
+        if (isGuestActor(this.me()) && !OBJECTION_POLICY.guestsMayObject) {
+          hint.hidden = false;
+          hint.textContent = coverage.length > 1
+            ? 'Sign in to reject several lines at once or to say what would change your mind: only a verified person can later clear it.'
+            : 'Sign in to add “I’d agree if…”: only a verified person can later clear it. Clear that field to reject this line.';
+          return;
+        }
+        options.onExplicit?.('rejected');
+        options.onChosen?.('rejected');
+        void this.createObjection(coverage, reason, condition);
+        return;
+      }
       choose('rejected', reason);
     };
-    reasonInput.addEventListener('keydown', (event) => {
+    const escClose = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       event.preventDefault();
       event.stopPropagation();
       reasonRow.hidden = true;
-      reasonInput.blur();
-    });
+      (event.target as HTMLElement).blur();
+    };
+    reasonInput.addEventListener('keydown', escClose);
+    conditionInput.addEventListener('keydown', escClose);
     const openReason = () => {
       if (!this.canMark) return;
       if (scope && !FOLDING.allowSectionReject) { sectionHint.hidden = false; return; }
@@ -1044,10 +1196,17 @@ export class LineMarksUI {
       if (entry?.carried) { what.textContent += ' · carried over a small edit'; what.dataset.carried = 'true'; }
       if (entry?.current && entry.mark.status === 'rejected' && entry.mark.reason) what.textContent += `: ${entry.mark.reason}`;
       li.append(who, what);
+      // Step B4c: an AI's rationale for its mark.
+      if (entry?.current && entry.mark.why) {
+        const why = document.createElement('span');
+        why.className = 'plm-why';
+        why.textContent = `Why: ${entry.mark.why}`;
+        li.append(why);
+      }
       list.append(li);
     }
     root.append(list);
-    return { root, openReason, choose: (status, via) => choose(status, undefined, via ?? 'click'), ...(askControl ? { ask: askControl } : {}) };
+    return { root, openReason, scope: coverage, choose: (status, via) => choose(status, undefined, via ?? 'click'), ...(askControl ? { ask: askControl } : {}) };
   }
 
   private openMenu(line: DocLine, dot: HTMLElement): void {
@@ -1126,13 +1285,31 @@ export class LineMarksUI {
   // Next issue
   // --------------------------------------------------------------------------
 
+  /**
+   * Step B4c: Next issue follows stakes (ISSUE_PRIORITY), then document order. With a sitting
+   * budget, once the reader has visited that many Issues it stops and says what is left.
+   */
   gotoNextIssue(): void {
-    const issues = (this.summary?.issues ?? []).filter(issue => issue.pos !== null);
+    const ranked = this.ranked.filter(r => r.issue.pos !== null);
     const view = this.view;
-    if (!view || issues.length === 0) return;
-    const next = issues.find(issue => (issue.pos as number) > this.lastIssuePos) ?? issues[0];
-    this.lastIssuePos = next.pos as number;
-    const lineIndex = next.type === 'line' || next.type === 'ask' ? next.lineIndex : this.lineAtPos(next.pos as number);
+    if (!view || ranked.length === 0) return;
+    if (this.sittingStopped) this.startSitting();
+    const sitting = this.sittingSummary();
+    if (sitting.reached) {
+      this.renderBudget();
+      this.host.onBudgetReached?.(sitting);
+      this.budgetEl.dataset.flash = String(Date.now());
+      return;
+    }
+    const pick = nextRankedIssue(ranked, this.lastIssueKey, this.lastIssuePlace);
+    if (!pick) return;
+    const next = pick.issue;
+    this.lastIssueKey = pick.key;
+    this.lastIssuePlace = { priority: pick.priority, pos: next.pos as number };
+    this.visitIssue(pick.key);
+    this.countEl.dataset.priority = pick.rule;
+    this.countEl.dataset.why = pick.explicit ? `${PRIORITY_LABEL[pick.rule]} · ${actorLabel(pick.explicit.by)}: ${pick.explicit.reason ?? ''}` : PRIORITY_LABEL[pick.rule];
+    const lineIndex = 'lineIndex' in next && next.lineIndex !== null ? next.lineIndex : this.lineAtPos(next.pos as number);
     // Step B2: the next issue may sit in a folded section: unfold it first.
     if (lineIndex >= 0) this.host.revealLine?.(lineIndex);
     const target = this.issueElement(view, next);
@@ -1143,18 +1320,24 @@ export class LineMarksUI {
     }
     // Highlight with an overlay: ProseMirror re-reads its own DOM when attributes change on it.
     this.flash(target);
-    if (next.type === 'line' || next.type === 'ask') {
+    if ('lineIndex' in next && next.lineIndex !== null) {
       const dot = this.gutter.querySelector(`.plm-dot[data-line="${next.lineIndex}"]`) as HTMLButtonElement | null;
       dot?.focus({ preventScroll: true });
     }
-    this.countEl.dataset.current = next.type === 'line' ? `line ${next.lineIndex + 1}` : next.type === 'ask' ? `ask ${next.lineIndex + 1}` : next.type;
+    this.countEl.dataset.current = next.type === 'line' ? `line ${next.lineIndex + 1}`
+      : next.type === 'ask' ? `ask ${next.lineIndex + 1}`
+      : next.type === 'uncertain' ? `uncertain ${next.lineIndex + 1}`
+      : next.type === 'objection' ? `objection ${(next.lineIndex ?? -1) + 1}`
+      : next.type;
+    this.renderBudget();
   }
 
   private issueElement(view: EditorView, issue: ProofIssue): HTMLElement | null {
-    if (issue.type === 'line' || issue.type === 'ask') {
+    if ('lineIndex' in issue && issue.lineIndex !== null) {
       const line = this.lines[issue.lineIndex];
       return line ? view.nodeDOM(line.pos) as HTMLElement | null : null;
     }
+    if (issue.type !== 'comment' && issue.type !== 'suggestion') return null;
     const markEl = view.dom.querySelector(`[data-mark-id="${CSS.escape(issue.markId)}"]`) as HTMLElement | null;
     if (markEl) return markEl;
     try {
@@ -1300,9 +1483,395 @@ export class LineMarksUI {
     setTimeout(() => el.remove(), 4000);
   }
 
+  // --------------------------------------------------------------------------
+  // Steps B4c + B4d: review aids and objections
+  // --------------------------------------------------------------------------
+
+  /** Pending suggestions (ids) whose start sits on this line. */
+  suggestionsOnLine(index: number): string[] {
+    return this.reviewMarkCache
+      .filter(mark => mark.open && mark.kind !== 'comment' && typeof mark.pos === 'number' && this.lineAtPos(mark.pos) === index)
+      .map(mark => mark.id);
+  }
+
+  flagsOn(index: number): UncertainFlag[] { return this.flagsByLine.get(index) ?? []; }
+  objectionsOn(index: number): ObjectionView[] { return this.objectionsByLine.get(index) ?? []; }
+  /** Lines with an open uncertain flag (the reading walk reads them slower). */
+  flaggedLineSet(): Set<number> { return new Set(this.flagsByLine.keys()); }
+  /** This viewer's Issues in Next-issue order. */
+  rankedIssues(): RankedIssue[] { return this.ranked; }
+
+  /** An AI's notes (why, reject hints, priority) on a suggestion. */
+  notesForMark(markId: string): ReviewNote[] {
+    return this.serverNotes.filter(note => note.target.kind === 'suggestion' && note.target.markId === markId);
+  }
+
+  /** Step B4c: the reason chips for a Reject on this line. */
+  rejectChips(index: number) {
+    const hints: Array<{ hint: string; by: string }> = [];
+    const onLine = new Set(this.suggestionsOnLine(index));
+    for (const note of this.serverNotes) {
+      const here = note.target.kind === 'suggestion' ? onLine.has(note.target.markId) : noteLineIndex(note, this.lines) === index;
+      if (!here) continue;
+      for (const hint of note.rejectHints) hints.push({ hint, by: note.by });
+    }
+    return rejectChipsFor(hints);
+  }
+
+  /** Changes whenever the rail's box for this line would show different aids. */
+  aidsSignature(index: number): string {
+    const flags = this.flagsOn(index).map(f => `${f.id}:${f.note ?? ''}`).join(',');
+    const objections = this.objectionsOn(index).map(o => `${o.objection.id}:${o.repairPending}:${o.deletedLines}`).join(',');
+    const chips = this.rejectChips(index).map(c => c.label).join(',');
+    return `${flags}|${objections}|${chips}|${this.selection.join(',')}|${this.canApprove}`;
+  }
+
+  selectionLines(): number[] { return [...this.selection]; }
+
+  /** Step B4d: select lines a..b (inclusive) for a Reject that covers them. */
+  selectLines(a: number, b: number): void {
+    const lo = Math.max(0, Math.min(a, b));
+    const hi = Math.min(this.lines.length - 1, Math.max(a, b));
+    this.selection = hi > lo ? Array.from({ length: hi - lo + 1 }, (_, i) => lo + i) : [];
+    this.queueRender();
+    for (const listener of this.listeners) { try { listener(); } catch { /* next render */ } }
+  }
+
+  /** Step B4d: a text selection across several lines becomes the Reject's lines (R). */
+  selectFromEditor(): boolean {
+    const view = this.view;
+    if (!view || this.selection.length > 1) return this.selection.length > 1;
+    const { from, to, empty } = view.state.selection;
+    if (empty) return false;
+    const a = this.lineAtPos(from);
+    const b = this.lineAtPos(Math.max(from, to - 1));
+    if (a < 0 || b < 0 || a === b) return false;
+    this.selectLines(a, b);
+    return true;
+  }
+
+  clearSelection(): void {
+    if (this.selection.length === 0) return;
+    this.selection = [];
+    this.queueRender();
+    for (const listener of this.listeners) { try { listener(); } catch { /* next render */ } }
+  }
+
+  private async postAid(path: string, body: Record<string, unknown>): Promise<{ ok: boolean; body: Record<string, unknown> }> {
+    const slug = this.host.slug();
+    if (!slug) return { ok: false, body: {} };
+    this.writesInFlight += 1;
+    try {
+      const response = await fetch(`${this.host.apiBase()}/documents/${encodeURIComponent(slug)}${path}`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { ...this.host.authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ by: this.me(), ...body }),
+      });
+      const json = await response.json().catch(() => ({})) as Record<string, unknown>;
+      if (!response.ok) this.toast(typeof json.error === 'string' ? json.error : 'Could not save');
+      return { ok: response.ok, body: json };
+    } catch {
+      this.toast('Could not save (offline?)');
+      return { ok: false, body: {} };
+    } finally {
+      this.writesInFlight -= 1;
+      this.fetchSeq += 1;
+      void this.refresh();
+    }
+  }
+
+  /** Step B4c: flag a line uncertain (or change your note on your flag). */
+  async flagLine(index: number, note: string): Promise<boolean> {
+    const line = this.lines[index];
+    if (!line || !this.canMark) return false;
+    const result = await this.postAid('/flags', { anchor: anchorForLine(line), note });
+    if (result.ok) this.aidWrites += 1;
+    return result.ok;
+  }
+
+  async clearFlag(id: string): Promise<boolean> {
+    const result = await this.postAid(`/flags/${encodeURIComponent(id)}/clear`, {});
+    if (result.ok) this.aidWrites += 1;
+    return result.ok;
+  }
+
+  /** Step B4d: a Reject with "I'd agree if…" and/or several lines becomes an objection. */
+  async createObjection(indices: number[], reason: string, condition: string): Promise<boolean> {
+    const lines = [...new Set(indices)].map(index => this.lines[index]).filter((line): line is DocLine => Boolean(line));
+    if (lines.length === 0 || !this.canMark) return false;
+    const suggestions = [...new Set(lines.flatMap(line => this.suggestionsOnLine(line.index)))];
+    const result = await this.postAid('/objections', { lines: lines.map(anchorForLine), reason, condition: condition || null, suggestions });
+    if (result.ok) {
+      this.aidWrites += 1;
+      this.selection = [];
+      this.toast(`Objection recorded on ${lines.length} ${lines.length === 1 ? 'line' : 'lines'}. Only you can clear it.`);
+    }
+    return result.ok;
+  }
+
+  async clearObjection(id: string, reason?: string): Promise<boolean> {
+    const result = await this.postAid(`/objections/${encodeURIComponent(id)}/clear`, reason ? { reason } : {});
+    if (result.ok) this.aidWrites += 1;
+    return result.ok;
+  }
+
+  /** The objector saw the proposed repair and still objects. */
+  async keepObjection(id: string): Promise<boolean> {
+    const view = this.objectionViews.find(v => v.objection.id === id);
+    const result = await this.postAid(`/objections/${encodeURIComponent(id)}/keep`, view ? { ack: ackFor(view) } : {});
+    if (result.ok) this.aidWrites += 1;
+    return result.ok;
+  }
+
+  /** Step B4c: "Ask why" was tapped on a change (the reply itself goes through the editor). */
+  noteWhyAsked(markId: string, author: string | null): void {
+    void this.postAid('/why-asked', { markId, author });
+  }
+
+  private buildFlagRow(line: DocLine): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'plm-flag';
+    const me = actorKey(this.me());
+    const flags = this.flagsOn(line.index);
+    for (const flag of flags) {
+      const p = document.createElement('p');
+      p.className = 'plm-flag-note';
+      const mineFlag = actorKey(flag.by) === me;
+      p.textContent = `${mineFlag ? 'You flagged' : `${actorLabel(flag.by)} flagged`} this line uncertain${flag.note ? `: ${flag.note}` : '.'}`;
+      if (mineFlag || this.canApprove) {
+        const clear = document.createElement('button');
+        clear.type = 'button';
+        clear.className = 'plm-link plm-flag-clear';
+        clear.textContent = 'Clear flag';
+        clear.disabled = !this.canMark;
+        clear.onclick = () => { void this.clearFlag(flag.id); };
+        p.append(' ', clear);
+      }
+      row.append(p);
+    }
+    if (!this.canMark) return row;
+    const own = flags.find(flag => actorKey(flag.by) === me);
+    const open = document.createElement('button');
+    open.type = 'button';
+    open.className = 'plm-link plm-flag-open';
+    open.textContent = own ? 'Edit my note' : 'Flag uncertain…';
+    open.title = `Tell readers you are unsure of this line: an amber tick, a slower read (${UNCERTAIN_POLICY.dwellFactor}×), and an Issue until each reader agrees or rejects it.`;
+    const form = document.createElement('form');
+    form.className = 'plm-flag-form';
+    form.hidden = true;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.maxLength = UNCERTAIN_POLICY.maxNote;
+    input.placeholder = 'What are you unsure of? (optional)';
+    input.setAttribute('aria-label', 'What are you unsure of? (optional)');
+    input.value = own?.note ?? '';
+    const save = document.createElement('button');
+    save.type = 'submit';
+    save.textContent = own ? 'Save note' : 'Flag';
+    form.append(input, save);
+    open.onclick = () => { form.hidden = false; open.hidden = true; input.focus({ preventScroll: true }); };
+    form.onsubmit = (event) => { event.preventDefault(); void this.flagLine(line.index, input.value.trim()); };
+    input.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault(); event.stopPropagation();
+      form.hidden = true; open.hidden = false; input.blur();
+    });
+    row.append(open, form);
+    return row;
+  }
+
+  private buildObjectionCard(view: ObjectionView): HTMLElement {
+    const o = view.objection;
+    const card = document.createElement('div');
+    card.className = 'plm-objection';
+    card.dataset.objectionId = o.id;
+    if (view.repairPending) card.dataset.repair = 'true';
+    const mineObj = actorKey(o.by) === actorKey(this.me());
+    const head = document.createElement('p');
+    head.className = 'plm-objection-head';
+    const strong = document.createElement('strong');
+    strong.textContent = mineObj ? 'Your objection' : `Objection by ${actorLabel(o.by)}`;
+    head.append(strong, `: ${o.reason}`);
+    card.append(head);
+    if (o.condition) {
+      const cond = document.createElement('p');
+      cond.className = 'plm-objection-if';
+      cond.textContent = `${mineObj ? 'You’d' : 'They’d'} agree if: ${o.condition}`;
+      card.append(cond);
+    }
+    const status = document.createElement('p');
+    status.className = 'plm-objection-status';
+    const covered = view.lineIndices.filter((i): i is number => i !== null).map(i => i + 1);
+    status.textContent = `${describeObjection(view)}${covered.length ? ` · line${covered.length === 1 ? '' : 's'} ${covered.join(', ')}` : ''}`;
+    card.append(status);
+    const actions = document.createElement('div');
+    actions.className = 'plm-objection-actions';
+    const button = (label: string, cls: string, run: () => void) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = `plm-choice ${cls}`; b.textContent = label; b.disabled = !this.canMark;
+      b.onclick = run; actions.append(b); return b;
+    };
+    if (mineObj) {
+      if (view.repairPending) {
+        const repair = document.createElement('p');
+        repair.className = 'plm-objection-repair';
+        repair.textContent = 'A repair was proposed. Does it meet your condition?';
+        card.append(repair);
+        button('Clear', 'plm-objection-clear', () => { void this.clearObjection(o.id); });
+        button('Keep', 'plm-objection-keep', () => { void this.keepObjection(o.id); });
+      } else {
+        button('Clear my objection', 'plm-objection-clear', () => { void this.clearObjection(o.id); });
+      }
+    } else if (this.canApprove && OBJECTION_POLICY.ownerMayOverride) {
+      const form = document.createElement('form');
+      form.className = 'plm-objection-override';
+      form.hidden = true;
+      const input = document.createElement('input');
+      input.type = 'text'; input.maxLength = OBJECTION_POLICY.maxReason;
+      input.placeholder = 'Why override? (recorded)';
+      input.setAttribute('aria-label', 'Reason for overriding this objection (recorded)');
+      const save = document.createElement('button'); save.type = 'submit'; save.textContent = 'Override';
+      form.append(input, save);
+      form.onsubmit = (event) => {
+        event.preventDefault();
+        const reason = input.value.trim();
+        if (!reason) { input.setAttribute('aria-invalid', 'true'); input.focus(); return; }
+        void this.clearObjection(o.id, reason);
+      };
+      button('Override…', 'plm-objection-override-open', () => { form.hidden = false; input.focus({ preventScroll: true }); });
+      card.append(actions, form);
+      return card;
+    }
+    card.append(actions);
+    return card;
+  }
+
+  // ---------------- the sitting budget ----------------
+
+  private sittingKey(): string | null {
+    const slug = this.host.slug();
+    return slug ? `proof:sitting:${slug}` : null;
+  }
+
+  private loadSitting(): void {
+    const key = this.sittingKey();
+    if (!key) return;
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(key) || 'null') as { visited?: string[]; stopped?: boolean } | null;
+      this.sittingVisited = new Set(Array.isArray(saved?.visited) ? saved!.visited : []);
+      this.sittingStopped = saved?.stopped === true;
+    } catch { /* optional */ }
+  }
+
+  private saveSitting(): void {
+    const key = this.sittingKey();
+    if (!key) return;
+    try { sessionStorage.setItem(key, JSON.stringify({ visited: [...this.sittingVisited], stopped: this.sittingStopped })); } catch { /* optional */ }
+  }
+
+  private visitIssue(key: string): void {
+    this.sittingVisited.add(key);
+    this.saveSitting();
+  }
+
+  sittingSummary(): SittingSummary {
+    return sittingSummary(this.ranked, this.sittingVisited, this.budget);
+  }
+
+  /** "This sitting: N issues" (0 = off). Per browser. */
+  setBudget(budget: number): void {
+    this.budget = SITTING_BUDGET.choices.includes(budget) ? budget : SITTING_BUDGET.defaultBudget;
+    try { localStorage.setItem(BUDGET_KEY, String(this.budget)); } catch { /* optional */ }
+    this.startSitting();
+  }
+
+  startSitting(): void {
+    this.sittingVisited = new Set();
+    this.sittingStopped = false;
+    this.saveSitting();
+    this.renderBudget();
+  }
+
+  /** The reader stops here, told honestly what is left. */
+  stopSitting(): void {
+    this.sittingStopped = true;
+    this.saveSitting();
+    this.renderBudget();
+  }
+
+  private renderBudget(): void {
+    const el = this.budgetEl;
+    const summary = this.loaded ? this.sittingSummary() : null;
+    const sig = JSON.stringify([this.budget, summary, this.sittingStopped]);
+    if (el.dataset.sig === sig) return;
+    el.dataset.sig = sig;
+    el.replaceChildren();
+    const label = document.createElement('label');
+    label.className = 'plm-budget-setting';
+    const text = document.createElement('span');
+    text.textContent = 'This sitting';
+    const select = document.createElement('select');
+    select.setAttribute('aria-label', 'This sitting: how many issues to go through before stopping');
+    for (const n of SITTING_BUDGET.choices) {
+      const option = document.createElement('option');
+      option.value = String(n);
+      option.textContent = n === 0 ? 'no limit' : `${n} issues`;
+      select.append(option);
+    }
+    select.value = String(this.budget);
+    select.onchange = () => this.setBudget(Number(select.value));
+    label.append(text, select);
+    el.append(label);
+    el.dataset.state = !summary || this.budget === 0 ? 'off' : this.sittingStopped ? 'stopped' : summary.reached ? 'reached' : 'on';
+    if (!summary || this.budget === 0) return;
+    const status = document.createElement('p');
+    status.className = 'plm-budget-status';
+    status.setAttribute('role', 'status');
+    if (this.sittingStopped) {
+      status.textContent = summary.remaining === 0 ? 'Stopped. Nothing left.' : `Stopped with ${summary.text}. They wait for next time.`;
+      const again = document.createElement('button');
+      again.type = 'button'; again.className = 'plm-link'; again.textContent = 'Start a new sitting';
+      again.onclick = () => this.startSitting();
+      el.append(status, again);
+      return;
+    }
+    if (!summary.reached) {
+      status.textContent = `${Math.min(summary.visited, this.budget)} of ${this.budget} issues this sitting.`;
+      el.append(status);
+      return;
+    }
+    status.textContent = `Sitting done: ${this.budget} of ${this.budget}. ${summary.text}.`;
+    const actions = document.createElement('div');
+    actions.className = 'plm-budget-actions';
+    const stop = document.createElement('button');
+    stop.type = 'button'; stop.className = 'plm-choice plm-budget-stop'; stop.textContent = 'Stop here';
+    stop.onclick = () => this.stopSitting();
+    const more = document.createElement('button');
+    more.type = 'button'; more.className = 'plm-choice plm-budget-more'; more.textContent = `${this.budget} more`;
+    more.onclick = () => { this.startSitting(); this.gotoNextIssue(); };
+    actions.append(stop, more);
+    el.append(status, actions);
+  }
+
+  /** Test hook: flag / objection writes this page made. */
+  private aidWrites = 0;
+
   /** Test and agent hook: the numbers the UI shows. */
-  debugState(): { loaded: boolean; issues: number; aligned: boolean; team: string[]; lines: number; marks: LineMark[]; sectionWrites: number; askIssues: number; askAnswers: number; asks: Array<Record<string, unknown>>; skimWrites: number; snapshot: { id: string; createdAt: string } | null; carried: Array<{ line: number; by: string; from: string | null }> } {
+  debugState(): { aids: Record<string, unknown>; loaded: boolean; issues: number; aligned: boolean; team: string[]; lines: number; marks: LineMark[]; sectionWrites: number; askIssues: number; askAnswers: number; asks: Array<Record<string, unknown>>; skimWrites: number; snapshot: { id: string; createdAt: string } | null; carried: Array<{ line: number; by: string; from: string | null }> } {
     return {
+      aids: {
+        flags: this.flagViews.map(v => ({ id: v.flag.id, by: v.flag.by, note: v.flag.note, line: v.lineIndex })),
+        objections: this.objectionViews.map(v => ({ id: v.objection.id, by: v.objection.by, lines: v.lineIndices, repairPending: v.repairPending, deleted: v.deletedLines, condition: v.objection.condition })),
+        notes: this.serverNotes.length,
+        ranked: this.ranked.map(r => ({ key: r.key, rule: r.rule, priority: r.priority, type: r.issue.type, line: 'lineIndex' in r.issue ? r.issue.lineIndex : null })),
+        selection: [...this.selection],
+        sitting: this.sittingSummary(),
+        stopped: this.sittingStopped,
+        writes: this.aidWrites,
+        uncertainIssues: this.summary?.counts.uncertainIssues ?? -1,
+        objectionIssues: this.summary?.counts.objectionIssues ?? -1,
+      },
       skimWrites: this.skimWrites,
       snapshot: this.snapshot,
       carried: this.states.flatMap(state => [...state.marks.values()].filter(e => e.carried).map(e => ({ line: state.line.index, by: e.mark.by, from: e.carriedFrom ?? null }))),
@@ -1317,6 +1886,17 @@ export class LineMarksUI {
       lines: this.lines.length,
       marks: this.serverMarks,
     };
+  }
+}
+
+/** Step B4c: the reader's "This sitting" budget, per browser. */
+const BUDGET_KEY = 'proof:sitting-budget';
+function loadBudget(): number {
+  try {
+    const raw = Number(localStorage.getItem(BUDGET_KEY));
+    return SITTING_BUDGET.choices.includes(raw) ? raw : SITTING_BUDGET.defaultBudget;
+  } catch {
+    return SITTING_BUDGET.defaultBudget;
   }
 }
 

@@ -242,7 +242,7 @@ async function desktop(browser, base, style, width) {
     await waitFor(page, () => window.__proofReadingWalk.debugState().focus === 7);
     await page.evaluate(() => document.activeElement?.blur());
     await page.keyboard.press('r');
-    await page.locator('.prw-right .plm-reason input').fill('Detail is wrong');
+    await page.locator('.prw-right .plm-reason input:not(.plm-condition)').fill('Detail is wrong');
     await page.keyboard.press('Enter');
     await waitFor(page, () => document.querySelector('.plm-dot[data-line="7"]')?.dataset.status === 'rejected');
     await page.evaluate(() => document.activeElement?.blur());

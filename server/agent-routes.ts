@@ -46,6 +46,22 @@ import { agentKeyActor } from '../src/shared/line-marks.js';
 import { decideActor } from './identity.js';
 import { answerAgentAsk, buildAskReport, createAskOnLine, createAgentAsk, listAgentAsks, listCanonicalAsks, reaskAsk, withdrawAsk } from './asks.js';
 import { ASK_POLICY, askTeamActors, oneLine } from '../src/shared/asks.js';
+import {
+  aidsReport,
+  checkSuggestionWhy,
+  clearFlag,
+  clearObjection,
+  createAgentObjection,
+  keepObjection,
+  recordSuggestionNote,
+  suggestionNoteFields,
+  writeAgentFlag,
+  writeAgentNote,
+  type SuggestionNoteFields,
+} from './review-aids.js';
+import { ISSUE_PRIORITY, REJECT_CHIPS, SITTING_BUDGET, UNCERTAIN_POLICY, WHY_POLICY } from '../src/shared/review-aids.js';
+import { OBJECTION_POLICY } from '../src/shared/objections.js';
+import { normalizeActorString } from '../src/shared/identity.js';
 
 /** Step B3: edit/v2 conflicts that an insertAfter ask retries (a keystroke landed meanwhile). */
 const ASK_INSERT_RETRY_CODES = new Set(['STALE_REVISION', 'STALE_BASE', 'PROJECTION_STALE', 'LIVE_REF_DRIFT']);
@@ -2158,6 +2174,14 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
       links.snapshots = { method: 'GET', href: `/api/agent/${slug}/snapshots` };
       links.sinceYou = { method: 'GET', href: `/api/agent/${slug}/since-you` };
       body.carriedMarks = report.carried;
+      // Step B4c/B4d: uncertain flags, AI review notes, open objections; each Issue has a priority.
+      body.flags = report.flags;
+      body.reviewNotes = report.reviewNotes;
+      body.objections = report.objections;
+      body.reviewAidsPolicy = { why: WHY_POLICY, rejectChips: REJECT_CHIPS, uncertain: UNCERTAIN_POLICY, priority: ISSUE_PRIORITY, sitting: SITTING_BUDGET, objections: OBJECTION_POLICY };
+      links.flags = { method: 'GET', href: `/api/agent/${slug}/flags` };
+      links.notes = { method: 'GET', href: `/api/agent/${slug}/notes` };
+      links.objections = { method: 'GET', href: `/api/agent/${slug}/objections` };
       body.alignment = {
         aligned: report.aligned,
         team: report.team,
@@ -3275,6 +3299,12 @@ agentRoutes.post('/:slug/ops', async (req: Request, res: Response) => {
   }
 
   agentRequestTokenIds.set(req, access?.tokenId ?? null);
+  // Step B4c: suggestion.add carries a "why" like the suggest-* routes.
+  let opsWhyGate: WhyGate | null = null;
+  if (op === 'suggestion.add') {
+    opsWhyGate = suggestionWhyGate(req, res, slug, payload, mutationRoute);
+    if (!opsWhyGate) return;
+  }
   const participationBody = { ...asPayload(req.body), ...payload };
   ensureAgentPresenceForAuthenticatedCall(req, slug, participationBody, 'ops.request');
   const requestId = readRequestId(req);
@@ -3463,6 +3493,7 @@ agentRoutes.post('/:slug/ops', async (req: Request, res: Response) => {
   if (op === 'rewrite.apply' && result.status >= 200 && result.status < 300 && rewriteGate) {
     result.body = annotateRewriteDisruptionMetadata(result.body, rewriteGate);
   }
+  if (opsWhyGate) finishSuggestionNote(res, slug, opsWhyGate, result);
   storeIdempotentMutationResult(replay, mutationRoute, slug, result.status, result.body);
   if (result.status >= 200 && result.status < 300 && op !== 'rewrite.apply') {
     await notifyCollabMutation(
@@ -3747,6 +3778,125 @@ agentRoutes.delete('/:slug/asks/:askId', async (req: Request, res: Response) => 
   sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
 });
 
+// ============================================================================
+// Proof Documents Steps B4c + B4d: review aids and objections
+// ============================================================================
+
+interface WhyGate { by: string; fields: SuggestionNoteFields; warn: boolean }
+
+/**
+ * Step B4c: checks an AI suggestion's "why" before it is added (WHY_POLICY.enforce). Sends the
+ * refusal and returns null when refused.
+ */
+function suggestionWhyGate(req: Request, res: Response, slug: string, payload: Record<string, unknown>, route: string): WhyGate | null {
+  const fields = suggestionNoteFields(payload);
+  if ('error' in fields) {
+    sendMutationResponse(res, fields.error.status, fields.error.body, { route, slug });
+    return null;
+  }
+  const tokenId = agentRequestTokenIds.get(req) ?? null;
+  const key = tokenId ? listDocumentAgentKeys(slug).find(k => k.tokenId === tokenId && !k.revokedAt) ?? null : null;
+  const typed = typeof payload.by === 'string' && payload.by.trim() ? payload.by : 'ai:unknown';
+  const by = key ? agentKeyActor(key.label) : normalizeActorString(typed);
+  // An agent key's suggestion names its own AI when it does not say who wrote it (Step B6 rule
+  // for marks; before this, such suggestions showed as "unknown").
+  if (key && (typeof payload.by !== 'string' || !payload.by.trim())) payload.by = by;
+  const check = checkSuggestionWhy({ by, viaAgentKey: Boolean(key), fields });
+  if (check.refuse) {
+    sendMutationResponse(res, check.refuse.status, check.refuse.body, { route, slug });
+    return null;
+  }
+  return { by, fields, warn: check.warn };
+}
+
+/** Step B4c: after a suggestion was added, store its note and add the missing-why warning. */
+function finishSuggestionNote(res: Response, slug: string, gate: WhyGate, result: { status: number; body: unknown }): void {
+  if (result.status < 200 || result.status >= 300 || !isRecord(result.body)) return;
+  const markId = typeof result.body.markId === 'string' ? result.body.markId : '';
+  try {
+    const note = recordSuggestionNote(slug, markId, gate.by, gate.fields);
+    if (note) result.body.note = { why: note.why, rejectHints: note.rejectHints, priority: note.priority, priorityReason: note.priorityReason };
+  } catch (error) {
+    console.warn('[agent-routes] suggestion note failed', { slug, error: String(error) });
+  }
+  if (gate.warn) {
+    res.setHeader(WHY_POLICY.warningHeader, WHY_POLICY.warningCode);
+    const warnings = Array.isArray(result.body.warnings) ? result.body.warnings : [];
+    result.body.warnings = [...warnings, { code: WHY_POLICY.warningCode, message: 'Add a one-line "why" to AI suggestions: readers see it beside the change. It will be required.' }];
+  }
+}
+
+async function currentAgentState(slug: string): Promise<{ markdown: string; marks: unknown }> {
+  await recoverCanonicalDocumentIfNeeded(slug, 'state');
+  const state = await executeDocumentOperationAsync(slug, 'GET', '/state');
+  const body = asPayload(state.body);
+  const doc = getDocumentBySlug(slug);
+  return {
+    markdown: typeof body.markdown === 'string' ? body.markdown : (doc?.markdown ?? ''),
+    marks: isRecord(body.marks) ? body.marks : doc?.marks,
+  };
+}
+
+/** A small POST route with the agent's actor resolved (B6); `run` does the work. */
+function aidRoute(path: string, route: string, roles: ShareRole[], run: (ctx: { req: Request; slug: string; by: string; role: ShareRole; payload: Record<string, unknown> }) => Promise<{ status: number; body: Record<string, unknown> }>): void {
+  agentRoutes.post(path, async (req: Request, res: Response) => {
+    const slug = getSlug(req);
+    if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route }); return; }
+    const role = checkAuth(req, res, slug, roles);
+    if (!role) return;
+    const payload = asPayload(req.body);
+    const actor = resolveAgentActor(req, slug, payload, role);
+    if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route, slug }); return; }
+    const result = await run({ req, slug, by: actor.by, role, payload });
+    if (result.status === 200) scheduleAlignmentCheck(slug);
+    sendMutationResponse(res, result.status, result.body, { route, slug });
+  });
+}
+
+// Step B4c: every AI review note (why / reject hints / priority), open flags and objections.
+for (const [path, key] of [['/:slug/notes', 'notes'], ['/:slug/flags', 'flags'], ['/:slug/objections', 'objections']] as const) {
+  agentRoutes.get(path, async (req: Request, res: Response) => {
+    const slug = getSlug(req);
+    if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+    if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+    const state = await currentAgentState(slug);
+    const report = await aidsReport(slug, state.markdown, state.marks);
+    res.setHeader('Cache-Control', 'no-store');
+    if (key === 'notes') res.json({ success: true, notes: report.notes, policy: { why: WHY_POLICY, rejectChips: REJECT_CHIPS, priority: ISSUE_PRIORITY } });
+    else if (key === 'flags') res.json({ success: true, flags: report.flags, policy: UNCERTAIN_POLICY });
+    else res.json({ success: true, objections: report.objections, closed: req.query.closed === '1' ? report.closedObjections : undefined, policy: OBJECTION_POLICY });
+  });
+}
+
+// Step B4c: an AI's note on a suggestion ({ markId }) or a line (a line target):
+// { why?, rejectHints?, priority? (1-5, with priorityReason; null clears) }.
+aidRoute('/:slug/notes', 'POST /notes', ['commenter', 'editor', 'owner_bot'], async ({ slug, by, payload }) =>
+  writeAgentNote(slug, (await currentAgentState(slug)).markdown, payload, by));
+
+// Step B4c: flag a line uncertain: { <line target>, note? }.
+aidRoute('/:slug/flags', 'POST /flags', ['commenter', 'editor', 'owner_bot'], async ({ slug, by, payload }) =>
+  writeAgentFlag(slug, (await currentAgentState(slug)).markdown, payload, by));
+
+// Step B4c: clear a flag (the flagger, or the owner credential).
+aidRoute('/:slug/flags/:flagId/clear', 'POST /flags/:id/clear', ['commenter', 'editor', 'owner_bot'], async ({ req, slug, by, role }) =>
+  clearFlag(slug, { id: String(req.params.flagId ?? ''), by, isOwner: role === 'owner_bot', source: 'agent' }));
+
+// Step B4d: object to one or more lines: { lines: [<line target>, ...] | <line target>, reason, condition? }.
+aidRoute('/:slug/objections', 'POST /objections', ['commenter', 'editor', 'owner_bot'], async ({ slug, by, payload }) => {
+  const state = await currentAgentState(slug);
+  return createAgentObjection(slug, state.markdown, state.marks, payload, by);
+});
+
+// Step B4d: the objector clears it; the owner credential overrides it with { reason }.
+aidRoute('/:slug/objections/:objectionId/clear', 'POST /objections/:id/clear', ['commenter', 'editor', 'owner_bot'], async ({ req, slug, by, role, payload }) =>
+  clearObjection(slug, { id: String(req.params.objectionId ?? ''), by, isOwner: role === 'owner_bot', reason: payload.reason, source: 'agent' }));
+
+// Step B4d: the objector saw the repair and still objects.
+aidRoute('/:slug/objections/:objectionId/keep', 'POST /objections/:id/keep', ['commenter', 'editor', 'owner_bot'], async ({ req, slug, by }) => {
+  const state = await currentAgentState(slug);
+  return keepObjection(slug, { id: String(req.params.objectionId ?? ''), by, markdown: state.markdown, rawMarks: state.marks, source: 'agent' });
+});
+
 agentRoutes.post('/:slug/marks/suggest-replace', async (req: Request, res: Response) => {
   const mutationRoute = 'POST /marks/suggest-replace';
   const slug = getSlug(req);
@@ -3755,6 +3905,9 @@ agentRoutes.post('/:slug/marks/suggest-replace', async (req: Request, res: Respo
     return;
   }
   if (!checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot'])) return;
+  // Step B4c: an AI's suggestion carries a one-line "why" (WHY_POLICY).
+  const whyGate = suggestionWhyGate(req, res, slug, asPayload(req.body), mutationRoute);
+  if (!whyGate) return;
   const routeKey = mutationRoute;
   const replay = await maybeReplayIdempotentMutation(req, res, slug, mutationRoute, routeKey);
   if (replay.handled) return;
@@ -3762,6 +3915,7 @@ agentRoutes.post('/:slug/marks/suggest-replace', async (req: Request, res: Respo
   const mutationContext = await enforceMutationPrecondition(res, slug, mutationRoute, 'suggestion.add', payload, replay);
   if (!mutationContext) return;
   const result = await executeDocumentOperationAsync(slug, 'POST', '/marks/suggest-replace', payload, mutationContext);
+  finishSuggestionNote(res, slug, whyGate, result);
   storeIdempotentMutationResult(replay, mutationRoute, slug, result.status, result.body);
   if (result.status >= 200 && result.status < 300) {
     notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'suggestion.add.replace' }), { apply: false });
@@ -3777,6 +3931,9 @@ agentRoutes.post('/:slug/marks/suggest-insert', async (req: Request, res: Respon
     return;
   }
   if (!checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot'])) return;
+  // Step B4c: an AI's suggestion carries a one-line "why" (WHY_POLICY).
+  const whyGate = suggestionWhyGate(req, res, slug, asPayload(req.body), mutationRoute);
+  if (!whyGate) return;
   const routeKey = mutationRoute;
   const replay = await maybeReplayIdempotentMutation(req, res, slug, mutationRoute, routeKey);
   if (replay.handled) return;
@@ -3784,6 +3941,7 @@ agentRoutes.post('/:slug/marks/suggest-insert', async (req: Request, res: Respon
   const mutationContext = await enforceMutationPrecondition(res, slug, mutationRoute, 'suggestion.add', payload, replay);
   if (!mutationContext) return;
   const result = await executeDocumentOperationAsync(slug, 'POST', '/marks/suggest-insert', payload, mutationContext);
+  finishSuggestionNote(res, slug, whyGate, result);
   storeIdempotentMutationResult(replay, mutationRoute, slug, result.status, result.body);
   if (result.status >= 200 && result.status < 300) {
     notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'suggestion.add.insert' }), { apply: false });
@@ -3799,6 +3957,9 @@ agentRoutes.post('/:slug/marks/suggest-delete', async (req: Request, res: Respon
     return;
   }
   if (!checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot'])) return;
+  // Step B4c: an AI's suggestion carries a one-line "why" (WHY_POLICY).
+  const whyGate = suggestionWhyGate(req, res, slug, asPayload(req.body), mutationRoute);
+  if (!whyGate) return;
   const routeKey = mutationRoute;
   const replay = await maybeReplayIdempotentMutation(req, res, slug, mutationRoute, routeKey);
   if (replay.handled) return;
@@ -3806,6 +3967,7 @@ agentRoutes.post('/:slug/marks/suggest-delete', async (req: Request, res: Respon
   const mutationContext = await enforceMutationPrecondition(res, slug, mutationRoute, 'suggestion.add', payload, replay);
   if (!mutationContext) return;
   const result = await executeDocumentOperationAsync(slug, 'POST', '/marks/suggest-delete', payload, mutationContext);
+  finishSuggestionNote(res, slug, whyGate, result);
   storeIdempotentMutationResult(replay, mutationRoute, slug, result.status, result.body);
   if (result.status >= 200 && result.status < 300) {
     notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'suggestion.add.delete' }), { apply: false });

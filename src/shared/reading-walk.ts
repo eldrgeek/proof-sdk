@@ -50,6 +50,11 @@ export interface WalkLine {
   /** Pending suggestions and open comments on the line, in document order. */
   marks: WalkMark[];
   /**
+   * Step B4c: multiplies the line's reading time (an uncertain-flagged line reads slower:
+   * UNCERTAIN_POLICY.dwellFactor). Absent = 1.
+   */
+  dwellFactor?: number;
+  /**
    * Step B2: the line sits in a folded section. The focus never lands on it, scrolling past it
    * does not read it, and its marks neither hold the page nor get passed (you cannot read what
    * is hidden).
@@ -120,7 +125,11 @@ export class ReadingWalk {
   get readingRate(): number { return this.rate; }
 
   /** Step B3b: how long this line must hold the focus to be read. */
-  dwellFor(line: number): number { return dwellMsFor(this.lines[line]?.words, this.rate); }
+  dwellFor(line: number): number {
+    const factor = this.lines[line]?.dwellFactor;
+    const base = dwellMsFor(this.lines[line]?.words, this.rate);
+    return typeof factor === 'number' && factor > 0 && factor !== 1 ? Math.round(base * factor) : base;
+  }
   hasSkimmed(key: string): boolean { return this.skimKeys.has(key) && !this.readKeys.has(key); }
   get lineCount(): number { return this.lines.length; }
 

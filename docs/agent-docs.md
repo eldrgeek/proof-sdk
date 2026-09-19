@@ -458,6 +458,85 @@ state; the newest 50 are kept). `/state` shows it in `alignment.lastSnapshot`.
 The page reads the latest from `GET /api/documents/<slug>/line-marks` (`alignedSnapshot`) and asks
 the server to check with `POST /api/documents/<slug>/alignment-check` (the server decides).
 
+## Review aids: why, uncertain flags, priority, reject chips (Proof Documents, Step B4c)
+
+Every rule below is a named constant in `src/shared/review-aids.ts` (`WHY_POLICY`,
+`UNCERTAIN_POLICY`, `ISSUE_PRIORITY`, `SITTING_BUDGET`, `REJECT_CHIPS`); `/state` returns them
+in `reviewAidsPolicy`.
+
+Why (your rationale): an AI's suggestion carries a one-line `why`. Readers see it under the change
+card in the reading rail, with an "Ask why" link that replies `@<you> Why this change?` on the
+suggestion's thread and records a `review.why_asked` event (`data.markId`, `data.author`).
+
+  POST /api/agent/<slug>/marks/suggest-replace  { quote, content, why, rejectHints?, priority?, priorityReason? }
+  (the same fields on suggest-insert, suggest-delete and /ops `suggestion.add`)
+
+- A request made with an agent key without `why` gets 400 `WHY_REQUIRED`. Other AI-named requests
+  (a share token or the owner credential with `by: "ai:…"`) still succeed but carry the header
+  `X-Proof-Warning: WHY_MISSING` and a `warnings` entry: `WHY_POLICY.enforce` is `agent-key`; it
+  will become `all-ai`. A person's suggestion needs no `why`.
+- An agent key's suggestion with no `by` is now recorded as the key's AI (it used to read "unknown").
+- `rejectHints` (up to 5, 40 characters each) become reason chips when a reader rejects that line.
+- `priority` 1 (most urgent) to 5 raises that Issue in everyone's Next-issue order; it needs a
+  `priorityReason`. It never lowers an Issue below its rule (see below).
+- `/marks/line` also takes `why` (kept for AI actors only; shown beside your mark).
+
+Notes on a line or an existing suggestion (an AI only; one note per AI per target, merged):
+
+  POST /api/agent/<slug>/notes   { markId } or a line target, plus any of why, rejectHints, priority (+ priorityReason; null clears)
+  GET  /api/agent/<slug>/notes
+
+Uncertain flags: a writer (anyone with comment access) flags a line they are unsure of. The margin
+shows an amber tick, the reading walk gives the line twice its reading time, and the flag is an
+Issue (type `uncertain`, with `openFor`) for every team member except the flagger until they Agree,
+Approve or Reject the line deliberately after the flag (a Seen or a scroll does not settle it). The
+flag follows its line through edits; only the flagger or an Owner clears it.
+
+  POST /api/agent/<slug>/flags               { <line target>, note? }   (flagging again updates your note)
+  POST /api/agent/<slug>/flags/<id>/clear
+  GET  /api/agent/<slug>/flags
+  Events: line_flag.set, line_flag.updated, line_flag.cleared
+
+Priority: each Issue in `/state` carries `key`, `priority` (1 most urgent), `priorityRule`,
+`explicitPriority` and `urgent` (priority 1-2). The rules, most urgent first: a rejection by someone
+else or an objection (1); an ask waiting on you, or a repair proposed to your objection (2); a line
+changed since you marked it (3); an uncertain flag (4); a pending suggestion or open comment (5); an
+unseen line (6); an Issue that waits only on other people (7). `/state` is team-neutral (no
+viewer); the page ranks for its viewer. Next issue follows priority, then document order.
+
+Sitting budget: the reading rail has "This sitting: no limit / 5 / 10 / 20 issues" (per browser;
+default off). When the reader has visited that many Issues with Next issue, Next stops and says
+"Sitting done: 5 of 5. 7 more, none urgent." with Stop here / 5 more.
+
+## Objections: "I'd agree if…" (Proof Documents, Step B4d)
+
+A Reject may carry a condition ("I'd agree if…") and may cover several lines (shift-click lines in
+the margin, or select text across lines, then R). That Reject is stored as an objection, in its own
+table, not in the text: each covered line keeps its original anchor and a current anchor that is
+re-found after edits and moves (exact text, then the most similar line of the same kind, then the
+line in its old slot between the same neighbours). A covered line that cannot be found is reported
+as deleted and the objection stays open. Rules in `OBJECTION_POLICY` (`src/shared/objections.ts`).
+
+- An open objection is an Issue for everyone (type `objection`: `objectionId`, `lineIndices`, `by`,
+  `reason`, `condition`, `deletedLines`, `repairPending`).
+- Only the objector clears it. An Owner (the owner credential; on the page the document's creator
+  or a Documents admin) can override it with a recorded reason. Guests cannot object (sign in).
+- When a covered line is edited, deleted, or gains a pending suggestion, "a repair was proposed":
+  the objector's `since-you` lists it under `repairs`, and the rail offers Clear / Keep. Keep records
+  what the objector saw, so only later changes count as a new repair.
+
+  POST /api/agent/<slug>/objections              { lines: [<line target>, ...] (or one target inline), reason, condition? }
+  POST /api/agent/<slug>/objections/<id>/clear   (owner credential: { reason } overrides)
+  POST /api/agent/<slug>/objections/<id>/keep
+  GET  /api/agent/<slug>/objections[?closed=1]
+  Events: objection.created (with the lines and the condition), objection.repair_proposed,
+          objection.kept, objection.cleared, objection.overridden
+
+A Familiar that sees `objection.created` can draft a repair as a suggestion on the covered lines
+(with a `why` that names the condition); the objector then sees it as a proposed repair.
+`objection.repair_proposed` is recorded when the server next reads the document (`/state`,
+`/objections`, `since-you`), not at the moment of a browser edit.
+
 ## Presence And Event Polling
 
 Poll for changes:

@@ -20,7 +20,8 @@
  */
 import type { Mark, CommentData, ReplaceData } from '../formats/marks';
 import { getActorName, getMarkColor } from '../formats/marks';
-import { actorKey, type DocLine } from '../shared/line-marks';
+import { actorKey, isAiActor, type DocLine } from '../shared/line-marks';
+import { UNCERTAIN_POLICY, WHY_POLICY } from '../shared/review-aids';
 import { ASK_POLICY, type AskChoice } from '../shared/asks';
 import { GestureGate, READING_WALK, ReadingWalk, countWords, dwellMsFor, type WalkLine, type WalkMark, type WalkSnapshot } from '../shared/reading-walk';
 import type { SinceItem, SinceYouReport, RingerItem } from '../shared/alignment';
@@ -136,6 +137,8 @@ export class ReadingWalkUI {
   private docsMessage = 'Loading…';
   private readonly seenWrites: number[] = [];
   private lastError = '';
+  /** Step B4c test hook: changes whose author was asked why. */
+  private readonly whyAsked: string[] = [];
 
   constructor(private readonly host: ReadingWalkHost) {
     this.left.setAttribute('aria-label', 'Documents');
@@ -166,6 +169,9 @@ export class ReadingWalkUI {
     document.addEventListener('click', this.onDocClick, true);
     document.addEventListener('visibilitychange', this.onVisibility);
     try { window.matchMedia(PHONE_QUERY).addEventListener('change', this.onResize); } catch { /* old browsers */ }
+    // Step B4c: "This sitting" (the budget setting and its status) sits under the reading speed.
+    const budget = this.host.lineMarks().budgetEl;
+    if (budget.parentElement !== this.rightBody) this.rightBody.insertBefore(budget, this.sinceHost);
     this.unsubscribe = this.host.lineMarks().subscribe(() => this.sync());
     this.sync();
     void this.loadDocuments();
@@ -231,11 +237,14 @@ export class ReadingWalkUI {
     const pending = this.pendingMarks();
     this.marksSig = pending.map(mark => `${mark.id}@${mark.range!.from}`).join(',') + `|${this.lines.length}`;
     const hidden = this.host.hiddenLines?.() ?? new Set<number>();
+    // Step B4c: a line its writer flagged uncertain takes UNCERTAIN_POLICY.dwellFactor × as long.
+    const flagged = lm.flaggedLineSet();
     const walkLines: WalkLine[] = this.lines.map(line => ({
       key: `${line.hash}:${line.occurrence}`,
       words: countWords(line.text),
       marks: [] as WalkMark[],
       ...(hidden.has(line.index) ? { hidden: true } : {}),
+      ...(flagged.has(line.index) ? { dwellFactor: UNCERTAIN_POLICY.dwellFactor } : {}),
     }));
     for (const mark of pending) {
       const index = lm.lineAtPos(mark.range!.from);
@@ -419,6 +428,7 @@ export class ReadingWalkUI {
     const target = event.target as HTMLElement | null;
     if (target?.closest?.('[role="dialog"], .pm-review-dialog, .mark-popover, .plm-menu, .proof-share-overflow-menu, [role="menu"]')) return;
     const key = event.key;
+    if (key === 'Escape' && this.host.lineMarks().selectionLines().length) { this.host.lineMarks().clearSelection(); return; }
     if (key === 'a' || key === 'A') { event.preventDefault(); this.markFocus('agreed'); return; }
     if (key === 'r' || key === 'R') { event.preventDefault(); this.openReason(); return; }
     if (key === 'j' || key === 'J' || key === 'ArrowDown') { event.preventDefault(); this.next(); return; }
@@ -439,6 +449,18 @@ export class ReadingWalkUI {
     }
     this.renderNow();
     this.box?.ask?.choose(choice);
+  }
+
+  /** Step B4d: the focus line (shift-click ranges in the margin start here). */
+  focusIndex(): number { return this.walk?.focus ?? 0; }
+
+  /** Step B4c: Next issue hit the sitting budget: show the rail's "This sitting" status. */
+  budgetReached(): void {
+    if (isPhone()) this.openSheet('right');
+    else if (document.body.classList.contains('prw-right-collapsed')) this.setCollapsed('right', false);
+    const el = this.host.lineMarks().budgetEl;
+    el.scrollIntoView({ block: 'nearest' });
+    (el.querySelector('.plm-budget-stop') as HTMLButtonElement | null)?.focus({ preventScroll: true });
   }
 
   /** Step B3: the viewer answered the ask on `line` (from any control): an explicit action. */
@@ -525,6 +547,8 @@ export class ReadingWalkUI {
   }
 
   private openReason(): void {
+    // Step B4d: a text selection across several lines makes the Reject cover them.
+    if (this.host.lineMarks().selectFromEditor()) this.boxSig = '';
     if (isPhone()) this.openSheet('right');
     else if (document.body.classList.contains('prw-right-collapsed')) this.setCollapsed('right', false);
     this.renderNow();
@@ -693,6 +717,8 @@ export class ReadingWalkUI {
     refresh.type = 'button';
     refresh.onclick = () => { void this.loadSinceYou(); };
     const groups: Array<[string, SinceItem[], number, string]> = [
+      // Step B4d: a repair was proposed to one of your objections (Clear / Keep in the line's box).
+      ['A repair was proposed', report.repairs ?? [], report.counts.repairs ?? 0, 'repairs'],
       ['Lines edited since', report.edited, report.counts.edited, 'edited'],
       ['New asks', report.asks, report.counts.asks, 'asks'],
       ['Rejected by others', report.rejections, report.counts.rejections, 'rejections'],
@@ -734,6 +760,7 @@ export class ReadingWalkUI {
       : item.type === 'ask' ? `Ask from ${getActorName(item.by ?? '')}`
       : item.type === 'rejection' ? `${getActorName(item.by ?? '')} rejected`
       : item.type === 'suggestion' ? `Suggestion by ${getActorName(item.by ?? '')}`
+      : item.type === 'repair' ? `Your objection: ${item.reason ?? ''}`
       : item.type === 'reply' ? `Reply by ${getActorName(item.by ?? '')}`
       : `Comment by ${getActorName(item.by ?? '')}`;
     button.append(el('span', 'prw-since-head', head));
@@ -945,7 +972,7 @@ export class ReadingWalkUI {
     const state = lm.lineState(walk.focus);
     const summary = lm.issueSummary();
     const marks = state ? [...state.marks.values()].map(e => `${e.mark.id}:${e.mark.status}:${e.current}:${e.mark.reason ?? ''}`).join(',') : '';
-    const sig = `${walk.focus}|${line.hash}|${line.occurrence}|${marks}|${summary?.team.join(',') ?? ''}|${lm.isLoaded()}|${lm.askSignature(walk.focus)}`;
+    const sig = `${walk.focus}|${line.hash}|${line.occurrence}|${marks}|${summary?.team.join(',') ?? ''}|${lm.isLoaded()}|${lm.askSignature(walk.focus)}|${lm.aidsSignature(walk.focus)}`;
     if (sig === this.boxSig && this.box) return;
     // Keep the box while the reader types a reason for this same line.
     const active = document.activeElement;
@@ -967,8 +994,10 @@ export class ReadingWalkUI {
     const onLine = walk.marksOn(walk.focus);
     const all = new Map(this.pendingMarks().map(mark => [mark.id, mark]));
     const current = walk.currentMark();
+    const lm = this.host.lineMarks();
     const sig = JSON.stringify([walk.focus, onLine.map(m => [m.id, walk.isPassed(m.id), walk.isProvisional(m.id)]), current?.id,
-      onLine.map(m => { const mk = all.get(m.id); return mk ? [mk.at, mk.data] : null; })]);
+      onLine.map(m => { const mk = all.get(m.id); return mk ? [mk.at, mk.data] : null; }),
+      onLine.map(m => lm.notesForMark(m.id).map(n => n.why))]);
     if (sig === this.changesSig) return;
     this.changesSig = sig;
     this.changesHost.replaceChildren();
@@ -1019,6 +1048,29 @@ export class ReadingWalkUI {
       for (const reply of (mark.data as CommentData)?.replies ?? []) body.append(el('p', 'prw-reply', `${getActorName(reply.by)}: ${reply.text}`));
     }
     card.append(body);
+    // Step B4c: the author's one-line rationale, and "Ask why" for an AI's change.
+    if (mark.kind !== 'comment') {
+      const notes = this.host.lineMarks().notesForMark(mark.id).filter(note => note.why);
+      for (const note of notes) {
+        const why = el('p', 'prw-why');
+        why.append(el('span', 'prw-why-label', 'Why: '), note.why ?? '');
+        if (note.by !== mark.by) why.append(el('span', 'prw-why-by', ` (${getActorName(note.by)})`));
+        card.append(why);
+      }
+      if (WHY_POLICY.askWhyFor === 'everyone' || isAiActor(mark.by ?? '')) {
+        const ask = el('button', 'prw-link prw-ask-why', 'Ask why');
+        ask.type = 'button';
+        ask.title = `Posts “${WHY_POLICY.askWhyText}” to ${getActorName(mark.by)} on this change`;
+        ask.onclick = () => {
+          this.decide(mark, 'reply', `@${getActorName(mark.by)} ${WHY_POLICY.askWhyText}`);
+          this.host.lineMarks().noteWhyAsked(mark.id, mark.by ?? null);
+          ask.disabled = true;
+          ask.textContent = 'Asked';
+          this.whyAsked.push(mark.id);
+        };
+        card.append(ask);
+      }
+    }
     if (flags.provisional) {
       const note = el('p', 'prw-card-note', 'Accepted by scrolling · not saved yet');
       const undo = el('button', 'prw-link', 'Undo'); undo.type = 'button';
@@ -1243,6 +1295,8 @@ export class ReadingWalkUI {
       skimmed: [...this.skimmedLines],
       rate: walk?.readingRate ?? null,
       dwellMs: walk ? walk.dwellFor(walk.focus) : null,
+      flagged: [...this.host.lineMarks().flaggedLineSet()],
+      whyAsked: [...this.whyAsked],
       since: this.sinceReport ? { hasHistory: this.sinceReport.hasHistory, counts: this.sinceReport.counts, baseline: this.sinceReport.baseline } : null,
       readingY: this.readingY(),
       tops: [...this.tops],

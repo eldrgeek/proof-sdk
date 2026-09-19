@@ -177,11 +177,13 @@ export interface SectionIssueCount {
   reviewMarks: number;
   /** Step B3: open asks in the section. */
   asks: number;
+  /** Step B4c/B4d: uncertain flags and objections in the section. */
+  aids: number;
 }
 
 /** The Issues (same computation as the top bar) that sit inside the section, heading included. */
 export function sectionIssueCount(section: DocSection, lines: DocLine[], summary: IssueSummary | null): SectionIssueCount {
-  const count: SectionIssueCount = { total: 0, lines: 0, reviewMarks: 0, asks: 0 };
+  const count: SectionIssueCount = { total: 0, lines: 0, reviewMarks: 0, asks: 0, aids: 0 };
   if (!summary) return count;
   const from = lines[section.headingIndex]?.pos ?? 0;
   const to = section.lineEnd < lines.length ? lines[section.lineEnd].pos : Number.POSITIVE_INFINITY;
@@ -190,11 +192,13 @@ export function sectionIssueCount(section: DocSection, lines: DocLine[], summary
       if (issue.lineIndex >= section.headingIndex && issue.lineIndex < section.lineEnd) count.lines += 1;
     } else if (issue.type === 'ask') {
       if (issue.lineIndex >= section.headingIndex && issue.lineIndex < section.lineEnd) count.asks += 1;
+    } else if (issue.type === 'uncertain' || issue.type === 'objection') {
+      if (issue.lineIndex !== null && issue.lineIndex >= section.headingIndex && issue.lineIndex < section.lineEnd) count.aids += 1;
     } else if (typeof issue.pos === 'number' && issue.pos >= from && issue.pos < to) {
       count.reviewMarks += 1;
     }
   }
-  count.total = count.lines + count.reviewMarks + count.asks;
+  count.total = count.lines + count.reviewMarks + count.asks + count.aids;
   return count;
 }
 

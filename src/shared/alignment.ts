@@ -67,7 +67,7 @@ export interface SinceSnapshotBaseline {
   lines: Array<{ hash: string; occurrence: number; text: string }>;
 }
 
-export type SinceItemType = 'edited' | 'ask' | 'rejection' | 'suggestion' | 'comment' | 'reply';
+export type SinceItemType = 'edited' | 'ask' | 'rejection' | 'suggestion' | 'comment' | 'reply' | 'repair';
 
 export interface SinceItem {
   type: SinceItemType;
@@ -83,6 +83,8 @@ export interface SinceItem {
   reason?: string | null;
   markId?: string;
   askId?: string;
+  /** Step B4d: a repair was proposed to your objection. */
+  objectionId?: string;
   detail?: string | null;
 }
 
@@ -110,7 +112,9 @@ export interface SinceYouReport {
   suggestions: SinceItem[];
   comments: SinceItem[];
   ringers: RingerItem[];
-  counts: { edited: number; asks: number; rejections: number; suggestions: number; comments: number; ringers: number; total: number };
+  /** Step B4d: your open objections whose lines changed or gained a suggestion since you looked. */
+  repairs: SinceItem[];
+  counts: { edited: number; asks: number; rejections: number; suggestions: number; comments: number; ringers: number; repairs: number; total: number };
 }
 
 /** An explicit mark: chosen for this one line (not a scroll, not a folded section, not a skim). */
@@ -275,6 +279,7 @@ export function computeSinceYou(input: {
     suggestions: suggestions.length,
     comments: comments.length,
     ringers: ringers.length,
+    repairs: 0,
     total: 0,
   };
   counts.total = counts.edited + counts.asks + counts.rejections + counts.suggestions + counts.comments + counts.ringers;
@@ -289,6 +294,7 @@ export function computeSinceYou(input: {
     suggestions: cap(suggestions.sort(byTime)),
     comments: cap(comments.sort(byTime)),
     ringers: cap(ringers),
+    repairs: [],
     counts,
   };
 }

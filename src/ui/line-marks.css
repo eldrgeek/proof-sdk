@@ -120,3 +120,62 @@ body.plm-on #editor { padding-left:calc(var(--provenance-bar-width, 6px) + 48px)
 @media (max-width:700px) {
   #share-banner .plm-aligned-at { display:none; }
 }
+
+/* Proof Documents Steps B4c + B4d: review aids and objections (Claude Opus 5, 2026-09-19). */
+/* An amber tick left of the dot: its writer flagged the line uncertain. A red one: an open objection. */
+.plm-dot[data-uncertain="true"]::before,
+.plm-dot[data-objection="true"]::before {
+  content:''; position:absolute; right:-4px; top:20%; bottom:20%; width:3px; border-radius:2px; background:#d97706;
+}
+.plm-dot[data-objection="true"]::before { background:#dc2626; }
+.plm-dot[data-uncertain="true"][data-objection="true"]::before { background:linear-gradient(#d97706 50%, #dc2626 50%); }
+.plm-dot[data-selected="true"] .plm-glyph { box-shadow:0 0 0 3px rgba(220,38,38,.35); }
+.plm-link { border:none; background:none; padding:0; color:#2563eb; cursor:pointer; font:inherit; text-decoration:underline; }
+.plm-link:disabled { color:#9ca3af; cursor:default; }
+.plm-reason { flex-wrap:wrap; }
+.plm-reason > input:first-of-type { flex:1 1 100%; }
+.plm-reason .plm-condition { flex:1 1 100%; }
+.plm-reason > button[type="submit"] { margin-left:auto; }
+.plm-reject-scope { flex:1 1 100%; margin:0; font-size:12px; color:#991b1b; }
+.plm-reject-hint { flex:1 1 100%; margin:0; font-size:12px; color:#92400e; }
+.plm-reject-hint[hidden] { display:none; }
+.plm-chips { flex:1 1 100%; display:flex; flex-wrap:wrap; gap:6px; }
+.plm-reason .plm-chip {
+  min-height:32px; padding:0 10px; border:1px solid #d1d5db; border-radius:999px; background:#fff; color:#374151;
+  font:500 12px system-ui,sans-serif; cursor:pointer;
+}
+.plm-reason .plm-chip[data-source="author"] { border-color:#a78bfa; background:#f5f3ff; color:#4c1d95; }
+.plm-reason .plm-chip:hover { border-color:#6b7280; }
+.plm-reason .plm-link { min-height:0; padding:0; background:none; color:#2563eb; font:inherit; }
+.plm-flag { margin:6px 0; font-size:12px; }
+.plm-flag-note { margin:0 0 4px; padding:6px 8px; border-left:3px solid #d97706; border-radius:4px; background:#fffbeb; color:#78350f; }
+.plm-flag-form { display:flex; gap:6px; margin-top:4px; }
+.plm-flag-form[hidden] { display:none; }
+.plm-flag-form input { flex:1; min-width:0; min-height:32px; padding:4px 8px; border:1px solid #949ca8; border-radius:8px; font:inherit; }
+.plm-flag-form button { min-height:32px; padding:0 10px; border:none; border-radius:8px; background:#d97706; color:#fff; font:600 12px system-ui,sans-serif; cursor:pointer; }
+.plm-objection { margin:6px 0; padding:8px; border-left:3px solid #dc2626; border-radius:6px; background:#fef2f2; color:#7f1d1d; font-size:12px; }
+.plm-objection[data-repair="true"] { border-left-color:#2563eb; background:#eff6ff; color:#1e3a8a; }
+.plm-objection p { margin:0 0 4px; }
+.plm-objection-status { color:#6b7280; }
+.plm-objection-repair { font-weight:600; }
+.plm-objection-actions { display:flex; gap:6px; flex-wrap:wrap; }
+.plm-objection-override { display:flex; gap:6px; margin-top:6px; }
+.plm-objection-override[hidden] { display:none; }
+.plm-objection-override input { flex:1; min-width:0; min-height:32px; padding:4px 8px; border:1px solid #949ca8; border-radius:8px; font:inherit; }
+.plm-objection-override button { min-height:32px; padding:0 10px; border:none; border-radius:8px; background:#7f1d1d; color:#fff; font:600 12px system-ui,sans-serif; }
+.plm-why { display:block; flex-basis:100%; color:#6b7280; font-size:11px; }
+.plm-budget { margin:0 0 10px; font-size:12px; }
+.plm-budget-setting { display:flex; align-items:center; gap:6px; color:#4b5563; }
+.plm-budget-setting select { font:inherit; min-height:28px; }
+.plm-budget-status { margin:4px 0; color:#374151; }
+.plm-budget[data-state="reached"] { padding:8px; border-radius:8px; background:#eff6ff; }
+.plm-budget[data-state="reached"] .plm-budget-status { font-weight:600; color:#1e3a8a; }
+.plm-budget-actions { display:flex; gap:6px; }
+@media (max-width: 700px) {
+  .plm-sheet .plm-reason .plm-chip { min-height:44px; font-size:14px; }
+  .plm-sheet .plm-flag-form input, .plm-sheet .plm-flag-form button,
+  .plm-sheet .plm-objection-override input, .plm-sheet .plm-objection-override button { min-height:44px; font-size:16px; }
+  .prw-right .plm-reason .plm-chip { min-height:44px; font-size:14px; }
+  .plm-budget-setting select { min-height:44px; }
+  .plm-budget-actions .plm-choice { min-height:44px; }
+}
