@@ -72,6 +72,7 @@ import {
   summarizeDocumentIntegrity,
 } from './document-integrity.js';
 import { recordProjectionRepair } from './metrics.js';
+import { MARK_POSITION_REMAP_POLICY, remapStoredMarkPositions } from './mark-position-remap.js';
 import { isHostedRewriteEnvironment } from './rewrite-policy.js';
 import { refreshSnapshotForSlug } from './snapshot.js';
 import { pauseDocumentAndPropagate } from './share-state.js';
@@ -127,6 +128,12 @@ type CanonicalMutationFailure = {
 type CanonicalMutationSuccess = {
   ok: true;
   document: DocumentRow;
+  /**
+   * The marks as committed. They can differ from args.nextMarks: stored positions are remapped
+   * through the text change (MARK_POSITION_REMAP_POLICY). Post-commit syncs and verifications must
+   * use these, or they write the stale positions back into the live document.
+   */
+  marks: Record<string, unknown>;
   yStateVersion: number;
   activeCollabClients: number;
 };
@@ -852,6 +859,52 @@ async function deriveMarkdownFromCanonicalFragment(
   }
 }
 
+type StoredMarkRecord = ReturnType<typeof synchronizeAuthoredMarks>[string];
+
+function canonicalFragmentRoot(ydoc: Y.Doc, schema: Schema): ProseMirrorNode | null {
+  try {
+    const fragment = ydoc.getXmlFragment('prosemirror');
+    if (fragment.length === 0) return null;
+    return yXmlFragmentToProseMirrorRootNode(fragment as any, schema as any) as ProseMirrorNode;
+  } catch {
+    return null;
+  }
+}
+
+function remapMarksThroughCanonicalChange(args: {
+  slug: string;
+  source: string;
+  parser: { schema: unknown };
+  beforeDoc: Y.Doc;
+  afterDoc: Y.Doc;
+  authoritativeMarkdown: string;
+  previousMarks: Record<string, unknown>;
+  nextMarks: Record<string, StoredMarkRecord>;
+}): Record<string, StoredMarkRecord> {
+  if (!MARK_POSITION_REMAP_POLICY.enabled) return args.nextMarks;
+  try {
+    const schema = args.parser.schema as Schema;
+    const oldDoc = canonicalFragmentRoot(args.beforeDoc, schema)
+      ?? (parseMarkdownWithHtmlFallback(args.parser as any, args.authoritativeMarkdown).doc as ProseMirrorNode | null);
+    const newDoc = canonicalFragmentRoot(args.afterDoc, schema);
+    if (!oldDoc || !newDoc) return args.nextMarks;
+    const result = remapStoredMarkPositions({
+      previousMarks: args.previousMarks,
+      nextMarks: args.nextMarks,
+      oldDoc,
+      newDoc,
+    });
+    return result.marks as Record<string, StoredMarkRecord>;
+  } catch (error) {
+    console.warn('[canonical] mark position remap failed; marks keep their stored positions', {
+      slug: args.slug,
+      source: args.source,
+      error: String(error),
+    });
+    return args.nextMarks;
+  }
+}
+
 export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Promise<CanonicalMutationResult> {
   const doc = getDocumentBySlug(args.slug);
   if (!doc || doc.share_state === 'DELETED') {
@@ -1090,7 +1143,7 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
   }
   const nextMarksBase = hasExplicitNextMarks ? nextMarks : authoritativeMarks;
   const authoredMarks = extractAuthoredMarksFromDoc(parsedNext.doc as ProseMirrorNode, parser.schema as Schema);
-  const effectiveNextMarks = synchronizeAuthoredMarks(nextMarksBase, authoredMarks);
+  let effectiveNextMarks = synchronizeAuthoredMarks(nextMarksBase, authoredMarks);
   const preserveRichMarkdownSnapshot = shouldPreserveRichMarkdownSnapshot(sanitizedMarkdown);
   let authoritativeNextMarkdown = preserveRichMarkdownSnapshot
     ? normalizeStoredMarkdownSnapshot(sanitizedMarkdown)
@@ -1171,6 +1224,18 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
       }
       applyMarksMapDiff(persistedCandidateDoc.getMap('marks'), effectiveNextMarks);
     }, canonicalTransactionOrigin(args.source));
+    // Stored mark positions follow the text: map every mark the caller did not re-anchor through
+    // this change (server/mark-position-remap.ts). Must run before the marks are written below.
+    effectiveNextMarks = remapMarksThroughCanonicalChange({
+      slug: args.slug,
+      source: args.source,
+      parser,
+      beforeDoc: ydoc,
+      afterDoc: persistedCandidateDoc,
+      authoritativeMarkdown,
+      previousMarks: authoritativeMarks,
+      nextMarks: effectiveNextMarks,
+    });
     if (!preserveRichMarkdownSnapshot) {
       authoritativeNextMarkdown = (
         await deriveMarkdownFromCanonicalFragment(persistedCandidateDoc, parser.schema)
@@ -1442,6 +1507,7 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
     return {
       ok: true,
       document: updated,
+      marks: effectiveNextMarks,
       yStateVersion: updated.y_state_version,
       activeCollabClients,
     };

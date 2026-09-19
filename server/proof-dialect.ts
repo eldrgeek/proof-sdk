@@ -140,8 +140,13 @@ export const IMPORT_POLICY = {
    * insertion at the start of a line into a replacement (2026-09-19, Waiting on Mike export).
    */
   createFromCurrent: true,
-  /** End every import with one canonical write of text + marks (see applyImportedMarks). */
-  seal: true,
+  /**
+   * End every import with one canonical write of text + marks (see applyImportedMarks). Off since
+   * fix/suggestion-positions (2026-09-19): the loss it worked around was a row-only marks write
+   * (patchStoredMarksAsync) on a document with persisted Yjs state, and every marks write now
+   * reaches the Yjs marks map (MARKS_WRITE_POLICY in document-engine.ts). Kept as a switch.
+   */
+  seal: false,
 } as const;
 
 /** Who is importing, and so whose name the import may write marks in. */
@@ -1206,8 +1211,8 @@ export async function applyImportedMarks(slug: string, input: {
     }
   }
   // Seal: one canonical write of the text with every stored mark, so the collaborative document
-  // carries them. Without it, suggestions stored beside the text only (replacements, deletions,
-  // attached insertions) were dropped when the first reader opened the page (IMPORT_POLICY.seal).
+  // carries them. Before MARKS_WRITE_POLICY (document-engine.ts), suggestions stored beside the text
+  // only were dropped when the first reader opened the page; now optional (IMPORT_POLICY.seal).
   if (IMPORT_POLICY.seal) {
     const final = getDocumentBySlug(slug);
     if (final) {

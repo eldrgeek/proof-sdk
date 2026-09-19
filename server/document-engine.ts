@@ -317,6 +317,15 @@ async function getAsyncMutationReadyDocumentWithVisibleFallback(
   return { doc, error: null };
 }
 
+/**
+ * Where a marks-only write goes. Ruling point (fix/suggestion-positions, 2026-09-19): once a
+ * document has persisted collaborative (Yjs) state, the Yjs marks map is what a page loads, so a
+ * marks write must reach it; a write to the documents row alone is lost at the next page open.
+ */
+export const MARKS_WRITE_POLICY = {
+  canonicalWhenYjsPersisted: true,
+} as const;
+
 function buildCanonicalMutationBaseArgs(
   doc: Pick<MutationReadyDocument, 'revision' | 'updated_at'>,
   context?: AsyncDocumentMutationContext,
@@ -1424,7 +1433,10 @@ function persistMarks(slug: string, marks: Record<string, StoredMark>, actor: st
     });
   }
 
-  if (hasPotentiallyLiveCollabDoc(slug)) {
+  const persistedRow = getDocumentBySlug(slug);
+  const hasPersistedYjsState = typeof persistedRow?.y_state_version === 'number' && persistedRow.y_state_version > 0;
+  if (hasPotentiallyLiveCollabDoc(slug) || (MARKS_WRITE_POLICY.canonicalWhenYjsPersisted && hasPersistedYjsState)) {
+    // A row-only write would be dropped at the next page open (see persistMarksAsync).
     return {
       status: 503,
       body: {
@@ -1598,7 +1610,14 @@ async function persistMarksAsync(
   const yjsBackedMutationBase = context?.mutationBase
     && context.mutationBase.source !== 'projection'
     && context.mutationBase.source !== 'canonical_row';
+  // A document with persisted collaborative state keeps its marks in the Yjs marks map, and a page
+  // that opens it rebuilds the row from that map (projection materialization deliberately does not
+  // resurrect row-only suggestions). A marks write that reached only the row was therefore lost at
+  // the next page open: pending replacements, deletions and attached insertions stored by the
+  // dialect import (patchStoredMarksAsync, which has no route context) vanished that way.
+  // MARKS_WRITE_POLICY.canonicalWhenYjsPersisted sends every such write through the canonical path.
   const shouldCommitCanonical = (Boolean(context?.precondition) && hasPersistedYjsState)
+    || (MARKS_WRITE_POLICY.canonicalWhenYjsPersisted && hasPersistedYjsState)
     || Boolean(yjsBackedMutationBase)
     || (typeof targetMarkdown === 'string'
       && stripEphemeralCollabSpans(targetMarkdown) !== persistedMarkdown);

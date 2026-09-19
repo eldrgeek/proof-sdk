@@ -115,6 +115,17 @@ Rewrite the whole document:
     -H "X-Agent-Id: your-agent" \
     -d '{"type":"rewrite.apply","by":"ai:your-agent","content":"# New markdown..."}'
 
+### Marks keep pointing at their words (2026-09-19)
+
+Every stored mark carries its quote and its positions (`range`, `startRel`, `endRel`). When a server
+mutation changes text — `/edit`, `/edit/v2`, `rewrite.apply`, a new suggestion, an accepted or
+rejected one — the positions of every other mark are mapped through that change before they are
+written, so a suggestion below an edited paragraph still points at its own words and Accept applies
+there. You do not have to re-anchor other people's marks after your edit, and you should not rewrite
+their positions yourself: send only the marks you mean to change. Positions you do recompute are
+kept as you sent them. A mark whose words your edit removed stays stored and is listed in
+`orphanedMarks` in `GET /state`; reject it (or leave it) — it is never silently dropped.
+
 ## Edit Via Structured Operations (Append, Replace, Insert)
 
 For surgical edits without rewriting the entire document, use the `/edit` endpoint:
