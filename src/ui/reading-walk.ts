@@ -62,6 +62,8 @@ export const HOVER_FOCUS_POLICY = {
   delayMs: 150,
   /** Pointers that hover precisely (a mouse or trackpad). */
   query: '(hover: hover) and (pointer: fine)',
+  /** A pointer event closer than this to the last one is not a move (synthetic events after scroll or layout). */
+  minMovePx: 3,
   /** A move of the reading position (scroll, J / K, Next issue, a jump) hands the focus back to it. */
   walkMoveClearsHover: true,
 } as const;
@@ -215,7 +217,6 @@ export class ReadingWalkUI {
   private hoverLine: number | null = null;
   private hoverCandidate: number | null = null;
   private hoverTimer: ReturnType<typeof setTimeout> | null = null;
-  private hoverFrame = 0;
   private lastPointer: { x: number; y: number } | null = null;
   private lastWalkFocus = -1;
   /** Touch focus: the strip docked at the bottom. */
@@ -261,6 +262,7 @@ export class ReadingWalkUI {
     document.addEventListener('click', this.onDocClick, true);
     document.addEventListener('visibilitychange', this.onVisibility);
     document.addEventListener('pointermove', this.onPointerMove, { passive: true });
+    document.addEventListener('pointerdown', this.onPointerDownHover, true);
     document.addEventListener('focusin', this.onFocusChange);
     document.addEventListener('focusout', this.onFocusChange);
     document.body.append(this.strip);
@@ -303,6 +305,7 @@ export class ReadingWalkUI {
     document.removeEventListener('click', this.onDocClick, true);
     document.removeEventListener('visibilitychange', this.onVisibility);
     document.removeEventListener('pointermove', this.onPointerMove);
+    document.removeEventListener('pointerdown', this.onPointerDownHover, true);
     document.removeEventListener('focusin', this.onFocusChange);
     document.removeEventListener('focusout', this.onFocusChange);
     if (this.hoverTimer) clearTimeout(this.hoverTimer);
@@ -717,16 +720,20 @@ export class ReadingWalkUI {
 
   private onPointerMove = (event: PointerEvent): void => {
     if (!this.walk || event.pointerType !== 'mouse' || !this.hoverCapable()) return;
-    // A scroll makes the browser send a pointer event at the same place: not a hover.
+    // A scroll, or the page changing under a still mouse, makes the browser send a pointer event
+    // at (about) the same place: not a hover. Only a real move counts.
     const last = this.lastPointer;
-    if (last && last.x === event.clientX && last.y === event.clientY) return;
+    if (last && Math.abs(last.x - event.clientX) < HOVER_FOCUS_POLICY.minMovePx && Math.abs(last.y - event.clientY) < HOVER_FOCUS_POLICY.minMovePx) return;
     this.lastPointer = { x: event.clientX, y: event.clientY };
-    if (this.hoverFrame) return;
-    this.hoverFrame = requestAnimationFrame(() => {
-      this.hoverFrame = 0;
-      const at = this.lastPointer;
-      if (at) this.hoverAt(at.x, at.y);
-    });
+    // Read what is under the pointer now: a click can scroll the page before a later frame.
+    this.hoverAt(event.clientX, event.clientY);
+  };
+
+  /** A press is an explicit act: a hover still waiting for its delay is dropped. */
+  private onPointerDownHover = (): void => {
+    if (this.hoverTimer) clearTimeout(this.hoverTimer);
+    this.hoverTimer = null;
+    this.hoverCandidate = null;
   };
 
   /** The line under a viewport point: the text, its margin dot, or a folded closed line; else null. */
@@ -753,6 +760,7 @@ export class ReadingWalkUI {
     const active = document.activeElement as HTMLElement | null;
     if (active && ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName) && this.right.contains(active)) return;
     const line = this.lineAtPoint(x, y);
+    this.hoverLog.push({ x: Math.round(x), y: Math.round(y), line }); if (this.hoverLog.length > 8) this.hoverLog.shift();
     // Off the text: the focus stays where it is (the mouse can travel to the rail).
     if (line === null || !Number.isFinite(line)) {
       if (this.hoverTimer) clearTimeout(this.hoverTimer);
@@ -781,8 +789,9 @@ export class ReadingWalkUI {
     this.renderNow();
   }
 
-  /** Test hook: hover focus changes. */
+  /** Test hook: hover focus changes, and the last points hover looked at. */
   private hoverWrites = 0;
+  private readonly hoverLog: Array<{ x: number; y: number; line: number | null }> = [];
 
   private onFocusChange = (): void => { this.queueRender(); };
 
@@ -1823,6 +1832,7 @@ export class ReadingWalkUI {
       target: walk ? this.targetLine() : -1,
       hover: this.hoverLine,
       hoverWrites: this.hoverWrites,
+      hoverLog: [...this.hoverLog],
       touch: this.touchMode(),
       strip: this.strip.hidden ? null : { line: Number(this.strip.dataset.line), status: this.strip.dataset.status ?? '' },
       lines: walk?.lineCount ?? 0,
