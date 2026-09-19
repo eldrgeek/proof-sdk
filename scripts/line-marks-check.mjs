@@ -4,6 +4,9 @@
 // Starts an isolated local server on the current dist/ build (run `npm run build` first), creates
 // throwaway documents on a temp SQLite database, and drives Chromium at desktop and phone sizes.
 // Screenshots go to .preview/. Exit code 0 only if every check passes.
+// Step 1b (reading walk, 2026-09-18): on desktop a dot focuses its line and the mark box sits in
+// the right rail (no popover); the focus line becomes Seen after a short dwell, so counts below
+// wait for that first.
 // Usage: node scripts/line-marks-check.mjs [--style playmaker|proof]
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -107,9 +110,11 @@ async function openDoc(browser, base, slug, name, contextOptions = {}, query = '
 const dotStatus = (page, line) => page.evaluate(i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.status ?? null, line);
 const issues = page => page.evaluate(() => window.__proofLineMarks.debugState().issues);
 const waitFor = (page, fn, arg, timeout = 9000) => page.waitForFunction(fn, arg, { timeout, polling: 200 });
+// Desktop: the dot focuses the line and its box is in the right rail. Phones: the Step 1 sheet.
+const markBox = (page, line) => page.locator(`.prw-right .plm-box[data-line="${line}"], .plm-menu`);
 async function mark(page, line, label, reason) {
   await page.locator(`.plm-dot[data-line="${line}"]`).click();
-  const menu = page.locator('.plm-menu');
+  const menu = markBox(page, line);
   await menu.waitFor({ state: 'visible' });
   await menu.getByRole('button', { name: label }).click();
   if (reason !== undefined) {
@@ -138,8 +143,9 @@ async function desktop(browser, base) {
     assert.ok(info.minLeft >= 0, `dot off screen ${info.minLeft}`);
   });
   await check(`${tag}: top bar shows the issue count and Next issue`, async () => {
-    const text = await page.locator('#share-banner .plm-issues-count').innerText();
-    assert.equal(text, `${LINE_COUNT} issues`);
+    // The first line is the reading walk's focus line: a short dwell marks it Seen.
+    await waitFor(page, () => document.querySelector('.plm-dot[data-line="0"]')?.dataset.status === 'seen');
+    await waitFor(page, n => document.querySelector('#share-banner .plm-issues-count')?.textContent === `${n} issues`, LINE_COUNT - 1);
     assert.ok(await page.locator('#share-banner .plm-next').isVisible());
   });
   await check(`${tag}: Seen on line 1 lowers the count`, async () => {
@@ -149,19 +155,18 @@ async function desktop(browser, base) {
   });
   await check(`${tag}: Agree and Reject (with a reason) set the dot; Approve is hidden for a non-owner`, async () => {
     await page.locator('.plm-dot[data-line="1"]').click();
-    const count = await page.locator('.plm-menu').getByRole('button', { name: /Approve/ }).count();
+    await markBox(page, 1).waitFor({ state: 'visible' });
+    const count = await markBox(page, 1).getByRole('button', { name: /Approve/ }).count();
     assert.equal(count, 0, 'non-owner sees Approve');
-    await page.keyboard.press('Escape');
     await mark(page, 1, /Agree/);
     await mark(page, 2, /Reject/, 'Needs a source');
     assert.equal(await dotStatus(page, 1), 'agreed');
     assert.equal(await dotStatus(page, 2), 'rejected');
     assert.equal(await issues(page), LINE_COUNT - 2, 'rejected line stays an issue');
     await page.locator('.plm-dot[data-line="2"]').click();
-    await page.locator('.plm-menu').waitFor({ state: 'visible' });
+    await markBox(page, 2).waitFor({ state: 'visible' });
     await page.screenshot({ path: path.join(shots, `${tag}-1-menu.png`) });
-    assert.ok((await page.locator('.plm-menu').innerText()).includes('Needs a source'));
-    await page.keyboard.press('Escape');
+    assert.ok((await markBox(page, 2).innerText()).includes('Needs a source'));
   });
   await check(`${tag}: marks survive a reload`, async () => {
     await page.reload();
@@ -206,9 +211,9 @@ async function desktop(browser, base) {
     await waitFor(page, () => [...document.querySelectorAll('.plm-dot[data-line="2"] .plm-pips i')].some(i => i.dataset.status === 'seen'), null, 12000);
     await page.screenshot({ path: path.join(shots, `${tag}-2-changed.png`) });
   });
-  await check(`${tag}: Next issue scrolls to and highlights an issue, then moves on`, async () => {
+  await check(`${tag}: Next issue moves the focus line to an issue and highlights it, then moves on`, async () => {
     await page.evaluate(() => window.scrollTo(0, 0));
-    const flashTop = () => page.evaluate(() => document.querySelector('.plm-flash')?.getBoundingClientRect().top ?? null);
+    const flashTop = () => page.evaluate(() => window.__proofReadingWalk.debugState().focus);
     await page.locator('#share-banner .plm-next').click();
     await page.locator('.plm-flash').waitFor({ state: 'attached', timeout: 2000 });
     const first = await flashTop();
@@ -218,7 +223,7 @@ async function desktop(browser, base) {
     await page.locator('#share-banner .plm-next').click();
     await page.waitForTimeout(100);
     const second = await flashTop();
-    assert.ok(second !== null && second > first, `second Next did not move down (${first} -> ${second})`);
+    assert.ok(second > first, `second Next did not move the focus line down (${first} -> ${second})`);
   });
   await check(`${tag}: the owner can Approve`, async () => {
     const o = await openDoc(browser, base, slug, 'Mike', { viewport: { width: 1280, height: 900 } }, `?token=${encodeURIComponent(created.ownerSecret)}`);
@@ -258,11 +263,12 @@ async function phone(browser, base) {
   const toast = page.locator('.proof-share-welcome-toast button');
   if (await toast.count()) await toast.first().click().catch(() => {});
   await check(`${tag}: bar stays one row with the issue button`, async () => {
+    await waitFor(page, () => document.querySelector('.plm-dot[data-line="0"]')?.dataset.status === 'seen');
     const h = await page.evaluate(() => document.getElementById('share-banner').getBoundingClientRect().height);
     assert.ok(h <= 60, `bar height ${h}`);
     const btn = page.locator('#share-banner .plm-next');
     assert.ok(await btn.isVisible(), 'issue button hidden');
-    assert.equal((await btn.innerText()).trim(), `${LINE_COUNT} ›`);
+    await waitFor(page, n => document.querySelector('#share-banner .plm-next')?.innerText.trim() === `${n} ›`, LINE_COUNT - 1);
     const r = await btn.boundingBox();
     assert.ok(r.height >= 44 && r.width >= 44, `issue button ${r.width}x${r.height}`);
   });
@@ -301,7 +307,7 @@ async function phone(browser, base) {
     assert.ok(box.height >= 44, `Agree button ${box.height}px tall`);
     await agree.tap();
     await waitFor(page, () => document.querySelector('.plm-dot[data-line="1"]')?.dataset.status === 'agreed');
-    assert.equal((await page.locator('#share-banner .plm-next').innerText()).trim(), `${LINE_COUNT - 1} ›`);
+    await waitFor(page, n => document.querySelector('#share-banner .plm-next')?.innerText.trim() === `${n} ›`, LINE_COUNT - 2);
   });
   await check(`${tag}: Reject asks for a reason on the phone`, async () => {
     await page.locator('.plm-dot[data-line="4"]').tap();

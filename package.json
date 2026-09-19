@@ -13,7 +13,7 @@
     "build": "vite build && node scripts/finalize-web-build.mjs",
     "serve": "tsx server/index.ts",
     "library": "tsx server/library/cli.ts",
-    "test": "npm run test:proof-sdk && npm run test:server-routes-share && npm run test:library && npm run test:soma-feedback && npm run test:client-errors && npm run test:agent-keys && npm run test:line-marks",
+    "test": "npm run test:proof-sdk && npm run test:server-routes-share && npm run test:library && npm run test:soma-feedback && npm run test:client-errors && npm run test:agent-keys && npm run test:line-marks && npm run test:reading-walk",
     "test:proof-sdk": "tsx src/tests/proof-sdk-agent-bridge-client.test.ts",
     "test:server-routes-share": "tsx src/tests/server-routes-and-share.test.ts",
     "test:client-errors": "tsx src/tests/error-sanitizer.test.ts && tsx src/tests/client-errors.test.ts",
@@ -22,6 +22,7 @@
     "demo:agent": "npm --workspace proof-example run demo:agent",
     "test:agent-keys": "tsx src/tests/agent-key-duplicate-cookies.test.ts && tsx src/tests/agent-key-session-issuance.test.ts && tsx src/tests/agent-keys.test.ts && tsx src/tests/agent-key-collab-revocation.test.ts && tsx src/tests/share-event-poller.test.ts",
     "test:line-marks": "tsx src/tests/line-marks.test.ts",
+    "test:reading-walk": "tsx src/tests/reading-walk.test.ts",
     "test:agent-key-dialog": "tsx src/tests/agent-key-dialog.browser.test.ts"
   },
   "dependencies": {

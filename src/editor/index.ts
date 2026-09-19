@@ -12,6 +12,7 @@ import { markApiView, isOwnHumanMarkChange, withHumanReviewWrite } from './revie
 
 import { PlayMakerReview, type ReviewAction } from '../ui/playmaker-review';
 import { LineMarksUI } from '../ui/line-marks';
+import { ReadingWalkUI } from '../ui/reading-walk';
 import { lineMarksViewPlugin } from './plugins/line-marks-view';
 import { getReviewStyle, setReviewStyle } from './review-style';
 import { ReviewDecisionHistory, reconnectNativeUndoManager } from './review-decision-history';
@@ -1118,6 +1119,7 @@ class ProofEditorImpl implements ProofEditor {
   private agentMenuCleanup: (() => void) | null = null;
   private playmakerReview: PlayMakerReview | null = null;
   private lineMarks: LineMarksUI | null = null;
+  private readingWalk: ReadingWalkUI | null = null;
   private reviewDecisionHistory: ReviewDecisionHistory | null = null;
   private reviewDecisionIds = new Set<string>();
   private capturingReviewDecision = false;
@@ -3721,10 +3723,33 @@ class ProofEditorImpl implements ProofEditor {
             const open = mark.kind === 'comment' ? data.resolved !== true : (data.status ?? 'pending') === 'pending';
             return { id: mark.id, kind: mark.kind, by: mark.by, quote: mark.quote, pos: mark.range?.from ?? null, open, replies: data.replies };
           }),
+        onDotActivate: (lineIndex) => this.readingWalk?.activateDot(lineIndex) ?? false,
+        focusLine: (lineIndex) => this.readingWalk?.focusLine(lineIndex) ?? false,
+        viewUpdated: () => this.readingWalk?.notifyViewUpdate(),
       });
       (window as unknown as { __proofLineMarks?: LineMarksUI }).__proofLineMarks = this.lineMarks;
+      // Proof Documents Step 1b: the three-column reading layout and the reading walk.
+      const lineMarks = this.lineMarks;
+      this.readingWalk = new ReadingWalkUI({
+        slug: () => shareClient.getSlug(),
+        actor: () => getCurrentActor(),
+        lineMarks: () => lineMarks,
+        marks: () => {
+          let marks: Mark[] = [];
+          this.editor?.action(ctx => { marks = getMarks(ctx.get(editorViewCtx).state); });
+          return marks;
+        },
+        decide: (ids, action, text) => {
+          this.performReviewDecision(ids, action, text);
+          this.playmakerReview?.update();
+        },
+        playmaker: () => this.playmakerReview,
+        reviewStyle: () => getReviewStyle(),
+      });
+      (window as unknown as { __proofReadingWalk?: ReadingWalkUI }).__proofReadingWalk = this.readingWalk;
     }
     this.lineMarks.start();
+    this.readingWalk?.start();
     return this.lineMarks;
   }
 
@@ -3770,6 +3795,10 @@ class ProofEditorImpl implements ProofEditor {
       const style = getReviewStyle();
       if (style === 'playmaker' && this.playmakerReview) {
         item('Marks', 'review', () => this.playmakerReview?.openPanel());
+      }
+      if (this.readingWalk) {
+        item('This line', 'mark · changes', () => this.readingWalk?.openSheet('right'));
+        item('Documents', 'list', () => this.readingWalk?.openSheet('left'));
       }
       item('Review style', style === 'playmaker' ? 'PlayMaker' : 'Proof', () => {
         setReviewStyle(style === 'playmaker' ? 'proof' : 'playmaker');

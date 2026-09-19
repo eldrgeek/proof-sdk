@@ -72,11 +72,22 @@ export class PlayMakerReview {
     document.body.dataset.reviewStyle = style;
     // The panel is a sidebar only where the page reserves a gutter for it (1100px and wider).
     // Narrower, it would cover the text, so it starts closed and opens on request.
-    this.panel.hidden = style !== 'playmaker' || !matchMedia('(min-width: 1100px)').matches;
+    // Docked in the reading layout's right rail (Step 1b), it never covers the text.
+    this.panel.hidden = style !== 'playmaker' || !(this.dockTarget || matchMedia('(min-width: 1100px)').matches);
     this.toggle.hidden = style !== 'playmaker';
     this.toggle.setAttribute('aria-expanded', String(!this.panel.hidden));
     this.bridge.changed(); this.update();
   };
+  private dockTarget: HTMLElement | null = null;
+  /** Step 1b: moves the Marks panel into `target` (the right rail), or back over the page (null). */
+  dock(target: HTMLElement | null): void {
+    if (target === this.dockTarget && (!target || this.panel.parentElement === target)) return;
+    this.dockTarget = target;
+    (target ?? document.body).append(this.panel);
+    this.panel.classList.toggle('pm-review-panel-docked', Boolean(target));
+    this.panel.hidden = getReviewStyle() !== 'playmaker' || !(target || matchMedia('(min-width: 1100px)').matches);
+    this.toggle.setAttribute('aria-expanded', String(!this.panel.hidden));
+  }
   openPanel(): void {
     if (getReviewStyle() !== 'playmaker') return;
     this.panel.hidden = false; this.toggle.setAttribute('aria-expanded', 'true');

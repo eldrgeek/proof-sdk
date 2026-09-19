@@ -1,0 +1,131 @@
+/* Proof Documents Step 1b: reading layout and reading walk (Claude Opus 5, 2026-09-18). */
+body.prw-on {
+  --prw-left: 256px;
+  --prw-right: 344px;
+  --prw-collapsed: 44px;
+  --prw-gap: 12px;
+  --prw-text: 760px;
+}
+body.prw-on.prw-left-collapsed { --prw-left: var(--prw-collapsed); }
+body.prw-on.prw-right-collapsed { --prw-right: var(--prw-collapsed); }
+
+/* Desktop: three columns. The rails are fixed; the page between them holds the text column. */
+@media (min-width: 701px) {
+  body.prw-on #app { padding-left: var(--prw-left); padding-right: var(--prw-right); box-sizing: border-box; }
+  body.prw-on #editor-container { max-width: var(--prw-text); margin: 0 auto; }
+  body.prw-on #app #editor,
+  body.prw-on[data-review-style="playmaker"] #app #editor {
+    padding-right: 24px !important;
+    padding-bottom: calc(100vh - 120px) !important;
+  }
+  body.prw-on .pm-review-panel:not(.pm-review-panel-docked) { display: none !important; }
+}
+
+.prw-rail {
+  position: fixed; top: var(--prw-top, 108px); bottom: 12px; z-index: 60; box-sizing: border-box;
+  display: flex; flex-direction: column; min-height: 0;
+  background: #fffefb; color: #26303c; border: 1px solid #e3e2dc; border-radius: 14px;
+  font: 14px/1.45 system-ui, -apple-system, sans-serif;
+}
+/* The left rail stops above the feedback chip (fixed bottom-left). */
+.prw-left { bottom: 72px; left: var(--prw-gap); width: calc(var(--prw-left) - 2 * var(--prw-gap)); }
+.prw-right { right: var(--prw-gap); width: calc(var(--prw-right) - 2 * var(--prw-gap)); }
+.prw-rail-head { display: flex; align-items: center; gap: 8px; padding: 10px 10px 8px 14px; border-bottom: 1px solid #ecebe6; flex-shrink: 0; }
+.prw-rail-head strong { font-size: 14px; }
+.prw-status { margin: 0; flex: 1; color: #646b73; font-size: 12px; font-variant-numeric: tabular-nums; }
+.prw-all { margin-left: auto; font-size: 12px; color: #2563eb; text-decoration: none; }
+.prw-collapse { width: 32px; height: 32px; flex-shrink: 0; border: 1px solid #e3e2dc; border-radius: 8px; background: #fff; color: #4b5563; cursor: pointer; font: 600 14px/1 system-ui, sans-serif; }
+.prw-collapse:hover { background: #f3f4f6; }
+.prw-rail-body { overflow: auto; padding: 10px 12px 14px; flex: 1; min-height: 0; }
+
+/* Collapsed: a narrow strip with only the toggle. */
+body.prw-left-collapsed .prw-left,
+body.prw-right-collapsed .prw-right { width: calc(var(--prw-collapsed) - 8px); }
+body.prw-left-collapsed .prw-left { left: 4px; }
+body.prw-right-collapsed .prw-right { right: 4px; }
+body.prw-left-collapsed .prw-left .prw-rail-body,
+body.prw-left-collapsed .prw-left .prw-rail-head > :not(.prw-collapse),
+body.prw-right-collapsed .prw-right .prw-rail-body,
+body.prw-right-collapsed .prw-right .prw-rail-head > :not(.prw-collapse) { display: none; }
+body.prw-left-collapsed .prw-left .prw-rail-head,
+body.prw-right-collapsed .prw-right .prw-rail-head { padding: 6px 2px; justify-content: center; border-bottom: none; }
+
+/* Documents */
+.prw-docs { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.prw-doc { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 6px 8px; border-radius: 8px; color: inherit; text-decoration: none; }
+.prw-doc:hover { background: #f3f4f6; }
+.prw-doc[aria-current="page"] { background: #eef2ff; font-weight: 600; }
+.prw-doc-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prw-doc-count { flex-shrink: 0; min-width: 20px; padding: 1px 6px; border-radius: 999px; background: #f3f4f6; color: #4b5563; font-size: 11px; text-align: center; font-variant-numeric: tabular-nums; }
+.prw-doc-count[data-kind="issues"] { background: #fef3c7; color: #92400e; }
+.prw-empty { margin: 4px 2px; color: #646b73; font-size: 13px; }
+
+/* The focus line */
+.prw-focus {
+  position: absolute; pointer-events: none; z-index: 20; border-radius: 6px;
+  background: rgba(37, 99, 235, 0.07); box-shadow: inset 3px 0 0 #2563eb; mix-blend-mode: multiply;
+  transition: top .12s ease, height .12s ease;
+}
+.prw-focus[hidden] { display: none; }
+
+/* Right rail content */
+.prw-provisional { margin: 0 0 10px; padding: 8px 10px; border-radius: 10px; background: #f0fdf4; border: 1px dashed #16a34a; }
+.prw-provisional[hidden] { display: none; }
+.prw-provisional-text { margin: 0 0 6px; font-size: 12px; color: #166534; }
+.prw-commit { min-height: 32px; padding: 0 12px; border: none; border-radius: 8px; background: #16a34a; color: #fff; font: 600 13px system-ui, sans-serif; cursor: pointer; }
+.prw-error { margin: 6px 0 0; color: #b91c1c; font-size: 12px; }
+.prw-linebox .plm-box { margin-top: 4px; }
+.prw-box-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.prw-keys { color: #8a9099; font-size: 11px; white-space: nowrap; }
+.prw-changes { margin-top: 14px; padding-top: 10px; border-top: 1px solid #ecebe6; }
+.prw-changes[hidden] { display: none; }
+.prw-changes-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.prw-step { color: #646b73; font-size: 12px; font-variant-numeric: tabular-nums; }
+.prw-step-nav { display: flex; gap: 6px; margin: 8px 0; }
+.prw-step-nav button, .prw-card-actions button, .prw-card > button {
+  min-height: 32px; padding: 4px 10px; border: 1px solid #d4d4cf; border-radius: 8px; background: #fff; color: inherit;
+  font: 600 12px/1.3 system-ui, sans-serif; cursor: pointer;
+}
+.prw-step-nav button:disabled { opacity: .45; cursor: default; }
+.prw-card { margin: 8px 0; padding: 8px 10px; border: 1px solid #e3e2dc; border-left: 3px solid var(--review-author, #9ca3af); border-radius: 8px; background: #fff; }
+.prw-card[data-current="true"] { box-shadow: 0 0 0 2px #2563eb; }
+.prw-card[data-provisional="true"] { background: #f0fdf4; border-style: dashed; border-left-style: solid; }
+.prw-card-who { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+.prw-card-who span { color: #646b73; }
+.prw-card-body { margin: 4px 0 6px; overflow-wrap: anywhere; font-size: 13px; }
+.prw-card-body del { color: #991b1b; }
+.prw-card-body ins { text-decoration: none; background: rgba(34, 197, 94, .18); }
+.prw-card-body blockquote { margin: 0; padding-left: 8px; border-left: 2px solid #d4d4cf; color: #4b5563; }
+.prw-card-body p { margin: 4px 0 0; }
+.prw-reply { color: #4b5563; font-size: 12px; }
+.prw-card-note { margin: 0 0 6px; color: #166534; font-size: 12px; }
+.prw-link { border: none; background: none; padding: 0; color: #2563eb; cursor: pointer; font: inherit; text-decoration: underline; }
+.prw-card-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.prw-accept { border-color: #86efac !important; }
+.prw-reject { border-color: #fca5a5 !important; }
+.prw-card textarea { box-sizing: border-box; width: 100%; min-height: 64px; margin: 8px 0 6px; padding: 8px; border: 1px solid #949ca8; border-radius: 8px; font: inherit; }
+.prw-hint { margin: 8px 0 0; color: #8a9099; font-size: 11px; }
+
+/* The PlayMaker Marks panel, docked in the right rail: part of the rail, not a floating card. */
+.prw-dock:not(:empty) { margin-top: 14px; padding-top: 10px; border-top: 1px solid #ecebe6; }
+.pm-review-panel.pm-review-panel-docked {
+  position: static !important; width: auto !important; max-height: none !important; overflow: visible !important;
+  padding: 0 !important; border: none !important; border-radius: 0 !important; box-shadow: none !important; background: transparent !important;
+}
+.pm-review-panel.pm-review-panel-docked h2 { font-size: 15px; }
+
+/* Phones: one column. The rails are bottom sheets opened from the ⋯ menu. */
+@media (max-width: 700px) {
+  body.prw-on #app #editor { padding-bottom: calc(100vh - 80px) !important; }
+  .prw-rail { display: none; }
+  .prw-rail.prw-sheet-open {
+    display: flex; left: 0 !important; right: 0 !important; top: auto !important; bottom: var(--proof-keyboard-offset, 0px) !important;
+    width: 100% !important; max-height: min(78dvh, 600px); border-radius: 16px 16px 0 0; z-index: 10002;
+    box-shadow: 0 -8px 32px #16223833; padding-bottom: env(safe-area-inset-bottom);
+  }
+  .prw-rail.prw-sheet-open .prw-rail-body, .prw-rail.prw-sheet-open .prw-rail-head > * { display: revert; }
+  .prw-rail.prw-sheet-open .prw-rail-head { display: flex; padding: 10px 12px; }
+  .prw-sheet-open .prw-collapse { width: 44px; height: 44px; font-size: 22px; border: none; }
+  .prw-sheet-open .prw-step-nav button, .prw-sheet-open .prw-card-actions button, .prw-sheet-open .prw-commit { min-height: 44px; font-size: 14px; }
+  .prw-keys { display: none; }
+}

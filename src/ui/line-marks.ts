@@ -39,9 +39,30 @@ export interface LineMarksHost {
   actor(): string;
   canComment(): boolean;
   reviewMarks(view: EditorView): ReviewMarkLike[];
+  /** Step 1b: a click on a margin dot. Return true when the reading walk took it (no popover). */
+  onDotActivate?(lineIndex: number): boolean;
+  /** Step 1b: Next issue moves the focus line. Return true when the reading walk scrolled there. */
+  focusLine?(lineIndex: number): boolean;
+  /** Step 1b: every editor view update (cursor, marks, text), after this UI has handled it. */
+  viewUpdated?(): void;
 }
 
-type StatusChoice = LineMarkStatus | 'unseen';
+export interface MarkBoxOptions {
+  /** Called after the viewer chose a mark (the popover closes itself; the rail stays). */
+  onChosen?(status: StatusChoice): void;
+  /** Called with the chosen status before it is written (the reading walk commits scroll-accepts). */
+  onExplicit?(status: StatusChoice): void;
+}
+
+export interface MarkBox {
+  root: HTMLElement;
+  /** Shows the one-line reason field (R). */
+  openReason(): void;
+  /** Sets a status as if its button was pressed (A). Returns false when marking is not allowed. */
+  choose(status: StatusChoice): boolean;
+}
+
+export type StatusChoice = LineMarkStatus | 'unseen';
 
 const STATUS_LABEL: Record<StatusChoice, string> = {
   unseen: 'Unseen',
@@ -92,6 +113,7 @@ export class LineMarksUI {
   private lastIssuePos = -1;
   private started = false;
   private resizeObserver: ResizeObserver | null = null;
+  private readonly listeners = new Set<() => void>();
 
   constructor(private readonly host: LineMarksHost) {
     this.bannerEl.className = 'plm-issues';
@@ -253,6 +275,7 @@ export class LineMarksUI {
       if (this.restampTimer) clearTimeout(this.restampTimer);
       this.restampTimer = setTimeout(() => this.restampOwnEdits(), RESTAMP_IDLE_MS);
     }
+    this.host.viewUpdated?.();
   }
 
   private attachGutter(): void {
@@ -289,6 +312,48 @@ export class LineMarksUI {
     }
     this.renderBanner();
     this.queueRender();
+    for (const listener of this.listeners) {
+      try { listener(); } catch (error) { console.warn('[plm] listener failed', error); }
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Step 1b: the reading walk reads lines and marks through these
+  // --------------------------------------------------------------------------
+
+  /** Called after every recomputation (marks loaded or changed, document changed). */
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  }
+
+  isLoaded(): boolean { return this.loaded; }
+  lineList(): DocLine[] { return this.lines; }
+  lineState(index: number): LineState | undefined { return this.states[index]; }
+  issueSummary(): IssueSummary | null { return this.summary; }
+  editorView(): EditorView | null { return this.view; }
+
+  /** The viewer's own status on a line ('changed' when their mark is out of date). */
+  myStatus(index: number): StatusChoice | 'changed' {
+    const mine = this.states[index]?.marks.get(actorKey(this.host.actor()));
+    return !mine ? 'unseen' : (mine.current ? mine.mark.status : 'changed');
+  }
+
+  /** Writes the viewer's mark on a line. */
+  setLineStatus(index: number, status: StatusChoice, reason?: string): Promise<boolean> {
+    const line = this.lines[index];
+    if (!line || !this.canMark) return Promise.resolve(false);
+    return this.writeMark(line, status, reason);
+  }
+
+  /** The line (index) that holds a document position, or -1. */
+  lineAtPos(pos: number): number {
+    for (const line of this.lines) {
+      if (pos >= line.pos && pos < line.pos + line.nodeSize) return line.index;
+    }
+    let best = -1;
+    for (const line of this.lines) if (line.pos <= pos) best = line.index;
+    return best;
   }
 
   /** The viewer edited lines they had marked: their mark follows the new text (policy). */
@@ -463,44 +528,44 @@ export class LineMarksUI {
     const index = Number(dot.dataset.line);
     const line = this.lines[index];
     if (!line) return;
+    if (this.host.onDotActivate?.(index)) { this.closeMenu(); return; }
     if (this.menu && this.menu.dataset.line === String(index)) { this.closeMenu(); return; }
     this.openMenu(line, dot);
   };
 
-  private openMenu(line: DocLine, dot: HTMLElement): void {
-    this.closeMenu();
-    const phone = isPhone();
+  /**
+   * The mark box for one line: excerpt, Seen / Agree / Approve / Reject (with a one-line reason),
+   * Clear, and every team member's mark. Used by the desktop popover and phone sheet (Step 1)
+   * and by the reading walk's right rail (Step 1b).
+   */
+  buildMarkBox(line: DocLine, options: MarkBoxOptions = {}): MarkBox {
     const state = this.states[line.index];
     const me = actorKey(this.host.actor());
     const mine = state?.marks.get(me);
-    const menu = document.createElement('div');
-    menu.className = phone ? 'plm-menu plm-sheet' : 'plm-menu';
-    menu.dataset.line = String(line.index);
-    menu.setAttribute('role', 'dialog');
-    menu.setAttribute('aria-label', 'Mark this line');
-
-    const head = document.createElement('div');
-    head.className = 'plm-menu-head';
-    const title = document.createElement('strong');
-    title.textContent = 'Mark this line';
-    const close = document.createElement('button');
-    close.type = 'button';
-    close.className = 'plm-close';
-    close.textContent = '×';
-    close.setAttribute('aria-label', 'Close line marks');
-    close.onclick = () => this.closeMenu();
-    head.append(title, close);
+    const root = document.createElement('div');
+    root.className = 'plm-box';
+    root.dataset.line = String(line.index);
     const excerpt = document.createElement('p');
     excerpt.className = 'plm-excerpt';
     excerpt.textContent = line.text.length > 140 ? `${line.text.slice(0, 140)}…` : line.text;
-    menu.append(head, excerpt);
+    root.append(excerpt);
 
     if (mine && !mine.current) {
       const changed = document.createElement('p');
       changed.className = 'plm-changed';
       changed.textContent = `Changed since you marked it ${STATUS_LABEL[mine.mark.status]}. Mark it again.`;
-      menu.append(changed);
+      root.append(changed);
     }
+
+    const choose = (status: StatusChoice, reason?: string): boolean => {
+      if (!this.canMark) return false;
+      options.onExplicit?.(status);
+      options.onChosen?.(status);
+      // onExplicit may have committed accepts on this line, which re-extracts the lines.
+      const fresh = this.lines[line.index] ?? line;
+      void this.writeMark(fresh, status, reason);
+      return true;
+    };
 
     const actions = document.createElement('div');
     actions.className = 'plm-actions';
@@ -525,8 +590,19 @@ export class LineMarksUI {
       event.preventDefault();
       const reason = reasonInput.value.trim();
       if (!reason) { reasonInput.focus(); reasonInput.setAttribute('aria-invalid', 'true'); return; }
-      this.closeMenu();
-      void this.writeMark(line, 'rejected', reason);
+      choose('rejected', reason);
+    };
+    reasonInput.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      reasonRow.hidden = true;
+      reasonInput.blur();
+    });
+    const openReason = () => {
+      if (!this.canMark) return;
+      reasonRow.hidden = false;
+      reasonInput.focus({ preventScroll: true });
     };
     for (const choice of choices) {
       const btn = document.createElement('button');
@@ -534,19 +610,13 @@ export class LineMarksUI {
       btn.className = 'plm-choice';
       btn.dataset.status = choice;
       btn.setAttribute('aria-pressed', String(current === choice));
-      btn.innerHTML = '';
       const g = document.createElement('span'); g.className = 'plm-choice-glyph'; g.textContent = STATUS_GLYPH[choice];
       const l = document.createElement('span'); l.textContent = choice === 'rejected' ? 'Reject…' : STATUS_LABEL[choice].replace('Agreed', 'Agree').replace('Approved', 'Approve');
       btn.append(g, l);
       btn.disabled = !this.canMark;
       btn.onclick = () => {
-        if (choice === 'rejected') {
-          reasonRow.hidden = false;
-          reasonInput.focus();
-          return;
-        }
-        this.closeMenu();
-        void this.writeMark(line, choice);
+        if (choice === 'rejected') { openReason(); return; }
+        choose(choice);
       };
       actions.append(btn);
     }
@@ -556,10 +626,10 @@ export class LineMarksUI {
       clear.className = 'plm-choice plm-clear';
       clear.textContent = 'Clear my mark';
       clear.disabled = !this.canMark;
-      clear.onclick = () => { this.closeMenu(); void this.writeMark(line, 'unseen'); };
+      clear.onclick = () => { options.onChosen?.('unseen'); void this.writeMark(line, 'unseen'); };
       actions.append(clear);
     }
-    menu.append(actions, reasonRow);
+    root.append(actions, reasonRow);
 
     // Everyone's marks on this line.
     const team = this.summary?.team ?? [];
@@ -579,8 +649,32 @@ export class LineMarksUI {
       li.append(who, what);
       list.append(li);
     }
-    menu.append(list);
+    root.append(list);
+    return { root, openReason, choose: (status) => choose(status) };
+  }
 
+  private openMenu(line: DocLine, dot: HTMLElement): void {
+    this.closeMenu();
+    const phone = isPhone();
+    const menu = document.createElement('div');
+    menu.className = phone ? 'plm-menu plm-sheet' : 'plm-menu';
+    menu.dataset.line = String(line.index);
+    menu.setAttribute('role', 'dialog');
+    menu.setAttribute('aria-label', 'Mark this line');
+
+    const head = document.createElement('div');
+    head.className = 'plm-menu-head';
+    const title = document.createElement('strong');
+    title.textContent = 'Mark this line';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'plm-close';
+    close.textContent = '×';
+    close.setAttribute('aria-label', 'Close line marks');
+    close.onclick = () => this.closeMenu();
+    head.append(title, close);
+    const box = this.buildMarkBox(line, { onChosen: () => this.closeMenu() });
+    menu.append(head, box.root);
     document.body.append(menu);
     if (!phone) {
       // Below the line's first row, so the line being marked stays readable; above it if no room.
@@ -601,7 +695,7 @@ export class LineMarksUI {
       document.removeEventListener('pointerdown', this.onDocPointerDown, true);
       document.removeEventListener('keydown', this.onDocKeyDown, true);
     };
-    (actions.querySelector('button:not(:disabled)') as HTMLButtonElement | null)?.focus({ preventScroll: true });
+    (menu.querySelector('.plm-actions button:not(:disabled)') as HTMLButtonElement | null)?.focus({ preventScroll: true });
   }
 
   private menuDot: HTMLElement | null = null;
@@ -643,7 +737,11 @@ export class LineMarksUI {
     this.lastIssuePos = next.pos as number;
     const target = this.issueElement(view, next);
     if (!target) return;
-    target.scrollIntoView({ block: 'center', behavior: 'auto' });
+    // Step 1b: with the reading walk on, Next issue moves the focus line (which scrolls there).
+    const lineIndex = next.type === 'line' ? next.lineIndex : this.lineAtPos(next.pos as number);
+    if (!(lineIndex >= 0 && this.host.focusLine?.(lineIndex))) {
+      target.scrollIntoView({ block: 'center', behavior: 'auto' });
+    }
     // Highlight with an overlay: ProseMirror re-reads its own DOM when attributes change on it.
     this.flash(target);
     if (next.type === 'line') {
