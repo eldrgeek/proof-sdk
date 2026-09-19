@@ -501,6 +501,23 @@ export type ProofIssue =
     openFor: string[];
   }
   | {
+    /**
+     * `{do}` action lines (src/shared/do.ts): an unfinished `{do}` (anything but done or withdrawn).
+     * `openFor` is who it waits on now (empty: it waits on nobody, e.g. approved while execution
+     * is not enabled, or on the machine).
+     */
+    type: 'do';
+    doId: string;
+    lineIndex: number;
+    pos: number;
+    kind: string;
+    excerpt: string;
+    by: string;
+    state: string;
+    label: string;
+    openFor: string[];
+  }
+  | {
     /** Step B3: an ask on this line that someone it was asked of has not answered. */
     type: 'ask';
     askId: string;
@@ -562,7 +579,17 @@ export interface IssueSummary {
   team: string[];
   issues: ProofIssue[];
   aligned: boolean;
-  counts: { lines: number; lineIssues: number; reviewMarkIssues: number; askIssues: number; uncertainIssues: number; objectionIssues: number; alternativeIssues: number; ttlIssues: number; total: number };
+  counts: { lines: number; lineIssues: number; reviewMarkIssues: number; askIssues: number; uncertainIssues: number; objectionIssues: number; alternativeIssues: number; ttlIssues: number; doIssues: number; total: number };
+}
+
+/** A `{do}` not yet done (src/shared/do.ts doIssueInputs; declared here to avoid an import cycle). */
+export interface DoIssueInputLike {
+  id: string;
+  lineIndex: number;
+  by: string;
+  state: string;
+  openFor: string[];
+  label: string;
 }
 
 /** Step B4f: a line with open alternatives (src/shared/alternatives.ts alternativeIssueInputs). */
@@ -627,6 +654,8 @@ export function computeIssues(input: {
   alternatives?: AlternativeIssueInput[];
   /** Step B4f: expired times-to-live. */
   ttl?: TtlIssueInput[];
+  /** `{do}` action lines not yet done (src/shared/do.ts doIssueInputs). */
+  dos?: DoIssueInputLike[];
   /** Step B4f (blind marking): lines whose revealed marks disagree, when that counts for priority. */
   disagreementLines?: ReadonlySet<number>;
   /** Step B4f: alternatives whose open-for list disagrees get `disagreement` too (blind on). */
@@ -776,18 +805,36 @@ export function computeIssues(input: {
       openFor: ttl.openFor,
     });
   }
+  let doIssues = 0;
+  for (const item of input.dos ?? []) {
+    const line = input.lines[item.lineIndex];
+    if (!line) continue;
+    doIssues += 1;
+    issues.push({
+      type: 'do',
+      doId: item.id,
+      lineIndex: line.index,
+      pos: line.pos,
+      kind: line.kind,
+      excerpt: line.text.slice(0, 120),
+      by: item.by,
+      state: item.state,
+      label: item.label,
+      openFor: item.openFor,
+    });
+  }
   // Document order; review marks without a position go last. At one position an ask comes
   // before the line's own Issue, so Next issue lands on the decision first (then an objection,
   // then open alternatives, then an uncertain flag, then an expired time-to-live).
-  const rank = (issue: ProofIssue) => (issue.type === 'ask' ? 0 : issue.type === 'objection' ? 1 : issue.type === 'alternative' ? 2
+  const rank = (issue: ProofIssue) => (issue.type === 'ask' || issue.type === 'do' ? 0 : issue.type === 'objection' ? 1 : issue.type === 'alternative' ? 2
     : issue.type === 'uncertain' ? 3 : issue.type === 'ttl' ? 4 : issue.type === 'line' ? 5 : 6);
   issues.sort((a, b) => ((a.pos ?? Number.MAX_SAFE_INTEGER) - (b.pos ?? Number.MAX_SAFE_INTEGER)) || (rank(a) - rank(b)));
-  const lineIssues = issues.length - reviewMarkIssues - askIssues - uncertainIssues - objectionIssues - alternativeIssues - ttlIssues;
+  const lineIssues = issues.length - reviewMarkIssues - askIssues - uncertainIssues - objectionIssues - alternativeIssues - ttlIssues - doIssues;
   return {
     team: input.team,
     issues,
     aligned: issues.length === 0,
-    counts: { lines: input.lines.length, lineIssues, reviewMarkIssues, askIssues, uncertainIssues, objectionIssues, alternativeIssues, ttlIssues, total: issues.length },
+    counts: { lines: input.lines.length, lineIssues, reviewMarkIssues, askIssues, uncertainIssues, objectionIssues, alternativeIssues, ttlIssues, doIssues, total: issues.length },
   };
 }
 

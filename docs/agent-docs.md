@@ -629,6 +629,89 @@ Page routes (same rules, signed-in actor): `POST /api/documents/<slug>/alternati
 `.../alternatives/pick`, `.../alternatives/decide`, `.../alternatives/<id>/withdraw`,
 `.../settings`, `.../explain`, `.../ttl`, `.../ttl/<id>/clear`, `.../bundles/<id>/decision`.
 
+## {do}: action lines (safe slice: proposal and approval only; nothing runs)
+
+_Added 2026-09-18 by Claude Opus 5 (worker proof-do) for Mike Wolf, from do-design.md as corrected
+by Astra's critique. Rules in `DO_POLICY` and `DO_OPERATIONS` (`src/shared/do.ts`)._
+
+A `{do}` turns one line into one typed action (the Pulse Zero `payload.actions` v1 shape). The line
+is the imperative title. **Execution is not enabled** (`DO_POLICY.executionEnabled = false`): the
+page's Run button is disabled and labelled "Execution not enabled yet", every run route answers
+`409 EXECUTION_NOT_ENABLED`, and the only executor is `NullExecutor` (`server/do-executor.ts`),
+which refuses. Nothing is written to any queue.
+
+**Propose (AIs and signed-in people; never guests).** Edit access (an agent key or the owner credential):
+
+  POST /api/agent/<slug>/dos   { <line target: lineIndex | hash[, occurrence] | ref | quote>,
+                                 action: <v1 action>, to?: ["human:<email>", ...],
+                                 presser?: "approver" | "human:<email>", retryBudget?: 0..3 }
+  GET  /api/agent/<slug>/dos   (every {do} with state, consequence, digest, approvals; the operation table)
+  POST /api/agent/<slug>/dos/<id>/revise   { action? (higher revision), to?, presser?, retryBudget? }
+  POST /api/agent/<slug>/dos/<id>/revoke   (the proposer or the owner credential)
+  DELETE /api/agent/<slug>/dos/<id>        (withdraw: the proposer or the owner credential)
+  POST /api/agent/<slug>/dos/<id>/approve  always 403 SIGNED_IN_PERSON_REQUIRED
+  POST /api/agent/<slug>/dos/<id>/run      always 409 EXECUTION_NOT_ENABLED
+  Events: do.created, do.revised, do.approved, do.revoked, do.withdrawn, do.run_refused
+
+The action must pass the ported Pulse validator (`actionErrors`) and the operation table. Today the
+table holds only `workflow/gdoc_bridge_authorize` (it mirrors the bridge's allowlist): it needs
+`params.project_id` and `params.account`, `verification.kind: google_drive_about`, and a
+`human_gate` on `https://accounts.google.com/` with ref `google.oauth.consent.primary`. Params are
+references, never secrets: credential-looking values and secret-named keys are refused. `to` must
+name verified people (`human:<email>`); it defaults to the document's signed-in owner. One `{do}`
+per line (409 `DO_EXISTS`).
+
+**What the page shows.** A "Do" tag at the start of the line. Under it: the state, the blast radius,
+the operation's own consequence text ("If run: ...") and verified predicate ("Done means: ..."),
+who proposed it, who may approve, the approval, and the buttons. The author's `label` and
+`success_message` are never shown. The same control is in the right rail's box and the phone's
+bottom sheet.
+
+**Approve (page only).** `POST /api/documents/<slug>/dos/<id>/approve { digest }` succeeds only when
+all of these hold: the caller is a person signed in to this site (a Documents library / SOMA Auth
+session); they are named in `to`; they have Owner rights on the document; the request comes from
+this site (the `Origin` header equals the public origin, `Sec-Fetch-Site`, if sent, is
+`same-origin`, and the body is JSON); and `digest` is the {do}'s current digest. Refused: guests
+(whatever name they type), forged cookies, agent keys (even alongside a session), share tokens and
+the owner credential.
+
+An approval binds the **canonical action digest**: the document, the {do} id, the line's text, the
+action id and revision, the operation, params, account, gate and verification, the operation's
+consequence and predicate text, the permitted presser and the retry budget. Any change to any of
+these voids the approval: the {do} returns to `proposed` and the page says "approve it again".
+Approvals are single use (plus `retryBudget` retries). They are never deleted; revoking sets
+`revokedAt`. Approving is not agreeing: no line mark is written. Revoke with
+`POST /api/documents/<slug>/dos/<id>/revoke` (the approver or an Owner, same origin rules).
+
+**States.** `proposed`, `approved`, `queued`, `running`, `needs-finger`, `verifying`, `done`,
+`failed`, plus `stalled` and `withdrawn`. Receipts are read in the bridge's own terms: an active run
+sits at row status `open` with `result.state`. `needs-finger` starts only once
+`human_gate.target_ready` is true. `done` needs `status=done` and `verified: true` for the run's own
+digest. An active run with no receipt for 15 minutes is `stalled` (result unknown), never `failed`,
+and it blocks any retry. A verified receipt never marks the line Agreed.
+
+**Issues.** Every {do} that is not done, withdrawn or orphaned is an Issue (`type: "do"`, `doId`,
+`state`, `openFor`; `alignment.counts.doIssues`). Priority rules: `do-failed` (1: failed or stalled,
+for the proposer and approvers), `do-approve` (2: proposed, for the people in `to`), `do-finger` (2).
+An approved {do} waits on nobody while execution is disabled (`waiting-on-others`, 7).
+
+**Before execution is enabled (attended, with Mike).** Each item is required first:
+1. Identity: approval and Run by verified session only (done), plus the Mac-principal list
+   `DO_POLICY.macPrincipals` (checked by `authorizeRun`), which Mike confirms.
+2. Transport: a narrowly authorized enqueue RPC (fixed command, fixed operation set, digest-checked,
+   producer-scoped receipt reads, no receipt writes), never direct `mac_commands` inserts, because
+   the command bus also carries shell-capable legacy commands. Specify and test its grants before
+   any key reaches the VPS.
+3. Bridge: enforce the foreground-control and fresh-click checks inside `execute_card_action` before
+   side effects; accept the `proof:` idempotency prefix; echo the digest on receipts; report
+   `target_ready`.
+4. Atomic enqueue bookkeeping and execution claims; the executor checks revocation before it acts;
+   a stalled run is reconciled (never retried blind) before a new attempt; a retry resumes the same
+   run identity (the bridge checkpoints by idempotency key).
+5. The operation-owned consequence and blast-radius metadata agree with the bridge's table.
+6. Turn `DO_POLICY.executionEnabled` on and replace `NullExecutor` in one reviewed change, then run
+   one attended Google authorization end to end.
+
 ## Presence And Event Polling
 
 Poll for changes:

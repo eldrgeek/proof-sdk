@@ -17,6 +17,7 @@ import { FoldingUI } from '../ui/folding';
 import { lineMarksViewPlugin } from './plugins/line-marks-view';
 import { foldViewPlugin } from './plugins/fold-view';
 import { askViewPlugin } from './plugins/ask-view';
+import { doViewPlugin } from './plugins/do-view';
 import { proofExtrasViewPlugin } from './plugins/proof-extras-view';
 import { getReviewStyle, setReviewStyle } from './review-style';
 import { ReviewDecisionHistory, reconnectNativeUndoManager } from './review-decision-history';
@@ -1295,6 +1296,8 @@ class ProofEditorImpl implements ProofEditor {
       .use(foldViewPlugin)
       // Proof Documents Step B3: {ask} tags and answer controls (view-only widgets)
       .use(askViewPlugin)
+      // {do} action lines: Do tags and action controls (view-only widgets; Run is disabled)
+      .use(doViewPlugin)
       // Proof Documents Step B4f: alternatives stacks and term links (view-only decorations)
       .use(proofExtrasViewPlugin)
       .use(marksSyncPlugin((actionMarks, view, actionMetadata) => {

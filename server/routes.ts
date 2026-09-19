@@ -104,6 +104,9 @@ import {
 import { resolveExplicitAgentIdentity } from '../src/shared/agent-identity.js';
 import { activeAgentKeyActors, computeServerLines, documentOwnerActors, isLibraryDocumentCreator, listCanonicalLineMarks, listLineMarks, reviewMarksFromStored, writeLineMark, writeLineMarksBatch } from './line-marks.js';
 import { answerAsk, listCanonicalAsks, reaskAsk, withdrawAsk } from './asks.js';
+import { approveDo, revokeDo, runDo } from './do.js';
+import { listDos } from './do-store.js';
+import { DO_POLICY, doTeamActors } from '../src/shared/do.js';
 import { buildSinceYou, checkAlignment, currentDocumentState, latestSnapshotInfo, listSnapshotInfos, scheduleAlignmentCheck, sendSnapshotFile } from './alignment.js';
 import { clearFlag, clearObjection, createObjection, keepObjection, writeFlag } from './review-aids.js';
 import { listFlags, listObjections, listReviewNotes } from './review-aids-store.js';
@@ -1965,7 +1968,11 @@ apiRoutes.get('/documents/:slug/line-marks', async (req: Request, res: Response)
     ...actorsIn(lineMarks, asks, [...owners, ...agentKeyActors, ...reviewAuthors, me.actor]),
     ...listLineMarks(slug).map(mark => mark.by),
     ...flags.map(flag => flag.by), ...reviewNotes.map(note => note.by), ...objections.map(objection => objection.by),
+    ...doTeamActors(listDos(slug)),
   ]);
+  // {do} action lines: the page evaluates them against its own lines (same poll).
+  let dos: ReturnType<typeof listDos> = [];
+  try { dos = listDos(slug); } catch { dos = []; }
   const blindView = await pageExtras(req, slug, doc, me, lineMarks, asks);
   const extras = blindView.extras;
   res.setHeader('Cache-Control', 'no-store');
@@ -1974,6 +1981,8 @@ apiRoutes.get('/documents/:slug/line-marks', async (req: Request, res: Response)
     lineMarks: blindView.lineMarks,
     // Step B3: the page evaluates asks against its own lines (same poll, no extra request).
     asks: blindView.asks,
+    dos,
+    doPolicy: { executionEnabled: DO_POLICY.executionEnabled, executionDisabledLabel: DO_POLICY.executionDisabledLabel },
     owners,
     agentKeyActors,
     viewer: { canMark: access.canMark, canApprove: access.canApprove },
@@ -2310,6 +2319,65 @@ apiRoutes.delete('/documents/:slug/asks/:askId', opsRateLimiter, (req: Request, 
   const result = withdrawAsk(slug, { id: String(req.params.askId ?? ''), by: actor.actor, isOwner: access.canApprove });
   res.status(result.status).json(result.body);
 });
+
+// ============================================================================
+// {do} action lines from the page (safe slice). Approve and revoke only; Run always refuses.
+// ============================================================================
+
+/**
+ * A `{do}` approval or revocation must come from a person signed in to this site, from this site.
+ * Refused: no session, an agent key or share token acting (decideActor source is not 'session'),
+ * a missing or foreign Origin header (CSRF), a cross-site fetch, a body that is not JSON.
+ */
+function doSessionActor(req: Request, slug: string, access: ReturnType<typeof resolveLineMarkAccess>):
+  { ok: true; actor: string; source: string } | { ok: false; status: number; body: Record<string, unknown> } {
+  const origin = req.header('origin');
+  const publicOrigin = getPublicOrigin(req);
+  if (DO_POLICY.approveRequiresOriginHeader && (!origin || origin !== publicOrigin)) {
+    return { ok: false, status: 403, body: { success: false, code: 'SAME_ORIGIN_REQUIRED', error: 'This request must come from this site' } };
+  }
+  const fetchSite = req.header('sec-fetch-site');
+  if (fetchSite && fetchSite !== 'same-origin') {
+    return { ok: false, status: 403, body: { success: false, code: 'SAME_ORIGIN_REQUIRED', error: 'This request must come from this site' } };
+  }
+  if (!req.is('application/json')) {
+    return { ok: false, status: 415, body: { success: false, code: 'JSON_REQUIRED', error: 'Send a JSON body' } };
+  }
+  const body = isRecord(req.body) ? req.body : {};
+  const decision = resolvePageActor(req, slug, access, body.by);
+  if (!decision.ok) return decision;
+  if (decision.source !== 'session') {
+    return { ok: false, status: 403, body: { success: false, code: 'SIGNED_IN_PERSON_REQUIRED', error: 'Only a person signed in to this site can approve a {do} (not a guest, an agent key, a share link or a script credential)', actor: decision.actor } };
+  }
+  return { ok: true, actor: decision.actor, source: decision.source };
+}
+
+async function doRoute(req: Request, res: Response, action: 'approve' | 'revoke' | 'run'): Promise<void> {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canRead) { res.status(403).json({ success: false, error: 'No read access' }); return; }
+  const who = doSessionActor(req, slug, access);
+  if (!who.ok) { res.status(who.status).json(who.body); return; }
+  const state = await currentDocumentState(slug);
+  const lines = await computeServerLines(state?.markdown ?? doc.markdown ?? '');
+  const body = isRecord(req.body) ? req.body : {};
+  const id = String(req.params.doId ?? '');
+  const result = action === 'approve'
+    ? approveDo(slug, lines, { id, actor: who.actor, source: who.source, isOwner: access.canApprove, digest: body.digest })
+    : action === 'revoke'
+      ? revokeDo(slug, lines, { id, actor: who.actor, isOwner: access.canApprove })
+      : await runDo(slug, lines, { id, actor: who.actor, source: who.source });
+  if (result.status === 200) scheduleAlignmentCheck(slug);
+  res.status(result.status).json({ ...result.body, actor: who.actor });
+}
+
+// Body: { digest } — the digest of the {do} as the page showed it (it must still be current).
+apiRoutes.post('/documents/:slug/dos/:doId/approve', opsRateLimiter, (req: Request, res: Response) => { doRoute(req, res, 'approve').catch(error => { console.error('[do] route failed', error); if (!res.headersSent) res.status(500).json({ success: false, error: 'Internal error' }); }); });
+apiRoutes.post('/documents/:slug/dos/:doId/revoke', opsRateLimiter, (req: Request, res: Response) => { doRoute(req, res, 'revoke').catch(error => { console.error('[do] route failed', error); if (!res.headersSent) res.status(500).json({ success: false, error: 'Internal error' }); }); });
+// Always refuses in this build (409 EXECUTION_NOT_ENABLED).
+apiRoutes.post('/documents/:slug/dos/:doId/run', opsRateLimiter, (req: Request, res: Response) => { doRoute(req, res, 'run').catch(error => { console.error('[do] route failed', error); if (!res.headersSent) res.status(500).json({ success: false, error: 'Internal error' }); }); });
 
 // DELETE is an alias for destructive delete.
 apiRoutes.delete('/documents/:slug', (req: Request, res: Response) => {

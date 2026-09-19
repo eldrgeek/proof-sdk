@@ -253,6 +253,9 @@ export type PriorityRule =
   | 'open-alternative'
   | 'ttl-not-true'
   | 'ttl-check'
+  | 'do-failed'
+  | 'do-approve'
+  | 'do-finger'
   | 'waiting-on-others';
 
 export const ISSUE_PRIORITY = {
@@ -281,6 +284,12 @@ export const ISSUE_PRIORITY = {
     'ttl-not-true': 3,
     // Step B4f: an expired line waits on the AI collaborators' re-check (low, per the brief).
     'ttl-check': 6,
+    // {do} action lines: a failed or stalled run (result unknown) comes first for its proposer and
+    // approvers; approving, or the Mac click a run waits for, ranks with an open ask; a {do} that
+    // waits only on the machine (or on execution being enabled) waits on others.
+    'do-failed': 1,
+    'do-approve': 2,
+    'do-finger': 2,
     'waiting-on-others': 7,
   } as Record<PriorityRule, number>,
   /** "Urgent" in "7 more, none urgent": priority at or below this (decision: rejections and asks). */
@@ -310,6 +319,9 @@ export const PRIORITY_LABEL: Record<PriorityRule, string> = {
   'open-alternative': 'Competing wordings: pick one',
   'ttl-not-true': 'An AI says this may no longer be true',
   'ttl-check': 'Time to re-check this line',
+  'do-failed': 'An action failed or stalled',
+  'do-approve': 'An action waiting for your approval',
+  'do-finger': 'An action waiting for your click on the Mac',
   'waiting-on-others': 'Waiting on someone else',
 };
 
@@ -332,6 +344,7 @@ export function issueKey(issue: ProofIssue): string {
     case 'objection': return `objection:${issue.objectionId}`;
     case 'alternative': return `alt:${issue.lineIndex}`;
     case 'ttl': return `ttl:${issue.ttlId}`;
+    case 'do': return `do:${issue.doId}`;
     default: return `mark:${issue.markId}`;
   }
 }
@@ -368,6 +381,14 @@ export function priorityRule(issue: ProofIssue, viewer: string | null): Priority
     case 'ttl':
       if (me !== null && !includesActor(issue.openFor, viewer!)) return 'waiting-on-others';
       return issue.reason === 'expired' ? 'ttl-check' : 'ttl-not-true';
+    case 'do': {
+      if (me !== null && !includesActor(issue.openFor, viewer!)) return 'waiting-on-others';
+      if (issue.openFor.length === 0) return 'waiting-on-others';
+      if (issue.state === 'failed' || issue.state === 'stalled') return 'do-failed';
+      if (issue.state === 'needs-finger') return 'do-finger';
+      if (issue.state === 'proposed') return 'do-approve';
+      return 'waiting-on-others';
+    }
     case 'suggestion':
       return 'pending-suggestion';
     default:

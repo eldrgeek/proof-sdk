@@ -1,0 +1,48 @@
+/* Proof Documents {do} action lines, safe slice (Claude Opus 5, 2026-09-18). Mirrors asks.css. */
+.pdo-inline-tag {
+  display:inline-block; margin-right:6px; padding:1px 7px; border-radius:999px; vertical-align:2px;
+  background:#dbeafe; color:#1e40af; font:700 11px/1.5 system-ui,-apple-system,sans-serif; letter-spacing:.02em;
+  user-select:none; -webkit-user-select:none;
+}
+.pdo-inline-tag[data-state="done"] { background:#dcfce7; color:#166534; }
+.pdo-inline-tag[data-state="failed"], .pdo-inline-tag[data-state="stalled"] { background:#fee2e2; color:#991b1b; }
+
+.pdo {
+  display:block; box-sizing:border-box; margin:8px 0 4px; padding:10px 12px; border:1px solid #bfdbfe; border-left:3px solid #2563eb;
+  border-radius:10px; background:#f7faff; color:#26303c; font:400 14px/1.45 system-ui,-apple-system,sans-serif;
+  letter-spacing:normal; text-transform:none; white-space:normal; user-select:none; -webkit-user-select:none;
+}
+.pdo[data-state="approved"] { border-left-color:#16a34a; }
+.pdo[data-state="done"] { border-left-color:#16a34a; background:#f6fdf8; border-color:#bbf7d0; }
+.pdo[data-state="failed"], .pdo[data-state="stalled"] { border-left-color:#dc2626; background:#fff8f8; border-color:#fecaca; }
+.pdo-box { margin:0 0 10px; }
+.pdo-head { display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; font-size:12px; }
+.pdo-tag { padding:1px 7px; border-radius:999px; background:#2563eb; color:#fff; font-weight:700; }
+.pdo-state { font-weight:700; color:#1e3a8a; }
+.pdo[data-state="approved"] .pdo-state, .pdo[data-state="done"] .pdo-state { color:#15803d; }
+.pdo[data-state="failed"] .pdo-state, .pdo[data-state="stalled"] .pdo-state { color:#b91c1c; }
+.pdo-radius { color:#646b73; }
+.pdo-consequence, .pdo-predicate { margin:6px 0 0; overflow-wrap:anywhere; }
+.pdo-predicate { font-size:13px; color:#374151; }
+.pdo-meta { margin:6px 0 0; font-size:12px; color:#646b73; overflow-wrap:anywhere; }
+.pdo-approval { margin:6px 0 0; font-size:13px; color:#166534; }
+.pdo-approval[data-stale="true"] { color:#b45309; }
+.pdo-buttons { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.pdo-btn {
+  min-height:36px; padding:0 12px; border:1px solid #93c5fd; border-radius:8px; background:#fff; color:#26303c;
+  font:600 13px/1 system-ui,-apple-system,sans-serif; cursor:pointer;
+}
+.pdo-btn:hover:not(:disabled) { background:#eff6ff; }
+.pdo-btn:disabled { opacity:.55; cursor:not-allowed; }
+.pdo-btn[data-action="run"] { border-style:dashed; }
+.pdo-note-line { margin:8px 0 0; color:#6b7280; font-size:12px; }
+.pdo-hint { margin:6px 0 0; color:#b91c1c; font-size:12px; }
+.pdo-hint[hidden] { display:none; }
+.pdo[data-busy="true"] .pdo-btn { opacity:.6; pointer-events:none; }
+h1 .pdo, h2 .pdo, h3 .pdo, h4 .pdo, h5 .pdo, h6 .pdo { font-size:14px; font-weight:400; }
+
+@media (max-width: 700px) {
+  .pdo-buttons { width:100%; }
+  .pdo-btn { flex:1 1 140px; min-height:44px; font-size:15px; }
+}
+.ProseMirror .pdo-inline ~ br.ProseMirror-trailingBreak { display:none; }

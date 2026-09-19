@@ -190,7 +190,7 @@ export function sectionIssueCount(section: DocSection, lines: DocLine[], summary
   for (const issue of summary.issues) {
     if (issue.type === 'line') {
       if (issue.lineIndex >= section.headingIndex && issue.lineIndex < section.lineEnd) count.lines += 1;
-    } else if (issue.type === 'ask') {
+    } else if (issue.type === 'ask' || issue.type === 'do') {
       if (issue.lineIndex >= section.headingIndex && issue.lineIndex < section.lineEnd) count.asks += 1;
     } else if (issue.type === 'uncertain' || issue.type === 'objection' || issue.type === 'alternative' || issue.type === 'ttl') {
       if (issue.lineIndex !== null && issue.lineIndex >= section.headingIndex && issue.lineIndex < section.lineEnd) count.aids += 1;

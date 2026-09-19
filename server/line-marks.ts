@@ -64,6 +64,9 @@ import {
 } from './proof-extras-eval.js';
 import { BLIND_POLICY } from '../src/shared/blind.js';
 import { getProofSettings } from './proof-extras-store.js';
+import { buildDoReport } from './do-report.js';
+import { doTeamActors } from '../src/shared/do.js';
+import { listDos } from './do-store.js';
 
 export type LineMarkResult = { status: number; body: Record<string, unknown> };
 
@@ -209,6 +212,8 @@ export interface IssueReport extends IssueSummary {
   bundles: Array<Record<string, unknown>>;
   alternatives: Array<Record<string, unknown>>;
   ttls: Array<Record<string, unknown>>;
+  /** `{do}` action lines (evaluated now). */
+  dos: Array<Record<string, unknown>>;
   explains: Array<Record<string, unknown>>;
   terms: Array<Record<string, unknown>>;
   settings: { blind: boolean; blindSetBy: string | null; blindSetAt: string | null };
@@ -234,14 +239,18 @@ export async function buildIssueReport(slug: string, markdown: string, rawMarks:
   const reviewMarks = annotateReviewMarks(reviewMarksFromStored(rawMarks), extrasPre);
   // Step B4c/B4d: flags and objections are Issues too; flaggers and objectors join the team.
   const aids = evaluateAids(slug, lines, reviewMarks);
-  const team = computeDocumentTeam(slug, lineMarks, reviewMarks, [...(options.teamExtra ?? []), ...aids.teamExtra, ...extrasPre.teamExtra], dir);
+  // {do} action lines: proposers and approvers join the team; unfinished ones are Issues.
+  let doTeam: string[] = [];
+  try { doTeam = doTeamActors(listDos(slug)); } catch { doTeam = []; }
+  const team = computeDocumentTeam(slug, lineMarks, reviewMarks, [...(options.teamExtra ?? []), ...aids.teamExtra, ...extrasPre.teamExtra, ...doTeam], dir);
   const asks = options.asks ? options.asks(lines) : [];
+  const doReport = buildDoReport(slug, lines);
   const states = buildLineStates(lines, lineMarks);
   const now = Date.now();
   const extras = evaluateExtras(slug, extrasPre, { lines, states, team, rawMarks, now });
   const computed = computeIssues({
     lines, lineMarks, team, reviewMarks, asks, uncertain: uncertainInputs(aids, states, team), objections: objectionInputs(aids),
-    alternatives: alternativeInputs(extras, team), ttl: ttlInputs(extras),
+    alternatives: alternativeInputs(extras, team), ttl: ttlInputs(extras), dos: doReport.issueInputs,
     disagreementLines: extras.disagreement, disagreementAlternatives: extras.countsDisagreement,
   });
   // Step B4c: each Issue carries its team-neutral priority (rules + explicit AI priorities).
@@ -276,6 +285,7 @@ export async function buildIssueReport(slug: string, markdown: string, rawMarks:
     bundles: extras.bundleViews.map(view => serializeBundle(view, lines)),
     alternatives: extras.altViews.map(view => serializeAltSet(view, lines)),
     ttls: extras.ttlViews.map(view => serializeTtl(view, lines, now)),
+    dos: doReport.dos,
     explains: extrasPre.explains.map(serializeExplain),
     terms: termsReport(lines),
     settings: extrasPre.settings,

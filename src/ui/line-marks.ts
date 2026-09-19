@@ -37,6 +37,9 @@ import { FOLDING, planSectionMark } from '../shared/folding';
 import { askIssueInputs, askTeamActors, evaluateAsks, type AskChoice, type AskView, type ProofAsk } from '../shared/asks';
 import { askViewKey, setAskDecorations, type AskDecorationSpec } from '../editor/plugins/ask-view';
 import { askControlSignature, buildAskControl, buildAskTag, type AskControl } from './asks';
+import { doIssueInputs, doTeamActors, evaluateDos, type DoView, type ProofDo } from '../shared/do';
+import { doViewKey, setDoDecorations, type DoDecorationSpec } from '../editor/plugins/do-view';
+import { buildDoControl, buildDoTag, doControlSignature } from './do';
 import { setLineMarksViewListener, peekPendingLocalLineEdits, takePendingLocalLineEdits } from '../editor/plugins/line-marks-view';
 import { EMPTY_DIRECTORY, actorTrust, isGuestActor, normalizeActorString, resolveTargetActor, type IdentityDirectory, type ViewerIdentity } from '../shared/identity';
 import {
@@ -184,6 +187,13 @@ export class LineMarksUI {
   private askViews: AskView[] = [];
   private askDecoSig = '';
   private askDecoQueued = false;
+  /** `{do}` action lines from the server (approvals, runs) and their evaluation against the lines. */
+  private serverDos: ProofDo[] = [];
+  private doViews: DoView[] = [];
+  private doDecoSig = '';
+  private doDecoQueued = false;
+  /** Test hook: approvals / revocations this page saved. */
+  private doWrites = 0;
   private owners: string[] = [];
   private agentKeyActors: string[] = [];
   /** Step B4c/B4d: flags, AI review notes and open objections from the server, evaluated here. */
@@ -326,7 +336,7 @@ export class LineMarksUI {
         lineMarks?: LineMark[]; owners?: string[]; agentKeyActors?: string[]; asks?: ProofAsk[];
         flags?: UncertainFlag[]; reviewNotes?: ReviewNote[]; objections?: ProofObjection[];
         bundles?: ProofBundle[]; alternatives?: ProofAlternative[]; alternativeHistory?: ProofAlternative[]; picks?: AltPick[];
-        settings?: { blind?: boolean }; explains?: LineMarksUI['serverExplains']; ttls?: ProofTtl[]; serverNow?: string;
+        settings?: { blind?: boolean }; explains?: LineMarksUI['serverExplains']; ttls?: ProofTtl[]; serverNow?: string; dos?: ProofDo[];
         blind?: { revealedLines?: number[]; hiddenPositions?: number };
         viewer?: { canApprove?: boolean; canMark?: boolean };
         identity?: { me?: ViewerIdentity; directory?: IdentityDirectory };
@@ -345,6 +355,7 @@ export class LineMarksUI {
       this.serverPicks = Array.isArray(body.picks) ? body.picks : [];
       this.serverExplains = Array.isArray(body.explains) ? body.explains : [];
       this.serverTtls = Array.isArray(body.ttls) ? body.ttls : [];
+      this.serverDos = Array.isArray(body.dos) ? body.dos : [];
       this.blind = body.settings?.blind === true;
       this.blindInfo = body.blind ?? null;
       const serverNow = body.serverNow ? Date.parse(body.serverNow) : NaN;
@@ -485,7 +496,7 @@ export class LineMarksUI {
         reviewMarks,
         agentKeyActors: this.agentKeyActors,
         extra: [this.me(), ...askTeamActors(this.serverAsks), ...this.serverFlags.map(f => f.by), ...this.serverObjections.map(o => o.by),
-          ...this.serverAlternatives.map(a => a.by), ...this.serverTtls.map(t => t.by)],
+          ...this.serverAlternatives.map(a => a.by), ...this.serverTtls.map(t => t.by), ...doTeamActors(this.serverDos)],
         identity: { target: actor => resolveTargetActor(actor, this.directory) },
       });
       this.states = buildLineStates(this.lines, this.serverMarks);
@@ -499,6 +510,7 @@ export class LineMarksUI {
       this.bundleViews = this.serverBundles.map(bundle => evaluateBundle(bundle, this.lines, markId => this.locateSuggestion(markId)));
       this.termLinks = termLinksFor(this.lines, this.states, this.me());
       this.askViews = evaluateAsks(this.serverAsks, this.lines);
+      this.doViews = evaluateDos(this.serverDos, this.lines, this.host.slug() ?? '', Date.now() + this.clockSkewMs);
       // Step B4c/B4d: flags and objections, evaluated against this page's lines and positions.
       this.flagViews = evaluateFlags(this.serverFlags, this.lines);
       this.flagsByLine = flaggedLines(this.flagViews);
@@ -510,12 +522,14 @@ export class LineMarksUI {
         objections: objectionIssueInputs(this.objectionViews),
         alternatives: alternativeIssueInputs(this.altViews, team),
         ttl: ttlIssueInputs(this.ttlViews),
+        dos: doIssueInputs(this.doViews),
         disagreementLines: this.disagreement,
         disagreementAlternatives: disagreementCounts(this.blind),
       });
       this.ranked = rankIssues(this.summary.issues, { viewer: this.me(), explicitFor: explicitPriorityLookup(this.serverNotes, this.lines) });
       this.selection = this.selection.filter(index => index < this.lines.length);
       this.queueAskDecorations();
+      this.queueDoDecorations();
       this.queueExtrasDecorations();
       this.maybeCheckAlignment();
     }
@@ -722,7 +736,9 @@ export class LineMarksUI {
   /** Changes whenever the line's ask control would look different (for the rail's box). */
   askSignature(index: number): string {
     const view = this.askForLine(index);
-    return view ? askControlSignature(view, this.me(), this.canMark) : '';
+    const doView = this.doForLine(index);
+    return (view ? askControlSignature(view, this.me(), this.canMark) : '')
+      + (doView ? `|do:${doControlSignature(doView, this.me(), this.canApprove)}` : '');
   }
 
   /** Records the viewer's answer: Yes / Not yet / No in their own words. */
@@ -779,6 +795,93 @@ export class LineMarksUI {
       canAnswer: this.canMark && this.loaded,
       place,
       answer: (choice, words) => this.answerAsk(view.ask.id, choice, words),
+    });
+  }
+
+  // --------------------------------------------------------------------------
+  // {do} action lines (safe slice: approve and revoke; Run is disabled)
+  // --------------------------------------------------------------------------
+
+  /** The `{do}` on a line (evaluated against the current text), or null. */
+  doForLine(index: number): DoView | null {
+    return this.doViews.find(view => view.lineIndex === index) ?? null;
+  }
+
+  doList(): DoView[] { return this.doViews; }
+
+  /** Approve or revoke from the page. The server decides who may; the page only asks. */
+  private async writeDo(doId: string, action: 'approve' | 'revoke'): Promise<boolean> {
+    const slug = this.host.slug();
+    const view = this.doViews.find(v => v.record.id === doId);
+    if (!slug || !view) return false;
+    this.writesInFlight += 1;
+    try {
+      const response = await fetch(`${this.host.apiBase()}/documents/${encodeURIComponent(slug)}/dos/${encodeURIComponent(doId)}/${action}`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { ...this.host.authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(action === 'approve' ? { digest: view.digest } : {}),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { error?: string };
+        this.toast(body.error || (action === 'approve' ? 'Could not approve' : 'Could not revoke the approval'));
+        return false;
+      }
+      this.doWrites += 1;
+      return true;
+    } catch {
+      this.toast('Could not reach the server (offline?)');
+      return false;
+    } finally {
+      this.writesInFlight -= 1;
+      this.fetchSeq += 1;
+      void this.refresh();
+    }
+  }
+
+  private buildDoControlFor(view: DoView, place: 'inline' | 'box'): HTMLElement {
+    return buildDoControl(view, {
+      actor: this.me(),
+      isOwner: this.canApprove,
+      place,
+      approve: () => this.writeDo(view.record.id, 'approve'),
+      revoke: () => this.writeDo(view.record.id, 'revoke'),
+    });
+  }
+
+  /** Puts the inline `{do}` widgets in the text (view-only decorations), when they changed or went missing. */
+  private queueDoDecorations(): void {
+    if (this.doDecoQueued) return;
+    this.doDecoQueued = true;
+    requestAnimationFrame(() => {
+      this.doDecoQueued = false;
+      const view = this.view;
+      if (!view) return;
+      const specs: DoDecorationSpec[] = [];
+      const sigs: string[] = [];
+      for (const doView of this.doViews) {
+        if (doView.lineIndex === null || doView.state === 'withdrawn') continue;
+        const line = this.lines[doView.lineIndex];
+        if (!line || line.kind === 'table_row') continue; // table rows: the rail and sheet only
+        const sig = doControlSignature(doView, this.me(), this.canApprove);
+        sigs.push(`${doView.record.id}@${line.pos}:${line.nodeSize}:${sig}`);
+        specs.push({
+          doId: doView.record.id,
+          pos: line.pos,
+          nodeSize: line.nodeSize,
+          sig: String(hashSig(sig)),
+          tag: () => buildDoTag(doView),
+          control: () => this.buildDoControlFor(doView, 'inline'),
+        });
+      }
+      const signature = sigs.join('|');
+      // A remote Yjs update replaces the whole document and drops mapped decorations (see the
+      // ask widgets): rebuild whenever fewer are present than expected (a tag and a control each).
+      const expected = 2 * specs.filter(spec => view.state.doc.nodeAt(spec.pos)?.isTextblock).length;
+      const present = doViewKey.getState(view.state)?.find().length ?? 0;
+      if (signature === this.doDecoSig && present >= expected) return;
+      this.doDecoSig = signature;
+      try { setDoDecorations(view, specs); } catch (error) { console.warn('[plm] do decorations failed', error); }
     });
   }
 
@@ -902,7 +1005,7 @@ export class LineMarksUI {
     this.countEl.textContent = n === 0 ? 'Aligned' : `${n} ${n === 1 ? 'issue' : 'issues'}`;
     this.countEl.title = n === 0
       ? `Every team member has seen every line and no one has rejected anything. Team: ${summary.team.map(actorLabel).join(', ')}`
-      : `${summary.counts.lineIssues} lines not yet seen by everyone or rejected; ${summary.counts.reviewMarkIssues} open comments or suggestions; ${summary.counts.askIssues} unanswered ${summary.counts.askIssues === 1 ? 'ask' : 'asks'}; ${summary.counts.uncertainIssues} uncertain ${summary.counts.uncertainIssues === 1 ? 'line' : 'lines'}; ${summary.counts.objectionIssues} open ${summary.counts.objectionIssues === 1 ? 'objection' : 'objections'}; ${summary.counts.alternativeIssues} ${summary.counts.alternativeIssues === 1 ? 'line' : 'lines'} with competing wordings; ${summary.counts.ttlIssues} expired ${summary.counts.ttlIssues === 1 ? 'claim' : 'claims'}${this.blind ? '; blind marking is on' : ''}. Next issue goes by stakes: ${this.ranked.filter(r => r.urgent).length} urgent. Team: ${summary.team.map(actorLabel).join(', ')}`;
+      : `${summary.counts.lineIssues} lines not yet seen by everyone or rejected; ${summary.counts.reviewMarkIssues} open comments or suggestions; ${summary.counts.askIssues} unanswered ${summary.counts.askIssues === 1 ? 'ask' : 'asks'}; ${summary.counts.uncertainIssues} uncertain ${summary.counts.uncertainIssues === 1 ? 'line' : 'lines'}; ${summary.counts.objectionIssues} open ${summary.counts.objectionIssues === 1 ? 'objection' : 'objections'}; ${summary.counts.alternativeIssues} ${summary.counts.alternativeIssues === 1 ? 'line' : 'lines'} with competing wordings; ${summary.counts.ttlIssues} expired ${summary.counts.ttlIssues === 1 ? 'claim' : 'claims'}; ${summary.counts.doIssues} unfinished ${summary.counts.doIssues === 1 ? 'action' : 'actions'}${this.blind ? '; blind marking is on' : ''}. Next issue goes by stakes: ${this.ranked.filter(r => r.urgent).length} urgent. Team: ${summary.team.map(actorLabel).join(', ')}`;
     this.nextBtn.disabled = n === 0;
     this.setShort(n === 0 ? '✓ Aligned' : `${n} ›`);
     this.nextBtn.setAttribute('aria-label', n === 0 ? 'No issues: aligned' : `Next issue (${n} ${n === 1 ? 'issue' : 'issues'})`);
@@ -1057,6 +1160,9 @@ export class LineMarksUI {
     const askView = this.askForLine(line.index);
     const askControl = askView ? this.buildAskControlFor(askView, 'box') : undefined;
     if (askControl) root.append(askControl.root);
+    // {do}: the line's action, with Approve (for the people named) and the disabled Run.
+    const doView = this.doForLine(line.index);
+    if (doView && doView.state !== 'withdrawn') root.append(this.buildDoControlFor(doView, 'box'));
     // Step B4d: open objections on this line (with Clear / Keep for the objector).
     for (const objection of this.objectionsByLine.get(line.index) ?? []) root.append(this.buildObjectionCard(objection));
     // Step B4c: the writer's uncertainty (flag, note, Clear), or "Flag uncertain…".
@@ -1441,6 +1547,7 @@ export class LineMarksUI {
       : next.type === 'objection' ? `objection ${(next.lineIndex ?? -1) + 1}`
       : next.type === 'alternative' ? `alternative ${next.lineIndex + 1}`
       : next.type === 'ttl' ? `ttl ${next.lineIndex + 1}`
+      : next.type === 'do' ? `do ${next.lineIndex + 1}`
       : next.type;
     this.renderBudget();
   }
@@ -2423,7 +2530,7 @@ export class LineMarksUI {
   private aidWrites = 0;
 
   /** Test and agent hook: the numbers the UI shows. */
-  debugState(): { extras: Record<string, unknown>; aids: Record<string, unknown>; loaded: boolean; issues: number; aligned: boolean; team: string[]; lines: number; marks: LineMark[]; sectionWrites: number; askIssues: number; askAnswers: number; asks: Array<Record<string, unknown>>; skimWrites: number; snapshot: { id: string; createdAt: string } | null; carried: Array<{ line: number; by: string; from: string | null }> } {
+  debugState(): { extras: Record<string, unknown>; aids: Record<string, unknown>; loaded: boolean; issues: number; aligned: boolean; team: string[]; lines: number; marks: LineMark[]; sectionWrites: number; askIssues: number; askAnswers: number; asks: Array<Record<string, unknown>>; doIssues: number; doWrites: number; dos: Array<Record<string, unknown>>; skimWrites: number; snapshot: { id: string; createdAt: string } | null; carried: Array<{ line: number; by: string; from: string | null }> } {
     return {
       aids: {
         flags: this.flagViews.map(v => ({ id: v.flag.id, by: v.flag.by, note: v.flag.note, line: v.lineIndex })),
@@ -2458,6 +2565,9 @@ export class LineMarksUI {
       carried: this.states.flatMap(state => [...state.marks.values()].filter(e => e.carried).map(e => ({ line: state.line.index, by: e.mark.by, from: e.carriedFrom ?? null }))),
       askIssues: this.summary?.counts.askIssues ?? -1,
       askAnswers: this.askAnswers,
+      doIssues: this.summary?.counts.doIssues ?? -1,
+      doWrites: this.doWrites,
+      dos: this.doViews.map(v => ({ id: v.record.id, lineIndex: v.lineIndex, state: v.state, digest: v.digest, approvalCurrent: v.approvalCurrent, openFor: v.openFor })),
       asks: this.askViews.map(v => ({ id: v.ask.id, lineIndex: v.lineIndex, openFor: v.openFor, snoozedFor: v.snoozedFor, outcome: v.outcome, answers: v.answers.map(a => [a.by, a.choice, a.words]) })),
       sectionWrites: this.sectionWrites,
       loaded: this.loaded,

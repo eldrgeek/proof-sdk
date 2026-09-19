@@ -1486,6 +1486,57 @@ function initDatabase(): void {
   `);
   d.exec(`CREATE INDEX IF NOT EXISTS idx_document_ask_answers_ask ON document_ask_answers(ask_id, created_at)`);
 
+  // Proof Documents {do} action lines (safe slice, 2026-09-18). Beside the document like asks.
+  // document_do_approvals rows are never deleted (revocation sets revoked_at). document_do_runs
+  // exists for the attended enablement: in this slice nothing writes it (execution is disabled).
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_dos (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      to_json TEXT NOT NULL DEFAULT '[]',
+      presser TEXT NOT NULL DEFAULT 'approver',
+      retry_budget INTEGER NOT NULL DEFAULT 0,
+      action_json TEXT NOT NULL,
+      line_hash TEXT NOT NULL,
+      line_occurrence INTEGER NOT NULL,
+      line_ordinal INTEGER NOT NULL,
+      line_kind TEXT NOT NULL,
+      line_excerpt TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      withdrawn_at TEXT
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_dos_slug ON document_dos(document_slug, created_at)`);
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_do_approvals (
+      id TEXT PRIMARY KEY,
+      do_id TEXT NOT NULL,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      digest TEXT NOT NULL,
+      source TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      revoked_at TEXT,
+      revoked_by TEXT
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_do_approvals_do ON document_do_approvals(do_id, created_at)`);
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_do_runs (
+      id TEXT PRIMARY KEY,
+      do_id TEXT NOT NULL,
+      document_slug TEXT NOT NULL,
+      approval_id TEXT NOT NULL,
+      attempt INTEGER NOT NULL,
+      digest TEXT NOT NULL,
+      presser TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      receipts_json TEXT NOT NULL DEFAULT '[]',
+      UNIQUE (do_id, attempt)
+    )
+  `);
+
   // Proof Documents Step B6: explicit identity merges (a typed-name actor -> a verified person).
   // Made only by the COS on request (server/library/cli.ts merge-identity); rows are never
   // rewritten, the merge applies when marks and answers are read. scope = a slug or '*'.

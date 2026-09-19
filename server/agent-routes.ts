@@ -46,6 +46,8 @@ import { agentKeyActor } from '../src/shared/line-marks.js';
 import { decideActor } from './identity.js';
 import { answerAgentAsk, buildAskReport, createAskOnLine, createAgentAsk, listAgentAsks, listCanonicalAsks, reaskAsk, withdrawAsk } from './asks.js';
 import { ASK_POLICY, askTeamActors, oneLine } from '../src/shared/asks.js';
+import { createAgentDo, listAgentDos, reviseDo, revokeDo, runDo, withdrawDo } from './do.js';
+import { DO_POLICY, DO_OPERATIONS } from '../src/shared/do.js';
 import {
   aidsReport,
   checkSuggestionWhy,
@@ -2214,6 +2216,11 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
       body.bundles = report.bundles;
       body.alternatives = report.alternatives;
       body.ttls = report.ttls;
+      // {do} action lines (safe slice: approval only by a signed-in person; execution not enabled).
+      body.dos = report.dos;
+      body.doPolicy = { executionEnabled: DO_POLICY.executionEnabled, approvalSingleUse: DO_POLICY.approvalSingleUse, operations: Object.keys(DO_OPERATIONS) };
+      links.dos = { method: 'GET', href: `/api/agent/${slug}/dos` };
+      links.createDo = { method: 'POST', href: `/api/agent/${slug}/dos` };
       body.explains = report.explains;
       body.terms = report.terms;
       body.settings = report.settings;
@@ -3817,6 +3824,102 @@ agentRoutes.post('/:slug/asks/:askId/answer', async (req: Request, res: Response
   if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route: mutationRoute, slug }); return; }
   const askId = String(req.params.askId ?? '');
   const result = await answerAgentAsk(slug, await currentAgentMarkdown(slug), askId, payload, actor.by, true);
+  if (result.status === 200) scheduleAlignmentCheck(slug);
+  sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+});
+
+// ============================================================================
+// {do} action lines (safe slice, 2026-09-18). An AI may propose, revise, revoke and withdraw;
+// only a signed-in person approves (on the page), and nothing runs: execution is not enabled.
+// ============================================================================
+
+agentRoutes.get('/:slug/dos', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  const result = await listAgentDos(slug, await currentAgentMarkdown(slug));
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(result.status).json(result.body);
+});
+
+// Propose a {do} on an existing line. Body: { <line target>, action: <Pulse v1 action>, to?, presser?, retryBudget?, by? }.
+agentRoutes.post('/:slug/dos', async (req: Request, res: Response) => {
+  const mutationRoute = 'POST /dos';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute }); return; }
+  const role = checkAuth(req, res, slug, ['editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body);
+  const actor = resolveAgentActor(req, slug, payload, role);
+  if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route: mutationRoute, slug }); return; }
+  const result = await createAgentDo(slug, await currentAgentMarkdown(slug), payload, actor.by);
+  if (result.status === 200) {
+    notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'do.create' }), { apply: false });
+    scheduleAlignmentCheck(slug);
+  }
+  sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+});
+
+// Revise: a new action (higher revision), presser, retryBudget or to. Voids any approval.
+agentRoutes.post('/:slug/dos/:doId/revise', async (req: Request, res: Response) => {
+  const mutationRoute = 'POST /dos/:id/revise';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute }); return; }
+  const role = checkAuth(req, res, slug, ['editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body);
+  const actor = resolveAgentActor(req, slug, payload, role);
+  if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route: mutationRoute, slug }); return; }
+  const lines = await computeServerLines(await currentAgentMarkdown(slug));
+  const result = reviseDo(slug, lines, { id: String(req.params.doId ?? ''), by: actor.by, isOwner: role === 'owner_bot', action: payload.action, presser: payload.presser, retryBudget: payload.retryBudget, to: payload.to });
+  sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+});
+
+// Approval is never done through the agent API: an AI, a key or a share token is not a signed-in person.
+agentRoutes.post('/:slug/dos/:doId/approve', (req: Request, res: Response) => {
+  res.status(403).json({ success: false, code: 'SIGNED_IN_PERSON_REQUIRED', error: 'Only a person signed in to this site can approve a {do}, on the page. Ask them (an {ask} line works).' });
+});
+
+// Revoke the live approval (the proposer, or the owner credential). Always safe.
+agentRoutes.post('/:slug/dos/:doId/revoke', async (req: Request, res: Response) => {
+  const mutationRoute = 'POST /dos/:id/revoke';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute }); return; }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body);
+  const actor = resolveAgentActor(req, slug, payload, role);
+  if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route: mutationRoute, slug }); return; }
+  const lines = await computeServerLines(await currentAgentMarkdown(slug));
+  const result = revokeDo(slug, lines, { id: String(req.params.doId ?? ''), actor: actor.by, isOwner: role === 'owner_bot' });
+  sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+});
+
+// Run: always refused in this build (409 EXECUTION_NOT_ENABLED).
+agentRoutes.post('/:slug/dos/:doId/run', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body);
+  const actor = resolveAgentActor(req, slug, payload, role);
+  if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
+  const lines = await computeServerLines(await currentAgentMarkdown(slug));
+  const result = await runDo(slug, lines, { id: String(req.params.doId ?? ''), actor: actor.by, source: 'agent' });
+  res.status(result.status).json(result.body);
+});
+
+agentRoutes.delete('/:slug/dos/:doId', async (req: Request, res: Response) => {
+  const mutationRoute = 'DELETE /dos/:id';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute }); return; }
+  const role = checkAuth(req, res, slug, ['editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body);
+  const actor = resolveAgentActor(req, slug, payload, role);
+  if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route: mutationRoute, slug }); return; }
+  const lines = await computeServerLines(await currentAgentMarkdown(slug));
+  const result = withdrawDo(slug, lines, { id: String(req.params.doId ?? ''), by: actor.by, isOwner: role === 'owner_bot' });
   if (result.status === 200) scheduleAlignmentCheck(slug);
   sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
 });
