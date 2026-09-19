@@ -25,7 +25,7 @@ import {
   extractAuthoredMarksFromMarkdown,
   synchronizeAuthoredMarks,
 } from './proof-authored-mark-sync.js';
-import { isOrphanedSuggestionMark } from './proof-mark-orphans.js';
+import { isDetachedCommentMark, isOrphanedSuggestionMark, ORPHANED_SUGGESTION_POLICY } from './proof-mark-orphans.js';
 
 type RehydrationMode = 'repair' | 'accept' | 'reject';
 
@@ -212,6 +212,12 @@ function collectRequiredHydrationIds(marks: Record<string, StoredMark>, markdown
     // ORPHANED_SUGGESTION_POLICY: a pending suggestion whose quote is gone from the text cannot
     // hydrate and must not block every other mark operation. It stays in storage.
     if (reason === 'suggestion' && isOrphanedSuggestionMark(markdown, mark, id)) continue;
+    // A comment whose quoted text is gone stays stored but must not block every suggestion.
+    if (
+      reason === 'comment'
+      && !ORPHANED_SUGGESTION_POLICY.detachedCommentsRequireHydration
+      && isDetachedCommentMark(markdown, mark, id)
+    ) continue;
     if (reason !== 'authored') {
       requiredIds.push(id);
       continue;

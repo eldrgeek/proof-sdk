@@ -165,6 +165,76 @@ try {
     assert.equal(rejected.status, 200, JSON.stringify(rejected.body));
   });
 
+  await test('policy: a short quote found only inside other words is still an orphan (hgff4jxe)', () => {
+    const markdown = 'The first dialect is otherwise fine.\n\nThis Effort ends here.';
+    for (const quote of [' fi', 'fi', 'ise', 'lect', 'dia', 'ing']) {
+      assert.equal(
+        orphans.isOrphanedSuggestionMark(markdown, { kind: 'insert', by, quote, status: 'pending' } as any),
+        true,
+        `insert quote ${JSON.stringify(quote)} occurs only inside a word (or across "This Effort")`,
+      );
+    }
+    assert.equal(orphans.isOrphanedSuggestionMark(markdown, { kind: 'replace', by, quote: 'irs', status: 'pending', content: 'x' } as any), true, 'replace: same rule');
+    assert.equal(orphans.isOrphanedSuggestionMark(markdown, { kind: 'delete', by, quote: 'wise', status: 'pending' } as any), true, 'delete: same rule');
+    assert.equal(orphans.isOrphanedSuggestionMark(markdown, { kind: 'insert', by, quote: 'fine', status: 'pending' } as any), false, 'a whole word is present');
+    assert.equal(orphans.isOrphanedSuggestionMark(markdown, { kind: 'replace', by, quote: 'first dialect', status: 'pending', content: 'x' } as any), false, 'whole words across a space');
+    assert.equal(orphans.isOrphanedSuggestionMark(markdown, { kind: 'insert', by, quote: 'fine.', status: 'pending' } as any), false, 'punctuation edges need no boundary');
+    const spanned = 'A markdown <span data-proof="suggestion" data-id="s-dia" data-by="human:Mike" data-kind="insert">dia</span>lect here.';
+    assert.equal(orphans.isOrphanedSuggestionMark(spanned, { kind: 'insert', by, quote: 'dia', status: 'pending' } as any, 's-dia'), false, 'a partial-word insert with its Proof span is live');
+    assert.equal(orphans.isDetachedCommentMark(markdown, { kind: 'comment', by, quote: 'no one has rejected', text: 'x' } as any, 'c1'), true);
+    assert.equal(orphans.isDetachedCommentMark(markdown, { kind: 'comment', by, quote: 'first dialect', text: 'x' } as any, 'c1'), false);
+    assert.equal(orphans.isDetachedCommentMark(markdown, { kind: 'comment', by, quote: 'gone', text: 'x', resolved: true } as any, 'c1'), false);
+  });
+
+  await test('short-quote orphans and a detached comment do not block reject or accept (hgff4jxe shape)', async () => {
+    const shortSlug = 'orphan-short';
+    const shortDoc = [
+      '# Short',
+      '',
+      'The first dialect is otherwise fine.',
+      '',
+      'Keep this sentence for a live suggestion.',
+    ].join('\n');
+    const pendingInsert = (quote: string, from: number) => ({
+      kind: 'insert', by: 'human:Mike', createdAt: '2026-09-19T14:06:13.500Z', status: 'pending',
+      content: quote, quote: quote.trim(), range: { from, to: from + quote.length },
+      startRel: `char:${from}`, endRel: `char:${from + quote.length}`,
+    });
+    const storedMarks = {
+      'short-1': pendingInsert(' fi', 90),
+      'short-2': pendingInsert('ise', 87),
+      'short-3': pendingInsert('lect', 60),
+      'detached-comment': {
+        kind: 'comment', by: 'ai:claude', createdAt: '2026-09-18T23:43:48.242Z', quote: 'no one has rejected',
+        text: 'This sentence was rewritten.', threadId: 'detached-comment', thread: [], replies: [], resolved: false,
+        range: { from: 70, to: 89 }, startRel: 'char:70', endRel: 'char:89',
+      },
+    };
+    db.createDocument(shortSlug, shortDoc, storedMarks as any, 'Short orphans', 'owner-2', 'owner-secret-456');
+    const OWNER2 = { 'x-share-token': 'owner-secret-456' };
+    const state = await call(`/api/agent/${shortSlug}/state`, 'GET', undefined, OWNER2);
+    assert.equal(state.status, 200, JSON.stringify(state.body));
+    assert.deepEqual(state.body.orphanedMarks.map((m: any) => m.id), ['short-1', 'short-2', 'short-3']);
+
+    const live = await call(`/api/agent/${shortSlug}/marks/suggest-replace`, 'POST', { quote: 'live suggestion', content: 'kept suggestion', by }, OWNER2);
+    assert.equal(live.status, 200, JSON.stringify(live.body));
+
+    for (const id of ['short-1', 'short-2', 'short-3']) {
+      const before = db.getDocumentBySlug(shortSlug)!.markdown;
+      const r = await call(`/api/agent/${shortSlug}/marks/reject`, 'POST', { markId: id, by }, OWNER2);
+      assert.equal(r.status, 200, `${id}: ${JSON.stringify(r.body).slice(0, 400)}`);
+      assert.equal(db.getDocumentBySlug(shortSlug)!.markdown, before, 'rejecting an orphan changes no text');
+    }
+    const accepted = await call(`/api/agent/${shortSlug}/marks/accept`, 'POST', { markId: live.body.markId, by }, OWNER2);
+    assert.equal(accepted.status, 200, JSON.stringify(accepted.body).slice(0, 400));
+    const after = db.getDocumentBySlug(shortSlug)!;
+    assert.ok(after.markdown.includes('kept suggestion'));
+    assert.ok(after.markdown.includes('The first dialect is otherwise fine.'), 'the words the short quotes hid in are untouched');
+    const marksAfter = JSON.parse(after.marks) as Record<string, any>;
+    assert.ok(marksAfter['detached-comment'], 'the detached comment stays stored');
+    assert.equal(marksAfter['detached-comment'].text, 'This sentence was rewritten.');
+  });
+
   console.log(`\n${passed} orphaned-suggestion tests passed`);
 } finally {
   server.close();
