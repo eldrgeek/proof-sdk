@@ -254,6 +254,27 @@ try {
     assert.ok(issue, 'the new ask is an Issue');
   });
 
+  await test('undo of an answer: the answerer takes their own newest answer back; a later answer by someone else refuses', async () => {
+    const anchor = shared.anchorForLine(lines[Q1]);
+    // Someone else answers after Mike: his undo must refuse rather than overwrite the record.
+    const eric = await call(`/api/documents/${slug}/asks/${askId}/answer`, 'POST', { by: 'human:Eric', choice: 'yes', anchor });
+    assert.equal(eric.status, 200, JSON.stringify(eric.body));
+    const blocked = await call(`/api/documents/${slug}/asks/${askId}/answer`, 'DELETE', { by: 'human:Mike' });
+    assert.equal(blocked.status, 409);
+    assert.equal(blocked.body.code, 'ANSWERED_SINCE');
+    assert.match(blocked.body.error, /Nothing was overwritten/);
+    // Eric's own answer is the newest, so he can take it back.
+    const undone = await call(`/api/documents/${slug}/asks/${askId}/answer`, 'DELETE', { by: 'human:Eric' });
+    assert.equal(undone.status, 200, JSON.stringify(undone.body));
+    const after = await call(`/api/documents/${slug}/line-marks`);
+    const answers = after.body.asks[0].answers as Array<{ by: string }>;
+    assert.ok(!answers.some(a => /Eric/i.test(a.by)), 'the withdrawn answer is still there');
+    // Twice is not a second undo.
+    const again = await call(`/api/documents/${slug}/asks/${askId}/answer`, 'DELETE', { by: 'human:Eric' });
+    assert.equal(again.status, 404);
+    assert.equal(again.body.code, 'NO_ANSWER');
+  });
+
   console.log(`\nasks tests: ${passed} passed`);
 } finally {
   server.close();

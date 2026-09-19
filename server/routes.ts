@@ -103,7 +103,7 @@ import {
 } from './mutation-stage.js';
 import { resolveExplicitAgentIdentity } from '../src/shared/agent-identity.js';
 import { activeAgentKeyActors, computeServerLines, documentOwnerActors, isLibraryDocumentCreator, listCanonicalLineMarks, listLineMarks, reviewMarksFromStored, writeLineMark, writeLineMarksBatch } from './line-marks.js';
-import { answerAsk, listCanonicalAsks, reaskAsk, withdrawAsk } from './asks.js';
+import { answerAsk, listCanonicalAsks, reaskAsk, withdrawAnswer, withdrawAsk } from './asks.js';
 import { approveDo, revokeDo, runDo } from './do.js';
 import { listDos } from './do-store.js';
 import { DO_POLICY, doTeamActors } from '../src/shared/do.js';
@@ -2619,6 +2619,22 @@ apiRoutes.post('/documents/:slug/asks/:askId/answer', opsRateLimiter, (req: Requ
     source: 'page',
     canMark: access.canMark,
   });
+  if (result.status === 200) scheduleAlignmentCheck(slug);
+  res.status(result.status).json({ ...result.body, actor: actor.actor, trust: actor.trust });
+});
+
+// Undo of an answer (Mike, 2026-09-19): a person takes back their own newest answer. It refuses
+// with 409 when someone else answered after them, or the ask was re-asked (nothing is clobbered).
+apiRoutes.delete('/documents/:slug/asks/:askId/answer', opsRateLimiter, (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canComment) { res.status(403).json({ success: false, error: 'Undoing an answer needs comment access' }); return; }
+  const body = isRecord(req.body) ? req.body : {};
+  const actor = resolvePageActor(req, slug, access, body.by);
+  if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
+  const result = withdrawAnswer(slug, { id: String(req.params.askId ?? ''), by: actor.actor });
   if (result.status === 200) scheduleAlignmentCheck(slug);
   res.status(result.status).json({ ...result.body, actor: actor.actor, trust: actor.trust });
 });

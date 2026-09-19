@@ -402,6 +402,61 @@ Rules (policy `ASK_POLICY` in `src/shared/asks.ts`): Yes and No close the ask fo
 
 In the page: the question line shows an **Ask** tag and, under it, the recommendation and the Yes / Not yet / No buttons with a words field; the right rail and the phone sheet show the same control for the focus line. Keys while reading: **Y** yes, **N** no, **T** not yet (N and T open the reason field). Answering is an explicit action for the reading walk: it commits the scroll-accepts above the line. The page answers through `POST /api/documents/$SLUG/asks/:id/answer` `{by, choice, words, anchor}`, and reads asks from the line-marks poll (`GET /api/documents/$SLUG/line-marks` returns `asks`).
 
+## One Undo, and the one folding-and-focus model (2026-09-19)
+
+Mike, 2026-09-19: "Undo is needed for every user change."
+
+**One Undo.** Every action a person takes in the document — a line mark, a section mark, an ask
+answer, accepting or rejecting a change, resolving a comment, picking a wording, a tier flip, a
+fold, clearing an objection or a flag, ratifying a Familiar's proxy, committing the scroll-accepts
+— goes on one ordered per-person stack (`src/shared/undo.ts`). The right rail's first control says
+what Undo would reverse ("Undo agreed line 12"); ⌘Z / Ctrl+Z runs it, ⌘⇧Z / Ctrl+Y redoes it where
+a redo is cheap. Typing keeps the editor's own text history: the keystroke goes to whichever of the
+two happened last (`UNDO_UI_POLICY.textEditWins`), so from the person's side there is one undo.
+
+An undo is an ordinary action: it goes through the same routes and the same permission checks.
+It never overwrites a later action by someone else — it refuses and says why
+(`UNDO_POLICY.refuseOnConflict`), for example "Not undone: Eric answered after you did. Nothing was
+overwritten."
+
+New route (the undo counterpart an answer lacked):
+
+- `DELETE /api/documents/$SLUG/asks/:askId/answer` `{by}` — takes back the caller's own newest
+  answer. `409 ANSWERED_SINCE` when someone else answered after them, `409 REASKED_SINCE` when the
+  ask was asked again since, `404 NO_ANSWER` when they have no answer to take back. Needs comment
+  access, like answering.
+
+**Reject after Accept.** A second decision on a mark that is already settled used to return
+silently: the click did nothing and said nothing. It now refuses in words and offers the real Undo
+(`SETTLED_DECISION_POLICY.onSecondDecision = 'refuse-with-undo'`, `src/shared/settled-decision.ts`).
+An accepted change's text is already merged and someone may have typed on top of it, so rejecting
+it afterwards would rewrite their work; the Undo reverses the accept through the editor's decision
+history, which refuses of its own accord when the text moved.
+
+**Typing `?` means clarify.** A lone `?` typed at the end of a line, after existing text and
+separated from it by a space, is a clarify request, not text (`src/shared/clarify.ts`). On Enter or
+blur the `?` leaves the text and the ordinary Explain flow is posted on that line, quoting the
+sentence the `?` followed. It is a question: it never marks the line, it is never a rejection, and
+it is never an Issue for the asker. The same conversion runs in Suggesting mode, as a plain edit.
+"Is this right?" keeps its question mark — there is no space before it, so it is prose.
+
+**The one model** every folding and focus path follows (`SECTION_AUTOCLOSE` in
+`src/shared/folding.ts`):
+
+1. **An explicit person action beats any automatic one.** A section the person unfolded by hand is
+   sticky: no auto-close, no fold-to-level and no later fold pass refolds it. Only another explicit
+   fold takes that back. The same already held for a closed-Issue line the person opened by hand.
+2. **Nothing folds or moves under the reader's eyes.** An automatic fold waits until the section is
+   out of view and scrolling has been still for `SECTION_AUTOCLOSE.idleMs`.
+3. **Hover previews; click commits.** Hovering a folded heading peeks its body open without
+   changing the stored fold state; moving away re-folds it; a click commits the unfold. On desktop
+   the hovered line carries the same strong band the touch build uses, so the current element is
+   unmistakable, and the rail follows it.
+
+A section closes itself when the reader leaves it and it has no Issues **for that reader**
+(`SECTION_AUTOCLOSE.countIssues = 'viewer'`) — not the team-wide count the fold chip's badge shows,
+which would hold a section open because a teammate has not read it yet.
+
 ## Identity: who a mark or an answer names (Proof Documents, Step B6)
 
 Line marks, asks and ask answers name one of three kinds of actor:

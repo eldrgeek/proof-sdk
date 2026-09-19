@@ -16,6 +16,8 @@ import { ReadingWalkUI } from '../ui/reading-walk';
 import { ChatUI } from '../ui/chat';
 import { FoldingUI } from '../ui/folding';
 import { ClosedFoldUI } from '../ui/closed-fold';
+import { UndoUI } from '../ui/undo';
+import { ClarifyUI } from '../ui/clarify';
 import { lineMarksViewPlugin } from './plugins/line-marks-view';
 import { foldViewPlugin } from './plugins/fold-view';
 import { askViewPlugin } from './plugins/ask-view';
@@ -1143,6 +1145,12 @@ class ProofEditorImpl implements ProofEditor {
   private chatUnread = 0;
   private folding: FoldingUI | null = null;
   private closedFold: ClosedFoldUI | null = null;
+  /** The one Undo (Mike, 2026-09-19): the rail button and Cmd/Ctrl+Z. */
+  private undoUI: UndoUI | null = null;
+  /** Item 3 (Mike, 2026-09-19): typing "?" after a sentence asks the AIs to clarify it. */
+  private clarifyUI: ClarifyUI | null = null;
+  /** When the person last typed in the document (so Cmd+Z reverses whichever came last). */
+  private lastLocalTextEditAt = 0;
   private reviewDecisionHistory: ReviewDecisionHistory | null = null;
   private reviewDecisionIds = new Set<string>();
   private capturingReviewDecision = false;
@@ -3846,7 +3854,11 @@ class ProofEditorImpl implements ProofEditor {
           for (const index of this.lineMarks?.tierFoldedLines() ?? []) hidden.add(index);
           return hidden;
         },
-        focusChanged: (lineIndex) => this.closedFold?.setFocusLine(lineIndex),
+        focusChanged: (lineIndex) => {
+          this.closedFold?.setFocusLine(lineIndex);
+          // Item 4: a section with no Issues closes itself once the reader's focus leaves it.
+          this.folding?.setFocusLine(lineIndex);
+        },
         visibleLineFor: (lineIndex) => {
           let visible = this.folding?.visibleLineFor(lineIndex) ?? lineIndex;
           const tierFolded = this.lineMarks?.tierFoldedLines() ?? new Set<number>();
@@ -3862,6 +3874,20 @@ class ProofEditorImpl implements ProofEditor {
       this.closedFold = new ClosedFoldUI({ slug: () => shareClient.getSlug(), lineMarks: () => lineMarks, onApplied: () => walkUi.onFoldChange() });
       (window as unknown as { __proofClosedFold?: ClosedFoldUI }).__proofClosedFold = this.closedFold;
       walkUi.mountTool(this.closedFold.controlsEl);
+      // The one Undo: at the top of the right rail, above the outline controls.
+      this.undoUI = new UndoUI({ stack: () => lineMarks.undoStack(), lastTextEditAt: () => this.lastLocalTextEditAt });
+      (window as unknown as { __proofUndo?: UndoUI }).__proofUndo = this.undoUI;
+      walkUi.mountTool(this.undoUI.controlsEl, { first: true });
+      // Item 3: a lone "?" typed at the end of a line becomes a clarify request to the AIs.
+      this.clarifyUI = new ClarifyUI({
+        view: () => { let v: EditorView | null = null; this.editor?.action(ctx => { v = ctx.get(editorViewCtx); }); return v; },
+        explain: (lineIndex, question) => lineMarks.explainLine(lineIndex, question),
+        lineAtPos: pos => lineMarks.lineAtPos(pos),
+        directEditMeta: () => proofMarkActionMeta,
+        suggesting: () => this.isSuggestionsEnabled(),
+        toast: message => this.showErrorBanner(message),
+      });
+      (window as unknown as { __proofClarify?: ClarifyUI }).__proofClarify = this.clarifyUI;
       // Proof Documents Step B7: chat beside the document (its own table; never the text or Yjs).
       this.chat = new ChatUI({
         slug: () => shareClient.getSlug(),
@@ -3890,6 +3916,8 @@ class ProofEditorImpl implements ProofEditor {
     this.lineMarks.start();
     this.folding?.start();
     this.closedFold?.start();
+    this.undoUI?.start();
+    this.clarifyUI?.start();
     this.readingWalk?.start();
     this.chat?.start();
     return this.lineMarks;
@@ -4012,6 +4040,12 @@ class ProofEditorImpl implements ProofEditor {
           this.shareSuggestionReviewSignature = '';
           this.updateShareSuggestionReviewDisplay();
         },
+        // The one Undo (Mike, 2026-09-19): Cmd/Ctrl+Z reverses whichever came last, a typed edit
+        // or a Proof action. Returning false leaves the keystroke to the text history.
+        proofUndo: redo => this.undoUI?.handleKey(redo) ?? false,
+        // Item 2: undo the viewer's own earlier decision on one mark (what the "Reject did
+        // nothing, you already accepted it" notice offers).
+        undoDecision: id => this.undoDecisionForMark(id),
       });
     }
     return this.playmakerReview.control;
@@ -4085,6 +4119,56 @@ class ProofEditorImpl implements ProofEditor {
       }
     });
     for (const [line, kind] of closureLines) this.lineMarks?.noteClosure(line, kind);
+    this.recordDecisionUndo(ids, action);
+  }
+
+  /**
+   * The one Undo: a suggestion decision (accept / reject / resolve) goes on the person's stack.
+   * Its inverse is the editor's own decision history, which refuses when the text moved under it,
+   * so an undo never rewrites what someone typed after the decision.
+   */
+  private recordDecisionUndo(ids: string[], action: ReviewAction): void {
+    if (action === 'reply' || ids.length === 0) return;
+    const stack = this.lineMarks?.undoStack();
+    if (!stack) return;
+    const verb = action === 'accept' ? 'accepted' : action === 'reject' ? 'rejected' : 'resolved';
+    const what = ids.length === 1 ? (action === 'resolve' ? 'a comment' : 'a change') : `${ids.length} ${action === 'resolve' ? 'comments' : 'changes'}`;
+    const entry = stack.pushSimple(action === 'resolve' ? 'comment' : 'suggestion', `${verb} ${what}`, () => {
+      try {
+        const changed = this.restoreReviewDecision(false);
+        return changed ? { ok: true } : { ok: false, reason: 'Not undone: that decision is no longer the newest change to the text.' };
+      } catch (error) {
+        return { ok: false, reason: error instanceof Error ? error.message : 'Could not undo that decision.' };
+      }
+    }, () => {
+      try {
+        const changed = this.restoreReviewDecision(true);
+        return changed ? { ok: true } : { ok: false, reason: 'Could not redo that decision.' };
+      } catch (error) {
+        return { ok: false, reason: error instanceof Error ? error.message : 'Could not redo that decision.' };
+      }
+    });
+    if (entry) for (const id of ids) this.decisionUndoEntries.set(id, entry.id);
+  }
+
+  /** markId -> the undo entry that reverses the viewer's decision on it (item 2's Undo button). */
+  private readonly decisionUndoEntries = new Map<string, string>();
+
+  /**
+   * Item 2: undo the viewer's own earlier decision on one mark. Only the newest decision can be
+   * reversed on its own: anything else would step over decisions and edits made since, which is
+   * exactly what the one Undo refuses to do.
+   */
+  private async undoDecisionForMark(id: string): Promise<{ ok: boolean; reason?: string }> {
+    const stack = this.lineMarks?.undoStack();
+    if (!stack) return { ok: false, reason: 'Undo is not available on this document.' };
+    const entryId = this.decisionUndoEntries.get(id);
+    const next = stack.next();
+    if (!entryId || !next) return { ok: false, reason: 'That decision was made in an earlier session and cannot be undone here.' };
+    if (next.id !== entryId) return { ok: false, reason: `Not undone: you have done other things since (the newest is “${next.description}”). Use Undo in the rail, step by step.` };
+    const result = await stack.undo();
+    this.decisionUndoEntries.delete(id);
+    return result.ok ? { ok: true } : { ok: false, reason: result.message };
   }
 
   private restoreReviewDecision(redo: boolean): boolean {

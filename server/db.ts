@@ -4730,6 +4730,17 @@ export function insertDocumentAskAnswer(row: DocumentAskAnswerRow): void {
   `).run(row.id, row.ask_id, row.document_slug, row.by_actor, row.choice, row.words, row.line_hash, row.created_at);
 }
 
+/**
+ * Undo of an answer (Mike, 2026-09-19: "Undo is needed for every user change"). Removes one
+ * answer, by id, only when it belongs to `by_actor` — the route checks that it is the newest one.
+ */
+export function deleteDocumentAskAnswer(slug: string, id: string, byActor: string): number {
+  assertWritesAllowed('deleteDocumentAskAnswer');
+  return getDb().prepare(`
+    DELETE FROM document_ask_answers WHERE document_slug = ? AND id = ? AND by_actor = ?
+  `).run(slug, id, byActor).changes;
+}
+
 /** The ask follows its line: store the line's current anchor (after an edit or a move). */
 export function updateDocumentAskAnchor(slug: string, id: string, anchor: { hash: string; occurrence: number; ordinal: number; kind: string; excerpt: string }): void {
   assertWritesAllowed('updateDocumentAskAnchor');

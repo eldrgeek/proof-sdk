@@ -51,3 +51,17 @@
   .pm-review-dialog textarea { font-size:16px; }
   .ProseMirror { font-size:17px; }
 }
+
+/* Item 2 (Mike, 2026-09-19): "Reject did nothing, because you already accepted it" + a real Undo. */
+.pm-settled-notice {
+  position: fixed; z-index: 9500; left: 50%; transform: translateX(-50%);
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px)); max-width: min(560px, calc(100vw - 32px));
+  margin: 0; padding: 10px 14px; box-sizing: border-box; border-radius: 10px;
+  background: #fffbeb; border: 1px solid #f59e0b; color: #78350f;
+  font: 13px/1.4 system-ui, -apple-system, sans-serif; box-shadow: 0 6px 20px #16223822;
+}
+.pm-settled-notice[hidden] { display: none; }
+.pm-settled-undo {
+  margin-left: 6px; min-height: 32px; padding: 4px 10px; border: 1px solid #b45309; border-radius: 8px;
+  background: #fff; color: #78350f; font: 600 12px system-ui, sans-serif; cursor: pointer;
+}

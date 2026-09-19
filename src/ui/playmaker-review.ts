@@ -1,12 +1,25 @@
 import { getActorName, getMarkColor, type Mark, type CommentData, type ReplaceData } from '../formats/marks';
 import { getReviewStyle, setReviewStyle, getReviewWalk, setReviewWalk, REVIEW_STYLE_EVENT, REVIEW_STYLE_POLICY } from '../editor/review-style';
 import './playmaker-review.css';
+import { SETTLED_DECISION_POLICY } from '../shared/settled-decision';
+
+export { SETTLED_DECISION_POLICY };
 
 export type ReviewAction = 'accept' | 'reject' | 'resolve' | 'reply';
 export interface ReviewBridge {
   marks(): Mark[];
   decide(ids: string[], action: ReviewAction, text?: string): void;
   history(redo: boolean): boolean;
+  /**
+   * The one Undo (Mike, 2026-09-19). Called before the editor's own text/decision history: return
+   * true when Proof's undo stack took the keystroke, false to leave it to the text history.
+   */
+  proofUndo?(redo: boolean): boolean;
+  /**
+   * Item 2 (Mike, 2026-09-19: "once I have accepted something, reject does not seem to work").
+   * Undoes the viewer's own earlier decision on this mark. Resolves a reason when it cannot.
+   */
+  undoDecision?(id: string): Promise<{ ok: boolean; reason?: string }>;
   jump(id: string): void;
   changed(): void;
 }
@@ -49,6 +62,8 @@ export class PlayMakerReview {
   private failedIds = new Set<string>();
   private historyMessage = '';
   private readonly historyNotice = document.createElement('p');
+  /** Item 2: "Reject did nothing, because you already accepted it" + an Undo. */
+  private readonly settledEl = document.createElement('p');
   private readonly settledKey = `proof:review-settled:${location.pathname}`;
 
   constructor(private readonly bridge: ReviewBridge) {
@@ -69,7 +84,10 @@ export class PlayMakerReview {
     this.historyNotice.className = 'review-history-notice';
     this.historyNotice.setAttribute('role', 'alert');
     this.historyNotice.hidden = true;
-    document.body.append(this.panel, this.historyNotice);
+    this.settledEl.className = 'review-history-notice pm-settled-notice';
+    this.settledEl.setAttribute('role', 'alert');
+    this.settledEl.hidden = true;
+    document.body.append(this.panel, this.historyNotice, this.settledEl);
     window.addEventListener(REVIEW_STYLE_EVENT, this.styleChanged);
     window.visualViewport?.addEventListener('resize', this.syncKeyboardOffset);
     window.visualViewport?.addEventListener('scroll', this.syncKeyboardOffset);
@@ -308,11 +326,11 @@ export class PlayMakerReview {
       if (this.refreshPending || this.markSignature(current) !== this.displayedSignature) {
         this.refreshActive(false); return;
       }
-      if (!current || !isOpenReviewMark(current)) return;
+      if (!current || !isOpenReviewMark(current)) { this.settledNotice(current, action); return; }
     }
     const order = this.openMarks().map(mark => mark.id); const last = ids[ids.length - 1];
     try {
-      this.failedIds.clear(); this.historyMessage = '';
+      this.failedIds.clear(); this.historyMessage = ''; this.clearSettledNotice();
       this.bridge.decide(ids, action, text);
       if (action !== 'reply') ids.forEach(id => this.settled.add(id));
       this.close(); this.update(); this.advance(order, last);
@@ -327,6 +345,43 @@ export class PlayMakerReview {
       (this.dialog || this.panel).append(message);
     }
   }
+  /**
+   * Item 2: a decision on a mark that is already settled. It used to return silently — the click
+   * did nothing and said nothing. Now it says what already happened and offers the real Undo.
+   */
+  private settledNotice(current: Mark | undefined, action: ReviewAction): void {
+    if (SETTLED_DECISION_POLICY.onSecondDecision === 'silent') return;
+    const id = this.activeId;
+    const status = current ? (current.data as ReplaceData)?.status : null;
+    const resolved = current?.kind === 'comment' && Boolean((current.data as CommentData)?.resolved);
+    const key = !current ? 'gone' : resolved ? 'resolved' : status === 'accepted' ? 'accepted' : status === 'rejected' ? 'rejected' : 'gone';
+    const verb = action === 'accept' ? 'Accept' : action === 'reject' ? 'Reject' : 'Resolve';
+    const message = `${verb} did nothing: ${SETTLED_DECISION_POLICY.words[key]}`;
+    // The notice lives in its own element (settledEl), which update() never replaces.
+    this.settledEl.replaceChildren(message);
+    this.settledEl.hidden = false;
+    if (id && current && this.bridge.undoDecision) {
+      const undo = this.button('Undo my decision', () => {
+        undo.disabled = true;
+        void this.bridge.undoDecision!(id).then(result => {
+          this.settledEl.replaceChildren(result.ok ? 'Undone: the change is open again.' : (result.reason || 'Could not undo that decision.'));
+          this.update();
+        });
+      });
+      undo.className = 'pm-settled-undo';
+      this.settledEl.append(' ', undo);
+    }
+    (this.dialog ?? document.body).append(this.settledEl);
+    this.update();
+  }
+
+  /** Hides the settled notice (a new decision, or the dialog closing, ends it). */
+  clearSettledNotice(): void {
+    this.settledEl.hidden = true;
+    this.settledEl.replaceChildren();
+    if (this.settledEl.parentElement !== document.body) document.body.append(this.settledEl);
+  }
+
   private later(id: string): void { const order = this.openMarks().map(mark => mark.id); this.close(); this.advance(order, id); }
   private advance(order: string[], id: string): void {
     this.cancelWalk(); if (!this.walk) return;
@@ -363,6 +418,8 @@ export class PlayMakerReview {
     }
     event.preventDefault(); event.stopImmediatePropagation();
     this.cancelWalk(); this.close(!target.isContentEditable);
+    // The one Undo owns the keystroke whenever the newest thing the person did was not typing.
+    if (this.bridge.proofUndo?.(redo)) { this.historyMessage = ''; this.update(); return true; }
     try { this.historyMessage = ''; this.bridge.history(redo); }
     catch (error) { this.historyMessage = error instanceof Error ? error.message : 'Unable to restore decision.'; }
     this.update();

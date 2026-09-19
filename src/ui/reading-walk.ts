@@ -327,9 +327,12 @@ export class ReadingWalkUI {
     this.sync();
   }
 
-  /** Step B2: a tool (the outline fold controls) at the top of the right rail. */
-  mountTool(node: HTMLElement): void {
-    if (node.parentElement !== this.rightBody) this.rightBody.prepend(node);
+  /**
+   * Step B2: a tool (the outline fold controls) at the top of the right rail. `first` puts it
+   * above the other tools — the one Undo sits there, so it is always the first thing in reach.
+   */
+  mountTool(node: HTMLElement, options: { first?: boolean } = {}): void {
+    if (node.parentElement !== this.rightBody || options.first) this.rightBody.prepend(node);
     // The Familiar's brief stays at the very top.
     if (this.proxy.briefEl.parentElement === this.rightBody) this.rightBody.prepend(this.proxy.briefEl);
   }

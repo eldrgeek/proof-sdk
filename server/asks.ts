@@ -14,6 +14,7 @@ import { BLIND_POLICY } from '../src/shared/blind.js';
 import { getProofSettings } from './proof-extras-store.js';
 import {
   addDocumentEvent,
+  deleteDocumentAskAnswer,
   getDocumentAsk,
   insertDocumentAsk,
   insertDocumentAskAnswer,
@@ -342,6 +343,36 @@ export function answerAsk(slug: string, input: {
   }
   broadcastToRoom(slug, { type: 'line-marks.updated', by, timestamp: now });
   return { status: 200, body: { success: true, answer, askedOf, lineMarked, askId: ask.id } };
+}
+
+/**
+ * Undo of an answer (Mike, 2026-09-19: "Undo is needed for every user change"). A person takes
+ * back their OWN newest answer on an ask. It refuses rather than clobbering when someone else has
+ * answered the same ask since, or when the ask was re-asked after the answer: the later act wins
+ * and the person is told, so nothing is overwritten behind anyone's back.
+ */
+export function withdrawAnswer(slug: string, input: { id: string; by: unknown }): AskResult {
+  const by = cleanActor(input.by);
+  if (!by) return fail(400, 'INVALID_ACTOR', 'Missing or invalid "by"');
+  const ask = getAsk(slug, input.id);
+  if (!ask) return fail(404, 'ASK_NOT_FOUND', 'No such ask (it may have been withdrawn)');
+  const me = actorKey(by);
+  const answers = ask.answers.slice().sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+  const mine = [...answers].reverse().find(answer => actorKey(answer.by) === me);
+  if (!mine) return fail(404, 'NO_ANSWER', 'You have not answered this ask');
+  const newest = answers[answers.length - 1];
+  if (newest && newest.id !== mine.id) {
+    return fail(409, 'ANSWERED_SINCE', `Not undone: ${newest.by} answered after you did. Nothing was overwritten.`);
+  }
+  if (ask.askedAt && ask.askedAt > mine.at) {
+    return fail(409, 'REASKED_SINCE', 'Not undone: the question was asked again after you answered. Answer it again instead.');
+  }
+  const removed = deleteDocumentAskAnswer(slug, mine.id, mine.by);
+  if (!removed) return fail(404, 'NO_ANSWER', 'That answer is already gone');
+  const now = new Date().toISOString();
+  try { addDocumentEvent(slug, 'ask.answer_withdrawn', { askId: ask.id, answerId: mine.id, choice: mine.choice }, by); } catch { /* optional */ }
+  broadcastToRoom(slug, { type: 'line-marks.updated', by, timestamp: now });
+  return { status: 200, body: { success: true, askId: ask.id, answerId: mine.id } };
 }
 
 // ============================================================================

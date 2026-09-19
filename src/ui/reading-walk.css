@@ -208,8 +208,18 @@ body.prw-right-collapsed .prw-right .prw-chat { display: none; }
 .prw-edit-note { margin: 4px 0 6px; font-size: 12px; color: #92400e; }
 .prw-edit-note[data-kind="correct"] { color: #4b5563; }
 
-/* Hover focus (desktop): the band follows the line the mouse rests on. */
-.prw-focus[data-source="hover"] { background: rgba(37, 99, 235, 0.05); box-shadow: inset 3px 0 0 #60a5fa; }
+/*
+ * Hover focus (desktop). Mike, 2026-09-19: "If the user moves the mouse on desktop, the selected
+ * element becomes highlighted and is the focus." The hovered line gets the SAME strong band the
+ * touch build uses, so the current element is unmistakable — the earlier 5% wash was almost
+ * invisible against the page. The left bar is lighter than the reading band so the two are still
+ * told apart: a solid bar means "this is where I am reading", a hatched-lighter bar means "this is
+ * what the mouse is on".
+ */
+.prw-focus[data-source="hover"] {
+  background: rgba(37, 99, 235, 0.11);
+  box-shadow: inset 6px 0 0 #60a5fa, 0 0 0 1px rgba(37, 99, 235, .28);
+}
 
 /* Touch focus (Claude Opus 5, 2026-09-19): the current line is unmistakable without hover. */
 .prw-strip { display: none; }

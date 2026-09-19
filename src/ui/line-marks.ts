@@ -40,6 +40,7 @@ import { classifyLineChange } from '../shared/line-change';
 import { CLOSED_FOLD_POLICY, type ClosureKind } from '../shared/closed-fold';
 import type { SinceYouReport } from '../shared/alignment';
 import { FOLDING, planSectionMark } from '../shared/folding';
+import { UndoStack, conflictRefusal, describeLineMark, type UndoOutcome } from '../shared/undo';
 import { ANYONE, askIssueInputs, askTeamActors, evaluateAsks, type AskChoice, type AskView, type ProofAsk } from '../shared/asks';
 import { askViewKey, setAskDecorations, type AskDecorationSpec } from '../editor/plugins/ask-view';
 import { askControlSignature, buildAskControl, buildAskTag, type AskControl } from './asks';
@@ -497,6 +498,9 @@ export class LineMarksUI {
       && (CLOSED_FOLD_POLICY.passiveReadsFold || !PASSIVE_VIAS.has(via))) {
       this.noteClosure(line.index, status as ClosureKind);
     }
+    // The one Undo (Mike, 2026-09-19): every deliberate mark is undoable. Passive reads (dwell,
+    // a section sweep, a Familiar's proxy) and marks carried over an edit are not actions.
+    if (!PASSIVE_VIAS.has(via) && via !== 'edit' && via !== 'correct') this.recordMarkUndo(line, status, reason, via);
     const by = this.me();
     const me = actorKey(by);
     const state = this.states[line.index];
@@ -728,6 +732,59 @@ export class LineMarksUI {
     return !mine ? 'unseen' : (mine.current ? mine.mark.status : 'changed');
   }
 
+  /**
+   * One Undo for every change (Mike, 2026-09-19). Every action site pushes an entry here; the
+   * rail's Undo button and Cmd/Ctrl+Z run the newest one's inverse. See src/shared/undo.ts.
+   */
+  private readonly undo = new UndoStack();
+  /** While > 0, actions do not record themselves (an undo or redo IS the recorded action). */
+  private undoSuppress = 0;
+
+  undoStack(): UndoStack { return this.undo; }
+
+  /** Records an action, unless we are already inside an undo or a redo of one. */
+  private pushUndo(kind: Parameters<UndoStack['pushSimple']>[0], description: string, undo: () => Promise<UndoOutcome> | UndoOutcome, redo?: () => Promise<UndoOutcome> | UndoOutcome): void {
+    if (this.undoSuppress > 0) return;
+    this.undo.pushSimple(kind, description, undo, redo);
+  }
+
+  /** Runs `fn` without it recording itself (used by every inverse and every redo). */
+  async withoutUndo<T>(fn: () => Promise<T> | T): Promise<T> {
+    this.undoSuppress += 1;
+    try { return await fn(); } finally { this.undoSuppress -= 1; }
+  }
+
+  /** The viewer's own mark on a line now, for an undo entry's conflict check. */
+  private myMarkSnapshot(index: number): { status: StatusChoice; reason: string | null } {
+    const mine = this.states[index]?.marks.get(actorKey(this.me()));
+    if (!mine || !mine.current) return { status: 'unseen', reason: null };
+    return { status: mine.mark.status as StatusChoice, reason: mine.mark.reason ?? null };
+  }
+
+  /** Puts one line mark on the undo stack, with the mark it replaces as the inverse. */
+  private recordMarkUndo(line: DocLine, status: StatusChoice, reason: string | undefined, via: MarkVia): void {
+    if (this.undoSuppress > 0) return;
+    const index = line.index;
+    const before = this.myMarkSnapshot(index);
+    if (before.status === status && (before.reason ?? undefined) === reason) return;
+    const key = `${line.hash}:${line.occurrence}`;
+    const find = (): number => this.lines.findIndex(l => `${l.hash}:${l.occurrence}` === key);
+    this.pushUndo('line-mark', describeLineMark(status, index), async () => {
+      const at = find();
+      // The line's text changed since: the mark no longer means the same thing.
+      if (at < 0) return conflictRefusal('that line');
+      const now = this.myMarkSnapshot(at);
+      if (now.status !== status) return conflictRefusal('your mark on that line');
+      const ok = await this.withoutUndo(() => this.writeMark(this.lines[at], before.status, before.reason ?? undefined, 'click'));
+      return ok ? { ok: true } : { ok: false, reason: 'Could not undo the mark.' };
+    }, async () => {
+      const at = find();
+      if (at < 0) return { ok: false, reason: 'That line is not in the document any more.' };
+      const ok = await this.withoutUndo(() => this.writeMark(this.lines[at], status, reason, via));
+      return ok ? { ok: true } : { ok: false, reason: 'Could not redo the mark.' };
+    });
+  }
+
   /** Writes the viewer's mark on a line. */
   setLineStatus(index: number, status: StatusChoice, reason?: string, via: MarkVia = 'click'): Promise<boolean> {
     const line = this.lines[index];
@@ -916,12 +973,46 @@ export class LineMarksUI {
         return false;
       }
       this.askAnswers += 1;
+      // Undo: take the answer back (the route refuses when someone answered after you).
+      this.pushUndo('ask-answer', `answered “${choice === 'not_yet' ? 'Not yet' : choice === 'no' ? 'No' : 'Yes'}” on line ${view.lineIndex + 1}`,
+        () => this.withdrawAnswer(askId),
+        async () => {
+          const ok = await this.withoutUndo(() => this.answerAsk(askId, choice, words));
+          return ok ? { ok: true } : { ok: false, reason: 'Could not answer again.' };
+        });
       return true;
     } catch {
       this.serverAsks = previous;
       this.recompute();
       this.toast('Could not save the answer (offline?)');
       return false;
+    } finally {
+      this.writesInFlight -= 1;
+      this.fetchSeq += 1;
+      void this.refresh();
+    }
+  }
+
+  /**
+   * Undo of an answer: takes back the viewer's own newest answer on an ask. The route refuses
+   * (409) when someone else answered after them or the ask was re-asked — nothing is overwritten.
+   */
+  async withdrawAnswer(askId: string): Promise<UndoOutcome> {
+    const slug = this.host.slug();
+    if (!slug) return { ok: false, reason: 'The document is not open.' };
+    this.writesInFlight += 1;
+    try {
+      const response = await fetch(`${this.host.apiBase()}/documents/${encodeURIComponent(slug)}/asks/${encodeURIComponent(askId)}/answer`, {
+        method: 'DELETE',
+        credentials: 'same-origin',
+        headers: { ...this.host.authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ by: this.me() }),
+      });
+      const body = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) return { ok: false, reason: body.error || 'Could not take the answer back.' };
+      return { ok: true };
+    } catch {
+      return { ok: false, reason: 'Could not take the answer back (offline?).' };
     } finally {
       this.writesInFlight -= 1;
       this.fetchSeq += 1;
@@ -1869,6 +1960,16 @@ export class LineMarksUI {
    * server re-checks each one; lines that stopped qualifying come back as skipped.
    */
   async ratifyAll(): Promise<{ ok: boolean; id?: string; count: number; skipped: number }> {
+    const result = await this.ratifyAllInner();
+    if (result.ok && result.id) {
+      const id = result.id;
+      this.pushUndo('ratify', `ratified ${result.count} ${result.count === 1 ? 'line' : 'lines'} your Familiar read for you`,
+        async () => { const ok = await this.undoRatification(id); return ok ? { ok: true } : { ok: false, reason: 'That ratification can no longer be undone.' }; });
+    }
+    return result;
+  }
+
+  private async ratifyAllInner(): Promise<{ ok: boolean; id?: string; count: number; skipped: number }> {
     const ids = (this.brief?.ratify ?? []).map(item => item.proxy.id);
     if (ids.length === 0) return { ok: false, count: 0, skipped: 0 };
     const result = await this.proxyPost('ratify', '/proxy/ratify', { proxyIds: ids });
@@ -2119,14 +2220,25 @@ export class LineMarksUI {
       return false;
     }
     const label = status === 'unseen' ? 'Cleared' : STATUS_LABEL[status];
-    this.toastWithAction(`${label}: ${entries.length} ${entries.length === 1 ? 'line' : 'lines'} in “${scope.heading.slice(0, 40)}”.`, 'Undo', () => {
-      // One step back: every line gets the mark it had before (or none).
+    // One step back: every line gets the mark it had before (or none). The toast and the rail's
+    // Undo both run this, and running it twice is harmless (it restores the same marks).
+    const restore = async (): Promise<UndoOutcome> => {
       this.sectionWrites += 1;
-      void post(entries.map((entry, i) => ({
+      const ok = await post(entries.map((entry, i) => ({
         anchor: anchors[i],
         status: entry.previous ? entry.previous.status : 'unseen',
         ...(entry.previous?.reason ? { reason: entry.previous.reason } : {}),
       })), 'unseen');
+      return ok ? { ok: true } : { ok: false, reason: 'Could not undo the section mark.' };
+    };
+    const description = `${status === 'unseen' ? 'cleared' : (STATUS_LABEL[status] ?? status).toLowerCase()} ${entries.length} ${entries.length === 1 ? 'line' : 'lines'} in “${scope.heading.slice(0, 40)}”`;
+    this.pushUndo('section-mark', description, restore, async () => {
+      this.sectionWrites += 1;
+      const ok = await post(entries.map((entry, i) => ({ anchor: anchors[i], replaceIds: entry.replaceIds })), status);
+      return ok ? { ok: true } : { ok: false, reason: 'Could not redo the section mark.' };
+    });
+    this.toastWithAction(`${label}: ${entries.length} ${entries.length === 1 ? 'line' : 'lines'} in “${scope.heading.slice(0, 40)}”.`, 'Undo', () => {
+      void restore();
     }, FOLDING.undoToastMs);
     return true;
   }
@@ -2326,8 +2438,16 @@ export class LineMarksUI {
   }
 
   async clearFlag(id: string): Promise<boolean> {
+    const view = this.flagViews.find(f => f.flag.id === id) ?? null;
+    const flag = view?.flag ?? null;
+    const index = view?.lineIndex ?? -1;
     const result = await this.postAid(`/flags/${encodeURIComponent(id)}/clear`, {});
-    if (result.ok) this.aidWrites += 1;
+    if (result.ok) {
+      this.aidWrites += 1;
+      if (flag && index >= 0) this.pushUndo('flag', `cleared your uncertain flag on line ${index + 1}`,
+        async () => { const ok = await this.withoutUndo(() => this.flagLine(index, flag.note ?? '')); return ok ? { ok: true } : { ok: false, reason: 'Could not put the flag back.' }; },
+        async () => { const ok = await this.withoutUndo(() => this.clearFlag(id)); return ok ? { ok: true } : { ok: false, reason: 'Could not clear it again.' }; });
+    }
     return result.ok;
   }
 
@@ -2351,6 +2471,10 @@ export class LineMarksUI {
     if (result.ok) {
       this.aidWrites += 1;
       for (const index of lines) if (index !== null) this.noteClosure(index, 'objection-cleared');
+      // Undo: the objector keeps objecting after all (the /keep route is the inverse).
+      this.pushUndo('objection', 'cleared your objection',
+        async () => { const ok = await this.withoutUndo(() => this.keepObjection(id)); return ok ? { ok: true } : { ok: false, reason: 'Could not put the objection back.' }; },
+        async () => { const ok = await this.withoutUndo(() => this.clearObjection(id, reason)); return ok ? { ok: true } : { ok: false, reason: 'Could not clear it again.' }; });
     }
     return result.ok;
   }
@@ -2542,10 +2666,22 @@ export class LineMarksUI {
       { by, choice: option.id, lineHash: line.hash, at: new Date().toISOString() }];
     this.recompute();
     this.noteClosure(index, 'picked');
+    const before = pickOf(set, by);
     const result = await this.postAid('/alternatives/pick', { anchor: anchorForLine(line), choice: option.id });
     if (result.ok) {
       this.extrasWrites += 1;
       if (result.body.resolved) this.toast(`Everyone picked the same wording: it is now the line.`);
+      // Undo: go back to the wording you had picked. Once everyone's picks resolved the line, the
+      // pick has already become the text: that is an edit, and text undo owns it.
+      if (result.body.resolved) {
+        this.pushUndo('alternative', `picked a wording on line ${index + 1}`, () => ({ ok: false, reason: 'Not undone: that pick agreed with everyone else and is now the line. Suggest a change instead.' }));
+      } else if (before && before.choice !== option.id) {
+        this.pushUndo('alternative', `picked a wording on line ${index + 1}`,
+          async () => { const ok = await this.withoutUndo(() => this.pickAlternative(index, before.choice)); return ok ? { ok: true } : { ok: false, reason: 'Could not go back to your earlier pick.' }; },
+          async () => { const ok = await this.withoutUndo(() => this.pickAlternative(index, option.id)); return ok ? { ok: true } : { ok: false, reason: 'Could not pick that wording again.' }; });
+      } else if (!before) {
+        this.pushUndo('alternative', `picked a wording on line ${index + 1}`, () => ({ ok: false, reason: 'Not undone: a pick cannot be taken back once made, only changed. Pick another wording.' }));
+      }
     }
     return result.ok;
   }
@@ -2577,7 +2713,13 @@ export class LineMarksUI {
     const line = this.lines[index];
     if (!line || !this.canMark) return false;
     const result = await this.postAid('/ttl', { anchor: anchorForLine(line), ttl });
-    if (result.ok) this.extrasWrites += 1;
+    if (result.ok) {
+      this.extrasWrites += 1;
+      const id = typeof result.body.id === 'string' ? result.body.id : null;
+      if (id) this.pushUndo('ttl', `set a review-by date on line ${index + 1}`,
+        async () => { const ok = await this.withoutUndo(() => this.clearTtl(id)); return ok ? { ok: true } : { ok: false, reason: 'Could not clear that date.' }; },
+        async () => { const ok = await this.withoutUndo(() => this.setTtl(index, ttl)); return ok ? { ok: true } : { ok: false, reason: 'Could not set that date again.' }; });
+    }
     return result.ok;
   }
 
@@ -3051,6 +3193,13 @@ export class LineMarksUI {
   // Line tiers
   // --------------------------------------------------------------------------
 
+  /**
+   * The lines that are an Issue for THIS viewer: one they have not read, one they rejected, or one
+   * carrying an open comment, suggestion, ask or objection. The section auto-close (item 4) and
+   * the tier fold both read it.
+   */
+  myIssueLineSet(): ReadonlySet<number> { return this.myIssueLines; }
+
   tierView(index: number): TierView | null { return this.tierEval?.views[index] ?? null; }
   tiersTagged(): boolean { return this.tierEval?.anyTagged ?? false; }
 
@@ -3113,9 +3262,31 @@ export class LineMarksUI {
     const at = new Date().toISOString();
     this.serverTiers = [...this.serverTiers, ...lines.map((line, i) => ({ id: `local-${Date.now()}-${i}`, tier, by: this.me(), at, reason: reason ?? null, anchor: anchorForLine(line) }))];
     this.recompute();
+    const before = lines.map(line => this.tierEval?.views[line.index]?.tier ?? null);
     const result = await this.postAid('/tiers', { tier, anchors: lines.map(anchorForLine), ...(reason ? { reason } : {}) });
     this.tierWrites.push({ tier, lines: lines.map(l => l.index), ok: result.ok });
     if (!result.ok) { this.serverTiers = previous; this.recompute(); }
+    else {
+      // Undo: put each line back on the tier it carried. A tier flip is a tag, never text.
+      const groups = new Map<LineTier, number[]>();
+      lines.forEach((line, i) => {
+        const was = before[i];
+        if (!was || was === tier) return;
+        groups.set(was, [...(groups.get(was) ?? []), line.index]);
+      });
+      if (groups.size) {
+        this.pushUndo('tier', `set ${lines.length} ${lines.length === 1 ? 'line' : 'lines'} to ${tier}`, async () => {
+          for (const [was, indices] of groups) {
+            const ok = await this.withoutUndo(() => this.setTiers(indices, was, reason));
+            if (!ok) return { ok: false, reason: 'Could not put the tiers back.' };
+          }
+          return { ok: true };
+        }, async () => {
+          const ok = await this.withoutUndo(() => this.setTiers(lines.map(l => l.index), tier, reason));
+          return ok ? { ok: true } : { ok: false, reason: 'Could not set those tiers again.' };
+        });
+      }
+    }
     return result.ok;
   }
 

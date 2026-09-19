@@ -39,6 +39,93 @@ export const FOLDING = {
   badgeCounts: 'team' as 'team',
 } as const;
 
+/**
+ * Mike, 2026-09-19: "Leaving a group with no issues closes the group. Hovering over a closed group
+ * opens it." and "When a folded item below an H level is unfolded it does not refold."
+ *
+ * The one model every folding and focus path in Proof follows:
+ *   1. An explicit person action beats any automatic one. A section the person unfolded by hand
+ *      stays unfolded (`sticky`): no auto-close, no fold-to-level and no later fold pass refolds
+ *      it. Only another explicit fold (its chip, Fold all, fold-to-level used again on it after a
+ *      deliberate fold) takes the stickiness off.
+ *   2. Nothing folds or moves under the reader's eyes. An automatic fold waits until the section
+ *      is out of view and scrolling has settled (the same rule closed-Issue folding already uses).
+ *   3. Hover previews; click commits. Hovering a folded heading peeks its body open without
+ *      changing the stored fold state; moving away re-folds it. A click changes the state.
+ */
+export const SECTION_AUTOCLOSE = {
+  enabled: true,
+  /** Only a section with no Issues for the viewer closes itself. */
+  requireZeroIssues: true,
+  /**
+   * Whose Issues count. Mike's words are "a group with no issues" from the reader's side, so this
+   * is the viewer's own open Issues (an unread line of theirs, a rejection, an open comment or
+   * suggestion on it) — not the team-wide count the fold chip's badge shows, which would keep a
+   * section open because a teammate has not read it yet.
+   */
+  countIssues: 'viewer' as 'viewer' | 'team',
+  /** ...and only one with at least this many body lines (folding a one-line section is noise). */
+  minBodyLines: 2,
+  /** The reading focus must have left the section, and the section must be out of view... */
+  requireOutOfView: true,
+  /** ...and scrolling must have been still this long (rule 2: nothing folds under the reader). */
+  idleMs: 700,
+  /** Rule 1: a section the person unfolded by hand never auto-closes. */
+  respectStickyUnfold: true,
+  /** Rule 3: hovering a folded heading peeks it open. */
+  hoverPeek: true,
+  /** Rest this long on the folded heading before it peeks. */
+  hoverPeekDelayMs: 150,
+  /** Re-fold this long after the pointer leaves (a peek that flickers is worse than no peek). */
+  hoverPeekLeaveMs: 260,
+  /** localStorage key prefix for the set of sections the person unfolded by hand. */
+  stickyPrefix: 'proof:fold-sticky:',
+} as const;
+
+export interface AutoCloseInput {
+  sections: DocSection[];
+  folded: ReadonlySet<string>;
+  /** Sections the person unfolded by hand (rule 1). */
+  sticky: ReadonlySet<string>;
+  /** The reading / hover focus line, or -1. */
+  focusLine: number;
+  /** Issues in the section for the viewer. */
+  issueTotal: (section: DocSection) => number;
+  /** Is any part of the section on screen? (rule 2) */
+  inView: (section: DocSection) => boolean;
+}
+
+/**
+ * The sections that should close themselves now: zero Issues, the focus has left them, they are
+ * out of view, and the person has not unfolded them by hand. Pure: the caller folds the keys.
+ */
+export function planAutoClose(input: AutoCloseInput): string[] {
+  if (!SECTION_AUTOCLOSE.enabled) return [];
+  const out: string[] = [];
+  for (const section of input.sections) {
+    if (input.folded.has(section.key)) continue;
+    if (SECTION_AUTOCLOSE.respectStickyUnfold && input.sticky.has(section.key)) continue;
+    const bodyLines = section.lineEnd - section.headingIndex - 1;
+    if (bodyLines < SECTION_AUTOCLOSE.minBodyLines) continue;
+    // The focus is still inside it: leaving is the trigger, so it has not been left yet.
+    if (input.focusLine >= section.headingIndex && input.focusLine < section.lineEnd) continue;
+    if (SECTION_AUTOCLOSE.requireZeroIssues && input.issueTotal(section) > 0) continue;
+    if (SECTION_AUTOCLOSE.requireOutOfView && input.inView(section)) continue;
+    out.push(section.key);
+  }
+  return out;
+}
+
+/**
+ * Fold to level N while keeping rule 1: sections the person unfolded by hand stay unfolded.
+ * (`foldToLevel` is the raw shape; this is what a person's "H2" button does.)
+ */
+export function foldToLevelRespectingSticky(sections: DocSection[], level: number, sticky: ReadonlySet<string>): Set<string> {
+  const folded = foldToLevel(sections, level);
+  for (const key of sticky) folded.delete(key);
+  return folded;
+}
+
 const STATUS_RANK: Record<LineMarkStatus, number> = { skimmed: 0, seen: 1, agreed: 2, approved: 3, rejected: 0 };
 
 // ============================================================================

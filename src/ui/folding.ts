@@ -17,9 +17,11 @@ import type { EditorView } from '@milkdown/kit/prose/view';
 import type { DocLine } from '../shared/line-marks';
 import {
   FOLDING,
+  SECTION_AUTOCLOSE,
   computeSections,
-  foldToLevel,
+  foldToLevelRespectingSticky,
   foldedAncestors,
+  planAutoClose,
   headingLevels,
   hiddenBlockRanges,
   hiddenLineSet,
@@ -51,6 +53,22 @@ export class FoldingUI {
   private sections: DocSection[] = [];
   private lines: DocLine[] = [];
   private folded = new Set<string>();
+  /**
+   * Item 6 (Mike, 2026-09-19: "When a folded item below an H level is unfolded it does not
+   * refold"): sections the person unfolded by hand. Rule 1 of the model — an explicit action beats
+   * any automatic one — so nothing automatic (auto-close, fold-to-level, a later fold pass) folds
+   * these again. Only an explicit fold takes the stickiness off.
+   */
+  private sticky = new Set<string>();
+  /** Item 4: the folded heading the pointer is resting on (a peek, not a change to the state). */
+  private peeked: string | null = null;
+  private peekTimer: ReturnType<typeof setTimeout> | null = null;
+  private peekCandidate: string | null = null;
+  private autoCloseTimer: ReturnType<typeof setTimeout> | null = null;
+  private focusLine = -1;
+  /** Test hooks. */
+  private autoClosed: string[] = [];
+  private peekLog: string[] = [];
   private hidden = new Set<number>();
   private loadedSlug: string | null = null;
   private started = false;
@@ -74,6 +92,8 @@ export class FoldingUI {
     this.started = true;
     document.body.classList.add('pfold-on');
     window.addEventListener('resize', this.queueRender);
+    window.addEventListener('scroll', this.onScroll, { passive: true });
+    document.addEventListener('pointermove', this.onPointerMove, { passive: true });
     this.unsubscribe = this.host.lineMarks().subscribe(() => this.sync());
     this.sync();
   }
@@ -82,6 +102,10 @@ export class FoldingUI {
     this.started = false;
     document.body.classList.remove('pfold-on');
     window.removeEventListener('resize', this.queueRender);
+    window.removeEventListener('scroll', this.onScroll);
+    document.removeEventListener('pointermove', this.onPointerMove);
+    if (this.peekTimer) clearTimeout(this.peekTimer);
+    if (this.autoCloseTimer) clearTimeout(this.autoCloseTimer);
     this.unsubscribe?.();
     this.resizeObserver?.disconnect();
     this.layer.remove();
@@ -104,6 +128,11 @@ export class FoldingUI {
     return slug ? `${FOLDING.storagePrefix}${slug}` : null;
   }
 
+  private stickyKey(): string | null {
+    const slug = this.host.slug();
+    return slug ? `${SECTION_AUTOCLOSE.stickyPrefix}${slug}` : null;
+  }
+
   private loadFolded(): void {
     const slug = this.host.slug();
     if (slug === this.loadedSlug) return;
@@ -112,6 +141,10 @@ export class FoldingUI {
     let saved: unknown = [];
     try { saved = key ? JSON.parse(localStorage.getItem(key) || '[]') : []; } catch { saved = []; }
     this.folded = new Set(Array.isArray(saved) ? saved.filter((k): k is string => typeof k === 'string').slice(0, 2000) : []);
+    let sticky: unknown = [];
+    const stickyKey = this.stickyKey();
+    try { sticky = stickyKey ? JSON.parse(localStorage.getItem(stickyKey) || '[]') : []; } catch { sticky = []; }
+    this.sticky = new Set(Array.isArray(sticky) ? sticky.filter((k): k is string => typeof k === 'string').slice(0, 2000) : []);
   }
 
   private saveFolded(): void {
@@ -120,6 +153,12 @@ export class FoldingUI {
     try {
       if (this.folded.size === 0) localStorage.removeItem(key);
       else localStorage.setItem(key, JSON.stringify([...this.folded]));
+    } catch { /* optional */ }
+    const stickyKey = this.stickyKey();
+    if (!stickyKey) return;
+    try {
+      if (this.sticky.size === 0) localStorage.removeItem(stickyKey);
+      else localStorage.setItem(stickyKey, JSON.stringify([...this.sticky]));
     } catch { /* optional */ }
   }
 
@@ -138,8 +177,15 @@ export class FoldingUI {
     this.queueRender();
   }
 
+  /** The fold state as the reader SEES it: the stored set minus the one section being peeked. */
+  private visibleFolded(): Set<string> {
+    const set = new Set(this.folded);
+    if (this.peeked) set.delete(this.peeked);
+    return set;
+  }
+
   private recomputeHidden(): boolean {
-    const next = hiddenLineSet(this.sections, this.folded);
+    const next = hiddenLineSet(this.sections, this.visibleFolded());
     const changed = next.size !== this.hidden.size || [...next].some(i => !this.hidden.has(i));
     this.hidden = next;
     return changed;
@@ -158,7 +204,7 @@ export class FoldingUI {
   private apply(): void {
     const view = this.view();
     if (!view) return;
-    const ranges = hiddenBlockRanges(this.sections, this.folded);
+    const ranges = hiddenBlockRanges(this.sections, this.visibleFolded());
     const want: number[] = [];
     for (const [from, to] of ranges) for (let i = from; i < Math.min(to, view.state.doc.childCount); i += 1) want.push(i);
     const have = hiddenBlocks(view);
@@ -212,39 +258,103 @@ export class FoldingUI {
     return { lines: sectionLineIndices(section), heading: this.lines[lineIndex]?.text ?? '' };
   }
 
-  toggle(headingIndex: number): void {
+  /**
+   * An explicit fold or unfold by the person (the chip, the keyboard, the sheet). Rule 1: unfolding
+   * makes the section sticky (nothing automatic refolds it); folding takes that back, because
+   * "it stays unfolded until they fold it again" (Mike).
+   */
+  toggle(headingIndex: number, options: { record?: boolean } = {}): void {
     const section = sectionByHeading(this.sections, headingIndex);
     if (!section) return;
-    if (this.folded.has(section.key)) this.folded.delete(section.key);
-    else this.folded.add(section.key);
+    // A peek is not a state change: clicking commits it, so the peek ends here either way.
+    if (this.peeked === section.key) this.peeked = null;
+    const wasFolded = this.folded.has(section.key);
+    if (wasFolded) {
+      this.folded.delete(section.key);
+      this.sticky.add(section.key);
+    } else {
+      this.folded.add(section.key);
+      this.sticky.delete(section.key);
+    }
     this.commit();
+    if (options.record !== false) {
+      const heading = this.lines[headingIndex]?.text.slice(0, 40) ?? 'a section';
+      this.record(`${wasFolded ? 'unfolded' : 'folded'} “${heading}”`, () => this.toggle(headingIndex, { record: false }));
+    }
+  }
+
+  /** Puts a fold change on the one Undo stack (a fold is a person's action like any other). */
+  private record(description: string, inverse: () => void): void {
+    const stack = this.host.lineMarks().undoStack?.();
+    if (!stack) return;
+    let snapshot: { folded: string[]; sticky: string[] } | null = null;
+    stack.pushSimple('fold', description, () => {
+      snapshot = { folded: [...this.folded], sticky: [...this.sticky] };
+      inverse();
+      return { ok: true };
+    }, () => {
+      if (!snapshot) return { ok: false, reason: 'Could not redo that fold.' };
+      this.folded = new Set(snapshot.folded);
+      this.sticky = new Set(snapshot.sticky);
+      this.peeked = null;
+      this.commit();
+      return { ok: true };
+    });
   }
 
   setFolded(headingIndex: number, folded: boolean): void {
     if (this.isFolded(headingIndex) !== folded) this.toggle(headingIndex);
   }
 
-  foldAll(): void {
+  /** Fold all is the person folding everything again: it clears every sticky unfold. */
+  foldAll(options: { record?: boolean } = {}): void {
+    const before = { folded: [...this.folded], sticky: [...this.sticky] };
+    if (options.record !== false) {
+      this.record('folded every section', () => { this.folded = new Set(before.folded); this.sticky = new Set(before.sticky); this.peeked = null; this.commit(); });
+    }
     this.folded = new Set(this.sections.map(section => section.key));
+    this.sticky = new Set();
+    this.peeked = null;
     this.commit();
   }
 
-  unfoldAll(): void {
+  /** Unfold all is an explicit unfold of everything: every section becomes sticky. */
+  unfoldAll(options: { record?: boolean } = {}): void {
+    const before = { folded: [...this.folded], sticky: [...this.sticky] };
+    if (options.record !== false) {
+      this.record('unfolded every section', () => { this.folded = new Set(before.folded); this.sticky = new Set(before.sticky); this.peeked = null; this.commit(); });
+    }
     // Only this document's headings are stored under this key, so clearing it is safe.
     this.folded = new Set();
+    this.sticky = new Set(this.sections.map(section => section.key));
+    this.peeked = null;
     this.commit();
   }
 
-  foldLevel(level: number): void {
-    this.folded = foldToLevel(this.sections, level);
+  /**
+   * Item 6: fold-to-level leaves the sections the person unfolded by hand alone. Before this, H2
+   * refolded them and the person's work was undone by a button they pressed for other sections.
+   */
+  foldLevel(level: number, options: { record?: boolean } = {}): void {
+    const before = { folded: [...this.folded], sticky: [...this.sticky] };
+    if (options.record !== false) {
+      this.record(`showed headings down to level ${level}`, () => { this.folded = new Set(before.folded); this.sticky = new Set(before.sticky); this.peeked = null; this.commit(); });
+    }
+    this.folded = foldToLevelRespectingSticky(this.sections, level, this.sticky);
+    this.peeked = null;
     this.commit();
   }
+
+  /** The sections the person unfolded by hand (test hook and rule-1 checks). */
+  stickyKeys(): string[] { return [...this.sticky]; }
 
   /** Unfolds every folded section that hides the line. Returns true when something unfolded. */
   reveal(lineIndex: number): boolean {
     const ancestors = foldedAncestors(this.sections, this.folded, lineIndex);
     if (ancestors.length === 0) return false;
-    for (const section of ancestors) this.folded.delete(section.key);
+    // Revealing a line to go to it is the person asking for it: rule 1 makes it stick.
+    for (const section of ancestors) { this.folded.delete(section.key); this.sticky.add(section.key); }
+    this.peeked = null;
     this.commit();
     return true;
   }
@@ -305,15 +415,19 @@ export class FoldingUI {
         chip.dataset.key = section.key;
         this.layer.append(chip);
       }
-      const folded = this.folded.has(section.key);
+      const stored = this.folded.has(section.key);
+      const peeking = this.peeked === section.key;
+      // While peeking, the body is open but the state is still folded: the caret says so.
+      const folded = stored && !peeking;
       const count = sectionIssueCount(section, this.lines, summary);
       const bodyLines = section.lineEnd - section.headingIndex - 1;
       chip.dataset.heading = String(section.headingIndex);
-      chip.dataset.folded = String(folded);
+      chip.dataset.folded = String(stored);
+      chip.dataset.peek = String(peeking);
       chip.dataset.state = !loaded ? 'loading' : (count.total === 0 ? 'resolved' : 'issues');
       chip.setAttribute('aria-expanded', String(!folded));
       const countText = !loaded ? '…' : (count.total === 0 ? '✓' : String(count.total));
-      const sig = `${folded}|${countText}|${bodyLines}`;
+      const sig = `${folded}|${peeking}|${countText}|${bodyLines}`;
       if (chip.dataset.sig !== sig) {
         chip.dataset.sig = sig;
         const caret = document.createElement('span');
@@ -328,7 +442,7 @@ export class FoldingUI {
         ? 'no Issues: resolved'
         : `${count.total} ${count.total === 1 ? 'Issue remains' : 'Issues remain'} (${count.lines} ${count.lines === 1 ? 'line' : 'lines'}, ${count.reviewMarks} open ${count.reviewMarks === 1 ? 'comment or suggestion' : 'comments or suggestions'}${count.asks ? `, ${count.asks} open ${count.asks === 1 ? 'ask' : 'asks'}` : ''})`);
       chip.setAttribute('aria-label', `${folded ? 'Unfold' : 'Fold'} section “${line.text.slice(0, 60)}”: ${issuesText}`);
-      chip.title = `${folded ? `Folded: ${bodyLines} ${bodyLines === 1 ? 'line' : 'lines'} hidden. Click to unfold.` : 'Click to fold this section.'}\n${issuesText}`;
+      chip.title = `${peeking ? 'Peeking: still folded. Click to keep it open.' : stored ? `Folded: ${bodyLines} ${bodyLines === 1 ? 'line' : 'lines'} hidden. Hover to peek, click to unfold.` : 'Click to fold this section.'}\n${issuesText}`;
       const size = phone ? 36 : 24;
       const lineHeight = parseFloat(getComputedStyle(dom).lineHeight) || size;
       const top = rect.top - container.top + Math.max(0, (Math.min(lineHeight, rect.height) - size) / 2);
@@ -375,6 +489,135 @@ export class FoldingUI {
     }
   }
 
+  // --------------------------------------------------------------------------
+  // Item 4: a section with no Issues closes itself once the reader leaves it;
+  //         hovering a folded heading peeks it open.
+  // --------------------------------------------------------------------------
+
+  /** The reading / hover focus moved (the reading walk tells us). */
+  setFocusLine(lineIndex: number): void {
+    if (lineIndex === this.focusLine) return;
+    this.focusLine = lineIndex;
+    this.queueAutoClose();
+  }
+
+  private onScroll = (): void => { this.queueAutoClose(); };
+
+  /**
+   * Rule 2 of the model: nothing folds under the reader's eyes. The close waits until scrolling
+   * has been still for SECTION_AUTOCLOSE.idleMs and the section is off screen.
+   */
+  private queueAutoClose(): void {
+    if (!SECTION_AUTOCLOSE.enabled || !this.started) return;
+    if (this.autoCloseTimer) clearTimeout(this.autoCloseTimer);
+    this.autoCloseTimer = setTimeout(() => {
+      this.autoCloseTimer = null;
+      this.runAutoClose();
+    }, SECTION_AUTOCLOSE.idleMs);
+  }
+
+  /** Is any part of the section on screen? */
+  private sectionInView(section: DocSection): boolean {
+    const view = this.view();
+    const line = this.lines[section.headingIndex];
+    if (!view || !line) return true; // cannot tell: never fold blind
+    const dom = view.nodeDOM(line.pos) as HTMLElement | null;
+    if (!dom || typeof dom.getBoundingClientRect !== 'function') return true;
+    const top = dom.getBoundingClientRect().top;
+    const endLine = section.lineEnd < this.lines.length ? this.lines[section.lineEnd] : null;
+    const endDom = endLine ? view.nodeDOM(endLine.pos) as HTMLElement | null : null;
+    const bottom = endDom && typeof endDom.getBoundingClientRect === 'function'
+      ? endDom.getBoundingClientRect().top
+      : view.dom.getBoundingClientRect().bottom;
+    return bottom > 0 && top < window.innerHeight;
+  }
+
+  private runAutoClose(): void {
+    if (!SECTION_AUTOCLOSE.enabled || this.sections.length === 0) return;
+    const lm = this.host.lineMarks();
+    if (!lm.isLoaded()) return; // Issue counts unknown: never close on a guess
+    const summary = lm.issueSummary();
+    const mine = SECTION_AUTOCLOSE.countIssues === 'viewer' ? (lm.myIssueLineSet?.() ?? null) : null;
+    const issueTotal = (section: DocSection): number => {
+      if (!mine) return sectionIssueCount(section, this.lines, summary).total;
+      let count = 0;
+      for (const index of mine) if (index >= section.headingIndex && index < section.lineEnd) count += 1;
+      return count;
+    };
+    const keys = planAutoClose({
+      sections: this.sections,
+      folded: this.folded,
+      sticky: this.sticky,
+      focusLine: this.focusLine,
+      issueTotal,
+      inView: section => this.sectionInView(section),
+    });
+    if (keys.length === 0) return;
+    for (const key of keys) { this.folded.add(key); this.autoClosed.push(key); }
+    if (this.autoClosed.length > 50) this.autoClosed.splice(0, this.autoClosed.length - 50);
+    this.commit();
+  }
+
+  /**
+   * Rule 3: hover previews, click commits. Resting the pointer on a folded heading's chip or its
+   * heading text opens the body for as long as the pointer stays; leaving re-folds it. The stored
+   * fold state is untouched, so nothing is persisted by looking.
+   */
+  private onPointerMove = (event: PointerEvent): void => {
+    if (!SECTION_AUTOCLOSE.hoverPeek || !this.started || event.pointerType !== 'mouse') return;
+    const key = this.foldedKeyAt(event.clientX, event.clientY);
+    if (key === this.peekCandidate && (key === null ? this.peeked === null : this.peeked === key)) return;
+    this.peekCandidate = key;
+    if (this.peekTimer) clearTimeout(this.peekTimer);
+    if (key === null) {
+      // Off a folded heading: re-fold after a short grace, unless the person clicked it open.
+      if (this.peeked === null) return;
+      this.peekTimer = setTimeout(() => {
+        this.peekTimer = null;
+        if (this.peekCandidate !== null || this.peeked === null) return;
+        this.peekLog.push(`leave:${this.peeked}`);
+        this.peeked = null;
+        this.recomputeHidden();
+        this.apply();
+        this.queueRender();
+      }, SECTION_AUTOCLOSE.hoverPeekLeaveMs);
+      return;
+    }
+    this.peekTimer = setTimeout(() => {
+      this.peekTimer = null;
+      if (this.peekCandidate !== key || !this.folded.has(key)) return;
+      this.peeked = key;
+      this.peekLog.push(`peek:${key}`);
+      if (this.peekLog.length > 20) this.peekLog.shift();
+      this.recomputeHidden();
+      this.apply();
+      this.queueRender();
+    }, SECTION_AUTOCLOSE.hoverPeekDelayMs);
+  };
+
+  /** The folded section whose heading (text or chip) is under this point, or null. */
+  private foldedKeyAt(x: number, y: number): string | null {
+    const element = document.elementFromPoint(x, y);
+    if (!element) return null;
+    const chip = element.closest('.pfold-chip') as HTMLElement | null;
+    if (chip) {
+      const key = chip.dataset.key ?? null;
+      return key && this.folded.has(key) ? key : null;
+    }
+    const view = this.view();
+    if (!view || !view.dom.contains(element)) return null;
+    for (const section of this.sections) {
+      if (!this.folded.has(section.key)) continue;
+      const line = this.lines[section.headingIndex];
+      const dom = line ? view.nodeDOM(line.pos) as HTMLElement | null : null;
+      if (dom && (dom === element || dom.contains(element))) return section.key;
+    }
+    return null;
+  }
+
+  /** The section being peeked (shown open without changing the stored fold state). */
+  peekedKey(): string | null { return this.peeked; }
+
   private onLayerClick = (event: MouseEvent): void => {
     const chip = (event.target as HTMLElement).closest('.pfold-chip') as HTMLButtonElement | null;
     if (!chip) return;
@@ -389,6 +632,11 @@ export class FoldingUI {
     return {
       sections: this.sections.map(section => ({ ...section, text: this.lines[section.headingIndex]?.text ?? '', folded: this.folded.has(section.key) })),
       folded: [...this.folded],
+      sticky: [...this.sticky],
+      peeked: this.peeked,
+      peekLog: [...this.peekLog],
+      autoClosed: [...this.autoClosed],
+      focusLine: this.focusLine,
       hidden: [...this.hidden].sort((a, b) => a - b),
       hiddenBlocks: view ? hiddenBlocks(view) : [],
     };
