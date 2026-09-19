@@ -135,6 +135,18 @@ import {
   buildProofSdkDocumentPaths,
   buildProofSdkLinks,
 } from './proof-sdk-routes.js';
+import {
+  EXPORT_FORMATS,
+  IMPORT_POLICY,
+  applyImportedMarks,
+  exportProofDocument,
+  parseImport,
+  type ExportFormat,
+  type ImportAuthority,
+  type ImportSummary,
+} from './proof-dialect.js';
+import { stripAllProofSpanTags as stripSpansForExport } from './proof-span-strip.js';
+import { isEmailAddress as isEmailForImport, verifiedHumanActor as verifiedHumanForImport } from '../src/shared/identity.js';
 
 export const apiRoutes = Router();
 apiRoutes.use(agentKeyRoutes);
@@ -1135,6 +1147,37 @@ export async function createProofDocument(input: {
   return { doc, access, ownerSecret, sanitizedMarkdown };
 }
 
+/** Import format for /share/markdown: explicit, or the dialect when a "proof:" front matter block is present. */
+function resolveImportFormat(raw: unknown, markdown: string): 'proof-dialect' | 'criticmarkup' | 'auto' | null {
+  const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (value === 'proof-dialect' || value === 'proof' || value === 'dialect') return 'proof-dialect';
+  if (value === 'criticmarkup' || value === 'critic') return 'criticmarkup';
+  if (value === 'auto') return 'auto';
+  if (value === 'markdown' || value === 'plain') return null;
+  return /^---[ \t]*\r?\n(?:[\s\S]*?\r?\n)?proof:/.test(markdown) ? 'proof-dialect' : null;
+}
+
+/**
+ * Who an import may write marks as (IMPORT_POLICY in server/proof-dialect.ts): the direct-share API
+ * key is the operator credential (anyone in the file's handle table); a signed-in library member
+ * is only themselves; anyone else only "guest:importer".
+ */
+function importAuthorityFor(req: Request, authActor: string, by: unknown): ImportAuthority {
+  const apiKey = getDirectShareApiKey();
+  const presentedKey = getDirectSharePresentedToken(req);
+  if (authActor === 'api-key' || (apiKey && presentedKey === apiKey)) {
+    return { kind: 'operator', actor: typeof by === 'string' && /^(ai|human|guest):/.test(by) ? by : null };
+  }
+  try {
+    const session = isLibraryEnabled() ? getLibrarySession(req) : null;
+    const email = session?.member.email;
+    if (email && isEmailForImport(email)) return { kind: 'session', actor: verifiedHumanForImport(email) };
+  } catch {
+    // no library
+  }
+  return { kind: 'anonymous' };
+}
+
 export async function handleShareMarkdown(req: Request, res: Response): Promise<void> {
   const auth = await authorizeDirectShareRequest(req, res);
   if (!auth) return;
@@ -1193,10 +1236,19 @@ export async function handleShareMarkdown(req: Request, res: Response): Promise<
   }
 
   const source = req.path === '/share/markdown' ? 'share.markdown' : 'api.share.markdown';
+  // Proof dialect / CriticMarkup import (2026-09-19): with format=proof-dialect | criticmarkup |
+  // auto, or when the text carries a "proof:" front matter block, the marks become real marks.
+  const importFormat = resolveImportFormat(body?.format ?? req.query.format, sanitizedMarkdown);
+  if (importFormat && Buffer.byteLength(sanitizedMarkdown, 'utf8') > IMPORT_POLICY.maxBytes) {
+    res.status(413).json({ error: 'Import is too large', code: 'IMPORT_TOO_LARGE' });
+    return;
+  }
+  const parsedImport = importFormat ? parseImport(sanitizedMarkdown, importFormat) : null;
+  const importTitle = parsedImport && typeof parsedImport.parsed.frontMatter.proof?.title === 'string' ? parsedImport.parsed.frontMatter.proof.title as string : undefined;
   const { doc, access, ownerSecret } = await createProofDocument({
-    markdown: sanitizedMarkdown,
-    marks,
-    title,
+    markdown: parsedImport ? parsedImport.markdown : sanitizedMarkdown,
+    marks: parsedImport ? {} : marks,
+    title: title ?? importTitle,
     ownerId,
     accessRole: requestedRole,
     source,
@@ -1204,6 +1256,14 @@ export async function handleShareMarkdown(req: Request, res: Response): Promise<
     authMode: auth.authMode,
     authenticated: auth.authed,
   });
+  let importSummary: ImportSummary | null = null;
+  if (parsedImport) {
+    importSummary = await applyImportedMarks(doc.slug, {
+      parsed: parsedImport.parsed,
+      format: parsedImport.format,
+      authority: importAuthorityFor(req, auth.actor, body?.by),
+    });
+  }
   const links = buildShareLink(req, doc.slug);
   const shareUrlWithToken = withShareToken(links.shareUrl, access.secret);
   const urlWithToken = withShareToken(links.url, access.secret);
@@ -1226,6 +1286,7 @@ export async function handleShareMarkdown(req: Request, res: Response): Promise<
     shareState: doc.share_state,
     snapshotUrl: getSnapshotPublicUrl(doc.slug),
     createdAt: doc.created_at,
+    ...(importSummary ? { import: importSummary } : {}),
     _links: {
       view: links.url,
       web: links.shareUrl,
@@ -1947,6 +2008,37 @@ function viewerIdentity(req: Request, slug: string, access: ReturnType<typeof re
   // A guest: the page supplies the typed name (guest:<name>).
   return { actor: '', trust: 'guest', name: '', signInUrl };
 }
+
+// Proof dialect export for the page ("Download as Proof Document (.md)"): same output as
+// GET /api/agent/<slug>/export. While blind marking is on, the reader sees only their own positions.
+apiRoutes.get('/documents/:slug/export', async (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canRead) { res.status(403).json({ success: false, error: 'No read access' }); return; }
+  const format = (typeof req.query.format === 'string' && req.query.format ? req.query.format : 'proof-dialect') as ExportFormat;
+  if (!(EXPORT_FORMATS as readonly string[]).includes(format)) {
+    res.status(400).json({ success: false, code: 'INVALID_FORMAT', error: `format must be one of ${EXPORT_FORMATS.join(', ')}` });
+    return;
+  }
+  try {
+    const state = await executeDocumentOperationAsync(slug, 'GET', '/state');
+    const body = (state.body ?? {}) as Record<string, unknown>;
+    const markdown = typeof body.markdown === 'string' ? body.markdown : stripSpansForExport(doc.markdown ?? '');
+    const marks = body.marks && typeof body.marks === 'object' ? body.marks : doc.marks;
+    const me = viewerIdentity(req, slug, access, buildDirectory(slug));
+    const viewer = access.ownerAuthorized && access.role === 'owner_bot' ? null : (me.actor || 'guest:export');
+    const result = await exportProofDocument(slug, { markdown, marks, format, title: doc.title ?? null, viewer, authored: req.query.authored === '1' });
+    res.setHeader('Content-Type', result.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${result.filename.replace(/"/g, '')}"`);
+    res.setHeader('X-Proof-Export-Warnings', String(result.warnings.length));
+    res.status(200).send(result.text);
+  } catch (error) {
+    console.error('[routes] export failed', { slug, error: String(error) });
+    res.status(500).json({ success: false, code: 'EXPORT_FAILED', error: 'Export failed' });
+  }
+});
 
 apiRoutes.get('/documents/:slug/line-marks', async (req: Request, res: Response) => {
   const slug = getSlugParam(req);

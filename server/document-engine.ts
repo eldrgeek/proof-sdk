@@ -361,7 +361,7 @@ function parseRelativeCharOffset(value: unknown): number | null {
   return parsed;
 }
 
-function stripMarkdownWithMapping(markdown: string): { stripped: string; map: number[] } {
+export function stripMarkdownWithMapping(markdown: string): { stripped: string; map: number[] } {
   const source = markdown ?? '';
   const strippedChars: string[] = [];
   const map: number[] = [];
@@ -3174,6 +3174,22 @@ async function replyCommentAsync(
   const replies = [...baseReplies, { by, text, at: new Date().toISOString() }];
   marks[markId] = { ...existing, thread: replies, replies, threadId: existing.threadId ?? markId };
   return persistMarksAsync(slug, doc, marks, by, 'comment.replied', { markId, by, text }, context);
+}
+
+/**
+ * Proof dialect import (2026-09-19): rewrites fields of existing marks (their original timestamps,
+ * a comment's reply thread) through the normal mark persistence path, so a loaded live document
+ * stays in step. `patch` receives a copy of the stored marks and returns the next marks.
+ */
+export async function patchStoredMarksAsync(
+  slug: string,
+  patch: (marks: Record<string, StoredMark>) => Record<string, StoredMark>,
+  actor: string,
+): Promise<EngineExecutionResult> {
+  const ready = await getMutationReadyDocumentAsync(slug);
+  if (ready.error) return ready.error;
+  const marks = patch({ ...parseMarks(ready.doc.marks) });
+  return persistMarksAsync(slug, ready.doc, marks, actor, 'dialect.import.marks_patched', {});
 }
 
 function rewriteDocument(_slug: string, _body: JsonRecord): EngineExecutionResult {

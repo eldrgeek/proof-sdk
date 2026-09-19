@@ -933,6 +933,62 @@ Staging soak (live browser viewers + repeated `/edit` + `/edit/v2`):
   SOAK_DURATION_MS=300000 \
   npx tsx scripts/staging-collab-projection-soak.ts
 
+## Proof Documents as files: the dialect, export and import
+
+_Added 2026-09-19 by Claude Opus 5 (worker proof-dialect) for Mike Wolf, who specified the dialect
+and approved its form. Codec: `src/shared/proof-dialect.ts` (`DIALECT_POLICY`, `CRITIC_POLICY`);
+server: `server/proof-dialect.ts` (`EXPORT_POLICY`, `IMPORT_POLICY`)._
+
+A Proof Document is markdown with marks. A mark is a group in braces: the type (a bare lowercase
+word), then its source (`@handle`), then `key=value` fields (`key="quoted value"`, escapes `\"`
+`\\` `\n`).
+
+- Text marks wrap text: `[This sentence]{comment @mw text="Why?"}{reply @claude text=Because}`.
+  A change: `[~~deleted~~ inserted]{changed @mw}`; a pure insertion `[new words]{changed @mw}`; a
+  pure deletion `[~~old words~~]{changed @mw}`. Marks nest. Escape a literal `]` as `\]`.
+- Line marks sit at the end of a line, each after a space, several marks and authors per line:
+  `Some line. {agreed @mw via=dwell} {agreed @claude evidence="…"} {decision @mw}`. A table row
+  carries them inside its last cell (`| a | b {seen @mw} |`), a fenced code block on its fence line.
+- Front matter maps handles to identities and holds bundles and the title:
+  `proof: { version: 1, title: …, handles: { mw: human:mw@mike-wolf.com, claude: ai:claude }, bundles: { … } }`.
+- Not marks: links `[t](u)`, references `[t][r]`, task lists `- [ ]`, Pandoc attributes
+  `{.class #id}` / `{=html}`, anything in code. A trailing group must follow whitespace and be a
+  known line type or carry an `@source`.
+
+Types written by export: `changed` (`at why priority priorityreason hints bundle`), `comment`
+(`text at resolved`) + `reply`, the statuses `seen agreed approved rejected skimmed` (`at via
+reason why evidence was` — `was` holds the marked text when the line changed since), `decision` /
+`context` (tagged lines only), `uncertain` (`note at`), `ttl` (`for since`), `ask` (`to recommend
+ifyes`) + `answer` (`choice words`), `objection` (`id reason if`, on each covered line),
+`alternative` (`id text`) + `pick`, `do` (`state to action`=JSON), `proxy` (`for status confidence
+evidence`), `history`, and `authored` with `?authored=1`. Chat is not exported.
+
+  GET /api/agent/<slug>/export?format=proof-dialect | criticmarkup | plain   (any access)
+  GET /api/documents/<slug>/export?format=…                                 (the page: Share ▾ →
+      "Download as Proof Document (.md)"; phone: ⋯ → Download)
+
+`criticmarkup` writes suggestions and comments only (`{++ ++} {-- --} {~~ ~> ~~} {== ==}{>>@mw: …<<}`)
+and says so in a header comment. `plain` is the text without pending changes. While blind marking is
+on, anyone but the owner credential gets only their own positions.
+
+Import: `POST /share/markdown` with `format: "proof-dialect" | "criticmarkup" | "auto"` (or any text
+whose front matter has a `proof:` block). The library's New document → upload does the same with
+`auto` whenever the file carries marks. The response has `import`: `{ authority, created, history,
+guests, warnings }`. Text marks become real suggestions and comments; line marks become stored line
+marks (`at` kept, never later than now).
+
+Whose name an import may write in (`IMPORT_POLICY`, `mayActAs`):
+- the direct-share API key (the operator credential): anyone in the file's handle table;
+- a signed-in library member: only themselves;
+- anyone else: only `guest:importer`.
+A suggestion or comment by anyone else is kept as `guest:<handle>`. Every other mark by anyone else
+(a status, tier, flag, time-to-live, ask, answer, objection) becomes a **history note**: listed in
+`/state` as `dialectHistory` (`counts: false`), exported as `{history mark="…" claimed="…" reason=…}`,
+and never a mark again, whoever imports it later. `{do}`, `proxy`, `alternative` and `pick` always
+import as history notes (and export back unchanged): a file never proposes an executable action,
+binds a Familiar or settles a wording. Round trip: export → import (operator) → export gives the
+same file (`scripts/dialect-check.mjs`).
+
 ## Create A New Shared Doc
 
 If you need to create a share from scratch, use:

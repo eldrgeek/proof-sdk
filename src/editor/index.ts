@@ -3934,6 +3934,7 @@ class ProofEditorImpl implements ProofEditor {
         setReviewStyle(style === 'playmaker' ? 'proof' : 'playmaker');
       });
       item('Add agent', 'manage keys', () => { this.openAgentKeyDialog(); });
+      item('Download', 'Proof Document (.md)', () => { void this.downloadProofDocument(); });
       document.body.append(menu);
       btn.setAttribute('aria-expanded', 'true');
       document.addEventListener('pointerdown', outside, true);
@@ -4742,6 +4743,44 @@ class ProofEditorImpl implements ProofEditor {
     }
   }
 
+  /**
+   * Proof dialect (2026-09-19): "Download as Proof Document (.md)" — the document with every mark
+   * stored beside it (GET /api/documents/<slug>/export?format=proof-dialect), saved as a file.
+   */
+  async downloadProofDocument(format: 'proof-dialect' | 'criticmarkup' | 'plain' = 'proof-dialect'): Promise<boolean> {
+    const slug = shareClient.getSlug();
+    if (!slug) return false;
+    try {
+      const response = await fetch(`${shareClient.getApiBaseUrl()}/documents/${encodeURIComponent(slug)}/export?format=${format}`, {
+        credentials: 'same-origin',
+        headers: shareClient.getShareAuthHeaders(),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const text = await response.text();
+      const disposition = response.headers.get('content-disposition') ?? '';
+      const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? `${slug}.proof.md`;
+      const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.style.display = 'none';
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      return true;
+    } catch (error) {
+      console.warn('[proof] export failed', error);
+      const toast = document.createElement('div');
+      toast.className = 'proof-external-change-toast proof-export-failed-toast';
+      toast.setAttribute('role', 'alert');
+      toast.textContent = 'Could not download the Proof Document. Try again.';
+      document.body.append(toast);
+      setTimeout(() => toast.remove(), 4000);
+      return false;
+    }
+  }
+
   private copyWithPromptFallback(text: string, promptLabel = 'Copy link:'): boolean {
     try {
       window.prompt(promptLabel, text);
@@ -5038,6 +5077,7 @@ class ProofEditorImpl implements ProofEditor {
 
       addItem('Copy link', async () => this.copyLinkWithFallback(this.getCanonicalShareUrl()));
       addDivider();
+      addActionItem('Download as Proof Document (.md)', () => { void this.downloadProofDocument(); });
       addActionItem('View activity', () => this.openShareActivityModal());
 
       container.appendChild(menu);

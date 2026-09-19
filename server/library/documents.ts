@@ -3,6 +3,8 @@ import { stripProofSpanTags } from '../proof-span-strip.js';
 import { refreshSnapshotForSlug } from '../snapshot.js';
 import { createProofDocument } from '../routes.js';
 import type { LibraryMember } from './auth.js';
+import { applyImportedMarks, hasProofMarks, parseImport, type ImportSummary } from '../proof-dialect.js';
+import { isEmailAddress, verifiedHumanActor } from '../../src/shared/identity.js';
 
 type StoredReviewMark = {
   kind?: unknown;
@@ -204,12 +206,18 @@ export async function createLibraryDocument(input: {
   member: LibraryMember;
   title: string;
   markdown?: string;
-}): Promise<{ slug: string; url: string }> {
-  const title = input.title.replace(/\s+/g, ' ').trim() || 'Untitled document';
-  const markdown = typeof input.markdown === 'string' ? input.markdown : '';
-  if (Buffer.byteLength(markdown, 'utf8') > MAX_MARKDOWN_BYTES) {
+}): Promise<{ slug: string; url: string; import?: ImportSummary }> {
+  const rawMarkdown = typeof input.markdown === 'string' ? input.markdown : '';
+  if (Buffer.byteLength(rawMarkdown, 'utf8') > MAX_MARKDOWN_BYTES) {
     throw new Error('This document is too large. The limit is 10 MB.');
   }
+  // "Import .md" (2026-09-19): a Proof Document or a CriticMarkup file keeps its marks. The member
+  // imports as themselves: their own marks become live; other people's become guest proposals or
+  // history notes (IMPORT_POLICY in server/proof-dialect.ts).
+  const parsedImport = rawMarkdown && hasProofMarks(rawMarkdown) ? parseImport(rawMarkdown, 'auto') : null;
+  const markdown = parsedImport ? parsedImport.markdown : rawMarkdown;
+  const importTitle = parsedImport && typeof parsedImport.parsed.frontMatter.proof?.title === 'string' ? String(parsedImport.parsed.frontMatter.proof.title) : '';
+  const title = input.title.replace(/\s+/g, ' ').trim() || importTitle || 'Untitled document';
   const created = await createProofDocument({
     markdown,
     title,
@@ -221,7 +229,16 @@ export async function createLibraryDocument(input: {
     INSERT INTO library_document_meta (slug, created_by_member_id, archived_at, archived_by)
     VALUES (?, ?, NULL, NULL)
   `).run(created.doc.slug, input.member.id);
-  return { slug: created.doc.slug, url: `/d/${created.doc.slug}` };
+  let summary: ImportSummary | undefined;
+  if (parsedImport) {
+    const email = input.member.email;
+    summary = await applyImportedMarks(created.doc.slug, {
+      parsed: parsedImport.parsed,
+      format: parsedImport.format,
+      authority: email && isEmailAddress(email) ? { kind: 'session', actor: verifiedHumanActor(email) } : { kind: 'anonymous' },
+    });
+  }
+  return { slug: created.doc.slug, url: `/d/${created.doc.slug}`, ...(summary ? { import: summary } : {}) };
 }
 
 export function renameLibraryDocument(slug: string, title: string): boolean {

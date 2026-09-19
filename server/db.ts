@@ -1345,6 +1345,29 @@ function initDatabase(): void {
   `);
   d.exec(`CREATE INDEX IF NOT EXISTS idx_document_line_tiers_slug ON document_line_tiers(document_slug, at)`);
 
+  // Proof Documents, dialect import (2026-09-19): a mark an import could not make live (its author
+  // is someone the importer may not write as, or its type never imports live, such as {do}) is kept
+  // as a history note on its line. History notes never count for alignment and never become marks.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_dialect_history (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      mark_text TEXT NOT NULL,
+      claimed_by TEXT,
+      reason TEXT NOT NULL,
+      imported_by TEXT NOT NULL,
+      line_hash TEXT,
+      line_occurrence INTEGER,
+      line_ordinal INTEGER,
+      line_kind TEXT,
+      line_excerpt TEXT NOT NULL DEFAULT '',
+      line_text TEXT,
+      seq INTEGER NOT NULL DEFAULT 0,
+      at TEXT NOT NULL
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_dialect_history_slug ON document_dialect_history(document_slug, seq)`);
+
   // Proof Documents Step B4c: review notes (an AI's why / reject hints / explicit priority on a
   // suggestion or a line) and uncertain flags. Beside the document like line marks.
   d.exec(`

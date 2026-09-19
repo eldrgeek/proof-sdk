@@ -193,6 +193,7 @@ import {
   releaseMutationReservation,
   type MutationReservation,
 } from './mutation-idempotency.js';
+import { EXPORT_FORMATS, exportProofDocument, historyNotesForState, type ExportFormat } from './proof-dialect.js';
 
 export const agentRoutes = Router({ mergeParams: true });
 
@@ -2235,6 +2236,9 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
       // Line tiers: decision lines need each person's mark; a context line an AI read is enough.
       body.tiers = report.tiers;
       body.tierPolicy = TIER_POLICY;
+      // Dialect import: history notes (marks an import could not make live; they never count).
+      try { body.dialectHistory = historyNotesForState(slug, report.docLines ?? []); } catch { body.dialectHistory = []; }
+      links.export = { method: 'GET', href: `/api/agent/${slug}/export?format=proof-dialect`, formats: EXPORT_FORMATS };
       links.tiers = { method: 'GET', href: `/api/agent/${slug}/tiers` };
       links.setTiers = { method: 'POST', href: `/api/agent/${slug}/tiers` };
       body.proofExtrasPolicy = { bundles: BUNDLE_POLICY, alternatives: ALT_POLICY, blind: BLIND_POLICY, explain: EXPLAIN_POLICY, terms: { ...TERM_POLICY, sectionPattern: String(TERM_POLICY.sectionPattern), linePatterns: TERM_POLICY.linePatterns.map(String) }, ttl: TTL_POLICY };
@@ -3670,6 +3674,38 @@ agentRoutes.post('/:slug/marks/line', async (req: Request, res: Response) => {
     notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'line_mark.set' }), { apply: false });
   }
   sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+});
+
+// ============================================================================
+// Proof dialect export (2026-09-19): the document and every mark stored beside it as one
+// markdown file. ?format=proof-dialect (default) | criticmarkup | plain; ?authored=1 adds
+// "authored" marks. Import is POST /share/markdown with format=proof-dialect|criticmarkup|auto.
+// ============================================================================
+
+agentRoutes.get('/:slug/export', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  const role = checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const format = (typeof req.query.format === 'string' && req.query.format ? req.query.format : 'proof-dialect') as ExportFormat;
+  if (!(EXPORT_FORMATS as readonly string[]).includes(format)) {
+    res.status(400).json({ success: false, code: 'INVALID_FORMAT', error: `format must be one of ${EXPORT_FORMATS.join(', ')}` });
+    return;
+  }
+  try {
+    const state = await currentAgentState(slug);
+    const doc = getDocumentBySlug(slug);
+    const viewer = role === 'owner_bot' && typeof req.query.by !== 'string' ? null : (blindViewer(req, slug, role) ?? presentedKeyActor(req, slug) ?? 'guest:export');
+    const result = await exportProofDocument(slug, { markdown: state.markdown, marks: state.marks, format, title: doc?.title ?? null, viewer, authored: req.query.authored === '1' });
+    res.setHeader('Content-Type', result.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${result.filename.replace(/"/g, '')}"`);
+    res.setHeader('X-Proof-Export-Warnings', String(result.warnings.length));
+    res.setHeader('X-Proof-Export-Counts', JSON.stringify(result.counts));
+    res.status(200).send(result.text);
+  } catch (error) {
+    console.error('[agent-routes] export failed', { slug, error: String(error) });
+    res.status(500).json({ success: false, code: 'EXPORT_FAILED', error: 'Export failed' });
+  }
 });
 
 // ============================================================================

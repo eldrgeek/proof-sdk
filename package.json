@@ -13,7 +13,7 @@
     "build": "vite build && node scripts/finalize-web-build.mjs",
     "serve": "tsx server/index.ts",
     "library": "tsx server/library/cli.ts",
-    "test": "npm run test:proof-sdk && npm run test:server-routes-share && npm run test:library && npm run test:soma-feedback && npm run test:client-errors && npm run test:agent-keys && npm run test:line-marks && npm run test:reading-walk && npm run test:folding && npm run test:asks && npm run test:identity && npm run test:honest && npm run test:aids && npm run test:bundles && npm run test:do && npm run test:chat && npm run test:editing-first && npm run test:orphans && npm run test:proxy && npm run test:tiers",
+    "test": "npm run test:proof-sdk && npm run test:server-routes-share && npm run test:library && npm run test:soma-feedback && npm run test:client-errors && npm run test:agent-keys && npm run test:line-marks && npm run test:reading-walk && npm run test:folding && npm run test:asks && npm run test:identity && npm run test:honest && npm run test:aids && npm run test:bundles && npm run test:do && npm run test:chat && npm run test:editing-first && npm run test:orphans && npm run test:proxy && npm run test:tiers && npm run test:dialect",
     "test:proof-sdk": "tsx src/tests/proof-sdk-agent-bridge-client.test.ts",
     "test:server-routes-share": "tsx src/tests/server-routes-and-share.test.ts",
     "test:client-errors": "tsx src/tests/error-sanitizer.test.ts && tsx src/tests/client-errors.test.ts",
@@ -35,7 +35,8 @@
     "test:agent-key-dialog": "tsx src/tests/agent-key-dialog.browser.test.ts",
     "test:chat": "tsx src/tests/chat.test.ts",
     "test:proxy": "tsx src/tests/proxy-marks.test.ts",
-    "test:tiers": "tsx src/tests/line-tiers.test.ts"
+    "test:tiers": "tsx src/tests/line-tiers.test.ts",
+    "test:dialect": "tsx src/tests/proof-dialect.test.ts && tsx src/tests/proof-dialect-server.test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.879.0",
