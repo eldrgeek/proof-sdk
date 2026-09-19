@@ -10,6 +10,8 @@
  * Agents learn about answers from `ask.answered` events and from `asks` in /state.
  */
 import { randomUUID } from 'crypto';
+import { BLIND_POLICY } from '../src/shared/blind.js';
+import { getProofSettings } from './proof-extras-store.js';
 import {
   addDocumentEvent,
   getDocumentAsk,
@@ -323,10 +325,11 @@ export function answerAsk(slug: string, input: {
   ask.answers.push(answer);
   const askedOf = isAskedOf(ask, by);
   try {
+    // Step B4f: while blind marking is on, the event says that someone answered, not how.
+    const blind = BLIND_POLICY.eventsOmitPositions && getProofSettings(slug).blind;
     addDocumentEvent(slug, 'ask.answered', {
       askId: ask.id,
-      choice,
-      words,
+      ...(blind ? { blind: true } : { choice, words }),
       question: normalizeLineText(String(anchor.excerpt ?? '')) || ask.anchor.excerpt,
       recommend: ask.recommend,
       ifYes: ask.ifYes,

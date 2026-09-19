@@ -17,6 +17,7 @@ import { FoldingUI } from '../ui/folding';
 import { lineMarksViewPlugin } from './plugins/line-marks-view';
 import { foldViewPlugin } from './plugins/fold-view';
 import { askViewPlugin } from './plugins/ask-view';
+import { proofExtrasViewPlugin } from './plugins/proof-extras-view';
 import { getReviewStyle, setReviewStyle } from './review-style';
 import { ReviewDecisionHistory, reconnectNativeUndoManager } from './review-decision-history';
 
@@ -1294,6 +1295,8 @@ class ProofEditorImpl implements ProofEditor {
       .use(foldViewPlugin)
       // Proof Documents Step B3: {ask} tags and answer controls (view-only widgets)
       .use(askViewPlugin)
+      // Proof Documents Step B4f: alternatives stacks and term links (view-only decorations)
+      .use(proofExtrasViewPlugin)
       .use(marksSyncPlugin((actionMarks, view, actionMetadata) => {
         this.handleMarksChange(actionMarks, view, actionMetadata);
       }))
@@ -3729,7 +3732,7 @@ class ProofEditorImpl implements ProofEditor {
           .map(mark => {
             const data = (mark.data ?? {}) as { resolved?: boolean; status?: string; replies?: Array<{ by?: string }> };
             const open = mark.kind === 'comment' ? data.resolved !== true : (data.status ?? 'pending') === 'pending';
-            return { id: mark.id, kind: mark.kind, by: mark.by, quote: mark.quote, pos: mark.range?.from ?? null, open, replies: data.replies };
+            return { id: mark.id, kind: mark.kind, by: mark.by, quote: mark.quote, pos: mark.range?.from ?? null, open, replies: data.replies, status: mark.kind === 'comment' ? null : (data.status ?? 'pending') };
           }),
         onDotActivate: (lineIndex) => this.readingWalk?.activateDot(lineIndex) ?? false,
         focusLine: (lineIndex) => this.readingWalk?.focusLine(lineIndex) ?? false,
@@ -3741,6 +3744,28 @@ class ProofEditorImpl implements ProofEditor {
         anchorLine: () => this.readingWalk?.focusIndex() ?? 0,
         // Step B4c: the sitting budget was used (the rail shows it; phones get the sheet).
         onBudgetReached: () => this.readingWalk?.budgetReached(),
+        // Step B4f: Explain posts a comment thread on the whole line (its first text block).
+        commentOnLine: (line, text) => {
+          let id: string | null = null;
+          this.editor?.action(ctx => {
+            const view = markApiView(ctx.get(editorViewCtx));
+            let from = -1;
+            let to = -1;
+            const node = view.state.doc.nodeAt(line.pos);
+            if (node?.isTextblock) { from = line.pos + 1; to = line.pos + node.nodeSize - 1; }
+            else node?.descendants((child, childPos) => {
+              if (from >= 0 || !child.isTextblock || child.textContent.trim() === '') return from < 0;
+              from = line.pos + 1 + childPos + 1;
+              to = from + child.content.size;
+              return false;
+            });
+            if (from < 0 || to <= from) return;
+            const quote = normalizeQuote(view.state.doc.textBetween(from, to, '\n', '\n'));
+            const mark = markComment(view, quote, getCurrentActor(), text, { from, to });
+            id = mark?.id ?? null;
+          });
+          return id;
+        },
       });
       (window as unknown as { __proofLineMarks?: LineMarksUI }).__proofLineMarks = this.lineMarks;
       // Proof Documents Step 1b: the three-column reading layout and the reading walk.

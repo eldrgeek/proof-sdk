@@ -49,6 +49,21 @@ import { annotateIssues, evaluateAids, objectionInputs, serializeFlag, serialize
 import { isAiActor } from '../src/shared/line-marks.js';
 import { canonicalizeLineMarks, isEmailAddress, resolveTargetActor, verifiedHumanActor, type IdentityDirectory } from '../src/shared/identity.js';
 import { FOLDING, computeSections, sectionByHeading, sectionIssueCount, sectionLineIndices } from '../src/shared/folding.js';
+import {
+  alternativeInputs,
+  annotateReviewMarks,
+  evaluateExtras,
+  readExtras,
+  serializeAltSet,
+  serializeBundle,
+  serializeExplain,
+  serializeTtl,
+  termsReport,
+  ttlInputs,
+  type ExtrasEvaluation,
+} from './proof-extras-eval.js';
+import { BLIND_POLICY } from '../src/shared/blind.js';
+import { getProofSettings } from './proof-extras-store.js';
 
 export type LineMarkResult = { status: number; body: Record<string, unknown> };
 
@@ -190,6 +205,19 @@ export interface IssueReport extends IssueSummary {
   reviewNotes: Array<Record<string, unknown>>;
   /** Step B4d: open objections. */
   objections: Array<Record<string, unknown>>;
+  /** Steps B4e + B4f: bundles, open alternatives, times-to-live, Explain threads, terms, settings. */
+  bundles: Array<Record<string, unknown>>;
+  alternatives: Array<Record<string, unknown>>;
+  ttls: Array<Record<string, unknown>>;
+  explains: Array<Record<string, unknown>>;
+  terms: Array<Record<string, unknown>>;
+  settings: { blind: boolean; blindSetBy: string | null; blindSetAt: string | null };
+  /** Lines whose marks disagree (only while BLIND_POLICY.disagreementPriority applies). */
+  disagreementLines: number[];
+  evaluatedAt: string;
+  /** Raw evaluation, for the per-viewer blind view (not serialized). */
+  extras?: ExtrasEvaluation;
+  docLines?: DocLine[];
 }
 
 export async function buildIssueReport(slug: string, markdown: string, rawMarks: unknown, options: {
@@ -201,13 +229,21 @@ export async function buildIssueReport(slug: string, markdown: string, rawMarks:
   const lines = await computeServerLines(markdown);
   const dir = buildDirectory(slug);
   const lineMarks = listCanonicalLineMarks(slug, dir);
-  const reviewMarks = reviewMarksFromStored(rawMarks);
+  // Steps B4e + B4f: an Explain thread is not an Issue; a bundled suggestion names its bundle.
+  const extrasPre = readExtras(slug);
+  const reviewMarks = annotateReviewMarks(reviewMarksFromStored(rawMarks), extrasPre);
   // Step B4c/B4d: flags and objections are Issues too; flaggers and objectors join the team.
   const aids = evaluateAids(slug, lines, reviewMarks);
-  const team = computeDocumentTeam(slug, lineMarks, reviewMarks, [...(options.teamExtra ?? []), ...aids.teamExtra], dir);
+  const team = computeDocumentTeam(slug, lineMarks, reviewMarks, [...(options.teamExtra ?? []), ...aids.teamExtra, ...extrasPre.teamExtra], dir);
   const asks = options.asks ? options.asks(lines) : [];
   const states = buildLineStates(lines, lineMarks);
-  const computed = computeIssues({ lines, lineMarks, team, reviewMarks, asks, uncertain: uncertainInputs(aids, states, team), objections: objectionInputs(aids) });
+  const now = Date.now();
+  const extras = evaluateExtras(slug, extrasPre, { lines, states, team, rawMarks, now });
+  const computed = computeIssues({
+    lines, lineMarks, team, reviewMarks, asks, uncertain: uncertainInputs(aids, states, team), objections: objectionInputs(aids),
+    alternatives: alternativeInputs(extras, team), ttl: ttlInputs(extras),
+    disagreementLines: extras.disagreement, disagreementAlternatives: extras.countsDisagreement,
+  });
   // Step B4c: each Issue carries its team-neutral priority (rules + explicit AI priorities).
   const summary = { ...computed, issues: annotateIssues(computed.issues, aids.notes, lines) as typeof computed.issues };
   const sections = computeSections(lines).map(section => ({
@@ -237,6 +273,16 @@ export async function buildIssueReport(slug: string, markdown: string, rawMarks:
     flags: aids.flagViews.map(view => serializeFlag(view, lines)),
     reviewNotes: aids.notes.map(note => serializeNote(note, lines)),
     objections: aids.objectionViews.map(view => serializeObjection(view, lines)),
+    bundles: extras.bundleViews.map(view => serializeBundle(view, lines)),
+    alternatives: extras.altViews.map(view => serializeAltSet(view, lines)),
+    ttls: extras.ttlViews.map(view => serializeTtl(view, lines, now)),
+    explains: extrasPre.explains.map(serializeExplain),
+    terms: termsReport(lines),
+    settings: extrasPre.settings,
+    disagreementLines: [...extras.disagreement],
+    evaluatedAt: new Date(now).toISOString(),
+    extras,
+    docLines: lines,
     lines: lines.map(line => ({
       index: line.index,
       kind: line.kind,
@@ -380,7 +426,13 @@ export function writeLineMark(slug: string, input: {
   const mark = marks[0];
   const { status, anchor } = checked.entry;
   try {
-    addDocumentEvent(slug, 'line_mark.updated', { markId: mark?.id ?? null, removed, status: status ?? 'unseen', via: checked.entry.via, ...(mark?.why ? { why: mark.why } : {}), anchor: { hash: anchor.hash, excerpt: mark?.anchor.excerpt ?? anchor.excerpt }, source: input.source }, by);
+    // Step B4f: while blind marking is on, the event says that a line was marked, not how.
+    const blind = BLIND_POLICY.eventsOmitPositions && getProofSettings(slug).blind;
+    addDocumentEvent(slug, 'line_mark.updated', {
+      markId: mark?.id ?? null, removed,
+      ...(blind ? { blind: true } : { status: status ?? 'unseen', ...(mark?.why ? { why: mark.why } : {}) }),
+      via: checked.entry.via, anchor: { hash: anchor.hash, excerpt: mark?.anchor.excerpt ?? anchor.excerpt }, source: input.source,
+    }, by);
   } catch (error) {
     console.warn('[line-marks] failed to record event', { slug, error: String(error) });
   }
@@ -459,9 +511,10 @@ export function writeLineMarksBatch(slug: string, input: {
   const { marks, removed } = applyEntries(slug, by, entries);
   const statuses = [...new Set(entries.map(entry => entry.status ?? 'unseen'))];
   try {
+    const blind = BLIND_POLICY.eventsOmitPositions && getProofSettings(slug).blind;
     addDocumentEvent(slug, 'line_mark.batch', {
       count: entries.length,
-      statuses,
+      ...(blind ? { blind: true } : { statuses }),
       removed: removed.length,
       anchors: entries.slice(0, 50).map(entry => ({ hash: entry.anchor.hash, excerpt: normalizeLineText(String(entry.anchor.excerpt ?? '')).slice(0, 80) })),
       source: input.source,

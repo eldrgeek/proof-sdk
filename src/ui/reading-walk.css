@@ -172,3 +172,22 @@ body.prw-right-collapsed .prw-right .prw-rail-head { padding: 6px 2px; justify-c
 .prw-ask-why { display: inline-block; margin: 0 0 6px; font-size: 12px; }
 .prw-ask-why:disabled { color: #6b7280; text-decoration: none; cursor: default; }
 .prw-since-group[data-kind="repairs"] h4 { color: #1d4ed8; }
+
+/* Proof Documents Step B4e (Claude Opus 5, 2026-09-19): a review bundle as one card. */
+.prw-bundle { margin: 8px 0; padding: 8px 10px; border: 1px solid #c7d2fe; border-left: 4px solid var(--review-author, #6366f1); border-radius: 8px; background: #fbfbff; }
+.prw-bundle[data-stale="true"] { border-color: #fcd34d; background: #fffbeb; }
+.prw-bundle-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin-bottom: 6px; }
+.prw-bundle-tag { padding: 1px 6px; border-radius: 999px; background: #e0e7ff; color: #3730a3; font: 700 10px/16px system-ui, sans-serif; text-transform: uppercase; letter-spacing: .04em; }
+.prw-bundle-title { font-size: 13px; }
+.prw-bundle-by { color: #6b7280; font-size: 12px; }
+.prw-bundle-passages { margin: 0 0 6px; padding-left: 18px; font-size: 12px; }
+.prw-bundle-passage { margin: 0 0 6px; }
+.prw-bundle-passage[data-stale="true"] { color: #92400e; }
+.prw-bundle-where { display: inline-block; min-width: 48px; color: #6b7280; font-weight: 600; }
+.prw-bundle-change del { color: #b91c1c; }
+.prw-bundle-change ins { color: #15803d; text-decoration: none; background: #dcfce7; border-radius: 3px; padding: 0 2px; }
+.prw-bundle-result { display: block; margin-top: 2px; color: #374151; }
+.prw-bundle-stale { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px; background: #fef3c7; color: #92400e; font-size: 11px; font-weight: 600; }
+.prw-bundle-note { margin: 0 0 6px; padding: 6px 8px; border-radius: 6px; background: #f3f4f6; color: #374151; font-size: 12px; }
+.prw-bundle-status { margin: 0 0 6px; color: #4b5563; font-size: 12px; }
+.prw-bundle-fallback { margin: 6px 0 0; color: #92400e; font-size: 12px; font-weight: 600; }

@@ -2875,6 +2875,99 @@ async function updateSuggestionStatusAsync(
   };
 }
 
+/**
+ * Proof Documents Step B4e: accept (or reject) several suggestions as ONE mutation (a review
+ * bundle). Each suggestion is finalized in turn on an in-memory copy of the markdown and marks;
+ * if any fails, nothing is written. Then one canonical mutation, one tombstone and one event per
+ * suggestion. Authorship: Claude Opus 5 (worker proof-bundles), 2026-09-19.
+ */
+export async function finalizeSuggestionsBatchAsync(
+  slug: string,
+  markIds: string[],
+  status: 'accepted' | 'rejected',
+  by: string,
+  context?: AsyncDocumentMutationContext,
+): Promise<EngineExecutionResult> {
+  const ready = await getAsyncMutationReadyDocumentWithVisibleFallback(slug, context);
+  if (ready.error) return ready.error;
+  const doc = ready.doc;
+  const ids = [...new Set(markIds.filter(id => typeof id === 'string' && id))];
+  if (ids.length === 0) return { status: 400, body: { success: false, error: 'No suggestions to finalize' } };
+  let markdown = doc.markdown;
+  let marks = parseMarks(doc.marks);
+  const done: string[] = [];
+  for (const markId of ids) {
+    const existing = marks[markId];
+    if (!existing) return { status: 404, body: { success: false, code: 'MARK_NOT_FOUND', error: `Suggestion ${markId} not found; nothing was changed`, markId } };
+    if (existing.kind !== 'insert' && existing.kind !== 'delete' && existing.kind !== 'replace') {
+      return { status: 400, body: { success: false, code: 'NOT_A_SUGGESTION', error: `${markId} is not a suggestion; nothing was changed`, markId } };
+    }
+    if (existing.status === status) continue;
+    let working = marks;
+    if (isRecord(existing.target)) {
+      const parsedTarget = parseAnchorTarget(existing.target);
+      if (!parsedTarget.ok) return { status: 409, body: { success: false, code: 'ANCHOR_NOT_FOUND', error: `Suggestion ${markId} has invalid target metadata; nothing was changed`, markId } };
+      const resolved = resolveMutationAnchor(
+        status === 'accepted' ? 'POST /marks/accept' : 'POST /marks/reject',
+        markdown,
+        parsedTarget.target,
+        'Suggestion anchor quote not found in document',
+      );
+      if (!resolved.ok) return { status: resolved.result.status, body: { ...(isRecord(resolved.result.body) ? resolved.result.body : {}), success: false, markId, error: `Suggestion ${markId} no longer matches the text; nothing was changed` } };
+      const stabilizedTarget = stabilizeAnchorTarget(resolved.logicalSource, resolved.normalizedTarget, resolved.resolved);
+      const selectionMetadata = buildStoredSelectionMetadata(markdown, resolved.resolved.selection, typeof existing.quote === 'string' ? existing.quote : resolved.normalizedTarget.anchor);
+      working = {
+        ...marks,
+        [markId]: {
+          ...existing,
+          target: stabilizedTarget,
+          quote: selectionMetadata.quote,
+          ...(selectionMetadata.startRel ? { startRel: selectionMetadata.startRel } : {}),
+          ...(selectionMetadata.endRel ? { endRel: selectionMetadata.endRel } : {}),
+        },
+      };
+    }
+    const result = await finalizeSuggestionThroughRehydration({ markdown, marks: working as unknown as Parameters<typeof finalizeSuggestionThroughRehydration>[0]['marks'], markId, action: status === 'accepted' ? 'accept' : 'reject' });
+    if (!result.ok) {
+      return { status: 409, body: { success: false, code: result.code, error: `Suggestion ${markId} could not be ${status}: ${result.error}. Nothing was changed.`, markId } };
+    }
+    markdown = result.markdown;
+    marks = result.marks as unknown as typeof marks;
+    done.push(markId);
+  }
+  if (done.length === 0) return { status: 200, body: { success: true, markIds: [], markdown: doc.markdown, marks: parseMarks(doc.marks) } };
+  const mutation = await mutateCanonicalDocument({
+    slug,
+    nextMarkdown: markdown,
+    nextMarks: marks as unknown as Record<string, unknown>,
+    source: `engine:${status}:batch:${by}`,
+    ...buildCanonicalMutationBaseArgs(doc, context),
+    strictLiveDoc: true,
+    guardPathologicalGrowth: true,
+  });
+  if (!mutation.ok) {
+    return { status: mutation.status, body: { success: false, code: mutation.code, error: mutation.error, ...(mutation.retryWithState ? { retryWithState: mutation.retryWithState } : {}) } };
+  }
+  const eventIds: number[] = [];
+  for (const markId of done) {
+    eventIds.push(addDocumentEvent(slug, `suggestion.${status}`, { markId, status, by, batch: done.length }, by, mutationContextIdempotencyKey(context), mutationContextIdempotencyRoute(context)));
+    upsertMarkTombstone(slug, markId, status, mutation.document.revision);
+  }
+  return {
+    status: 200,
+    body: {
+      success: true,
+      markIds: done,
+      eventIds,
+      shareState: mutation.document.share_state,
+      updatedAt: mutation.document.updated_at,
+      content: mutation.document.markdown,
+      markdown: mutation.document.markdown,
+      marks: parseMarks(mutation.document.marks),
+    },
+  };
+}
+
 function resolveComment(
   slug: string,
   body: JsonRecord,

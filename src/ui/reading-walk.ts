@@ -22,6 +22,8 @@ import type { Mark, CommentData, ReplaceData } from '../formats/marks';
 import { getActorName, getMarkColor } from '../formats/marks';
 import { actorKey, isAiActor, type DocLine } from '../shared/line-marks';
 import { UNCERTAIN_POLICY, WHY_POLICY } from '../shared/review-aids';
+import { BUNDLE_POLICY, describeBundle, type BundleView } from '../shared/bundles';
+import { EXPLAIN_POLICY } from '../shared/explain';
 import { ASK_POLICY, type AskChoice } from '../shared/asks';
 import { GestureGate, READING_WALK, ReadingWalk, countWords, dwellMsFor, type WalkLine, type WalkMark, type WalkSnapshot } from '../shared/reading-walk';
 import type { SinceItem, SinceYouReport, RingerItem } from '../shared/alignment';
@@ -139,6 +141,10 @@ export class ReadingWalkUI {
   private lastError = '';
   /** Step B4c test hook: changes whose author was asked why. */
   private readonly whyAsked: string[] = [];
+  /** Step B4f test hook: lines explained with E. Step B4e: bundle decisions made here. */
+  private readonly explained: number[] = [];
+  private bundleErrorId: string | null = null;
+  private readonly bundleDecisions: Array<{ id: string; action: string; ok: boolean; error?: string }> = [];
 
   constructor(private readonly host: ReadingWalkHost) {
     this.left.setAttribute('aria-label', 'Documents');
@@ -172,6 +178,9 @@ export class ReadingWalkUI {
     // Step B4c: "This sitting" (the budget setting and its status) sits under the reading speed.
     const budget = this.host.lineMarks().budgetEl;
     if (budget.parentElement !== this.rightBody) this.rightBody.insertBefore(budget, this.sinceHost);
+    // Step B4f: blind marking (an Owner's switch) sits under "This sitting".
+    const blind = this.host.lineMarks().blindEl;
+    if (blind.parentElement !== this.rightBody) this.rightBody.insertBefore(blind, this.sinceHost);
     this.unsubscribe = this.host.lineMarks().subscribe(() => this.sync());
     this.sync();
     void this.loadDocuments();
@@ -228,14 +237,20 @@ export class ReadingWalkUI {
   }
 
   private pendingSignature(): string {
-    return this.pendingMarks().map(mark => `${mark.id}@${mark.range!.from}`).join(',') + `|${this.host.lineMarks().lineList().length}`;
+    const lm = this.host.lineMarks();
+    return this.pendingMarks().map(mark => `${mark.id}@${mark.range!.from}${lm.bundleForMark(mark.id) ? '+b' : ''}`).join(',') + `|${lm.lineList().length}`;
   }
 
   private sync(): void {
     const lm = this.host.lineMarks();
     this.lines = lm.lineList();
+    // Step B4e: a bundle's refusal message goes once that bundle is decided or gone.
+    if (this.bundleErrorId && !lm.bundleList().some(v => v.bundle.id === this.bundleErrorId && v.status === 'open')) {
+      if (this.lastError) this.lastError = '';
+      this.bundleErrorId = null;
+    }
     const pending = this.pendingMarks();
-    this.marksSig = pending.map(mark => `${mark.id}@${mark.range!.from}`).join(',') + `|${this.lines.length}`;
+    this.marksSig = pending.map(mark => `${mark.id}@${mark.range!.from}${lm.bundleForMark(mark.id) ? '+b' : ''}`).join(',') + `|${this.lines.length}`;
     const hidden = this.host.hiddenLines?.() ?? new Set<number>();
     // Step B4c: a line its writer flagged uncertain takes UNCERTAIN_POLICY.dwellFactor × as long.
     const flagged = lm.flaggedLineSet();
@@ -249,7 +264,9 @@ export class ReadingWalkUI {
     for (const mark of pending) {
       const index = lm.lineAtPos(mark.range!.from);
       if (index < 0 || !walkLines[index]) continue;
-      walkLines[index].marks.push({ id: mark.id, kind: mark.kind === 'comment' ? 'comment' : 'suggestion' });
+      // Step B4e: a bundle's suggestions step as one unit (BUNDLE_POLICY.walkStepsAsUnit).
+      const bundle = mark.kind !== 'comment' && BUNDLE_POLICY.walkStepsAsUnit ? lm.bundleForMark(mark.id) : null;
+      walkLines[index].marks.push({ id: mark.id, kind: mark.kind === 'comment' ? 'comment' : 'suggestion', ...(bundle ? { group: bundle.bundle.id } : {}) });
     }
     const now = performance.now();
     if (!this.walk) {
@@ -433,6 +450,15 @@ export class ReadingWalkUI {
     if (key === 'r' || key === 'R') { event.preventDefault(); this.openReason(); return; }
     if (key === 'j' || key === 'J' || key === 'ArrowDown') { event.preventDefault(); this.next(); return; }
     if (key === 'k' || key === 'K' || key === 'ArrowUp') { event.preventDefault(); this.previous(); return; }
+    // Step B4f: E asks the AI collaborators to explain the focus line (never a rejection).
+    if (key.toLowerCase() === EXPLAIN_POLICY.key) { event.preventDefault(); this.explainFocus(); return; }
+    // Step B4f: 1-9 pick among the focus line's competing wordings (1 is the original).
+    if (/^[1-9]$/.test(key) && this.host.lineMarks().altSetFor(this.walk.focus)) {
+      event.preventDefault();
+      this.explicit(this.walk.focus);
+      void this.host.lineMarks().pickAlternative(this.walk.focus, key);
+      return;
+    }
     // Step B3: Y / N / T answer the ask on the focus line (only when the line carries one).
     const choice = (Object.keys(ASK_POLICY.keys) as AskChoice[]).find(c => ASK_POLICY.keys[c] === key.toLowerCase());
     if (choice && this.host.lineMarks().askForLine(this.walk.focus)) {
@@ -449,6 +475,14 @@ export class ReadingWalkUI {
     }
     this.renderNow();
     this.box?.ask?.choose(choice);
+  }
+
+  /** Step B4f: E on the focus line posts the default question to the AI collaborators. */
+  private explainFocus(): void {
+    const walk = this.walk;
+    if (!walk) return;
+    this.explained.push(walk.focus);
+    void this.host.lineMarks().explainLine(walk.focus);
   }
 
   /** Step B4d: the focus line (shift-click ranges in the margin start here). */
@@ -566,6 +600,19 @@ export class ReadingWalkUI {
   private commit(ids: string[]): void {
     if (ids.length === 0) return;
     const walk = this.walk!;
+    // Step B4e: scroll-accepted bundle members commit only while their bundle still matches.
+    const lm = this.host.lineMarks();
+    const stale = new Set<string>();
+    for (const id of ids) {
+      const bundle = lm.bundleForMark(id);
+      if (bundle && bundle.stale.length) for (const member of bundle.bundle.members) stale.add(member.markId);
+    }
+    if (stale.size) {
+      for (const id of ids) if (stale.has(id)) walk.dropProvisional(id);
+      ids = ids.filter(id => !stale.has(id));
+      this.lastError = 'A bundle changed since it was made: its changes were not accepted. Review them one by one.';
+      if (ids.length === 0) { this.afterChange(); return; }
+    }
     try {
       this.host.decide(ids, 'accept');
       this.lastError = '';
@@ -983,8 +1030,9 @@ export class ReadingWalkUI {
     });
     const head = el('div', 'prw-box-head');
     const hasAsk = Boolean(lm.askForLine(walk.focus));
+    const alts = lm.altSetFor(walk.focus);
     head.append(el('strong', undefined, 'Mark this line'),
-      el('span', 'prw-keys', hasAsk ? 'Y yes · N no · T not yet' : 'A agree · R reject · J/K move'));
+      el('span', 'prw-keys', hasAsk ? 'Y yes · N no · T not yet' : alts ? `1–${alts.options.length} pick · A agree · E explain` : 'A agree · R reject · E explain · J/K move'));
     this.boxHost.replaceChildren(head, box.root);
     this.box = box;
   }
@@ -997,7 +1045,9 @@ export class ReadingWalkUI {
     const lm = this.host.lineMarks();
     const sig = JSON.stringify([walk.focus, onLine.map(m => [m.id, walk.isPassed(m.id), walk.isProvisional(m.id)]), current?.id,
       onLine.map(m => { const mk = all.get(m.id); return mk ? [mk.at, mk.data] : null; }),
-      onLine.map(m => lm.notesForMark(m.id).map(n => n.why))]);
+      onLine.map(m => lm.notesForMark(m.id).map(n => n.why)),
+      onLine.map(m => { const b = lm.bundleForMark(m.id); return b ? [b.bundle.id, b.pending.length, b.stale.join(','), b.status] : null; }),
+      this.bundleDecisions.length, this.lastError]);
     if (sig === this.changesSig) return;
     this.changesSig = sig;
     this.changesHost.replaceChildren();
@@ -1008,6 +1058,14 @@ export class ReadingWalkUI {
     head.append(el('strong', undefined, `Changes on this line`),
       el('span', 'prw-step', index < onLine.length ? `${index + 1} of ${onLine.length}` : `all ${onLine.length} passed`));
     this.changesHost.append(head);
+    // Step B4e: a bundle on this line shows as one card (title, why, every passage, one decision).
+    const shownBundles = new Set<string>();
+    for (const item of onLine) {
+      const bundle = lm.bundleForMark(item.id);
+      if (!bundle || shownBundles.has(bundle.bundle.id)) continue;
+      shownBundles.add(bundle.bundle.id);
+      this.changesHost.append(this.bundleCard(bundle, all));
+    }
     const nav = el('div', 'prw-step-nav');
     const back = el('button', undefined, '‹ Back'); back.type = 'button'; back.disabled = !walk.canStepBack();
     back.onclick = () => this.previous();
@@ -1018,6 +1076,9 @@ export class ReadingWalkUI {
     for (const item of onLine) {
       const mark = all.get(item.id);
       if (!mark) continue;
+      // Bundled changes are decided on the bundle card (unless it is stale: then one by one).
+      const bundle = lm.bundleForMark(item.id);
+      if (bundle && bundle.stale.length === 0) continue;
       this.changesHost.append(this.changeCard(mark, {
         current: current?.id === mark.id,
         provisional: walk.isProvisional(mark.id),
@@ -1026,6 +1087,125 @@ export class ReadingWalkUI {
     }
     const hint = el('p', 'prw-hint', 'Scroll down to step through the changes; scrolling past a change accepts it until you scroll back up.');
     this.changesHost.append(hint);
+  }
+
+  /** Step B4e: one card for a review bundle (title, why, every passage with its result, one decision). */
+  private bundleCard(view: BundleView, all: Map<string, Mark>): HTMLElement {
+    const b = view.bundle;
+    const card = el('article', 'prw-bundle');
+    card.dataset.bundleId = b.id;
+    card.dataset.stale = String(view.stale.length > 0);
+    card.style.setProperty('--review-author', getMarkColor(b.by));
+    const head = el('div', 'prw-bundle-head');
+    head.append(el('span', 'prw-bundle-tag', 'Bundle'), el('strong', 'prw-bundle-title', b.title), el('span', 'prw-bundle-by', getActorName(b.by)));
+    card.append(head);
+    if (b.why) {
+      const why = el('p', 'prw-why');
+      why.append(el('span', 'prw-why-label', 'Why: '), b.why);
+      card.append(why);
+    }
+    const list = el('ol', 'prw-bundle-passages');
+    const ids = new Set(b.members.map(m => m.markId));
+    for (const member of view.members) {
+      const li = el('li', 'prw-bundle-passage');
+      li.dataset.markId = member.markId;
+      li.dataset.state = member.state;
+      if (member.stale) li.dataset.stale = 'true';
+      const mark = all.get(member.markId);
+      li.append(el('span', 'prw-bundle-where', member.lineIndex === null ? 'Line ?' : `Line ${member.lineIndex + 1}`));
+      const change = el('span', 'prw-bundle-change');
+      if (mark && (mark.kind === 'replace' || mark.kind === 'delete')) change.append(el('del', undefined, mark.quote));
+      if (mark && mark.kind === 'replace') change.append(' → ');
+      if (mark && (mark.kind === 'replace' || mark.kind === 'insert')) change.append(el('ins', undefined, (mark.data as ReplaceData)?.content || mark.quote));
+      if (!mark) change.append(el('span', undefined, member.state === 'pending' ? '(not on this page yet)' : `(${member.state})`));
+      li.append(change);
+      if (member.lineIndex !== null && member.state === 'pending') {
+        li.append(el('span', 'prw-bundle-result', `Result: ${this.resultingText(member.lineIndex, ids)}`));
+      }
+      if (member.stale) li.append(el('span', 'prw-bundle-stale', member.staleReason === 'rejected' ? 'rejected on its own' : member.staleReason === 'missing' ? 'no longer here' : 'changed since bundled'));
+      list.append(li);
+    }
+    card.append(list);
+    card.append(el('p', 'prw-bundle-note', BUNDLE_POLICY.acceptNote));
+    const status = el('p', 'prw-bundle-status', describeBundle(view));
+    status.setAttribute('role', 'status');
+    card.append(status);
+    const actions = el('div', 'prw-card-actions');
+    const accept = el('button', 'prw-accept prw-bundle-accept', `Accept bundle (${view.pending.length})`);
+    accept.type = 'button';
+    accept.disabled = view.status !== 'open' || view.pending.length === 0;
+    accept.onclick = () => this.decideBundle(b.id, 'accept');
+    const reject = el('button', 'prw-reject prw-bundle-reject', 'Reject bundle');
+    reject.type = 'button';
+    reject.disabled = view.status !== 'open' || view.pending.length === 0;
+    reject.onclick = () => this.decideBundle(b.id, 'reject');
+    actions.append(accept, reject);
+    card.append(actions);
+    if (view.stale.length) card.append(el('p', 'prw-bundle-fallback', 'Some changes no longer match the text they were bundled on, so the bundle cannot be accepted whole. Review the changes below one by one.'));
+    return card;
+  }
+
+  /** The line's text with the bundle's changes applied, as this page renders them. */
+  private resultingText(lineIndex: number, ids: ReadonlySet<string>): string {
+    const view = this.host.lineMarks().editorView();
+    const line = this.lines[lineIndex];
+    const dom = view && line ? view.nodeDOM(line.pos) as HTMLElement | null : null;
+    if (!dom) return line?.text ?? '';
+    const clone = dom.cloneNode(true) as HTMLElement;
+    clone.querySelectorAll('.pask, .pdx-alts, .pask-tag').forEach(node => node.remove());
+    clone.querySelectorAll('[data-mark-id]').forEach(node => {
+      const id = node.getAttribute('data-mark-id') ?? '';
+      const insertWidget = node.classList.contains('mark-replace-insert');
+      const insert = insertWidget || (node.classList.contains('mark-insert') && !node.classList.contains('mark-delete'));
+      const del = node.classList.contains('mark-delete');
+      // This bundle's changes are applied; any other pending change is shown as the text stands now.
+      if (ids.has(id) ? del : insert) node.remove();
+    });
+    return (clone.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 300);
+  }
+
+  /**
+   * Step B4e: Accept or Reject a whole bundle. Accept first re-checks every member against its
+   * target hash (this page's lines): a stale bundle refuses, marks the stale changes, and falls
+   * back to one-by-one review. The editor applies all members in one step (all or nothing), then
+   * the server records the decision.
+   */
+  decideBundle(id: string, action: 'accept' | 'reject'): boolean {
+    const lm = this.host.lineMarks();
+    const view = lm.bundleList().find(v => v.bundle.id === id);
+    const walk = this.walk;
+    if (!view || !walk) return false;
+    if (action === 'accept' && !view.acceptable) {
+      this.lastError = view.stale.length
+        ? `${view.stale.length} of ${view.bundle.members.length} changes in “${view.bundle.title}” changed since they were bundled. Nothing was accepted: review them one by one.`
+        : 'Nothing in this bundle can be accepted now.';
+      this.bundleDecisions.push({ id, action, ok: false, error: this.lastError });
+      this.bundleErrorId = id;
+      for (const markId of view.bundle.members.map(m => m.markId)) walk.dropProvisional(markId);
+      this.changesSig = '';
+      this.afterChange();
+      return false;
+    }
+    const ids = view.pending;
+    const first = this.pendingMarks().find(m => ids.includes(m.id));
+    const line = first ? lm.lineAtPos(first.range!.from) : walk.focus;
+    // An explicit action: first commit the provisional accepts at or above it (not this bundle's).
+    const earlier = walk.explicitAction(Math.max(line, walk.focus)).filter(markId => !ids.includes(markId));
+    try {
+      if (earlier.length) this.host.decide(earlier, 'accept');
+      this.host.decide(ids, action);
+      for (const markId of ids) walk.decided(markId);
+      this.lastError = '';
+      this.bundleDecisions.push({ id, action, ok: true });
+      void lm.recordBundleDecision(id, action === 'accept' ? 'accepted' : 'rejected');
+    } catch (error) {
+      walk.restoreProvisional(earlier);
+      this.lastError = error instanceof Error ? error.message : 'Could not save the bundle.';
+      this.bundleDecisions.push({ id, action, ok: false, error: this.lastError });
+    }
+    this.changesSig = '';
+    this.afterChange();
+    return true;
   }
 
   private changeCard(mark: Mark, flags: { current: boolean; provisional: boolean; passed: boolean }): HTMLElement {
@@ -1297,6 +1477,8 @@ export class ReadingWalkUI {
       dwellMs: walk ? walk.dwellFor(walk.focus) : null,
       flagged: [...this.host.lineMarks().flaggedLineSet()],
       whyAsked: [...this.whyAsked],
+      explained: [...this.explained],
+      bundleDecisions: [...this.bundleDecisions],
       since: this.sinceReport ? { hasHistory: this.sinceReport.hasHistory, counts: this.sinceReport.counts, baseline: this.sinceReport.baseline } : null,
       readingY: this.readingY(),
       tops: [...this.tops],

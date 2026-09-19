@@ -107,6 +107,12 @@ import { answerAsk, listCanonicalAsks, reaskAsk, withdrawAsk } from './asks.js';
 import { buildSinceYou, checkAlignment, currentDocumentState, latestSnapshotInfo, listSnapshotInfos, scheduleAlignmentCheck, sendSnapshotFile } from './alignment.js';
 import { clearFlag, clearObjection, createObjection, keepObjection, writeFlag } from './review-aids.js';
 import { listFlags, listObjections, listReviewNotes } from './review-aids-store.js';
+import { clearTtl, decideAlternative, offerAlternative, pickAlternative, recordBundleDecision, recordExplain, setBlindSetting, setTtl, withdrawAlternative } from './proof-extras.js';
+import { getProofSettings, listAlternatives, listBundles, listExplains, listPicks, listTtls } from './proof-extras-store.js';
+import { blindViewFor } from './proof-extras-eval.js';
+import { lineEditor } from './agent-routes.js';
+import { ASK_POLICY, evaluateAsks } from '../src/shared/asks.js';
+import { isGuestActor, normalizeActorString } from '../src/shared/identity.js';
 import { buildDirectory, clientDirectory, decideActor, sessionIdentity } from './identity.js';
 import { IDENTITY_POLICY, actorsIn, isEmailAddress, verifiedHumanActor, type IdentityDirectory, type ViewerIdentity } from '../src/shared/identity.js';
 import { actorKey, agentKeyActor } from '../src/shared/line-marks.js';
@@ -1930,7 +1936,7 @@ function viewerIdentity(req: Request, slug: string, access: ReturnType<typeof re
   return { actor: '', trust: 'guest', name: '', signInUrl };
 }
 
-apiRoutes.get('/documents/:slug/line-marks', (req: Request, res: Response) => {
+apiRoutes.get('/documents/:slug/line-marks', async (req: Request, res: Response) => {
   const slug = getSlugParam(req);
   const doc = slug ? getDocumentBySlug(slug) : undefined;
   if (!slug || !doc) {
@@ -1960,12 +1966,14 @@ apiRoutes.get('/documents/:slug/line-marks', (req: Request, res: Response) => {
     ...listLineMarks(slug).map(mark => mark.by),
     ...flags.map(flag => flag.by), ...reviewNotes.map(note => note.by), ...objections.map(objection => objection.by),
   ]);
+  const blindView = await pageExtras(req, slug, doc, me, lineMarks, asks);
+  const extras = blindView.extras;
   res.setHeader('Cache-Control', 'no-store');
   res.json({
     success: true,
-    lineMarks,
+    lineMarks: blindView.lineMarks,
     // Step B3: the page evaluates asks against its own lines (same poll, no extra request).
-    asks,
+    asks: blindView.asks,
     owners,
     agentKeyActors,
     viewer: { canMark: access.canMark, canApprove: access.canApprove },
@@ -1976,8 +1984,54 @@ apiRoutes.get('/documents/:slug/line-marks', (req: Request, res: Response) => {
     flags,
     reviewNotes,
     objections,
+    // Steps B4e + B4f: bundles, alternatives (open, plus recent history) and picks, settings,
+    // Explain threads and times-to-live. The page evaluates them against its own lines; expiry
+    // is judged at `serverNow` (lazy, no timer).
+    ...extras,
   });
 });
+
+/**
+ * Steps B4e + B4f: the extras for the page's poll. Under blind marking, other members' marks, ask
+ * answers and picks on lines this viewer has not marked are replaced by placeholders here, so
+ * they never reach the browser.
+ */
+async function pageExtras(req: Request, slug: string, doc: NonNullable<ReturnType<typeof getDocumentBySlug>>, me: ViewerIdentity, lineMarks: ReturnType<typeof listCanonicalLineMarks>, asks: ReturnType<typeof listCanonicalAsks>): Promise<{ extras: Record<string, unknown>; lineMarks: typeof lineMarks; asks: typeof asks }> {
+  const settings = getProofSettings(slug);
+  const allAlternatives = listAlternatives(slug, { includeClosed: true });
+  let picks = listPicks(slug);
+  const extras: Record<string, unknown> = {
+    settings,
+    bundles: listBundles(slug),
+    alternatives: allAlternatives.filter(alt => alt.status === 'open'),
+    alternativeHistory: allAlternatives.filter(alt => alt.status !== 'open').slice(-100),
+    explains: listExplains(slug),
+    ttls: listTtls(slug).map(({ expiredNotedAt: _noted, ...ttl }) => ttl),
+    serverNow: new Date().toISOString(),
+  };
+  if (!settings.blind) return { extras: { ...extras, picks }, lineMarks, asks };
+  const typed = typeof req.query.by === 'string' ? normalizeActorString(req.query.by) : '';
+  const viewer = me.actor || (typed && isGuestActor(typed) ? typed : '');
+  const lines = await computeServerLines(doc.markdown ?? '');
+  const views = evaluateAsks(asks, lines);
+  const answered = views.filter(v => v.lineIndex !== null && v.ask.answers.some(a => actorKey(a.by) === actorKey(viewer))).map(v => v.lineIndex as number);
+  const view = blindViewFor({ lines, lineMarks, viewer, answeredLines: answered, picks });
+  picks = view.picks;
+  const redactedAsks = asks.map(ask => {
+    const at = views.find(v => v.ask.id === ask.id)?.lineIndex ?? null;
+    if (at !== null && view.revealed.has(at)) return ask;
+    return {
+      ...ask,
+      answers: ask.answers.map(answer => (actorKey(answer.by) === actorKey(viewer) ? answer
+        : { ...answer, choice: (ASK_POLICY.closes[answer.choice] ? 'yes' : 'not_yet') as typeof answer.choice, words: '', hidden: true })),
+    };
+  });
+  return {
+    extras: { ...extras, picks, blind: { on: true, viewer, revealedLines: [...view.revealed].sort((a, b) => a - b), hiddenPositions: view.hidden } },
+    lineMarks: view.lineMarks,
+    asks: redactedAsks,
+  };
+}
 
 // Proof Documents Steps B4c + B4d: flags and objections from the page. Writes need comment
 // access; the actor is decided as for line marks (a signed-in session wins over a typed name).
@@ -2021,6 +2075,52 @@ pageAidRoute('/documents/:slug/objections/:objectionId/keep', async ({ req, slug
   if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
   return keepObjection(slug, { id: String(req.params.objectionId ?? ''), by, ack: body.ack, markdown: state.markdown, rawMarks: state.marks, source: 'page' });
 });
+// ============================================================================
+// Proof Documents Steps B4e + B4f: page routes
+// ============================================================================
+
+// Step B4e: the page applied (or rejected) a whole bundle in its editor (one step): record it.
+pageAidRoute('/documents/:slug/bundles/:bundleId/decision', async ({ req, slug, by, body }) => {
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  return recordBundleDecision(slug, { id: String(req.params.bundleId ?? ''), by, decision: body.decision, markdown: state.markdown, rawMarks: state.marks });
+});
+// Step B4f: offer another wording { anchor, text }, pick { anchor, choice }, an Owner decides.
+pageAidRoute('/documents/:slug/alternatives', async ({ req, slug, by, body }) => {
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  return offerAlternative(slug, { by, anchor: body.anchor, text: body.text, markdown: state.markdown, rawMarks: state.marks, source: 'page', applyEdit: lineEditor(req, slug) });
+});
+pageAidRoute('/documents/:slug/alternatives/pick', async ({ req, slug, by, body }) => {
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  return pickAlternative(slug, { by, anchor: body.anchor, choice: body.choice, markdown: state.markdown, rawMarks: state.marks, source: 'page', applyEdit: lineEditor(req, slug) });
+});
+pageAidRoute('/documents/:slug/alternatives/decide', async ({ req, slug, by, access, body }) => {
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  return decideAlternative(slug, { by, isOwner: access.canApprove, anchor: body.anchor, choice: body.choice, markdown: state.markdown, rawMarks: state.marks, applyEdit: lineEditor(req, slug) });
+});
+pageAidRoute('/documents/:slug/alternatives/:altId/withdraw', ({ req, slug, by, access }) =>
+  withdrawAlternative(slug, { id: String(req.params.altId ?? ''), by, isOwner: access.canApprove }));
+// Step B4f: an Owner turns blind marking on or off: { blind: true | false }.
+pageAidRoute('/documents/:slug/settings', ({ slug, by, access, body }) =>
+  setBlindSetting(slug, { blind: body.blind, by, isOwner: access.canApprove, source: 'page' }));
+// Step B4f: the page posted an Explain thread on a line: { anchor, question, commentMarkId }.
+pageAidRoute('/documents/:slug/explain', async ({ slug, by, body }) => {
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  return recordExplain(slug, { by, anchor: body.anchor, question: body.question, commentMarkId: body.commentMarkId, markdown: state.markdown, source: 'page' });
+});
+// Step B4f: a line's time-to-live: { anchor, ttl: "7d" }; the setter or an Owner clears it.
+pageAidRoute('/documents/:slug/ttl', async ({ slug, by, body }) => {
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  return setTtl(slug, { by, anchor: body.anchor, ttl: body.ttl, markdown: state.markdown, source: 'page' });
+});
+pageAidRoute('/documents/:slug/ttl/:ttlId/clear', ({ req, slug, by, access }) =>
+  clearTtl(slug, { id: String(req.params.ttlId ?? ''), by, isOwner: access.canApprove, source: 'page' }));
+
 // Step B4c: the reader tapped "Ask why" on a change (the page also posts the reply itself):
 // recorded as review.why_asked so the author's Familiar sees the question. Body: { by, markId, author }.
 pageAidRoute('/documents/:slug/why-asked', ({ slug, by, body }) => {

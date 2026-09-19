@@ -179,3 +179,72 @@ body.plm-on #editor { padding-left:calc(var(--provenance-bar-width, 6px) + 48px)
   .plm-budget-setting select { min-height:44px; }
   .plm-budget-actions .plm-choice { min-height:44px; }
 }
+
+/* Proof Documents Steps B4e + B4f (Claude Opus 5, 2026-09-19): bundles, alternatives, blind
+   marking, Explain, times-to-live, term links. */
+/* Blind: someone's hidden mark is a grey dashed pip; a stale (time-to-live) mark a faded green ring. */
+.plm-pips i[data-status="hidden"] { background:repeating-linear-gradient(45deg,#9ca3af 0 2px,#fff 2px 4px); }
+.plm-pips i[data-status="stale"] { background:#fff; box-shadow:inset 0 0 0 1.5px #86efac; }
+.plm-dot[data-status="stale"] .plm-glyph { background:#fff; border:2px dashed #16a34a; }
+.plm-team-status[data-status="hidden"] { color:#6b7280; font-style:italic; }
+.plm-team-status[data-status="stale"] { color:#15803d; font-style:italic; }
+/* Disagreement revealed: a violet ring round the dot. Competing wordings / a time-to-live: small badges. */
+.plm-dot[data-disagreement="true"] .plm-glyph { box-shadow:0 0 0 3px rgba(124,58,237,.45); }
+.plm-dot[data-alternatives]:not([data-alternatives=""])::after {
+  content:attr(data-alternatives); position:absolute; right:-2px; top:-3px; min-width:12px; height:12px; padding:0 2px; border-radius:6px;
+  background:#2563eb; color:#fff; font:700 9px/12px system-ui,sans-serif; text-align:center;
+}
+.plm-dot[data-ttl="set"] { outline:1px dotted #0891b2; outline-offset:-2px; border-radius:50%; }
+.plm-dot[data-ttl="expired"] { outline:2px dotted #b45309; outline-offset:-2px; border-radius:50%; }
+.plm-disagree { margin:6px 0; padding:6px 8px; border-left:3px solid #7c3aed; border-radius:4px; background:#f5f3ff; color:#4c1d95; font-size:12px; font-weight:600; }
+.plm-blind-note { margin:6px 0; padding:6px 8px; border-radius:6px; background:#f3f4f6; color:#374151; font-size:12px; }
+.plm-alts { margin:6px 0; padding:8px; border-left:3px solid #2563eb; border-radius:6px; background:#eff6ff; font-size:12px; }
+.plm-alts-head { margin:0 0 6px; color:#1e3a8a; }
+.plm-alt { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px; padding:4px 0; border-top:1px solid #dbeafe; cursor:pointer; }
+.plm-alt:first-child { border-top:none; }
+.plm-alt input { margin:0; }
+.plm-alt-key { min-width:16px; padding:0 4px; border-radius:4px; background:#fff; color:#1e3a8a; font:700 11px/16px ui-monospace,monospace; text-align:center; box-shadow:inset 0 0 0 1px #bfdbfe; }
+.plm-alt-text { flex:1 1 60%; min-width:0; color:#111827; }
+.plm-alt-by { flex-basis:100%; padding-left:40px; color:#6b7280; font-size:11px; }
+.plm-alt-decide, .plm-alt-withdraw { font-size:11px; }
+.plm-alts-note { margin:6px 0 0; color:#6b7280; }
+.plm-extras { margin:6px 0; font-size:12px; }
+.plm-extras-links { display:flex; flex-wrap:wrap; gap:4px 12px; }
+.plm-alt-form, .plm-explain-form, .plm-ttl-form { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+.plm-alt-form[hidden], .plm-explain-form[hidden], .plm-ttl-form[hidden] { display:none; }
+.plm-alt-form textarea { flex:1 1 100%; min-height:44px; padding:6px 8px; border:1px solid #949ca8; border-radius:8px; font:inherit; resize:vertical; }
+.plm-explain-form input, .plm-ttl-form input { flex:1; min-width:0; min-height:32px; padding:4px 8px; border:1px solid #949ca8; border-radius:8px; font:inherit; }
+.plm-alt-form button[type="submit"], .plm-explain-form button, .plm-ttl-form button[type="submit"] {
+  min-height:32px; padding:0 10px; border:none; border-radius:8px; background:#2563eb; color:#fff; font:600 12px system-ui,sans-serif; cursor:pointer;
+}
+.plm-ttl-form .plm-ttl-preset { min-height:32px; padding:0 10px; border:1px solid #67e8f9; border-radius:999px; background:#ecfeff; color:#155e75; font:600 12px system-ui,sans-serif; cursor:pointer; }
+.plm-ttl-status { margin:0 0 4px; padding:6px 8px; border-left:3px solid #0891b2; border-radius:4px; background:#ecfeff; color:#155e75; }
+.plm-ttl-status[data-state="expired"] { border-left-color:#b45309; background:#fffbeb; color:#78350f; }
+.plm-alt-history { margin:6px 0; font-size:12px; color:#4b5563; }
+.plm-alt-history ul { margin:4px 0 0; padding-left:18px; }
+.plm-blind { margin:0 0 10px; font-size:12px; }
+.plm-blind[data-on="true"] { padding:6px 8px; border-radius:8px; background:#f5f3ff; }
+.plm-blind-setting { display:flex; align-items:center; gap:6px; color:#4b5563; font-weight:600; }
+.plm-blind-status { margin:4px 0 0; color:#4b5563; }
+/* In the text: the wordings stacked under a line, and a term linked at its first use. */
+.pdx-alts { display:block; margin:6px 0 2px; padding:4px 8px; border-left:3px solid #93c5fd; border-radius:4px; background:#f8fafc; font-size:.88em; line-height:1.4; user-select:none; }
+.pdx-alt { display:flex; gap:8px; align-items:baseline; padding:2px 0; cursor:pointer; color:#1f2937; }
+.pdx-alt[data-mine="true"] .pdx-alt-text { font-weight:600; }
+.pdx-alt[data-mine="true"] .pdx-alt-key { background:#2563eb; color:#fff; }
+.pdx-alt-key { min-width:16px; border-radius:4px; background:#e0e7ff; color:#1e3a8a; font:700 11px/16px ui-monospace,monospace; text-align:center; }
+.pdx-alt-text { flex:1; }
+.pdx-alt-by { color:#6b7280; font-size:.9em; white-space:nowrap; }
+.pdx-alt:first-child .pdx-alt-text { color:#6b7280; font-style:italic; }
+.pdx-term { text-decoration:underline dotted #7c3aed 2px; text-underline-offset:3px; cursor:help; }
+.plm-term-pop { position:fixed; z-index:10002; max-width:300px; padding:10px 12px; border-radius:10px; background:#fff; color:#111827; box-shadow:0 8px 24px rgba(0,0,0,.18); font:13px/1.45 system-ui,-apple-system,sans-serif; }
+.plm-term-pop p { margin:0 0 6px; }
+@media (max-width: 700px) {
+  .plm-alt { min-height:44px; }
+  .plm-alt input { width:20px; height:20px; }
+  .plm-extras-links .plm-link { min-height:44px; }
+  .plm-sheet .plm-alt-form button, .plm-sheet .plm-explain-form input, .plm-sheet .plm-explain-form button,
+  .plm-sheet .plm-ttl-form input, .plm-sheet .plm-ttl-form button, .plm-ttl-form .plm-ttl-preset { min-height:44px; font-size:16px; }
+  .plm-blind-setting input { width:22px; height:22px; }
+  .plm-blind-setting { min-height:44px; }
+  .pdx-alt { min-height:36px; align-items:center; }
+}

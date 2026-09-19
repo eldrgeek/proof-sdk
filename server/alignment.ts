@@ -26,6 +26,8 @@ import { serverSuggestionsOnLine } from './review-aids-eval.js';
 import { evaluateObjection } from '../src/shared/objections.js';
 import { buildAskReport, listCanonicalAsks } from './asks.js';
 import { buildDirectory } from './identity.js';
+import { getProofSettings } from './proof-extras-store.js';
+import { blindViewFor } from './proof-extras-eval.js';
 import { recoverCanonicalDocumentIfNeeded } from './canonical-document.js';
 import { executeDocumentOperationAsync } from './document-engine.js';
 import { resolveTargetActor } from '../src/shared/identity.js';
@@ -216,10 +218,13 @@ export async function buildSinceYou(slug: string, actor: string, state?: { markd
   const latest = latestAlignedSnapshot(slug);
   const payload = latest ? parsePayload(latest) : null;
   const me = actorKey(actor);
+  // Step B4f: under blind marking, others' rejections show only on lines this actor has marked.
+  let lineMarks = listCanonicalLineMarks(slug, dir);
+  if (getProofSettings(slug).blind) lineMarks = blindViewFor({ lines, lineMarks, viewer: actor, picks: [] }).lineMarks;
   const report = computeSinceYou({
     actor,
     lines,
-    lineMarks: listCanonicalLineMarks(slug, dir),
+    lineMarks,
     asks: listCanonicalAsks(slug, dir),
     reviewMarks: reviewMarksForSince(current.marks),
     snapshot: latest && payload ? { id: latest.id, createdAt: latest.created_at, team: payload.team, lines: payload.lines } : null,

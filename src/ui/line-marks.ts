@@ -20,6 +20,7 @@ import {
   computeIssues,
   computeStep1Team,
   extractLines,
+  isAiActor,
   registerActorLabels,
   type DocLine,
   type IssueSummary,
@@ -68,6 +69,12 @@ import {
   type ObjectionView,
   type ProofObjection,
 } from '../shared/objections';
+import { bundleIndex, describeBundle, evaluateBundle, type BundleView, type MemberState, type ProofBundle } from '../shared/bundles';
+import { ALT_POLICY, altLineIndex, alternativeIssueInputs, describeAltSet, evaluateAlternatives, pickOf, type AltPick, type AltSetView, type ProofAlternative } from '../shared/alternatives';
+import { disagreementCounts, disagreementLines } from '../shared/blind';
+import { EXPLAIN_POLICY, explainCommentText, termLinksFor, type TermUse } from '../shared/explain';
+import { TTL_POLICY, applyDecay, describeTtl, evaluateTtls, ttlIssueInputs, type ProofTtl, type TtlView } from '../shared/ttl';
+import { proofExtrasViewKey, setProofExtrasDecorations, termRange, type AltStackSpec, type TermLinkSpec } from '../editor/plugins/proof-extras-view';
 import './line-marks.css';
 
 export interface LineMarksHost {
@@ -93,6 +100,11 @@ export interface LineMarksHost {
   anchorLine?(): number;
   /** Step B4c: the sitting budget was used when the reader asked for the next issue. */
   onBudgetReached?(summary: SittingSummary): void;
+  /**
+   * Step B4f: posts a comment thread on a line (Explain) through the editor. Returns the new
+   * comment's id, or null when the editor could not place it.
+   */
+  commentOnLine?(line: DocLine, text: string): string | null;
 }
 
 export interface MarkBoxOptions {
@@ -115,6 +127,9 @@ export interface MarkBox {
 }
 
 export type StatusChoice = LineMarkStatus | 'unseen';
+
+/** Step B4f: statuses the page shows that are not stored (hidden = blind; stale = TTL ran out). */
+type ShownStatus = StatusChoice | 'changed' | 'hidden' | 'stale';
 
 const STATUS_LABEL: Record<StatusChoice, string> = {
   unseen: 'Unseen',
@@ -192,6 +207,29 @@ export class LineMarksUI {
   private lastIssuePlace: { priority: number; pos: number } | null = null;
   /** Step B4c: the "This sitting" setting and its status, shown in the reading rail. */
   readonly budgetEl = document.createElement('div');
+  /** Step B4f: blind marking (an Owner's switch, everyone's notice), shown in the reading rail. */
+  readonly blindEl = document.createElement('div');
+  /** Steps B4e + B4f: bundles, alternatives and picks, settings, Explain threads, times-to-live. */
+  private serverBundles: ProofBundle[] = [];
+  private serverAlternatives: ProofAlternative[] = [];
+  private serverAltHistory: ProofAlternative[] = [];
+  private serverPicks: AltPick[] = [];
+  private serverExplains: Array<{ id: string; by: string; commentMarkId: string | null; question: string; createdAt: string }> = [];
+  private serverTtls: ProofTtl[] = [];
+  private blind = false;
+  private blindInfo: { revealedLines?: number[]; hiddenPositions?: number } | null = null;
+  /** Server clock minus this browser's clock (expiry is judged on the server's clock). */
+  private clockSkewMs = 0;
+  private bundleViews: BundleView[] = [];
+  private altViews: AltSetView[] = [];
+  private altsByLine = new Map<number, AltSetView>();
+  private ttlViews: TtlView[] = [];
+  private ttlByLine = new Map<number, TtlView>();
+  private disagreement = new Set<number>();
+  private termLinks: TermUse[] = [];
+  private extrasDecoSig = '';
+  private extrasDecoQueued = false;
+  private extrasWrites = 0;
   /** Step B6: who the server says this viewer is, and the directory that reads names. */
   private serverMe: ViewerIdentity | null = null;
   private directory: IdentityDirectory = EMPTY_DIRECTORY;
@@ -244,6 +282,7 @@ export class LineMarksUI {
     this.loadSitting();
     document.addEventListener('visibilitychange', this.onVisibility);
     window.addEventListener('resize', this.queueRender);
+    document.addEventListener('click', this.onTermClick);
     void this.refresh();
     this.schedulePoll();
   }
@@ -254,6 +293,7 @@ export class LineMarksUI {
     setLineMarksViewListener(null);
     document.removeEventListener('visibilitychange', this.onVisibility);
     window.removeEventListener('resize', this.queueRender);
+    document.removeEventListener('click', this.onTermClick);
     if (this.pollTimer) clearTimeout(this.pollTimer);
     this.pollTimer = null;
     this.closeMenu();
@@ -275,7 +315,9 @@ export class LineMarksUI {
     if (!slug) return;
     const seq = ++this.fetchSeq;
     try {
-      const response = await fetch(`${this.host.apiBase()}/documents/${encodeURIComponent(slug)}/line-marks`, {
+      // Step B4f: a guest names itself so blind marking can reveal its own lines.
+      const guest = this.serverMe?.actor ? '' : `?by=${encodeURIComponent(this.me())}`;
+      const response = await fetch(`${this.host.apiBase()}/documents/${encodeURIComponent(slug)}/line-marks${guest}`, {
         headers: this.host.authHeaders(),
         credentials: 'same-origin',
       });
@@ -283,6 +325,9 @@ export class LineMarksUI {
       const body = await response.json() as {
         lineMarks?: LineMark[]; owners?: string[]; agentKeyActors?: string[]; asks?: ProofAsk[];
         flags?: UncertainFlag[]; reviewNotes?: ReviewNote[]; objections?: ProofObjection[];
+        bundles?: ProofBundle[]; alternatives?: ProofAlternative[]; alternativeHistory?: ProofAlternative[]; picks?: AltPick[];
+        settings?: { blind?: boolean }; explains?: LineMarksUI['serverExplains']; ttls?: ProofTtl[]; serverNow?: string;
+        blind?: { revealedLines?: number[]; hiddenPositions?: number };
         viewer?: { canApprove?: boolean; canMark?: boolean };
         identity?: { me?: ViewerIdentity; directory?: IdentityDirectory };
         alignedSnapshot?: { id: string; createdAt: string } | null;
@@ -294,6 +339,16 @@ export class LineMarksUI {
       this.serverFlags = Array.isArray(body.flags) ? body.flags : [];
       this.serverNotes = Array.isArray(body.reviewNotes) ? body.reviewNotes : [];
       this.serverObjections = Array.isArray(body.objections) ? body.objections : [];
+      this.serverBundles = Array.isArray(body.bundles) ? body.bundles : [];
+      this.serverAlternatives = Array.isArray(body.alternatives) ? body.alternatives : [];
+      this.serverAltHistory = Array.isArray(body.alternativeHistory) ? body.alternativeHistory : [];
+      this.serverPicks = Array.isArray(body.picks) ? body.picks : [];
+      this.serverExplains = Array.isArray(body.explains) ? body.explains : [];
+      this.serverTtls = Array.isArray(body.ttls) ? body.ttls : [];
+      this.blind = body.settings?.blind === true;
+      this.blindInfo = body.blind ?? null;
+      const serverNow = body.serverNow ? Date.parse(body.serverNow) : NaN;
+      if (Number.isFinite(serverNow)) this.clockSkewMs = serverNow - Date.now();
       this.owners = Array.isArray(body.owners) ? body.owners : [];
       this.agentKeyActors = Array.isArray(body.agentKeyActors) ? body.agentKeyActors : [];
       this.canApprove = body.viewer?.canApprove === true;
@@ -415,17 +470,34 @@ export class LineMarksUI {
         this.lines = extractLines(view.state.doc as unknown as LineSourceNode);
         this.linesDoc = view.state.doc;
       }
-      const reviewMarks = this.host.reviewMarks(view);
+      // Steps B4e + B4f: an Explain thread is not an Issue; a bundled suggestion names its bundle.
+      const explainIds = new Set(this.serverExplains.map(e => e.commentMarkId).filter((id): id is string => Boolean(id)));
+      const bundleOf = bundleIndex(this.serverBundles);
+      const reviewMarks = this.host.reviewMarks(view).map(mark => {
+        const explain = !EXPLAIN_POLICY.commentIsIssue && explainIds.has(mark.id);
+        const bundleId = bundleOf.get(mark.id);
+        return explain || bundleId ? { ...mark, ...(explain ? { explain: true } : {}), ...(bundleId ? { bundleId } : {}) } : mark;
+      });
       this.reviewMarkCache = reviewMarks;
       const team = computeStep1Team({
         owners: this.owners,
         lineMarks: this.serverMarks,
         reviewMarks,
         agentKeyActors: this.agentKeyActors,
-        extra: [this.me(), ...askTeamActors(this.serverAsks), ...this.serverFlags.map(f => f.by), ...this.serverObjections.map(o => o.by)],
+        extra: [this.me(), ...askTeamActors(this.serverAsks), ...this.serverFlags.map(f => f.by), ...this.serverObjections.map(o => o.by),
+          ...this.serverAlternatives.map(a => a.by), ...this.serverTtls.map(t => t.by)],
         identity: { target: actor => resolveTargetActor(actor, this.directory) },
       });
       this.states = buildLineStates(this.lines, this.serverMarks);
+      // Step B4f: alternatives, times-to-live (judged on the server's clock), disagreement.
+      this.altViews = evaluateAlternatives(this.serverAlternatives, this.serverPicks, this.lines, team);
+      this.altsByLine = new Map(this.altViews.map(v => [v.lineIndex, v]));
+      this.ttlViews = evaluateTtls(this.serverTtls, this.lines, this.states, team, Date.now() + this.clockSkewMs);
+      this.ttlByLine = new Map(this.ttlViews.filter(v => v.lineIndex !== null).map(v => [v.lineIndex as number, v]));
+      applyDecay(this.states, this.ttlViews);
+      this.disagreement = disagreementCounts(this.blind) ? disagreementLines(this.states) : new Set();
+      this.bundleViews = this.serverBundles.map(bundle => evaluateBundle(bundle, this.lines, markId => this.locateSuggestion(markId)));
+      this.termLinks = termLinksFor(this.lines, this.states, this.me());
       this.askViews = evaluateAsks(this.serverAsks, this.lines);
       // Step B4c/B4d: flags and objections, evaluated against this page's lines and positions.
       this.flagViews = evaluateFlags(this.serverFlags, this.lines);
@@ -436,14 +508,20 @@ export class LineMarksUI {
         lines: this.lines, lineMarks: this.serverMarks, team, reviewMarks, asks: askIssueInputs(this.askViews),
         uncertain: uncertainIssueInputs(this.flagViews, this.states, team),
         objections: objectionIssueInputs(this.objectionViews),
+        alternatives: alternativeIssueInputs(this.altViews, team),
+        ttl: ttlIssueInputs(this.ttlViews),
+        disagreementLines: this.disagreement,
+        disagreementAlternatives: disagreementCounts(this.blind),
       });
       this.ranked = rankIssues(this.summary.issues, { viewer: this.me(), explicitFor: explicitPriorityLookup(this.serverNotes, this.lines) });
       this.selection = this.selection.filter(index => index < this.lines.length);
       this.queueAskDecorations();
+      this.queueExtrasDecorations();
       this.maybeCheckAlignment();
     }
     this.renderBanner();
     this.renderBudget();
+    this.renderBlind();
     this.queueRender();
     for (const listener of this.listeners) {
       try { listener(); } catch (error) { console.warn('[plm] listener failed', error); }
@@ -819,7 +897,7 @@ export class LineMarksUI {
     this.countEl.textContent = n === 0 ? 'Aligned' : `${n} ${n === 1 ? 'issue' : 'issues'}`;
     this.countEl.title = n === 0
       ? `Every team member has seen every line and no one has rejected anything. Team: ${summary.team.map(actorLabel).join(', ')}`
-      : `${summary.counts.lineIssues} lines not yet seen by everyone or rejected; ${summary.counts.reviewMarkIssues} open comments or suggestions; ${summary.counts.askIssues} unanswered ${summary.counts.askIssues === 1 ? 'ask' : 'asks'}; ${summary.counts.uncertainIssues} uncertain ${summary.counts.uncertainIssues === 1 ? 'line' : 'lines'}; ${summary.counts.objectionIssues} open ${summary.counts.objectionIssues === 1 ? 'objection' : 'objections'}. Next issue goes by stakes: ${this.ranked.filter(r => r.urgent).length} urgent. Team: ${summary.team.map(actorLabel).join(', ')}`;
+      : `${summary.counts.lineIssues} lines not yet seen by everyone or rejected; ${summary.counts.reviewMarkIssues} open comments or suggestions; ${summary.counts.askIssues} unanswered ${summary.counts.askIssues === 1 ? 'ask' : 'asks'}; ${summary.counts.uncertainIssues} uncertain ${summary.counts.uncertainIssues === 1 ? 'line' : 'lines'}; ${summary.counts.objectionIssues} open ${summary.counts.objectionIssues === 1 ? 'objection' : 'objections'}; ${summary.counts.alternativeIssues} ${summary.counts.alternativeIssues === 1 ? 'line' : 'lines'} with competing wordings; ${summary.counts.ttlIssues} expired ${summary.counts.ttlIssues === 1 ? 'claim' : 'claims'}${this.blind ? '; blind marking is on' : ''}. Next issue goes by stakes: ${this.ranked.filter(r => r.urgent).length} urgent. Team: ${summary.team.map(actorLabel).join(', ')}`;
     this.nextBtn.disabled = n === 0;
     this.setShort(n === 0 ? '✓ Aligned' : `${n} ›`);
     this.nextBtn.setAttribute('aria-label', n === 0 ? 'No issues: aligned' : `Next issue (${n} ${n === 1 ? 'issue' : 'issues'})`);
@@ -877,8 +955,13 @@ export class LineMarksUI {
       }
       dot.dataset.line = String(line.index);
       const mine = state.marks.get(me);
-      const myStatus: StatusChoice | 'changed' = !mine ? 'unseen' : (mine.current ? mine.mark.status : 'changed');
+      const myStatus: ShownStatus = !mine ? 'unseen' : (!mine.current ? 'changed' : mine.decayed ? 'stale' : mine.mark.status);
       dot.dataset.status = myStatus;
+      // Step B4f: disagreement (blind reveal), competing wordings, a time-to-live on the line.
+      if (this.disagreement.has(line.index)) dot.dataset.disagreement = 'true'; else delete dot.dataset.disagreement;
+      if (this.altsByLine.has(line.index)) dot.dataset.alternatives = String(this.altsByLine.get(line.index)!.options.length - 1); else delete dot.dataset.alternatives;
+      const ttlView = this.ttlByLine.get(line.index);
+      if (ttlView) dot.dataset.ttl = ttlView.expired || ttlView.notTrue ? 'expired' : 'set'; else delete dot.dataset.ttl;
       dot.dataset.issue = issueLines.has(line.index) ? 'true' : 'false';
       // Step B3b: your mark survived a small edit (the rail shows what changed).
       if (mine?.carried) dot.dataset.carried = 'true'; else delete dot.dataset.carried;
@@ -894,7 +977,7 @@ export class LineMarksUI {
       dot.style.width = `${dotSize}px`;
       dot.style.height = `${dotSize}px`;
       const others = [...state.marks.entries()].filter(([k]) => k !== me);
-      const pipStatuses = others.slice(0, 4).map(([, entry]) => entry.current ? entry.mark.status : 'changed');
+      const pipStatuses = others.slice(0, 4).map(([, entry]) => shownStatus(entry));
       // Rebuild the dot's children only when they change: a click whose target was replaced
       // between pointerdown and pointerup would be lost.
       const sig = `${myStatus}|${pipStatuses.join(',')}`;
@@ -902,7 +985,7 @@ export class LineMarksUI {
         dot.dataset.sig = sig;
         const glyph = document.createElement('span');
         glyph.className = 'plm-glyph';
-        glyph.textContent = STATUS_GLYPH[myStatus];
+        glyph.textContent = myStatus === 'stale' ? '' : STATUS_GLYPH[myStatus];
         const pips = document.createElement('span');
         pips.className = 'plm-pips';
         for (const status of pipStatuses) {
@@ -912,12 +995,15 @@ export class LineMarksUI {
         }
         dot.replaceChildren(glyph, pips);
       }
-      const othersText = others.map(([, e]) => `${actorLabel(e.mark.by)}: ${e.current ? STATUS_LABEL[e.mark.status] : 'changed since marked'}`).join('; ');
+      const othersText = others.map(([, e]) => `${actorLabel(e.mark.by)}: ${shownLabel(shownStatus(e))}`).join('; ');
       const carriedText = (mine?.carried ? ' (carried over a small edit)' : '')
         + (this.flagsByLine.has(line.index) ? '. Flagged uncertain by its writer' : '')
         + (this.objectionsByLine.has(line.index) ? '. Has an open objection' : '');
-      dot.setAttribute('aria-label', `Line ${line.index + 1}: your mark ${myStatus === 'changed' ? 'is out of date (the line changed)' : STATUS_LABEL[myStatus as StatusChoice]}${carriedText}${othersText ? `. ${othersText}` : ''}. Mark this line`);
-      dot.title = othersText ? `You: ${myStatus === 'changed' ? 'changed since you marked it' : STATUS_LABEL[myStatus as StatusChoice]}\n${othersText.replace(/; /g, '\n')}` : 'Mark this line';
+      const extraText = (this.disagreement.has(line.index) ? '. The team disagrees on this line' : '')
+        + (this.altsByLine.has(line.index) ? '. Has competing wordings' : '')
+        + (ttlView ? `. ${describeTtl(ttlView, Date.now() + this.clockSkewMs)}` : '');
+      dot.setAttribute('aria-label', `Line ${line.index + 1}: your mark ${myStatus === 'changed' ? 'is out of date (the line changed)' : shownLabel(myStatus)}${carriedText}${extraText}${othersText ? `. ${othersText}` : ''}. Mark this line`);
+      dot.title = othersText ? `You: ${myStatus === 'changed' ? 'changed since you marked it' : shownLabel(myStatus)}\n${othersText.replace(/; /g, '\n')}` : 'Mark this line';
     }
     for (const [key, el] of existing) if (!used.has(key)) el.remove();
   }
@@ -970,6 +1056,26 @@ export class LineMarksUI {
     for (const objection of this.objectionsByLine.get(line.index) ?? []) root.append(this.buildObjectionCard(objection));
     // Step B4c: the writer's uncertainty (flag, note, Clear), or "Flag uncertain…".
     root.append(this.buildFlagRow(line));
+    // Step B4f: disagreement revealed by blind marking, competing wordings, time-to-live, Explain.
+    if (this.disagreement.has(line.index)) {
+      const note = document.createElement('p');
+      note.className = 'plm-disagree';
+      note.setAttribute('role', 'status');
+      note.textContent = 'The team disagrees on this line: someone agreed and someone rejected it. It is a priority Issue.';
+      root.append(note);
+    }
+    if (this.blind && this.hiddenOnLine(line.index) > 0) {
+      const note = document.createElement('p');
+      note.className = 'plm-blind-note';
+      const n = this.hiddenOnLine(line.index);
+      note.textContent = `Blind marking: ${n} ${n === 1 ? 'mark is' : 'marks are'} hidden until you mark this line.`;
+      root.append(note);
+    }
+    const altSet = this.altsByLine.get(line.index);
+    if (altSet) root.append(this.buildAltSection(line, altSet));
+    root.append(this.buildExtrasRow(line, Boolean(altSet)));
+    const history = this.altHistoryFor(line.index);
+    if (history.length) root.append(this.buildAltHistory(history));
 
     if (mine && !mine.current) {
       const changed = document.createElement('p');
@@ -1184,11 +1290,11 @@ export class LineMarksUI {
       who.textContent = actorKey(member) === me ? `${actorLabel(member)} (you)` : actorLabel(member);
       const what = document.createElement('span');
       what.className = 'plm-team-status';
-      const status = !entry ? 'unseen' : (entry.current ? entry.mark.status : 'changed');
+      const status = !entry ? 'unseen' : shownStatus(entry);
       what.dataset.status = status;
-      what.textContent = status === 'changed' ? 'Changed since marked' : STATUS_LABEL[status as StatusChoice];
+      what.textContent = status === 'changed' ? 'Changed since marked' : shownLabel(status);
       // Step B3b: how a Seen was earned ("Seen by scrolling" vs "Seen, marked").
-      if (entry?.current && entry.mark.status === 'seen') {
+      if (entry?.current && entry.mark.status === 'seen' && !entry.mark.hidden) {
         const via = (entry.mark.via ?? 'api') as MarkVia;
         what.textContent += ` ${via === 'click' || via === 'key' ? '(marked)' : `(${VIA_LABEL[via]})`}`;
         what.dataset.via = via;
@@ -1328,6 +1434,8 @@ export class LineMarksUI {
       : next.type === 'ask' ? `ask ${next.lineIndex + 1}`
       : next.type === 'uncertain' ? `uncertain ${next.lineIndex + 1}`
       : next.type === 'objection' ? `objection ${(next.lineIndex ?? -1) + 1}`
+      : next.type === 'alternative' ? `alternative ${next.lineIndex + 1}`
+      : next.type === 'ttl' ? `ttl ${next.lineIndex + 1}`
       : next.type;
     this.renderBudget();
   }
@@ -1523,7 +1631,12 @@ export class LineMarksUI {
     const flags = this.flagsOn(index).map(f => `${f.id}:${f.note ?? ''}`).join(',');
     const objections = this.objectionsOn(index).map(o => `${o.objection.id}:${o.repairPending}:${o.deletedLines}`).join(',');
     const chips = this.rejectChips(index).map(c => c.label).join(',');
-    return `${flags}|${objections}|${chips}|${this.selection.join(',')}|${this.canApprove}`;
+    const alt = this.altsByLine.get(index);
+    const alts = alt ? JSON.stringify([alt.options.map(o => o.id), [...alt.picks.values()].map(p => [p.by, p.hidden ? '?' : p.choice])]) : '';
+    const ttl = this.ttlByLine.get(index);
+    const ttlSig = ttl ? `${ttl.ttl.id}:${ttl.expired}:${ttl.notTrue}:${ttl.decayed.length}:${ttl.ttl.checks.length}` : '';
+    const extras = `${alts}|${ttlSig}|${this.disagreement.has(index)}|${this.hiddenOnLine(index)}|${this.altHistoryFor(index).length}|${this.blind}`;
+    return `${flags}|${objections}|${chips}|${this.selection.join(',')}|${this.canApprove}|${extras}`;
   }
 
   selectionLines(): number[] { return [...this.selection]; }
@@ -1747,6 +1860,453 @@ export class LineMarksUI {
     return card;
   }
 
+  // --------------------------------------------------------------------------
+  // Steps B4e + B4f: bundles, alternatives, blind marking, Explain, times-to-live
+  // --------------------------------------------------------------------------
+
+  /** Where a suggestion is on this page, and whether it is still pending. */
+  private locateSuggestion(markId: string): { state: MemberState; lineIndex: number | null } {
+    const mark = this.reviewMarkCache.find(m => m.id === markId);
+    if (!mark) return { state: 'missing', lineIndex: null };
+    if (!mark.open) return { state: mark.status === 'rejected' ? 'rejected' : mark.status === 'accepted' ? 'accepted' : 'missing', lineIndex: null };
+    return { state: 'pending', lineIndex: typeof mark.pos === 'number' ? this.lineAtPos(mark.pos) : null };
+  }
+
+  /** The open bundle a suggestion belongs to (evaluated against this page). */
+  bundleForMark(markId: string): BundleView | null {
+    return this.bundleViews.find(view => view.bundle.status === 'open' && view.bundle.members.some(m => m.markId === markId)) ?? null;
+  }
+
+  bundleList(): BundleView[] { return this.bundleViews; }
+
+  /** Step B4e: the page applied or rejected a bundle in its editor: record it on the server. */
+  async recordBundleDecision(id: string, decision: 'accepted' | 'rejected'): Promise<boolean> {
+    const result = await this.postAid(`/bundles/${encodeURIComponent(id)}/decision`, { decision });
+    if (result.ok) this.extrasWrites += 1;
+    return result.ok;
+  }
+
+  altSetFor(index: number): AltSetView | null { return this.altsByLine.get(index) ?? null; }
+
+  private hiddenOnLine(index: number): number {
+    const state = this.states[index];
+    const marks = state ? [...state.marks.values()].filter(e => e.current && e.mark.hidden).length : 0;
+    const set = this.altsByLine.get(index);
+    const picks = set ? [...set.picks.values()].filter(p => p.hidden).length : 0;
+    return marks + picks;
+  }
+
+  private altHistoryFor(index: number): ProofAlternative[] {
+    const cache = new Map<string, boolean>();
+    return this.serverAltHistory.filter(alt => alt.status !== 'withdrawn' && altLineIndex(alt, this.lines, cache) === index).reverse();
+  }
+
+  /** Step B4f: pick a wording on a line: an option id, or its key "1".."9". */
+  async pickAlternative(index: number, choice: string): Promise<boolean> {
+    const set = this.altsByLine.get(index);
+    const line = this.lines[index];
+    if (!set || !line || !this.canMark) return false;
+    const option = /^[1-9]$/.test(choice) ? set.options[Number(choice) - 1] : set.options.find(o => o.id === choice);
+    if (!option) return false;
+    // Optimistic: the pick shows at once.
+    const by = this.me();
+    this.serverPicks = [...this.serverPicks.filter(p => !(actorKey(p.by) === actorKey(by) && p.lineHash === line.hash)),
+      { by, choice: option.id, lineHash: line.hash, at: new Date().toISOString() }];
+    this.recompute();
+    const result = await this.postAid('/alternatives/pick', { anchor: anchorForLine(line), choice: option.id });
+    if (result.ok) {
+      this.extrasWrites += 1;
+      if (result.body.resolved) this.toast(`Everyone picked the same wording: it is now the line.`);
+    }
+    return result.ok;
+  }
+
+  async offerAlternative(index: number, text: string): Promise<boolean> {
+    const line = this.lines[index];
+    if (!line || !this.canMark || !text.trim()) return false;
+    const result = await this.postAid('/alternatives', { anchor: anchorForLine(line), text });
+    if (result.ok) this.extrasWrites += 1;
+    return result.ok;
+  }
+
+  async decideAlternative(index: number, choice: string): Promise<boolean> {
+    const line = this.lines[index];
+    if (!line || !this.canApprove) return false;
+    const result = await this.postAid('/alternatives/decide', { anchor: anchorForLine(line), choice });
+    if (result.ok) { this.extrasWrites += 1; this.toast('Decided: that wording is now the line.'); }
+    return result.ok;
+  }
+
+  async withdrawAlternative(id: string): Promise<boolean> {
+    const result = await this.postAid(`/alternatives/${encodeURIComponent(id)}/withdraw`, {});
+    if (result.ok) this.extrasWrites += 1;
+    return result.ok;
+  }
+
+  /** Step B4f: a time-to-live on a line ("7d"). */
+  async setTtl(index: number, ttl: string): Promise<boolean> {
+    const line = this.lines[index];
+    if (!line || !this.canMark) return false;
+    const result = await this.postAid('/ttl', { anchor: anchorForLine(line), ttl });
+    if (result.ok) this.extrasWrites += 1;
+    return result.ok;
+  }
+
+  async clearTtl(id: string): Promise<boolean> {
+    const result = await this.postAid(`/ttl/${encodeURIComponent(id)}/clear`, {});
+    if (result.ok) this.extrasWrites += 1;
+    return result.ok;
+  }
+
+  ttlFor(index: number): TtlView | null { return this.ttlByLine.get(index) ?? null; }
+
+  /**
+   * Step B4f: Explain. Posts a comment thread on the line to the AI collaborators (tagged
+   * `explain` on the server, with an explain.requested event). Never marks the line.
+   */
+  async explainLine(index: number, question = ''): Promise<boolean> {
+    const line = this.lines[index];
+    if (!line || !this.canMark) return false;
+    const ais = (this.summary?.team ?? []).filter(isAiActor).map(actor => actorLabel(actor));
+    const text = explainCommentText(question, ais);
+    const markId = this.host.commentOnLine?.(line, text) ?? null;
+    if (!markId) { this.toast('Could not place the question on this line'); return false; }
+    const result = await this.postAid('/explain', { anchor: anchorForLine(line), question: question.trim() || EXPLAIN_POLICY.defaultQuestion, commentMarkId: markId });
+    if (result.ok) {
+      this.extrasWrites += 1;
+      this.toast(ais.length ? `Asked ${ais.join(', ')} to explain line ${index + 1}. The answer comes back on the line’s thread.` : `Asked for an explanation of line ${index + 1} (no AI has joined this document yet).`);
+    }
+    return result.ok;
+  }
+
+  /** Step B4f: an Owner turns blind marking on or off. */
+  async setBlind(on: boolean): Promise<boolean> {
+    const result = await this.postAid('/settings', { blind: on });
+    if (result.ok) { this.extrasWrites += 1; this.blind = on; this.renderBlind(); }
+    return result.ok;
+  }
+
+  isBlind(): boolean { return this.blind; }
+
+  /** Step B4f: the defined terms this reader has not seen yet (linked at their first use). */
+  termLinkList(): TermUse[] { return this.termLinks; }
+
+  private buildAltSection(line: DocLine, set: AltSetView): HTMLElement {
+    const root = document.createElement('div');
+    root.className = 'plm-alts';
+    root.dataset.line = String(line.index);
+    const head = document.createElement('p');
+    head.className = 'plm-alts-head';
+    const strong = document.createElement('strong');
+    strong.textContent = 'Competing wordings';
+    head.append(strong, ` · ${describeAltSet(set)} · keys 1–${set.options.length}`);
+    root.append(head);
+    const mine = pickOf(set, this.me());
+    const group = document.createElement('div');
+    group.setAttribute('role', 'radiogroup');
+    group.setAttribute('aria-label', 'Pick one wording for this line');
+    const counts = new Map<string, number>();
+    for (const pick of set.picks.values()) if (!pick.hidden) counts.set(pick.choice, (counts.get(pick.choice) ?? 0) + 1);
+    set.options.forEach((option, i) => {
+      const label = document.createElement('label');
+      label.className = 'plm-alt';
+      label.dataset.choice = option.id;
+      label.dataset.key = String(i + 1);
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = `plm-alt-${line.index}`;
+      radio.value = option.id;
+      radio.checked = mine?.choice === option.id;
+      radio.disabled = !this.canMark;
+      radio.onchange = () => { if (radio.checked) void this.pickAlternative(line.index, option.id); };
+      const key = document.createElement('span');
+      key.className = 'plm-alt-key';
+      key.textContent = String(i + 1);
+      const text = document.createElement('span');
+      text.className = 'plm-alt-text';
+      text.textContent = option.text;
+      const by = document.createElement('span');
+      by.className = 'plm-alt-by';
+      const n = counts.get(option.id) ?? 0;
+      by.textContent = `${option.by ? `offered by ${actorLabel(option.by)}` : 'the line as it is'}${n ? ` · ${n} picked` : ''}`;
+      label.append(radio, key, text, by);
+      if (this.canApprove && ALT_POLICY.ownerDecides) {
+        const decide = document.createElement('button');
+        decide.type = 'button';
+        decide.className = 'plm-link plm-alt-decide';
+        decide.textContent = 'Decide';
+        decide.title = 'As an Owner, make this the line now';
+        decide.onclick = (event) => { event.preventDefault(); void this.decideAlternative(line.index, option.id); };
+        label.append(decide);
+      }
+      if (option.by && (actorKey(option.by) === actorKey(this.me()) || this.canApprove)) {
+        const withdraw = document.createElement('button');
+        withdraw.type = 'button';
+        withdraw.className = 'plm-link plm-alt-withdraw';
+        withdraw.textContent = 'Withdraw';
+        withdraw.onclick = (event) => { event.preventDefault(); void this.withdrawAlternative(option.id); };
+        label.append(withdraw);
+      }
+      group.append(label);
+    });
+    root.append(group);
+    const hidden = [...set.picks.values()].filter(p => p.hidden).length;
+    const note = document.createElement('p');
+    note.className = 'plm-alts-note';
+    note.textContent = hidden
+      ? `${hidden} ${hidden === 1 ? 'pick is' : 'picks are'} hidden until you pick or mark this line (blind marking).`
+      : 'When everyone picks the same wording it becomes the line; the others are kept as its history.';
+    root.append(note);
+    return root;
+  }
+
+  private buildExtrasRow(line: DocLine, hasAlts: boolean): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'plm-extras';
+    const links = document.createElement('div');
+    links.className = 'plm-extras-links';
+    const forms = document.createElement('div');
+    const link = (label: string, cls: string, title: string, onClick: () => void) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = `plm-link ${cls}`; b.textContent = label; b.title = title; b.disabled = !this.canMark;
+      b.onclick = onClick; links.append(b); return b;
+    };
+    const escHide = (form: HTMLElement) => (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault(); event.stopPropagation(); form.hidden = true; (event.target as HTMLElement).blur();
+    };
+    // Offer another wording (instead of rejecting).
+    const altsCount = this.altsByLine.get(line.index)?.options.length ?? 1;
+    if (ALT_POLICY.kinds.includes(line.kind) && altsCount - 1 < ALT_POLICY.maxPerLine) {
+      const form = document.createElement('form');
+      form.className = 'plm-alt-form';
+      form.hidden = true;
+      const input = document.createElement('textarea');
+      input.rows = 2;
+      input.maxLength = ALT_POLICY.maxText;
+      input.value = line.text;
+      input.setAttribute('aria-label', 'Your wording for this line');
+      const save = document.createElement('button');
+      save.type = 'submit';
+      save.textContent = 'Offer this wording';
+      form.append(input, save);
+      form.onsubmit = (event) => { event.preventDefault(); const text = input.value.trim(); if (text && text !== line.text) void this.offerAlternative(line.index, text); };
+      input.addEventListener('keydown', escHide(form));
+      input.addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); form.requestSubmit(); } });
+      link(hasAlts ? 'Offer another wording…' : 'Offer another wording…', 'plm-alt-open', 'Instead of rejecting, propose a different wording. Everyone picks one.', () => {
+        form.hidden = false; input.focus({ preventScroll: true }); input.select();
+      });
+      forms.append(form);
+    }
+    // Explain (E).
+    const explainForm = document.createElement('form');
+    explainForm.className = 'plm-explain-form';
+    explainForm.hidden = true;
+    const q = document.createElement('input');
+    q.type = 'text'; q.maxLength = EXPLAIN_POLICY.maxQuestion; q.placeholder = EXPLAIN_POLICY.defaultQuestion;
+    q.setAttribute('aria-label', 'Your question about this line (optional)');
+    const ask = document.createElement('button'); ask.type = 'submit'; ask.textContent = 'Ask';
+    explainForm.append(q, ask);
+    explainForm.onsubmit = (event) => { event.preventDefault(); void this.explainLine(line.index, q.value); explainForm.hidden = true; };
+    q.addEventListener('keydown', escHide(explainForm));
+    link('Explain…', 'plm-explain-open', 'Ask the document’s AI collaborators to explain this line (key E). It is not a rejection and not an Issue for you.', () => {
+      explainForm.hidden = false; q.focus({ preventScroll: true });
+    });
+    forms.append(explainForm);
+    // Time-to-live.
+    const ttl = this.ttlByLine.get(line.index);
+    const ttlRow = document.createElement('div');
+    ttlRow.className = 'plm-ttl';
+    if (ttl) {
+      const p = document.createElement('p');
+      p.className = 'plm-ttl-status';
+      p.dataset.state = ttl.expired || ttl.notTrue ? 'expired' : 'set';
+      const who = actorKey(ttl.ttl.by) === actorKey(this.me()) ? 'you' : actorLabel(ttl.ttl.by);
+      let text = `Perishable (${ttl.ttl.label}, set by ${who}): ${describeTtl(ttl, Date.now() + this.clockSkewMs)}.`;
+      if (ttl.decayed.length) text += ` ${ttl.decayed.length} Agreed/Approved ${ttl.decayed.length === 1 ? 'mark is' : 'marks are'} stale.`;
+      if ((ttl.expired || ttl.notTrue) && ttl.openFor.length) text += ttl.reason === 'expired' ? ' Waiting for an AI to re-check it.' : ' Mark it again (Agree or Reject).';
+      const last = ttl.ttl.checks[ttl.ttl.checks.length - 1];
+      if (last) text += ` Last check: ${actorLabel(last.by)} said ${last.stillTrue ? 'still true' : 'no longer true'}${last.why ? ` (${last.why})` : ''}.`;
+      p.textContent = text;
+      if (actorKey(ttl.ttl.by) === actorKey(this.me()) || this.canApprove) {
+        const clear = document.createElement('button');
+        clear.type = 'button'; clear.className = 'plm-link plm-ttl-clear'; clear.textContent = 'Remove';
+        clear.disabled = !this.canMark;
+        clear.onclick = () => { void this.clearTtl(ttl.ttl.id); };
+        p.append(' ', clear);
+      }
+      ttlRow.append(p);
+    }
+    const ttlForm = document.createElement('form');
+    ttlForm.className = 'plm-ttl-form';
+    ttlForm.hidden = true;
+    for (const preset of TTL_POLICY.presets) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'plm-ttl-preset'; b.textContent = preset;
+      b.onclick = () => { void this.setTtl(line.index, preset); ttlForm.hidden = true; };
+      ttlForm.append(b);
+    }
+    const custom = document.createElement('input');
+    custom.type = 'text'; custom.placeholder = 'or e.g. 12h'; custom.maxLength = 8;
+    custom.setAttribute('aria-label', 'Time-to-live, for example 7d or 12h');
+    const setBtn = document.createElement('button'); setBtn.type = 'submit'; setBtn.textContent = 'Set';
+    ttlForm.append(custom, setBtn);
+    ttlForm.onsubmit = (event) => { event.preventDefault(); if (custom.value.trim()) void this.setTtl(line.index, custom.value.trim()); ttlForm.hidden = true; };
+    custom.addEventListener('keydown', escHide(ttlForm));
+    link(ttl ? 'Change time-to-live…' : 'Time-to-live…', 'plm-ttl-open', 'Make this line perishable: when the time runs out, agreement to it goes stale and an AI re-checks it.', () => {
+      ttlForm.hidden = false; (ttlForm.querySelector('button') as HTMLButtonElement | null)?.focus({ preventScroll: true });
+    });
+    forms.append(ttlForm);
+    row.append(ttlRow, links, forms);
+    return row;
+  }
+
+  private buildAltHistory(history: ProofAlternative[]): HTMLElement {
+    const details = document.createElement('details');
+    details.className = 'plm-alt-history';
+    const summary = document.createElement('summary');
+    summary.textContent = `Earlier wordings (${history.length})`;
+    details.append(summary);
+    const list = document.createElement('ul');
+    for (const alt of history.slice(0, 20)) {
+      const li = document.createElement('li');
+      const how = alt.resolution?.how === 'owner' ? 'an Owner decided' : 'everyone picked';
+      li.textContent = `${alt.status === 'chosen' ? 'Chosen' : 'Not chosen'}: “${alt.text}” — offered by ${actorLabel(alt.by)}${alt.resolution ? ` (${how})` : ''}`;
+      list.append(li);
+    }
+    details.append(list);
+    return details;
+  }
+
+  /** Step B4f: the rail's blind-marking row (an Owner's switch; a notice for everyone else). */
+  private renderBlind(): void {
+    const el = this.blindEl;
+    const sig = JSON.stringify([this.blind, this.canApprove, this.loaded, this.blindInfo?.hiddenPositions ?? 0]);
+    if (el.dataset.sig === sig) return;
+    el.dataset.sig = sig;
+    el.className = 'plm-blind';
+    el.dataset.on = String(this.blind);
+    el.replaceChildren();
+    el.hidden = !this.loaded || (!this.blind && !this.canApprove);
+    if (el.hidden) return;
+    if (this.canApprove) {
+      const label = document.createElement('label');
+      label.className = 'plm-blind-setting';
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = this.blind;
+      box.onchange = () => { void this.setBlind(box.checked); };
+      const text = document.createElement('span');
+      text.textContent = 'Blind marking';
+      label.append(box, text);
+      el.append(label);
+    }
+    const note = document.createElement('p');
+    note.className = 'plm-blind-status';
+    note.textContent = this.blind
+      ? 'On: you see how others marked a line only after you mark it yourself. Disagreements then come first.'
+      : 'Off: everyone sees everyone’s marks at once.';
+    el.append(note);
+  }
+
+  /** The alternatives stacks under their lines and the term links (view-only decorations). */
+  private queueExtrasDecorations(): void {
+    if (this.extrasDecoQueued) return;
+    this.extrasDecoQueued = true;
+    requestAnimationFrame(() => {
+      this.extrasDecoQueued = false;
+      const view = this.view;
+      if (!view) return;
+      const alts: AltStackSpec[] = [];
+      const sigs: string[] = [];
+      for (const set of this.altViews) {
+        const line = this.lines[set.lineIndex];
+        if (!line || line.kind === 'table_row') continue;
+        const mine = pickOf(set, this.me())?.choice ?? '';
+        const sig = String(hashSig(JSON.stringify([set.options.map(o => [o.id, o.text, o.by]), mine, [...set.picks.values()].map(p => [p.by, p.hidden ? '?' : p.choice])])));
+        sigs.push(`${set.lineIndex}@${line.pos}:${line.nodeSize}:${sig}`);
+        alts.push({ lineIndex: set.lineIndex, pos: line.pos, nodeSize: line.nodeSize, sig, render: () => this.buildAltStack(set) });
+      }
+      const terms: TermLinkSpec[] = [];
+      for (const use of this.termLinks) {
+        const line = this.lines[use.lineIndex];
+        if (!line || line.kind === 'table_row') continue;
+        sigs.push(`t:${use.term}@${line.pos}`);
+        terms.push({ term: use.term, definition: use.definition, defLineIndex: use.defLineIndex, pos: line.pos, nodeSize: line.nodeSize });
+      }
+      const signature = sigs.join('|');
+      // A remote Yjs update replaces the whole document, which drops mapped decorations even when
+      // every position is unchanged: rebuild whenever the set holds fewer than it should.
+      const expected = alts.filter(spec => view.state.doc.nodeAt(spec.pos)?.isTextblock).length
+        + terms.filter(spec => termRange(view.state.doc, spec.pos, spec.term)).length;
+      const present = proofExtrasViewKey.getState(view.state)?.find().length ?? 0;
+      if (signature === this.extrasDecoSig && present >= expected) return;
+      this.extrasDecoSig = signature;
+      try { setProofExtrasDecorations(view, alts, terms); } catch (error) { console.warn('[plm] extras decorations failed', error); }
+    });
+  }
+
+  /** The wordings shown under a line in the text (original first; the rail has the controls). */
+  private buildAltStack(set: AltSetView): HTMLElement {
+    const root = document.createElement('div');
+    root.className = 'pdx-alts';
+    root.contentEditable = 'false';
+    root.dataset.line = String(set.lineIndex);
+    root.setAttribute('aria-label', 'Competing wordings for this line');
+    const mine = pickOf(set, this.me())?.choice ?? null;
+    set.options.forEach((option, i) => {
+      const row = document.createElement('div');
+      row.className = 'pdx-alt';
+      row.dataset.choice = option.id;
+      if (mine === option.id) row.dataset.mine = 'true';
+      const key = document.createElement('span');
+      key.className = 'pdx-alt-key';
+      key.textContent = String(i + 1);
+      const text = document.createElement('span');
+      text.className = 'pdx-alt-text';
+      text.textContent = i === 0 ? 'Original wording (above)' : option.text;
+      const by = document.createElement('span');
+      by.className = 'pdx-alt-by';
+      by.textContent = option.by ? actorLabel(option.by) : '';
+      row.append(key, text, by);
+      row.onclick = (event) => { event.preventDefault(); event.stopPropagation(); void this.pickAlternative(set.lineIndex, option.id); };
+      root.append(row);
+    });
+    return root;
+  }
+
+  /** Clicking a linked term shows its definition, with a way to go and read it. */
+  private onTermClick = (event: MouseEvent): void => {
+    const target = (event.target as HTMLElement | null)?.closest?.('.pdx-term') as HTMLElement | null;
+    document.querySelector('.plm-term-pop')?.remove();
+    if (!target) return;
+    const term = target.dataset.term ?? '';
+    const use = this.termLinks.find(u => u.term === term);
+    if (!use) return;
+    const pop = document.createElement('div');
+    pop.className = 'plm-term-pop';
+    pop.setAttribute('role', 'dialog');
+    pop.setAttribute('aria-label', `Definition of ${term}`);
+    const p = document.createElement('p');
+    const strong = document.createElement('strong');
+    strong.textContent = use.term;
+    p.append(strong, ` — ${use.definition}`);
+    const go = document.createElement('button');
+    go.type = 'button'; go.className = 'plm-link'; go.textContent = 'Go to the definition';
+    go.onclick = () => { pop.remove(); this.host.revealLine?.(use.defLineIndex); if (!this.host.focusLine?.(use.defLineIndex)) this.issueTarget(use.defLineIndex)?.scrollIntoView({ block: 'center' }); };
+    pop.append(p, go);
+    const r = target.getBoundingClientRect();
+    pop.style.left = `${Math.max(8, Math.min(window.innerWidth - 300, r.left))}px`;
+    pop.style.top = `${Math.min(window.innerHeight - 120, r.bottom + 6)}px`;
+    document.body.append(pop);
+    setTimeout(() => pop.remove(), 8000);
+  };
+
+  private issueTarget(index: number): HTMLElement | null {
+    const line = this.lines[index];
+    return line && this.view ? this.view.nodeDOM(line.pos) as HTMLElement | null : null;
+  }
+
   // ---------------- the sitting budget ----------------
 
   private sittingKey(): string | null {
@@ -1858,7 +2418,7 @@ export class LineMarksUI {
   private aidWrites = 0;
 
   /** Test and agent hook: the numbers the UI shows. */
-  debugState(): { aids: Record<string, unknown>; loaded: boolean; issues: number; aligned: boolean; team: string[]; lines: number; marks: LineMark[]; sectionWrites: number; askIssues: number; askAnswers: number; asks: Array<Record<string, unknown>>; skimWrites: number; snapshot: { id: string; createdAt: string } | null; carried: Array<{ line: number; by: string; from: string | null }> } {
+  debugState(): { extras: Record<string, unknown>; aids: Record<string, unknown>; loaded: boolean; issues: number; aligned: boolean; team: string[]; lines: number; marks: LineMark[]; sectionWrites: number; askIssues: number; askAnswers: number; asks: Array<Record<string, unknown>>; skimWrites: number; snapshot: { id: string; createdAt: string } | null; carried: Array<{ line: number; by: string; from: string | null }> } {
     return {
       aids: {
         flags: this.flagViews.map(v => ({ id: v.flag.id, by: v.flag.by, note: v.flag.note, line: v.lineIndex })),
@@ -1871,6 +2431,22 @@ export class LineMarksUI {
         writes: this.aidWrites,
         uncertainIssues: this.summary?.counts.uncertainIssues ?? -1,
         objectionIssues: this.summary?.counts.objectionIssues ?? -1,
+      },
+      extras: {
+        blind: this.blind,
+        blindInfo: this.blindInfo,
+        bundles: this.bundleViews.map(v => ({ id: v.bundle.id, title: v.bundle.title, status: v.status, pending: v.pending, stale: v.stale, acceptable: v.acceptable, summary: describeBundle(v) })),
+        alternatives: this.altViews.map(v => ({ line: v.lineIndex, options: v.options.map(o => o.id), openFor: v.openFor, unanimous: v.unanimous, disagree: v.disagree, picks: [...v.picks.values()].map(p => ({ by: p.by, choice: p.hidden ? null : p.choice, hidden: Boolean(p.hidden) })) })),
+        ttls: this.ttlViews.map(v => ({ id: v.ttl.id, line: v.lineIndex, expired: v.expired, notTrue: v.notTrue, decayed: v.decayed, openFor: v.openFor, reason: v.reason })),
+        disagreement: [...this.disagreement],
+        terms: this.termLinks.map(t => ({ term: t.term, line: t.lineIndex, def: t.defLineIndex })),
+        explains: this.serverExplains.length,
+        hiddenMarks: this.serverMarks.filter(m => m.hidden).length,
+        alternativeIssues: this.summary?.counts.alternativeIssues ?? -1,
+        ttlIssues: this.summary?.counts.ttlIssues ?? -1,
+        writes: this.extrasWrites,
+        decoSig: this.extrasDecoSig,
+        decorations: this.view ? (proofExtrasViewKey.getState(this.view.state)?.find().length ?? 0) : null,
       },
       skimWrites: this.skimWrites,
       snapshot: this.snapshot,
@@ -1914,4 +2490,19 @@ function hashSig(input: string): number {
   let h = 0;
   for (let i = 0; i < input.length; i += 1) h = (Math.imul(31, h) + input.charCodeAt(i)) | 0;
   return h >>> 0;
+}
+
+/** Step B4f: what the page shows for a mark (a blind placeholder, a decayed mark, a stale one). */
+function shownStatus(entry: { mark: LineMark; current: boolean; decayed?: boolean }): ShownStatus {
+  if (!entry.current) return 'changed';
+  if (entry.mark.hidden) return 'hidden';
+  if (entry.decayed) return 'stale';
+  return entry.mark.status;
+}
+
+function shownLabel(status: ShownStatus): string {
+  if (status === 'hidden') return 'Marked · hidden until you mark this line';
+  if (status === 'stale') return 'Stale: agreed before the line’s time-to-live ran out';
+  if (status === 'changed') return 'changed since marked';
+  return STATUS_LABEL[status];
 }

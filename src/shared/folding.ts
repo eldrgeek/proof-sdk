@@ -192,7 +192,7 @@ export function sectionIssueCount(section: DocSection, lines: DocLine[], summary
       if (issue.lineIndex >= section.headingIndex && issue.lineIndex < section.lineEnd) count.lines += 1;
     } else if (issue.type === 'ask') {
       if (issue.lineIndex >= section.headingIndex && issue.lineIndex < section.lineEnd) count.asks += 1;
-    } else if (issue.type === 'uncertain' || issue.type === 'objection') {
+    } else if (issue.type === 'uncertain' || issue.type === 'objection' || issue.type === 'alternative' || issue.type === 'ttl') {
       if (issue.lineIndex !== null && issue.lineIndex >= section.headingIndex && issue.lineIndex < section.lineEnd) count.aids += 1;
     } else if (typeof issue.pos === 'number' && issue.pos >= from && issue.pos < to) {
       count.reviewMarks += 1;

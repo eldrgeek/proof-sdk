@@ -40,6 +40,12 @@ export type WalkMarkKind = 'suggestion' | 'comment';
 export interface WalkMark {
   id: string;
   kind: WalkMarkKind;
+  /**
+   * Step B4e: a review bundle. The bundle's passages step as one unit: when the focus reaches the
+   * first of them, one step passes (and provisionally accepts) every member, wherever it sits. The
+   * unit's accepts belong to the first member's line, so scrolling back above it reverts them all.
+   */
+  group?: string;
 }
 
 export interface WalkLine {
@@ -144,7 +150,7 @@ export class ReadingWalk {
   setLines(lines: WalkLine[], now: number): void {
     this.lines = lines.slice();
     const pending = new Map<string, number>();
-    lines.forEach((line, index) => line.marks.forEach(mark => pending.set(mark.id, index)));
+    lines.forEach((line, index) => line.marks.forEach(mark => pending.set(mark.id, this.unitLine(mark, index))));
     for (const [id] of [...this.provisional]) {
       const at = pending.get(id);
       if (at === undefined) this.provisional.delete(id); // accepted, rejected or removed elsewhere
@@ -165,6 +171,26 @@ export class ReadingWalk {
 
   marksOn(line: number): WalkMark[] {
     return this.lines[line]?.marks ?? [];
+  }
+
+  /** Step B4e: the first line that holds a member of `group` (the unit's line), or null. */
+  groupLine(group: string): number | null {
+    for (let line = 0; line < this.lines.length; line += 1) {
+      if (this.lines[line].marks.some(mark => mark.group === group)) return line;
+    }
+    return null;
+  }
+
+  /** Step B4e: every mark of `group`, in document order. */
+  groupMarks(group: string): WalkMark[] {
+    return this.lines.flatMap(line => line.marks.filter(mark => mark.group === group));
+  }
+
+  /** The line a provisional accept belongs to: its own line, or its bundle's first line. */
+  private unitLine(mark: WalkMark, line: number): number {
+    if (!mark.group) return line;
+    const first = this.groupLine(mark.group);
+    return first === null ? line : Math.min(first, line);
   }
 
   /** Index on the focus line of the first mark not yet passed (= count when all are passed). */
@@ -214,8 +240,12 @@ export class ReadingWalk {
     for (let i = marks.length - 1; i >= 0; i -= 1) {
       const mark = marks[i];
       if (!this.passed.has(mark.id)) continue;
-      this.passed.delete(mark.id);
-      if (this.provisional.has(mark.id)) this.revert(mark.id, this.focusLine);
+      // Step B4e: stepping back over a bundle member un-passes the whole unit.
+      const unit = mark.group ? this.groupMarks(mark.group) : [mark];
+      for (const member of unit) {
+        this.passed.delete(member.id);
+        if (this.provisional.has(member.id)) this.revert(member.id, this.provisional.get(member.id) ?? this.focusLine);
+      }
       return true;
     }
     return false;
@@ -244,7 +274,11 @@ export class ReadingWalk {
     } else {
       for (const [id, line] of [...this.provisional]) if (line > to) this.revert(id, line);
       for (let line = to + 1; line < this.lines.length; line += 1) {
-        for (const mark of this.marksOn(line)) this.passed.delete(mark.id);
+        for (const mark of this.marksOn(line)) {
+          // Step B4e: a bundle member below stays passed while its unit's line is still above.
+          if (mark.group && this.unitLine(mark, line) <= to && this.passed.has(mark.id)) continue;
+          this.passed.delete(mark.id);
+        }
       }
       // Arriving from below on a line whose marks were all passed: they stay passed, so the
       // next upward gesture steps back through them one at a time.
@@ -329,7 +363,7 @@ export class ReadingWalk {
   restore(snapshot: WalkSnapshot | null | undefined, now: number): void {
     if (!snapshot) return;
     const pending = new Map<string, { line: number; kind: WalkMarkKind }>();
-    this.lines.forEach((line, index) => line.marks.forEach(mark => pending.set(mark.id, { line: index, kind: mark.kind })));
+    this.lines.forEach((line, index) => line.marks.forEach(mark => pending.set(mark.id, { line: this.unitLine(mark, index), kind: mark.kind })));
     const focus = Math.max(0, Math.min(this.lines.length - 1, Number(snapshot.focus) || 0));
     this.focusLine = focus;
     this.enteredAt = now;
@@ -363,10 +397,16 @@ export class ReadingWalk {
 
   private pass(mark: WalkMark, line: number): void {
     if (this.passed.has(mark.id)) return;
-    this.passed.add(mark.id);
-    if (mark.kind === 'suggestion') {
-      this.provisional.set(mark.id, line);
-      this.events.push({ type: 'provisional', id: mark.id, line });
+    // Step B4e: a bundle passes as one unit, owned by its first line.
+    const unit = mark.group ? this.groupMarks(mark.group) : [mark];
+    const at = this.unitLine(mark, line);
+    for (const member of unit) {
+      if (this.passed.has(member.id)) continue;
+      this.passed.add(member.id);
+      if (member.kind === 'suggestion') {
+        this.provisional.set(member.id, at);
+        this.events.push({ type: 'provisional', id: member.id, line: at });
+      }
     }
   }
 

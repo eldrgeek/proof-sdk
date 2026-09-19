@@ -1340,6 +1340,104 @@ function initDatabase(): void {
   `);
   d.exec(`CREATE INDEX IF NOT EXISTS idx_document_objections_slug ON document_objections(document_slug, created_at)`);
 
+  // Proof Documents Steps B4e + B4f (server/proof-extras-store.ts): review bundles, competing
+  // alternatives and picks, per-document settings (blind marking), Explain threads and line
+  // times-to-live. All beside the document, never in its text or Yjs state.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_bundles (
+      id TEXT NOT NULL,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      title TEXT NOT NULL,
+      why TEXT,
+      members_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'open',
+      created_at TEXT NOT NULL,
+      closed_at TEXT,
+      closed_by TEXT,
+      PRIMARY KEY (document_slug, id)
+    )
+  `);
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_alternatives (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      text TEXT NOT NULL,
+      line_hash TEXT NOT NULL,
+      line_occurrence INTEGER NOT NULL,
+      line_ordinal INTEGER NOT NULL,
+      line_kind TEXT NOT NULL,
+      line_excerpt TEXT NOT NULL DEFAULT '',
+      line_text TEXT,
+      created_at TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      closed_at TEXT,
+      closed_by TEXT,
+      resolution_json TEXT
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_alternatives_slug ON document_alternatives(document_slug, created_at)`);
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_alt_picks (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      actor_key TEXT NOT NULL,
+      choice TEXT NOT NULL,
+      line_hash TEXT NOT NULL,
+      at TEXT NOT NULL
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_alt_picks_slug ON document_alt_picks(document_slug, at)`);
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_proof_settings (
+      document_slug TEXT PRIMARY KEY,
+      blind INTEGER NOT NULL DEFAULT 0,
+      blind_set_by TEXT,
+      blind_set_at TEXT
+    )
+  `);
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_explains (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      comment_mark_id TEXT,
+      question TEXT NOT NULL,
+      line_hash TEXT NOT NULL,
+      line_occurrence INTEGER NOT NULL,
+      line_ordinal INTEGER NOT NULL,
+      line_kind TEXT NOT NULL,
+      line_excerpt TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_explains_slug ON document_explains(document_slug, created_at)`);
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_line_ttls (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      ttl_ms INTEGER NOT NULL,
+      label TEXT NOT NULL,
+      line_hash TEXT NOT NULL,
+      line_occurrence INTEGER NOT NULL,
+      line_ordinal INTEGER NOT NULL,
+      line_kind TEXT NOT NULL,
+      line_excerpt TEXT NOT NULL DEFAULT '',
+      line_text TEXT,
+      set_at TEXT NOT NULL,
+      period_start TEXT NOT NULL,
+      period_hash TEXT NOT NULL,
+      checks_json TEXT NOT NULL DEFAULT '[]',
+      expired_noted_at TEXT,
+      cleared_at TEXT,
+      cleared_by TEXT
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_line_ttls_slug ON document_line_ttls(document_slug, set_at)`);
+
   // Proof Documents Step B3c: aligned snapshots. Frozen when a document's Issue count reaches 0:
   // its markdown, every line mark, the asks with answers and the team. Rows are never changed.
   d.exec(`

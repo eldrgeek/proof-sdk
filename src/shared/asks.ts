@@ -31,6 +31,11 @@ export interface AskAnswer {
   at: string;
   /** Hash of the question line's text when the answer was given. */
   lineHash: string;
+  /**
+   * Step B4f blind marking: someone else's answer the viewer may not see yet. `choice` is only a
+   * placeholder (yes = a closing answer, not_yet = still open) and `words` is empty.
+   */
+  hidden?: boolean;
 }
 
 export interface ProofAsk {
@@ -251,15 +256,16 @@ export function askIssueInputs(views: AskView[]): Array<{ id: string; lineIndex:
 /** Plain-language status line, for the control and for AIs reading /state. */
 export function describeAsk(view: AskView): string {
   const who = (actor: string) => (actor === ANYONE ? 'anyone' : actorLabel(actor));
+  const said = (answer: AskAnswer | null) => (answer?.hidden ? 'answered (hidden)' : ASK_CHOICE_LABEL[answer!.choice]);
   if (view.lineIndex === null) return 'The question line was deleted';
   if (view.settled) {
-    return view.people.map(p => `${who(p.actor)}: ${ASK_CHOICE_LABEL[p.answer!.choice]}`).join(' · ');
+    return view.people.map(p => `${who(p.actor)}: ${said(p.answer)}`).join(' · ');
   }
   const parts: string[] = [];
   if (view.openFor.length) parts.push(`Waiting on ${view.openFor.map(who).join(', ')}`);
   if (view.snoozedFor.length) parts.push(`Not yet: ${view.snoozedFor.map(who).join(', ')}`);
   const done = view.people.filter(p => p.state === 'answered');
-  if (done.length) parts.push(done.map(p => `${who(p.actor)}: ${ASK_CHOICE_LABEL[p.answer!.choice]}`).join(', '));
+  if (done.length) parts.push(done.map(p => `${who(p.actor)}: ${said(p.answer)}`).join(', '));
   return parts.join(' · ');
 }
 

@@ -240,6 +240,7 @@ export function flaggedLines(views: FlagView[]): Map<number, UncertainFlag[]> {
 // ============================================================================
 
 export type PriorityRule =
+  | 'disagreement'
   | 'rejected-by-others'
   | 'objection'
   | 'open-ask'
@@ -249,6 +250,9 @@ export type PriorityRule =
   | 'pending-suggestion'
   | 'open-comment'
   | 'unseen'
+  | 'open-alternative'
+  | 'ttl-not-true'
+  | 'ttl-check'
   | 'waiting-on-others';
 
 export const ISSUE_PRIORITY = {
@@ -260,6 +264,8 @@ export const ISSUE_PRIORITY = {
    * suggestions; an Issue that waits only on other people ranks last.
    */
   byRule: {
+    // Step B4f: a line whose revealed marks (blind marking) or picks disagree.
+    disagreement: 1,
     'rejected-by-others': 1,
     objection: 1,
     'open-ask': 2,
@@ -269,6 +275,12 @@ export const ISSUE_PRIORITY = {
     'pending-suggestion': 5,
     'open-comment': 5,
     unseen: 6,
+    // Step B4f: open competing wordings wait on your pick (like a changed line).
+    'open-alternative': 3,
+    // Step B4f: an AI said a perishable line is no longer true (people re-check it).
+    'ttl-not-true': 3,
+    // Step B4f: an expired line waits on the AI collaborators' re-check (low, per the brief).
+    'ttl-check': 6,
     'waiting-on-others': 7,
   } as Record<PriorityRule, number>,
   /** "Urgent" in "7 more, none urgent": priority at or below this (decision: rejections and asks). */
@@ -285,6 +297,7 @@ export const ISSUE_PRIORITY = {
 } as const;
 
 export const PRIORITY_LABEL: Record<PriorityRule, string> = {
+  disagreement: 'The team disagrees here',
   'rejected-by-others': 'Rejected by someone else',
   objection: 'Objection',
   'open-ask': 'An ask waiting on you',
@@ -294,6 +307,9 @@ export const PRIORITY_LABEL: Record<PriorityRule, string> = {
   'pending-suggestion': 'Pending suggestion',
   'open-comment': 'Open comment',
   unseen: 'Not seen yet',
+  'open-alternative': 'Competing wordings: pick one',
+  'ttl-not-true': 'An AI says this may no longer be true',
+  'ttl-check': 'Time to re-check this line',
   'waiting-on-others': 'Waiting on someone else',
 };
 
@@ -314,6 +330,8 @@ export function issueKey(issue: ProofIssue): string {
     case 'ask': return `ask:${issue.askId}`;
     case 'uncertain': return `flag:${issue.flagId}`;
     case 'objection': return `objection:${issue.objectionId}`;
+    case 'alternative': return `alt:${issue.lineIndex}`;
+    case 'ttl': return `ttl:${issue.ttlId}`;
     default: return `mark:${issue.markId}`;
   }
 }
@@ -331,6 +349,7 @@ export function priorityRule(issue: ProofIssue, viewer: string | null): Priority
   const me = viewer ? actorKey(viewer) : null;
   switch (issue.type) {
     case 'line': {
+      if (issue.disagreement) return 'disagreement';
       if (issue.rejectedBy.some(r => me === null || actorKey(r.by) !== me)) return 'rejected-by-others';
       if (me === null ? issue.changedFor.length > 0 : includesActor(issue.changedFor, viewer!)) return 'changed-since-you-marked';
       if (me === null ? issue.unseenBy.length > 0 : includesActor(issue.unseenBy, viewer!)) return 'unseen';
@@ -343,6 +362,12 @@ export function priorityRule(issue: ProofIssue, viewer: string | null): Priority
       return issue.repairPending ? 'repair-proposed' : 'waiting-on-others';
     case 'uncertain':
       return me === null || includesActor(issue.openFor, viewer!) ? 'uncertain' : 'waiting-on-others';
+    case 'alternative':
+      if (issue.disagreement) return 'disagreement';
+      return me === null || includesActor(issue.openFor, viewer!) ? 'open-alternative' : 'waiting-on-others';
+    case 'ttl':
+      if (me !== null && !includesActor(issue.openFor, viewer!)) return 'waiting-on-others';
+      return issue.reason === 'expired' ? 'ttl-check' : 'ttl-not-true';
     case 'suggestion':
       return 'pending-suggestion';
     default:

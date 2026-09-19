@@ -40,7 +40,7 @@ import {
   verifyAuthoritativeMutationBaseStable,
 } from './collab.js';
 import { canonicalizeStoredMarks, type StoredMark } from '../src/formats/marks.js';
-import { buildIssueReport, computeServerLines, resolveAgentLineTarget, writeAgentLineMark } from './line-marks.js';
+import { buildIssueReport, computeServerLines, listCanonicalLineMarks, resolveAgentLineTarget, writeAgentLineMark } from './line-marks.js';
 import { buildSinceYou, freezeIfAligned, listSnapshotInfos, scheduleAlignmentCheck, sendSnapshotFile } from './alignment.js';
 import { agentKeyActor } from '../src/shared/line-marks.js';
 import { decideActor } from './identity.js';
@@ -72,9 +72,36 @@ import {
 } from './agent-collab-status.js';
 import {
   executeDocumentOperationAsync,
+  finalizeSuggestionsBatchAsync,
   type AsyncDocumentMutationContext,
   type EngineExecutionResult,
 } from './document-engine.js';
+import {
+  addToBundle,
+  alternativesReport,
+  bundleField,
+  bundleReport,
+  checkBundleField,
+  checkTtl,
+  clearTtl,
+  decideAlternative,
+  decideBundle,
+  offerAlternative,
+  pickAlternative,
+  setBlindSetting,
+  setTtl,
+  ttlReport,
+  withdrawAlternative,
+  type LineEditor,
+} from './proof-extras.js';
+import { blindViewFor, redactIssues, serializeExplain, termsReport } from './proof-extras-eval.js';
+import { getProofSettings, listExplains, listPicks } from './proof-extras-store.js';
+import { BUNDLE_POLICY } from '../src/shared/bundles.js';
+import { ALT_POLICY } from '../src/shared/alternatives.js';
+import { BLIND_POLICY } from '../src/shared/blind.js';
+import { EXPLAIN_POLICY, TERM_POLICY } from '../src/shared/explain.js';
+import { TTL_POLICY } from '../src/shared/ttl.js';
+import type { DocLine as ProofDocLine } from '../src/shared/line-marks.js';
 import {
   recordAgentMutation,
   recordCollabRouteLatency,
@@ -2182,6 +2209,43 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
       links.flags = { method: 'GET', href: `/api/agent/${slug}/flags` };
       links.notes = { method: 'GET', href: `/api/agent/${slug}/notes` };
       links.objections = { method: 'GET', href: `/api/agent/${slug}/objections` };
+      // Steps B4e + B4f: bundles, open alternatives, times-to-live (expiry evaluated at
+      // `evaluatedAt`), Explain threads, defined terms and the document's settings (blind).
+      body.bundles = report.bundles;
+      body.alternatives = report.alternatives;
+      body.ttls = report.ttls;
+      body.explains = report.explains;
+      body.terms = report.terms;
+      body.settings = report.settings;
+      body.evaluatedAt = report.evaluatedAt;
+      body.disagreementLines = report.disagreementLines;
+      body.proofExtrasPolicy = { bundles: BUNDLE_POLICY, alternatives: ALT_POLICY, blind: BLIND_POLICY, explain: EXPLAIN_POLICY, terms: { ...TERM_POLICY, sectionPattern: String(TERM_POLICY.sectionPattern), linePatterns: TERM_POLICY.linePatterns.map(String) }, ttl: TTL_POLICY };
+      links.bundles = { method: 'GET', href: `/api/agent/${slug}/bundles` };
+      links.alternatives = { method: 'GET', href: `/api/agent/${slug}/alternatives` };
+      links.ttl = { method: 'GET', href: `/api/agent/${slug}/ttl` };
+      links.explains = { method: 'GET', href: `/api/agent/${slug}/explains` };
+      links.terms = { method: 'GET', href: `/api/agent/${slug}/terms` };
+      links.settings = { method: 'GET', href: `/api/agent/${slug}/settings` };
+      // Step B4f: blind marking. The caller sees other members' positions only on lines it has
+      // marked itself (the owner credential with no "by" reads everything).
+      if (report.settings.blind) {
+        const viewer = blindViewer(req, slug, role);
+        body.blind = { on: true, viewer: viewer ?? null };
+        if (viewer !== undefined) {
+          const lines = report.docLines ?? [];
+          const answered = ((askReport as ReturnType<typeof buildAskReport> | null)?.views ?? [])
+            .filter(view => view.lineIndex !== null && view.ask.answers.some(a => actorKeyOf(a.by) === actorKeyOf(viewer ?? '')))
+            .map(view => view.lineIndex as number);
+          const view = blindViewFor({ lines, lineMarks: report.lineMarks, viewer: viewer ?? '', answeredLines: answered, picks: listPicks(slug) });
+          body.lineMarks = view.lineMarks;
+          body.issues = redactIssues(report.issues, view.revealed);
+          body.asks = (body.asks as Array<Record<string, unknown>>).map(ask => redactAsk(ask, view.revealed, viewer ?? ''));
+          body.alternatives = redactAltSets(report.alternatives, view.revealed, viewer ?? '');
+          body.disagreementLines = report.disagreementLines.filter(index => view.revealed.has(index));
+          body.carriedMarks = report.carried.filter(c => view.revealed.has(c.lineIndex) || actorKeyOf(c.by) === actorKeyOf(viewer ?? ''));
+          body.blind = { on: true, viewer, revealedLines: [...view.revealed].sort((a, b) => a - b), hiddenPositions: view.hidden };
+        }
+      }
       body.alignment = {
         aligned: report.aligned,
         team: report.team,
@@ -3493,7 +3557,7 @@ agentRoutes.post('/:slug/ops', async (req: Request, res: Response) => {
   if (op === 'rewrite.apply' && result.status >= 200 && result.status < 300 && rewriteGate) {
     result.body = annotateRewriteDisruptionMetadata(result.body, rewriteGate);
   }
-  if (opsWhyGate) finishSuggestionNote(res, slug, opsWhyGate, result);
+  if (opsWhyGate) { finishSuggestionNote(res, slug, opsWhyGate, result); await finishSuggestionBundle(slug, opsWhyGate, result); }
   storeIdempotentMutationResult(replay, mutationRoute, slug, result.status, result.body);
   if (result.status >= 200 && result.status < 300 && op !== 'rewrite.apply') {
     await notifyCollabMutation(
@@ -3592,6 +3656,57 @@ function resolveAgentActor(req: Request, slug: string, payload: Record<string, u
   });
   if (!decision.ok) return decision;
   return { ok: true, by: decision.actor };
+}
+
+function actorKeyOf(actor: string): string {
+  return String(actor ?? '').normalize('NFC').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+/**
+ * Step B4f: who a read is for, under blind marking. An agent key is its AI; `?by=` names the
+ * caller otherwise. The owner credential with no `by` reads everything (undefined); any other
+ * caller that names nobody sees no one's positions ('' reveals no line).
+ */
+function blindViewer(req: Request, slug: string, role: ShareRole): string | undefined {
+  const typed = typeof req.query.by === 'string' ? req.query.by : undefined;
+  if (role === 'owner_bot' && !typed && BLIND_POLICY.ownerCredentialSeesAll) {
+    const tokenId = agentRequestTokenIds.get(req) ?? null;
+    if (!tokenId) return undefined;
+  }
+  const actor = resolveAgentActor(req, slug, typed ? { by: typed } : {}, role);
+  return actor.ok ? actor.by : '';
+}
+
+/** Step B4f: an ask's answers as a blind viewer may see them (their own answer stays). */
+function redactAsk(ask: Record<string, unknown>, revealed: ReadonlySet<number>, viewer: string): Record<string, unknown> {
+  const index = typeof ask.lineIndex === 'number' ? ask.lineIndex : null;
+  if (index !== null && revealed.has(index)) return ask;
+  const me = actorKeyOf(viewer);
+  const hide = (a: Record<string, unknown>) => (actorKeyOf(String(a.by ?? a.actor ?? '')) === me ? a : { by: a.by ?? a.actor, at: a.at ?? null, hidden: true });
+  return {
+    ...ask,
+    status: 'hidden',
+    summary: 'Answers are hidden until you mark this line (blind marking)',
+    people: Array.isArray(ask.people) ? (ask.people as Array<Record<string, unknown>>).map(p => (actorKeyOf(String(p.actor ?? '')) === me ? p
+      : { actor: p.actor, state: p.state === 'open' ? 'open' : 'hidden', choice: null, words: null, at: null })) : ask.people,
+    answers: Array.isArray(ask.answers) ? (ask.answers as Array<Record<string, unknown>>).map(hide) : ask.answers,
+    history: Array.isArray(ask.history) ? (ask.history as Array<Record<string, unknown>>).map(hide) : ask.history,
+  };
+}
+
+/** Step B4f: alternative picks as a blind viewer may see them. */
+function redactAltSets(sets: Array<Record<string, unknown>>, revealed: ReadonlySet<number>, viewer: string): Array<Record<string, unknown>> {
+  const me = actorKeyOf(viewer);
+  return sets.map(set => {
+    const index = typeof set.lineIndex === 'number' ? set.lineIndex : null;
+    if (index !== null && revealed.has(index)) return set;
+    return {
+      ...set,
+      unanimous: null,
+      disagree: false,
+      picks: Array.isArray(set.picks) ? (set.picks as Array<Record<string, unknown>>).map(p => (actorKeyOf(String(p.by ?? '')) === me ? p : { by: p.by, choice: null, hidden: true })) : set.picks,
+    };
+  });
 }
 
 async function currentAgentMarkdown(slug: string): Promise<string> {
@@ -3782,7 +3897,7 @@ agentRoutes.delete('/:slug/asks/:askId', async (req: Request, res: Response) => 
 // Proof Documents Steps B4c + B4d: review aids and objections
 // ============================================================================
 
-interface WhyGate { by: string; fields: SuggestionNoteFields; warn: boolean }
+interface WhyGate { by: string; fields: SuggestionNoteFields; warn: boolean; bundle?: { id: string; title: string | null; why: string | null } | null }
 
 /**
  * Step B4c: checks an AI suggestion's "why" before it is added (WHY_POLICY.enforce). Sends the
@@ -3806,7 +3921,17 @@ function suggestionWhyGate(req: Request, res: Response, slug: string, payload: R
     sendMutationResponse(res, check.refuse.status, check.refuse.body, { route, slug });
     return null;
   }
-  return { by, fields, warn: check.warn };
+  // Step B4e: { bundle: { id, title, why } } adds the new suggestion to that review bundle.
+  const bundle = bundleField(payload);
+  if (bundle && 'error' in bundle) {
+    sendMutationResponse(res, bundle.error.status, bundle.error.body, { route, slug });
+    return null;
+  }
+  if (bundle) {
+    const refused = checkBundleField(slug, bundle);
+    if (refused) { sendMutationResponse(res, refused.status, refused.body, { route, slug }); return null; }
+  }
+  return { by, fields, warn: check.warn, bundle };
 }
 
 /** Step B4c: after a suggestion was added, store its note and add the missing-why warning. */
@@ -3897,6 +4022,212 @@ aidRoute('/:slug/objections/:objectionId/keep', 'POST /objections/:id/keep', ['c
   return keepObjection(slug, { id: String(req.params.objectionId ?? ''), by, markdown: state.markdown, rawMarks: state.marks, source: 'agent' });
 });
 
+// ============================================================================
+// Proof Documents Steps B4e + B4f: bundles, alternatives, blind marking, Explain, times-to-live
+// ============================================================================
+
+/**
+ * Step B4e: accepts or rejects several suggestions as one mutation (the engine's batch), then
+ * waits for live collaboration to converge, like POST /marks/accept.
+ */
+export function bundleApplier(req: Request | null, slug: string, by: string): (markIds: string[], action: 'accept' | 'reject') => Promise<{ status: number; body: Record<string, unknown> }> {
+  return async (markIds, action) => {
+    // A person's newest typing or a page's own accept may still be settling: retry like a keystroke race.
+    let result = await finalizeSuggestionsBatchAsync(slug, markIds, action === 'accept' ? 'accepted' : 'rejected', by);
+    for (let attempt = 0; attempt < 12 && result.status === 409 && isRecord(result.body) && ASK_INSERT_RETRY_CODES.has(String(result.body.code)); attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      result = await finalizeSuggestionsBatchAsync(slug, markIds, action === 'accept' ? 'accepted' : 'rejected', by);
+    }
+    const body = isRecord(result.body) ? result.body : {};
+    if (result.status < 200 || result.status >= 300) return { status: result.status, body };
+    const payload = { by, markIds };
+    const collabStatus = await notifyCollabMutation(
+      slug,
+      req ? buildParticipationFromMutation(req, slug, payload, { details: `bundle.${action}` }) : null,
+      { verify: true, source: action === 'accept' ? 'marks.accept' : 'marks.reject', stabilityMs: EDIT_COLLAB_STABILITY_MS, strictLiveDoc: true, apply: false },
+    );
+    if (!collabStatus.confirmed) {
+      return { status: 409, body: { success: false, code: 'COLLAB_SYNC_FAILED', error: 'The bundle was applied but did not converge to the live document yet; re-read /state', reason: collabStatus.reason ?? 'sync_timeout' } };
+    }
+    return { status: 200, body: { success: true, markIds: body.markIds ?? markIds } };
+  };
+}
+
+/**
+ * Step B4f: replaces one line's text with an edit/v2 operation (a normal edit): the whole block
+ * when the line is its block (keeping a heading's, quote's or list marker's prefix), else a find /
+ * replace of the line's text inside its block. Retries a keystroke race like an ask's insert.
+ */
+export function lineEditor(req: Request | null, slug: string): LineEditor {
+  return async (line: ProofDocLine, lines: ProofDocLine[], text: string, by: string) => {
+    let last: { status: number; body: Record<string, unknown> } = { status: 409, body: { success: false, error: 'Not attempted' } };
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const snapshot = await buildAgentSnapshot(slug);
+      const snapBody = isRecord(snapshot.body) ? snapshot.body : {};
+      const revision = typeof snapBody.revision === 'number' ? snapBody.revision : null;
+      const blocks = Array.isArray(snapBody.blocks) ? snapBody.blocks as Array<Record<string, unknown>> : [];
+      const block = blocks[line.block];
+      if (revision === null || !block) return { status: 409, body: { success: false, code: 'SNAPSHOT_UNAVAILABLE', error: 'The document is not ready for edits; retry shortly' } };
+      const ref = `b${line.block + 1}`;
+      const blockMarkdown = typeof block.markdown === 'string' ? block.markdown : '';
+      // An earlier attempt may have landed although it reported a conflict: then it is done.
+      if (attempt > 0 && blockMarkdown.includes(text) && !blockMarkdown.includes(line.text)) {
+        return { status: 200, body: { success: true, alreadyApplied: true } };
+      }
+      const alone = lines.filter(candidate => candidate.block === line.block).length === 1;
+      let operation: Record<string, unknown> | null = null;
+      if (blockMarkdown.includes(line.text)) {
+        operation = { op: 'find_replace_in_block', ref, find: line.text, replace: text };
+      } else if (alone) {
+        const prefix = (blockMarkdown.match(/^(#{1,6}\s+|>\s+|[-*+]\s+|\d+[.)]\s+)/) ?? [''])[0];
+        operation = { op: 'replace_block', ref, block: { markdown: `${prefix}${text}` } };
+      }
+      if (!operation) return { status: 409, body: { success: false, code: 'ALT_APPLY_FAILED', error: 'This line has formatting the server cannot rewrite safely; edit it by hand to the chosen wording' } };
+      const editBody = { by, baseRevision: revision, operations: [operation] };
+      const edit = await applyAgentEditV2(slug, editBody);
+      last = { status: edit.status, body: isRecord(edit.body) ? edit.body : {} };
+      if (edit.status >= 200 && edit.status < 300) {
+        if (req) await settleEditV2Success(req, slug, editBody, edit);
+        else broadcastToRoom(slug, { type: 'document.updated', source: 'agent-edit-v2', timestamp: new Date().toISOString() });
+        return last;
+      }
+      if (!ASK_INSERT_RETRY_CODES.has(String(last.body.code))) return last;
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    return last;
+  };
+}
+
+const editorFor = lineEditor;
+
+// Step B4e: bundles (GET: open ones; ?closed=1 adds decided ones).
+agentRoutes.get('/:slug/bundles', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  const state = await currentAgentState(slug);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, bundles: await bundleReport(slug, state.markdown, state.marks, req.query.closed === '1'), policy: BUNDLE_POLICY });
+});
+
+// Step B4e: group existing suggestions: { id?, title, why?, markIds: [...] } (an existing id appends).
+aidRoute('/:slug/bundles', 'POST /bundles', ['commenter', 'editor', 'owner_bot'], async ({ slug, by, payload }) => {
+  const state = await currentAgentState(slug);
+  return addToBundle(slug, {
+    by, bundle: { id: typeof payload.id === 'string' ? payload.id : null, title: payload.title, why: payload.why },
+    markIds: payload.markIds, markdown: state.markdown, rawMarks: state.marks, source: 'agent',
+  });
+});
+
+// Step B4e: accept or reject a whole bundle (edit access). Accept refuses with 409 BUNDLE_STALE.
+for (const action of ['accept', 'reject'] as const) {
+  aidRoute(`/:slug/bundles/:bundleId/${action}`, `POST /bundles/:id/${action}`, ['editor', 'owner_bot'], async ({ req, slug, by }) => {
+    const state = await currentAgentState(slug);
+    return decideBundle(slug, { id: String(req.params.bundleId ?? ''), by, action, markdown: state.markdown, rawMarks: state.marks, apply: bundleApplier(req, slug, by) });
+  });
+}
+
+// Step B4f: open alternatives per line (?closed=1 adds the folded history).
+agentRoutes.get('/:slug/alternatives', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  const role = checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const state = await currentAgentState(slug);
+  const report = await alternativesReport(slug, state.markdown, state.marks, req.query.closed === '1');
+  let sets = report.sets;
+  if (getProofSettings(slug).blind) {
+    const viewer = blindViewer(req, slug, role);
+    if (viewer !== undefined) {
+      const lines = await computeServerLines(state.markdown);
+      const view = blindViewFor({ lines, lineMarks: listCanonicalLineMarks(slug), viewer, picks: listPicks(slug) });
+      sets = redactAltSets(sets, view.revealed, viewer);
+    }
+  }
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, alternatives: sets, ...(report.closed ? { closed: report.closed } : {}), policy: ALT_POLICY });
+});
+
+// Step B4f: offer another wording: { <line target>, text }.
+aidRoute('/:slug/alternatives', 'POST /alternatives', ['commenter', 'editor', 'owner_bot'], async ({ req, slug, by, payload }) => {
+  const state = await currentAgentState(slug);
+  return offerAlternative(slug, { by, target: payload, text: payload.text, markdown: state.markdown, rawMarks: state.marks, source: 'agent', applyEdit: editorFor(req, slug) });
+});
+
+// Step B4f: pick a wording: { <line target>, choice: "original" | <alternative id> | "1".."9" }.
+aidRoute('/:slug/alternatives/pick', 'POST /alternatives/pick', ['commenter', 'editor', 'owner_bot'], async ({ req, slug, by, payload }) => {
+  const state = await currentAgentState(slug);
+  return pickAlternative(slug, { by, target: payload, choice: payload.choice, markdown: state.markdown, rawMarks: state.marks, source: 'agent', applyEdit: editorFor(req, slug) });
+});
+
+// Step B4f: the owner credential decides between the wordings.
+aidRoute('/:slug/alternatives/decide', 'POST /alternatives/decide', ['owner_bot'], async ({ req, slug, by, role, payload }) => {
+  const state = await currentAgentState(slug);
+  return decideAlternative(slug, { by, isOwner: role === 'owner_bot', target: payload, choice: payload.choice, markdown: state.markdown, rawMarks: state.marks, applyEdit: editorFor(req, slug) });
+});
+
+aidRoute('/:slug/alternatives/:altId/withdraw', 'POST /alternatives/:id/withdraw', ['commenter', 'editor', 'owner_bot'], async ({ req, slug, by, role }) =>
+  withdrawAlternative(slug, { id: String(req.params.altId ?? ''), by, isOwner: role === 'owner_bot' }));
+
+// Step B4f: the document's settings (blind marking); the owner credential changes them.
+agentRoutes.get('/:slug/settings', (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, settings: getProofSettings(slug), policy: { blind: BLIND_POLICY } });
+});
+aidRoute('/:slug/settings', 'POST /settings', ['owner_bot'], async ({ slug, by, role, payload }) =>
+  setBlindSetting(slug, { blind: payload.blind, by, isOwner: role === 'owner_bot', source: 'agent' }));
+
+// Step B4f: Explain threads (answer by replying on the thread) and the defined terms.
+agentRoutes.get('/:slug/explains', (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, explains: listExplains(slug).map(serializeExplain), policy: EXPLAIN_POLICY });
+});
+agentRoutes.get('/:slug/terms', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  const state = await currentAgentState(slug);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, terms: termsReport(await computeServerLines(state.markdown)) });
+});
+
+// Step B4f: times-to-live. GET evaluates expiry now (lazily); POST sets one: { <line target>, ttl: "7d" }.
+agentRoutes.get('/:slug/ttl', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  const state = await currentAgentState(slug);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, evaluatedAt: new Date().toISOString(), ttls: await ttlReport(slug, state.markdown, state.marks), policy: TTL_POLICY });
+});
+aidRoute('/:slug/ttl', 'POST /ttl', ['commenter', 'editor', 'owner_bot'], async ({ slug, by, payload }) =>
+  setTtl(slug, { by, target: payload, ttl: payload.ttl, markdown: (await currentAgentState(slug)).markdown, source: 'agent' }));
+aidRoute('/:slug/ttl/:ttlId/clear', 'POST /ttl/:id/clear', ['commenter', 'editor', 'owner_bot'], async ({ req, slug, by, role }) =>
+  clearTtl(slug, { id: String(req.params.ttlId ?? ''), by, isOwner: role === 'owner_bot', source: 'agent' }));
+// Step B4f: an AI answers "still true?": { stillTrue: true | false, why? }.
+aidRoute('/:slug/ttl/:ttlId/check', 'POST /ttl/:id/check', ['commenter', 'editor', 'owner_bot'], async ({ req, slug, by, payload }) =>
+  checkTtl(slug, { id: String(req.params.ttlId ?? ''), by, stillTrue: payload.stillTrue, why: payload.why, markdown: (await currentAgentState(slug)).markdown, source: 'agent' }));
+
+/** Step B4e: after a suggestion was added with a `bundle` field, add it to that bundle. */
+async function finishSuggestionBundle(slug: string, gate: WhyGate, result: { status: number; body: unknown }): Promise<void> {
+  if (!gate.bundle || result.status < 200 || result.status >= 300 || !isRecord(result.body)) return;
+  const markId = typeof result.body.markId === 'string' ? result.body.markId : '';
+  if (!markId) return;
+  try {
+    const state = await currentAgentState(slug);
+    const added = await addToBundle(slug, { by: gate.by, bundle: gate.bundle, markIds: [markId], markdown: state.markdown, rawMarks: state.marks, source: 'agent' });
+    result.body.bundle = added.status === 200 ? added.body.bundle : { error: added.body };
+  } catch (error) {
+    result.body.bundle = { error: String(error) };
+  }
+}
+
 agentRoutes.post('/:slug/marks/suggest-replace', async (req: Request, res: Response) => {
   const mutationRoute = 'POST /marks/suggest-replace';
   const slug = getSlug(req);
@@ -3916,6 +4247,7 @@ agentRoutes.post('/:slug/marks/suggest-replace', async (req: Request, res: Respo
   if (!mutationContext) return;
   const result = await executeDocumentOperationAsync(slug, 'POST', '/marks/suggest-replace', payload, mutationContext);
   finishSuggestionNote(res, slug, whyGate, result);
+  await finishSuggestionBundle(slug, whyGate, result);
   storeIdempotentMutationResult(replay, mutationRoute, slug, result.status, result.body);
   if (result.status >= 200 && result.status < 300) {
     notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'suggestion.add.replace' }), { apply: false });
@@ -3942,6 +4274,7 @@ agentRoutes.post('/:slug/marks/suggest-insert', async (req: Request, res: Respon
   if (!mutationContext) return;
   const result = await executeDocumentOperationAsync(slug, 'POST', '/marks/suggest-insert', payload, mutationContext);
   finishSuggestionNote(res, slug, whyGate, result);
+  await finishSuggestionBundle(slug, whyGate, result);
   storeIdempotentMutationResult(replay, mutationRoute, slug, result.status, result.body);
   if (result.status >= 200 && result.status < 300) {
     notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'suggestion.add.insert' }), { apply: false });
@@ -3968,6 +4301,7 @@ agentRoutes.post('/:slug/marks/suggest-delete', async (req: Request, res: Respon
   if (!mutationContext) return;
   const result = await executeDocumentOperationAsync(slug, 'POST', '/marks/suggest-delete', payload, mutationContext);
   finishSuggestionNote(res, slug, whyGate, result);
+  await finishSuggestionBundle(slug, whyGate, result);
   storeIdempotentMutationResult(replay, mutationRoute, slug, result.status, result.body);
   if (result.status >= 200 && result.status < 300) {
     notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'suggestion.add.delete' }), { apply: false });

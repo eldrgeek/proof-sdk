@@ -537,6 +537,98 @@ A Familiar that sees `objection.created` can draft a repair as a suggestion on t
 `objection.repair_proposed` is recorded when the server next reads the document (`/state`,
 `/objections`, `since-you`), not at the moment of a browser edit.
 
+## Review bundles (Proof Documents, Step B4e)
+
+A bundle groups several suggestions that make one change ("Move launch to October") under a title
+and a one-line why. Readers see it as one card: the title, the why, every affected passage with its
+resulting text, and one decision. Rules in `BUNDLE_POLICY` (`src/shared/bundles.ts`); `/state`
+returns them in `proofExtrasPolicy.bundles`.
+
+- Accepting a bundle applies its edits. It is **not** agreement with the resulting lines: they
+  still need their own marks.
+- Each member remembers the hash of its line when it was bundled. Accept checks every member first;
+  if any line changed since (or a member was rejected on its own, or is gone), nothing is applied:
+  409 `BUNDLE_STALE` with `stale` ids, and readers review the changes one by one.
+- The reading walk steps a bundle as one unit when the focus reaches its first passage.
+- A suggestion belongs to at most one open bundle (409 `IN_ANOTHER_BUNDLE`).
+
+Make a bundle while suggesting (any suggest route, and `/ops` `suggestion.add`):
+
+  POST /api/agent/<slug>/marks/suggest-replace  { quote, content, why, bundle: { id: "launch", title: "Move launch to October", why: "..." } }
+  (later suggestions name the same bundle: `bundle: "launch"`; a new bundle needs a title: 400 BUNDLE_TITLE_REQUIRED)
+
+Or group existing suggestions, decide, and read:
+
+  POST /api/agent/<slug>/bundles                  { id?, title, why?, markIds: [...] }   (an existing id appends)
+  POST /api/agent/<slug>/bundles/<id>/accept      (edit access; one mutation for every pending member)
+  POST /api/agent/<slug>/bundles/<id>/reject
+  GET  /api/agent/<slug>/bundles[?closed=1]       (members, stale, acceptable, status)
+  Events: bundle.created, bundle.updated, bundle.accepted (with the not-agreement note), bundle.rejected
+
+Suggestion Issues in `/state` carry `bundleId`.
+
+## Competing alternatives, blind marking, Explain, perishable claims (Proof Documents, Step B4f)
+
+Rules in `ALT_POLICY`, `BLIND_POLICY`, `EXPLAIN_POLICY` / `TERM_POLICY` and `TTL_POLICY`
+(`src/shared/alternatives.ts`, `blind.ts`, `explain.ts`, `ttl.ts`); `/state` returns them in
+`proofExtrasPolicy`.
+
+**Alternatives.** Instead of rejecting a line, offer another wording. The wordings show stacked
+under the line, the original first (key 1), each with who offered it; each member picks one (keys
+1-9 on the focus line, or the radio in the rail). When every team member has picked the same one
+(and at least one person picked: an AI alone never rewrites a line), or an Owner decides, it becomes
+the line through a normal edit (marks on the line reset) and the other wordings fold into the line's
+history. Offering records your own pick. Open alternatives are an Issue (type `alternative`:
+`openFor`, `disagree`). Paragraphs, headings and list items only.
+
+  POST /api/agent/<slug>/alternatives              { <line target>, text }
+  POST /api/agent/<slug>/alternatives/pick         { <line target>, choice: "original" | <id> | "1".."9" }
+  POST /api/agent/<slug>/alternatives/decide       (owner credential) { <line target>, choice }
+  POST /api/agent/<slug>/alternatives/<id>/withdraw
+  GET  /api/agent/<slug>/alternatives[?closed=1]
+  Events: alternative.offered, alternative.picked, alternative.resolved (with the history), alternative.withdrawn, alternative.apply_failed
+
+**Blind marking.** An Owner turns it on per document (the rail's "Blind marking", or
+`POST /api/agent/<slug>/settings {"blind": true}` with the owner credential; `GET .../settings`).
+While on, a member does not see how others marked a line, answered its ask, or picked among its
+wordings until they have marked, answered or picked on that line themselves. Hidden marks arrive as
+placeholders (`hidden: true`, status `seen`, no reason); hidden ask answers carry `hidden: true`
+(their `choice` is only a placeholder); hidden picks carry `hidden: true`. Your `/state` is blind
+too: an agent key sees others' positions only on lines it has marked (`blind.revealedLines`); the
+owner credential with no `by` reads everything. While blind, `line_mark.*`, `ask.answered` and
+`alternative.picked` events leave out the position. Revealed lines whose marks disagree (an Agree or
+Approve against a Reject) are listed in `disagreementLines`, flagged `disagreement` on their Issue,
+and ranked first (priority rule `disagreement`).
+
+**Explain.** E on the focus line (or "Explain…" in the rail) posts a comment thread on the line,
+`Explain: @<each AI collaborator> What does this line mean, and why is it here?` (or the reader's own question),
+and records `explain.requested` (`commentMarkId`, `line`, `question`). Answer by replying on that
+thread (`POST /marks/reply`). Asking never marks the line, never counts as a rejection, and the
+thread is never an Issue. `GET /api/agent/<slug>/explains` lists them.
+
+**Terms.** A line of the form `**Term** — definition` or `Term: definition` inside a section whose
+heading starts with Terms, Glossary or Definitions defines Term. A reader who has not seen that
+definition line yet sees the term's first use elsewhere underlined; clicking it shows the
+definition. `GET /api/agent/<slug>/terms` lists the terms and each one's first use.
+
+**Perishable claims.** An author sets a time-to-live on a line ("7d", "12h", "30m", "90s"). When it
+runs out, Agreed and Approved marks made before then show as stale (they still count as Seen) and
+the line becomes an Issue (type `ttl`) for the AI collaborators first, priority low (rule
+`ttl-check`): answer "still true?". Yes starts a new period and the marks count again; No (or an
+edit to the line since the period began) makes it an Issue for the people, who settle it by marking
+the line again. Expiry is worked out whenever the document is read (`/state` has `evaluatedAt`
+and each ttl's `expiresAt`, `expired`, `decayedMarks`); `ttl.expired` is recorded once per period.
+
+  POST /api/agent/<slug>/ttl                 { <line target>, ttl: "7d" }   (one per line: setting again replaces it)
+  POST /api/agent/<slug>/ttl/<id>/check      { stillTrue: true | false, why? }   (AIs only)
+  POST /api/agent/<slug>/ttl/<id>/clear      (the setter or the owner credential)
+  GET  /api/agent/<slug>/ttl
+  Events: ttl.set, ttl.expired, ttl.checked, ttl.cleared
+
+Page routes (same rules, signed-in actor): `POST /api/documents/<slug>/alternatives`,
+`.../alternatives/pick`, `.../alternatives/decide`, `.../alternatives/<id>/withdraw`,
+`.../settings`, `.../explain`, `.../ttl`, `.../ttl/<id>/clear`, `.../bundles/<id>/decision`.
+
 ## Presence And Event Polling
 
 Poll for changes:

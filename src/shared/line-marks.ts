@@ -75,6 +75,12 @@ export interface LineMark {
   via?: MarkVia | null;
   /** Step B4c: an AI's one-line rationale for its mark (REVIEW_AIDS WHY_POLICY). */
   why?: string | null;
+  /**
+   * Step B4f (blind marking): a placeholder for someone else's mark on a line the viewer has not
+   * marked yet. Its status reads as "seen" and its reason and why are removed; the UI shows
+   * "marked (hidden until you mark this line)". Never written to storage.
+   */
+  hidden?: boolean;
 }
 
 export interface DocLine {
@@ -302,6 +308,15 @@ export interface ReviewMarkLike {
   pos?: number | null;
   open: boolean;
   replies?: Array<{ by?: string | null }>;
+  /**
+   * Step B4f: an Explain question (src/shared/explain.ts). The caller sets it only when
+   * EXPLAIN_POLICY.commentIsIssue is false; such a comment is never an Issue.
+   */
+  explain?: boolean;
+  /** Step B4e: the review bundle of a suggestion. */
+  bundleId?: string;
+  /** Step B4e: a suggestion's status (pending / accepted / rejected), when the caller knows it. */
+  status?: string | null;
 }
 
 /**
@@ -360,6 +375,11 @@ export interface LineMarkEntry {
   carried?: boolean;
   /** Step B3b: for a carried mark, the text it was made on. */
   carriedFrom?: string;
+  /**
+   * Step B4f (perishable claims): the line's time-to-live expired after this Agreed/Approved mark
+   * was made. The mark shows as "stale"; it still counts as Seen (src/shared/ttl.ts).
+   */
+  decayed?: boolean;
 }
 
 export interface LineState {
@@ -442,6 +462,43 @@ export type ProofIssue =
     rejectedBy: Array<{ by: string; reason: string | null }>;
     /** Step B3b: members whose focus passed the line too fast (they are in unseenBy too). */
     skimmedBy: string[];
+    /**
+     * Step B4f (blind marking): revealed marks on the line disagree (an Agree or Approve and a
+     * Reject). Set only while it counts for priority (BLIND_POLICY in src/shared/blind.ts).
+     */
+    disagreement?: boolean;
+  }
+  | {
+    /**
+     * Step B4f: a line with competing wordings still open (src/shared/alternatives.ts). An Issue
+     * for everyone who has not picked; when all picked but differ, for everyone (disagree).
+     */
+    type: 'alternative';
+    lineIndex: number;
+    pos: number;
+    kind: string;
+    excerpt: string;
+    alternatives: number;
+    openFor: string[];
+    disagree: boolean;
+    disagreement?: boolean;
+  }
+  | {
+    /**
+     * Step B4f: a perishable line whose time-to-live ran out (src/shared/ttl.ts). Open for the AI
+     * collaborators to re-check ("still true?"), and for people only when the line changed since or
+     * an AI said it is no longer true.
+     */
+    type: 'ttl';
+    ttlId: string;
+    lineIndex: number;
+    pos: number;
+    kind: string;
+    excerpt: string;
+    by: string;
+    expiresAt: string;
+    reason: 'expired' | 'not-true' | 'changed';
+    openFor: string[];
   }
   | {
     /** Step B3: an ask on this line that someone it was asked of has not answered. */
@@ -497,13 +554,33 @@ export type ProofIssue =
     kind: string;
     by: string | null;
     excerpt: string;
+    /** Step B4e: the review bundle this suggestion belongs to (src/shared/bundles.ts). */
+    bundleId?: string;
   };
 
 export interface IssueSummary {
   team: string[];
   issues: ProofIssue[];
   aligned: boolean;
-  counts: { lines: number; lineIssues: number; reviewMarkIssues: number; askIssues: number; uncertainIssues: number; objectionIssues: number; total: number };
+  counts: { lines: number; lineIssues: number; reviewMarkIssues: number; askIssues: number; uncertainIssues: number; objectionIssues: number; alternativeIssues: number; ttlIssues: number; total: number };
+}
+
+/** Step B4f: a line with open alternatives (src/shared/alternatives.ts alternativeIssueInputs). */
+export interface AlternativeIssueInput {
+  lineIndex: number;
+  alternatives: number;
+  openFor: string[];
+  disagree: boolean;
+}
+
+/** Step B4f: an expired time-to-live that is an Issue (src/shared/ttl.ts ttlIssueInputs). */
+export interface TtlIssueInput {
+  id: string;
+  lineIndex: number;
+  by: string;
+  expiresAt: string;
+  reason: 'expired' | 'not-true' | 'changed';
+  openFor: string[];
 }
 
 /** Step B4c: an uncertain flag that is an Issue (src/shared/review-aids.ts uncertainIssueInputs). */
@@ -546,6 +623,14 @@ export function computeIssues(input: {
   uncertain?: UncertainIssueInput[];
   /** Step B4d: open objections. */
   objections?: ObjectionIssueInput[];
+  /** Step B4f: lines with open alternatives. */
+  alternatives?: AlternativeIssueInput[];
+  /** Step B4f: expired times-to-live. */
+  ttl?: TtlIssueInput[];
+  /** Step B4f (blind marking): lines whose revealed marks disagree, when that counts for priority. */
+  disagreementLines?: ReadonlySet<number>;
+  /** Step B4f: alternatives whose open-for list disagrees get `disagreement` too (blind on). */
+  disagreementAlternatives?: boolean;
 }): IssueSummary {
   const states = buildLineStates(input.lines, input.lineMarks);
   const issues: ProofIssue[] = [];
@@ -582,12 +667,13 @@ export function computeIssues(input: {
       changedFor,
       rejectedBy,
       skimmedBy,
+      ...(input.disagreementLines?.has(state.line.index) ? { disagreement: true } : {}),
     });
   }
   let reviewMarkIssues = 0;
   if (LINE_MARK_POLICY.openReviewMarksAreIssues) {
     for (const mark of input.reviewMarks ?? []) {
-      if (!mark.open) continue;
+      if (!mark.open || mark.explain) continue;
       reviewMarkIssues += 1;
       issues.push({
         type: mark.kind === 'comment' ? 'comment' : 'suggestion',
@@ -596,6 +682,7 @@ export function computeIssues(input: {
         kind: mark.kind,
         by: mark.by ?? null,
         excerpt: String(mark.quote ?? '').slice(0, 120),
+        ...(mark.bundleId ? { bundleId: mark.bundleId } : {}),
       });
     }
   }
@@ -654,17 +741,53 @@ export function computeIssues(input: {
       repairPending: objection.repairPending,
     });
   }
+  let alternativeIssues = 0;
+  for (const alt of input.alternatives ?? []) {
+    const line = input.lines[alt.lineIndex];
+    if (!line || alt.openFor.length === 0) continue;
+    alternativeIssues += 1;
+    issues.push({
+      type: 'alternative',
+      lineIndex: line.index,
+      pos: line.pos,
+      kind: line.kind,
+      excerpt: line.text.slice(0, 120),
+      alternatives: alt.alternatives,
+      openFor: alt.openFor,
+      disagree: alt.disagree,
+      ...(alt.disagree && input.disagreementAlternatives ? { disagreement: true } : {}),
+    });
+  }
+  let ttlIssues = 0;
+  for (const ttl of input.ttl ?? []) {
+    const line = input.lines[ttl.lineIndex];
+    if (!line || ttl.openFor.length === 0) continue;
+    ttlIssues += 1;
+    issues.push({
+      type: 'ttl',
+      ttlId: ttl.id,
+      lineIndex: line.index,
+      pos: line.pos,
+      kind: line.kind,
+      excerpt: line.text.slice(0, 120),
+      by: ttl.by,
+      expiresAt: ttl.expiresAt,
+      reason: ttl.reason,
+      openFor: ttl.openFor,
+    });
+  }
   // Document order; review marks without a position go last. At one position an ask comes
   // before the line's own Issue, so Next issue lands on the decision first (then an objection,
-  // then an uncertain flag).
-  const rank = (issue: ProofIssue) => (issue.type === 'ask' ? 0 : issue.type === 'objection' ? 1 : issue.type === 'uncertain' ? 2 : issue.type === 'line' ? 3 : 4);
+  // then open alternatives, then an uncertain flag, then an expired time-to-live).
+  const rank = (issue: ProofIssue) => (issue.type === 'ask' ? 0 : issue.type === 'objection' ? 1 : issue.type === 'alternative' ? 2
+    : issue.type === 'uncertain' ? 3 : issue.type === 'ttl' ? 4 : issue.type === 'line' ? 5 : 6);
   issues.sort((a, b) => ((a.pos ?? Number.MAX_SAFE_INTEGER) - (b.pos ?? Number.MAX_SAFE_INTEGER)) || (rank(a) - rank(b)));
-  const lineIssues = issues.length - reviewMarkIssues - askIssues - uncertainIssues - objectionIssues;
+  const lineIssues = issues.length - reviewMarkIssues - askIssues - uncertainIssues - objectionIssues - alternativeIssues - ttlIssues;
   return {
     team: input.team,
     issues,
     aligned: issues.length === 0,
-    counts: { lines: input.lines.length, lineIssues, reviewMarkIssues, askIssues, uncertainIssues, objectionIssues, total: issues.length },
+    counts: { lines: input.lines.length, lineIssues, reviewMarkIssues, askIssues, uncertainIssues, objectionIssues, alternativeIssues, ttlIssues, total: issues.length },
   };
 }
 

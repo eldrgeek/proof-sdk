@@ -50,7 +50,7 @@ const who = (actor: string) => (actor === ANYONE ? 'anyone' : actorLabel(actor))
 export function askControlSignature(view: AskView, actor: string, canAnswer: boolean): string {
   return JSON.stringify([
     view.ask.recommend, view.ask.ifYes, view.ask.to, view.ask.askedAt, view.lineHash,
-    view.answers.map(a => [a.id, a.choice, a.words]), view.openFor, view.snoozedFor, actorKey(actor), canAnswer,
+    view.answers.map(a => [a.id, a.choice, a.words, a.hidden ? 1 : 0]), view.openFor, view.snoozedFor, actorKey(actor), canAnswer,
   ]);
 }
 
@@ -91,10 +91,11 @@ export function buildAskControl(view: AskView, options: AskControlOptions): AskC
     const list = el('ul', 'pask-answers');
     for (const answer of view.answers) {
       const li = el('li');
-      li.dataset.choice = answer.choice;
+      li.dataset.choice = answer.hidden ? 'hidden' : answer.choice;
       const me = actorKey(answer.by) === actorKey(options.actor);
+      // Step B4f blind marking: someone answered; how is hidden until you mark this line.
       li.append(el('span', 'pask-who', me ? `${actorLabel(answer.by)} (you)` : actorLabel(answer.by)),
-        el('span', 'pask-choice', ASK_CHOICE_LABEL[answer.choice]));
+        el('span', 'pask-choice', answer.hidden ? 'answered · hidden until you mark this line' : ASK_CHOICE_LABEL[answer.choice]));
       if (answer.words) li.append(el('q', 'pask-words-said', answer.words));
       if (!isAskedOf(view.ask, answer.by)) li.append(el('span', 'pask-note', 'not asked'));
       list.append(li);
