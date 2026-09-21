@@ -1055,6 +1055,25 @@ export interface ProofEditor {
   isReviewLocked(): boolean;
 }
 
+
+/**
+ * Top bar spacing (Mike, 2026-09-21: "The bar at the top has excess whitespace above and below the
+ * buttons."). Touch targets stay at least 44 px on phones and touch screens.
+ */
+const TOP_BAR_LAYOUT = {
+  /** Desktop: the bar's distance from the top edge (was 18). */
+  desktopTopPx: 8,
+  /** Desktop: padding above and below the buttons (was 16). */
+  desktopPadY: 4,
+  /** Desktop with a mouse: button height (was 48). */
+  desktopTargetPx: 36,
+  /** Phone: the bar's height (44 px targets + 2 px above and below; was 52). */
+  phoneBarPx: 48,
+  /** Space between the bar and the first line of text (was 32; phones also added the desktop's 18 by mistake). */
+  textGapDesktopPx: 16,
+  textGapPhonePx: 12,
+} as const;
+
 class ProofEditorImpl implements ProofEditor {
   editor: Editor | null = null;
   heatMapMode: 'hidden' | 'subtle' | 'background' | 'full' = 'background';
@@ -3372,6 +3391,29 @@ class ProofEditorImpl implements ProofEditor {
         .proof-share-overflow-menu button:active { background: #f3f4f6; }
         .proof-share-overflow-menu button span:last-child { color: #6b7280; font-size: 13px; }
       }
+      /* Top bar (2026-09-21): tight around its buttons. A mouse gets 36 px targets on desktop; touch
+         screens (and phones, below) keep 44 px. */
+      @media (min-width: 701px) {
+        #share-banner { padding: ${TOP_BAR_LAYOUT.desktopPadY}px 6px ${TOP_BAR_LAYOUT.desktopPadY}px 16px !important; gap: 10px !important; }
+      }
+      @media (min-width: 701px) and (pointer: fine) {
+        #share-banner > a,
+        #share-banner > .share-pill-title,
+        #share-banner > button,
+        #share-banner .share-pill-agent-trigger,
+        #share-banner .share-pill-share-btn > button,
+        #share-banner .share-pill-suggest-toggle,
+        #share-banner .pm-review-toggle,
+        #share-banner .share-pill-human-avatars > .proof-avatar-wrap {
+          min-height: ${TOP_BAR_LAYOUT.desktopTargetPx}px !important;
+        }
+        #share-banner .share-pill-human-avatars > .proof-avatar-wrap { height: ${TOP_BAR_LAYOUT.desktopTargetPx}px !important; }
+        #share-banner .share-pill-title { line-height: ${TOP_BAR_LAYOUT.desktopTargetPx}px; }
+      }
+      @media (max-width: 700px) {
+        #share-banner { height: calc(${TOP_BAR_LAYOUT.phoneBarPx}px + env(safe-area-inset-top, 0px)) !important; }
+        #share-banner .share-pill-overflow { min-height: 44px !important; height: 44px; }
+      }
       .proof-share-welcome-toast .proof-toast-content { display: flex !important; flex-direction: row !important; align-items: flex-start; gap: 8px; }
       .proof-share-welcome-toast .proof-toast-dismiss {
         flex-shrink: 0; min-width: 32px; min-height: 32px; margin: -6px -6px -6px 0; border: none;
@@ -3859,6 +3901,8 @@ class ProofEditorImpl implements ProofEditor {
           this.closedFold?.setFocusLine(lineIndex);
           // Item 4: a section with no Issues closes itself once the reader's focus leaves it.
           this.folding?.setFocusLine(lineIndex);
+          // Rail scrolling (2026-09-21): the chat shows its newest message when the focus line moves.
+          this.chat?.onFocusLine(lineIndex);
         },
         visibleLineFor: (lineIndex) => {
           let visible = this.folding?.visibleLineFor(lineIndex) ?? lineIndex;
@@ -6013,14 +6057,18 @@ class ProofEditorImpl implements ProofEditor {
       return;
     }
 
-    let offset = shareBanner ? 18 : 0;
+    // Top bar (Mike, 2026-09-21: "excess whitespace above and below the buttons"): the bar sits
+    // close to the top edge, and the text starts just below it. On phones the bar is pinned to the
+    // top edge by CSS (top: 0), so the space it takes is counted from 0.
+    const phone = window.matchMedia?.('(max-width: 700px)').matches ?? window.innerWidth <= 700;
+    let offset = shareBanner ? (phone ? 0 : TOP_BAR_LAYOUT.desktopTopPx) : 0;
     for (const banner of banners) {
       banner.style.top = `${offset}px`;
       const height = banner.offsetHeight || banner.getBoundingClientRect().height;
       offset += height;
     }
 
-    const extraSpacing = 32;
+    const extraSpacing = phone ? TOP_BAR_LAYOUT.textGapPhonePx : TOP_BAR_LAYOUT.textGapDesktopPx;
     editor.style.paddingTop = `${Math.ceil(offset + extraSpacing)}px`;
   }
 

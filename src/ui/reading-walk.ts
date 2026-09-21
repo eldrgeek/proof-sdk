@@ -29,8 +29,11 @@ import { GestureGate, READING_WALK, ReadingWalk, countWords, dwellMsFor, type Wa
 import type { SinceItem, SinceYouReport, RingerItem } from '../shared/alignment';
 import type { LineMarksUI, MarkBox } from './line-marks';
 import { isOpenReviewMark, type PlayMakerReview, type ReviewAction } from './playmaker-review';
-import { editingRemainingMs, installEditingGuard, isEditing, onEditingActivity } from '../editor/editing-guard';
+import { editingGuardDebug, editingRemainingMs, endWriting, installEditingGuard, isEditing, isReadingOwned, isWriting, onEditingActivity, onWritingChange, startWriting } from '../editor/editing-guard';
+import { READING_MODE_POLICY } from '../shared/reading-keys';
+import { Selection } from '@milkdown/kit/prose/state';
 import { ProxyMarksUI } from './proxy-marks';
+import { ScrollFollower, containRailWheel } from './rail-follow';
 import { TIER_POLICY } from '../shared/line-tiers';
 import './reading-walk.css';
 
@@ -132,13 +135,19 @@ function isPhone(): boolean {
   try { return window.matchMedia(PHONE_QUERY).matches; } catch { return window.innerWidth <= 700; }
 }
 
+/**
+ * Keys go to the text or field instead of the reading commands. The document's own text counts
+ * only while the person is writing (src/shared/reading-keys.ts): a caret the person did not put
+ * there is reading, and the editing guard has already stopped the key from typing.
+ */
 function isTypingTarget(target: EventTarget | null): boolean {
-  const el = target as HTMLElement | null;
-  if (!el || typeof el.closest !== 'function') return false;
-  if (el.isContentEditable) return true;
-  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)) return true;
-  const active = document.activeElement as HTMLElement | null;
-  return Boolean(active && (active.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName)));
+  const typing = (node: HTMLElement | null): boolean => {
+    if (!node || typeof node.closest !== 'function') return false;
+    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(node.tagName)) return true;
+    if (!node.isContentEditable) return false;
+    return node.closest('.ProseMirror') ? isWriting() : true;
+  };
+  return typing(target as HTMLElement | null) || typing(document.activeElement as HTMLElement | null);
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -178,6 +187,12 @@ export class ReadingWalkUI {
   /** Step B7: unread @mentions of the viewer in the chat (a badge on the rail toggle). */
   private chatUnread = 0;
   private readonly focusEl = el('div', 'prw-focus');
+  /** Writing mode: "Reading" / "Writing · Esc to read" in the rail head (click switches). */
+  private readonly modeEl = el('button', 'prw-mode');
+  private unsubscribeWriting: (() => void) | null = null;
+  /** Rail scrolling (2026-09-21): the right rail's body keeps the focus line's box and changes in view. */
+  private railFollow: ScrollFollower | null = null;
+  private readonly railWheelCleanups: Array<() => void> = [];
   private readonly styleEl = el('style');
   private readonly gate = new GestureGate();
   private box: MarkBox | null = null;
@@ -252,6 +267,8 @@ export class ReadingWalkUI {
     this.applyRailState();
     document.head.append(this.styleEl);
     document.body.append(this.left, this.right);
+    // Rail scrolling: a wheel over a rail scrolls that rail's lists only, never the page.
+    this.railWheelCleanups.push(containRailWheel(this.left), containRailWheel(this.right));
     window.addEventListener('scroll', this.onScroll, { passive: true });
     window.addEventListener('wheel', this.onWheel, { passive: false });
     window.addEventListener('touchstart', this.onTouchStart, { passive: true });
@@ -265,6 +282,7 @@ export class ReadingWalkUI {
     document.addEventListener('pointerdown', this.onPointerDownHover, true);
     document.addEventListener('focusin', this.onFocusChange);
     document.addEventListener('focusout', this.onFocusChange);
+    window.addEventListener('proof:follow-in-page-link', this.onInPageLink as EventListener);
     document.body.append(this.strip);
     try { window.matchMedia(PHONE_QUERY).addEventListener('change', this.onResize); } catch { /* old browsers */ }
     try { window.matchMedia(TOUCH_FOCUS_POLICY.query).addEventListener('change', this.onResize); } catch { /* old browsers */ }
@@ -283,6 +301,9 @@ export class ReadingWalkUI {
     (window as unknown as { __proofProxy?: ProxyMarksUI }).__proofProxy = this.proxy;
     this.unsubscribe = this.host.lineMarks().subscribe(() => this.sync());
     installEditingGuard();
+    (window as unknown as { __proofEditingGuard?: typeof editingGuardDebug }).__proofEditingGuard = editingGuardDebug;
+    this.unsubscribeWriting = onWritingChange(() => { this.renderMode(); this.queueRender(); });
+    this.renderMode();
     this.unsubscribeEditing = onEditingActivity(() => {
       // The press that places the caret lands before focus moves: check on the next frame.
       requestAnimationFrame(() => { if (isEditing()) { this.rebaseAfterEdit = true; this.clearHover(); this.queueFollowCaret(); } });
@@ -308,6 +329,7 @@ export class ReadingWalkUI {
     document.removeEventListener('pointerdown', this.onPointerDownHover, true);
     document.removeEventListener('focusin', this.onFocusChange);
     document.removeEventListener('focusout', this.onFocusChange);
+    window.removeEventListener('proof:follow-in-page-link', this.onInPageLink as EventListener);
     if (this.hoverTimer) clearTimeout(this.hoverTimer);
     this.strip.remove();
     document.body.classList.remove('prw-touch', 'prw-strip-on');
@@ -315,6 +337,9 @@ export class ReadingWalkUI {
     this.proxy.stop();
     this.unsubscribeEditing?.();
     this.unsubscribeEditing = null;
+    this.unsubscribeWriting?.();
+    this.unsubscribeWriting = null;
+    for (const cleanup of this.railWheelCleanups.splice(0)) cleanup();
     this.resizeObserver?.disconnect();
     this.host.playmaker()?.dock(null);
     this.left.remove(); this.right.remove(); this.focusEl.remove(); this.styleEl.remove();
@@ -420,6 +445,17 @@ export class ReadingWalkUI {
 
   private view() { return this.host.lineMarks().editorView(); }
 
+  /** Is the caret's line off screen (above the top bar or below the window)? */
+  private caretOutOfView(): boolean {
+    const view = this.view();
+    if (!view) return false;
+    try {
+      const at = view.coordsAtPos(view.state.selection.head);
+      const top = parseFloat(getComputedStyle(document.body).getPropertyValue('--prw-top')) || 0;
+      return at.bottom < top || at.top > window.innerHeight;
+    } catch { return false; }
+  }
+
   private queueFollowCaret(): void {
     if (!READING_EDIT_POLICY.focusFollowsCaret || this.followQueued) return;
     this.followQueued = true;
@@ -500,6 +536,8 @@ export class ReadingWalkUI {
   private onScroll = (): void => {
     const walk = this.walk;
     if (!walk || this.tops.length === 0) return;
+    // Writing mode: once typing has paused, scrolling the caret's line out of view is reading.
+    if (READING_MODE_POLICY.caretOutOfViewEndsWriting && isWriting() && !isEditing() && this.caretOutOfView()) endWriting();
     // Editing first: while the person edits, scrolling moves nothing and snaps nothing.
     if (isEditing()) { this.rebaseAfterEdit = true; this.queueRender(); return; }
     let target = this.lineAtReadingLine();
@@ -591,12 +629,21 @@ export class ReadingWalkUI {
   };
 
   private onKeyDown = (event: KeyboardEvent): void => {
-    if (!this.walk || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
+    // The editing guard prevents a reading key's default when the text holds the keyboard without
+    // the person writing (so it never types): that key is still ours to run.
+    if (!this.walk || (event.defaultPrevented && !isReadingOwned(event)) || event.metaKey || event.ctrlKey || event.altKey) return;
     if (isTypingTarget(event.target)) return;
     const target = event.target as HTMLElement | null;
     if (target?.closest?.('[role="dialog"], .pm-review-dialog, .mark-popover, .plm-menu, .proof-share-overflow-menu, [role="menu"]')) return;
     const key = event.key;
     if (key === 'Escape' && this.host.lineMarks().selectionLines().length) { this.host.lineMarks().clearSelection(); return; }
+    // Enter while reading: write at the end of the focus line (not on a button, which Enter presses).
+    if (key === 'Enter') {
+      if (!READING_MODE_POLICY.enterStartsWriting || target?.closest?.('button, a[href], summary, [role="button"]')) return;
+      event.preventDefault();
+      this.writeAtFocus();
+      return;
+    }
     if (key === 'a' || key === 'A') { event.preventDefault(); this.markFocus('agreed'); return; }
     if (key === 'r' || key === 'R') { event.preventDefault(); this.openReason(); return; }
     if (key === 'j' || key === 'J' || key === 'ArrowDown') { event.preventDefault(); this.next(); return; }
@@ -646,6 +693,43 @@ export class ReadingWalkUI {
     void this.host.lineMarks().explainLine(focus);
   }
 
+  /** The person is typing in a field in the right rail (a reason, a reply): the rail holds still. */
+  private typingInRail(): boolean {
+    const active = document.activeElement as HTMLElement | null;
+    return Boolean(active && this.right.contains(active) && (['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName) || active.isContentEditable));
+  }
+
+  /**
+   * The rail body's scrollTop that puts the end of the focus line's material (its box, then its
+   * changes) at the bottom of the rail: the newest thing about the line is in view.
+   */
+  private railEndTop(): number {
+    const body = this.rightBody;
+    const last = !this.changesHost.hidden && this.changesHost.childElementCount ? this.changesHost : this.boxHost;
+    if (!last.isConnected || !last.childElementCount) return body.scrollHeight;
+    const bottom = last.getBoundingClientRect().bottom - body.getBoundingClientRect().top + body.scrollTop;
+    const pad = parseFloat(getComputedStyle(body).paddingBottom) || 0;
+    return bottom + pad - body.clientHeight;
+  }
+
+  /** Enter while reading, or the mode chip: the caret goes to the end of the focus line and the person writes. */
+  writeAtFocus(): boolean {
+    const walk = this.walk;
+    const view = this.view();
+    if (!walk || !view || !view.editable) return false;
+    const line = this.lines[this.targetLine()];
+    if (!line) return false;
+    const end = Math.max(1, Math.min(view.state.doc.content.size - 1, line.pos + line.nodeSize - 1));
+    try {
+      view.dispatch(view.state.tr.setSelection(Selection.near(view.state.doc.resolve(end), -1)));
+    } catch { /* keep the selection */ }
+    view.focus();
+    startWriting();
+    this.clearHover();
+    this.queueRender();
+    return true;
+  }
+
   /** Step B4d: the focus line (shift-click ranges in the margin start here). */
   focusIndex(): number { return this.targetLine(); }
 
@@ -674,6 +758,16 @@ export class ReadingWalkUI {
     const mark = this.pendingMarks().find(m => m.id === id);
     if (!mark) return;
     this.explicit(this.host.lineMarks().lineAtPos(mark.range!.from));
+  };
+
+  /** A `#heading` link in the text was clicked: its heading becomes the focus line (a jump). */
+  private onInPageLink = (event: CustomEvent<{ pos: number; handled: boolean }>): void => {
+    const pos = event.detail?.pos ?? -1;
+    if (!this.walk || pos < 0) return;
+    const line = this.host.lineMarks().lineAtPos(pos);
+    if (line < 0) return;
+    this.host.lineMarks().revealLine?.(line);
+    if (this.focusLine(line)) event.detail.handled = true;
   };
 
   private onResize = (): void => {
@@ -708,7 +802,8 @@ export class ReadingWalkUI {
     const walk = this.walk;
     if (!walk) return 0;
     const hover = this.hoverLine;
-    if (hover === null || isEditing() || hover >= walk.lineCount || walk.isHidden(hover)) return walk.focus;
+    // While writing, the caret's line owns the focus: the keys type there.
+    if (hover === null || isWriting() || isEditing() || hover >= walk.lineCount || walk.isHidden(hover)) return walk.focus;
     return hover;
   }
 
@@ -779,6 +874,12 @@ export class ReadingWalkUI {
     this.hoverTimer = setTimeout(() => {
       this.hoverTimer = null;
       if (!this.walk || isEditing() || this.hoverCandidate !== line) return;
+      // Writing mode: resting on another line after typing paused returns to reading, so the keys
+      // act on the line the rail now shows (src/shared/reading-keys.ts).
+      if (isWriting()) {
+        if (!READING_MODE_POLICY.hoverEndsWriting) return;
+        endWriting();
+      }
       this.setHoverFocus(line);
     }, HOVER_FOCUS_POLICY.delayMs);
   }
@@ -796,7 +897,20 @@ export class ReadingWalkUI {
   private hoverWrites = 0;
   private readonly hoverLog: Array<{ x: number; y: number; line: number | null }> = [];
 
-  private onFocusChange = (): void => { this.queueRender(); };
+  private onFocusChange = (): void => { this.renderMode(); this.queueRender(); };
+
+  /** The mode chip: what the next letter key will do. */
+  private renderMode(): void {
+    const writing = isWriting();
+    const mode = writing ? 'writing' : 'reading';
+    if (this.modeEl.dataset.mode === mode) return;
+    this.modeEl.dataset.mode = mode;
+    this.modeEl.textContent = writing ? 'Writing · Esc to read' : 'Reading';
+    this.modeEl.title = writing
+      ? 'Keys type into the text. Esc, or a click outside the text, returns to reading.'
+      : 'Keys are commands: A agree, R reject, J/K next/previous. Click the text, or press Enter, to write.';
+    this.modeEl.setAttribute('aria-label', writing ? 'Writing: keys type into the text. Press to return to reading.' : 'Reading: keys are commands. Press to write on the focus line.');
+  }
 
   /** The touch strip: the focus line's own mark and Agree / Reject / More…. */
   private renderStrip(): void {
@@ -915,7 +1029,7 @@ export class ReadingWalkUI {
   }
 
   private commit(ids: string[]): void {
-    if (ids.length === 0) return;
+    if (ids.length === 0) { this.renderNow(); return; }
     const walk = this.walk!;
     // Step B4e: scroll-accepted bundle members commit only while their bundle still matches.
     const lm = this.host.lineMarks();
@@ -934,11 +1048,44 @@ export class ReadingWalkUI {
       // Scroll-accepts are passive: committing them never folds their lines (closed-fold policy).
       lm.withoutClosures(() => this.host.decide(ids, 'accept'));
       this.lastError = '';
+      this.commits.push({ ids: ids.slice(), ok: true });
     } catch (error) {
-      walk.restoreProvisional(ids);
-      this.lastError = error instanceof Error ? error.message : 'Could not save the accepts.';
+      // A batch accept is all or nothing. A change that was edited after it was proposed can never
+      // be accepted as it stands: putting it back as "accepted by scrolling" left the same notice
+      // and the same button, so the next click did nothing (Mike, 2026-09-21). Drop those from the
+      // scroll-accepts (they stay open for an explicit decision), save the rest, and say so.
+      const failed = (error as { failedIds?: string[] })?.failedIds ?? [];
+      const rest = ids.filter(id => !failed.includes(id));
+      this.commits.push({ ids: ids.slice(), ok: false, error: error instanceof Error ? error.message : String(error) });
+      if (failed.length && rest.length) {
+        try {
+          lm.withoutClosures(() => this.host.decide(rest, 'accept'));
+          this.commits.push({ ids: rest.slice(), ok: true });
+        } catch (retry) {
+          walk.restoreProvisional(rest);
+          this.lastError = retry instanceof Error ? retry.message : 'Could not save the accepts.';
+          this.afterChange();
+          return;
+        }
+      } else if (!failed.length) {
+        walk.restoreProvisional(ids);
+        this.lastError = error instanceof Error ? error.message : 'Could not save the accepts.';
+        this.afterChange();
+        return;
+      }
+      const lines = failed.map(id => this.lineOfMark(id)).filter(n => n >= 0).map(n => n + 1);
+      const where = lines.length ? ` (line ${[...new Set(lines)].join(', ')})` : '';
+      this.lastError = `${failed.length === 1 ? '1 change was' : `${failed.length} changes were`} edited after being proposed, so ${failed.length === 1 ? 'it' : 'they'} could not be accepted as ${failed.length === 1 ? 'it stands' : 'they stand'}${where}. ${failed.length === 1 ? 'It is' : 'They are'} still open: accept or reject ${failed.length === 1 ? 'it' : 'them'} there.`;
     }
     this.afterChange();
+  }
+
+  /** Test hook: every commit of scroll-accepts (the ids, and whether the accept bridge took them). */
+  private readonly commits: Array<{ ids: string[]; ok: boolean; error?: string }> = [];
+
+  private lineOfMark(id: string): number {
+    const mark = this.pendingMarks().find(m => m.id === id);
+    return mark?.range ? this.host.lineMarks().lineAtPos(mark.range.from) : -1;
   }
 
   private decide(mark: Mark, action: ReviewAction, text?: string): void {
@@ -1231,8 +1378,11 @@ export class ReadingWalkUI {
     this.renderDynamicStyle();
     this.renderStatus();
     this.renderMe();
+    const railSig = `${this.boxSig}\n${this.changesSig}`;
     this.renderBox();
     this.renderChanges();
+    // The focus line changed, or its box or changes did: keep them in view at the rail's bottom.
+    if (`${this.boxSig}\n${this.changesSig}` !== railSig && !this.typingInRail()) this.railFollow?.follow();
     this.renderDocuments();
     this.renderRate();
     this.renderStrip();
@@ -1345,15 +1495,25 @@ export class ReadingWalkUI {
     this.provisionalEl.dataset.sig = sig;
     this.provisionalEl.replaceChildren();
     if (n > 0) {
-      const text = el('p', 'prw-provisional-text', `${n} ${n === 1 ? 'change' : 'changes'} accepted by scrolling, not saved yet. Scroll back up to undo.`);
-      const commit = el('button', 'prw-commit', `Commit ${n} accepted`);
+      const one = n === 1;
+      const text = el('p', 'prw-provisional-text',
+        `You scrolled past ${n} ${one ? 'change' : 'changes'}, so ${one ? 'it counts' : 'they count'} as accepted by scrolling. ${one ? 'It is' : 'They are'} not saved yet: scroll back up to take ${one ? 'it' : 'them'} back, or save now.`);
+      const commit = el('button', 'prw-commit', `Save ${n} accepted ${one ? 'change' : 'changes'}`);
       commit.type = 'button';
+      // The press must not move the keyboard (or the rail) before the release: the click is the act.
+      commit.addEventListener('mousedown', event => event.preventDefault());
       commit.onclick = () => this.commit(this.walk?.commitAll() ?? []);
       this.provisionalEl.append(text, commit);
     }
+    this.provisionalEl.dataset.state = n > 0 ? 'pending' : 'error';
     if (this.lastError) {
       const err = el('p', 'prw-error', this.lastError);
       err.setAttribute('role', 'alert');
+      const dismiss = el('button', 'prw-link prw-error-dismiss', 'OK');
+      dismiss.type = 'button';
+      dismiss.setAttribute('aria-label', 'Dismiss this message');
+      dismiss.onclick = () => { this.lastError = ''; this.renderNow(); };
+      err.append(' ', dismiss);
       this.provisionalEl.append(err);
     }
   }
@@ -1614,7 +1774,7 @@ export class ReadingWalkUI {
       }
     }
     if (flags.provisional) {
-      const note = el('p', 'prw-card-note', 'Accepted by scrolling · not saved yet');
+      const note = el('p', 'prw-card-note', 'Accepted by scrolling, not saved yet');
       const undo = el('button', 'prw-link', 'Undo'); undo.type = 'button';
       undo.onclick = () => { this.walk?.dropProvisional(mark.id); this.afterChange(); };
       note.append(' ', undo);
@@ -1672,17 +1832,27 @@ export class ReadingWalkUI {
     const rightToggle = el('button', 'prw-collapse');
     rightToggle.type = 'button';
     rightToggle.onclick = () => this.toggleRail('right');
-    rightHead.append(rightTitle, this.statusEl, rightToggle, this.meEl, this.proxy.familiarEl, this.rateEl);
+    this.modeEl.type = 'button';
+    this.modeEl.dataset.keepsWriting = '';
+    this.modeEl.hidden = !READING_MODE_POLICY.showModeChip;
+    // A press on the chip must not first move the keyboard out of the text (that alone ends writing).
+    this.modeEl.addEventListener('mousedown', event => event.preventDefault());
+    this.modeEl.onclick = () => { if (isWriting()) endWriting(); else this.writeAtFocus(); this.renderMode(); };
+    rightHead.append(rightTitle, this.statusEl, this.modeEl, rightToggle, this.meEl, this.proxy.familiarEl, this.rateEl);
     this.meEl.setAttribute('aria-live', 'polite');
     this.provisionalEl.hidden = true;
     this.provisionalEl.setAttribute('aria-live', 'polite');
     this.sinceHost.hidden = true;
     this.sinceHost.setAttribute('aria-label', 'Since you last marked');
     this.buildRate();
-    this.rightBody.append(this.sinceHost, this.provisionalEl, this.boxHost, this.changesHost, this.dockHost);
+    this.rightBody.append(this.sinceHost, this.boxHost, this.changesHost, this.dockHost);
     // Step B7: the chat is a pane at the bottom of the rail, below the line's box: it keeps its
     // composer in view while the rail body above it scrolls.
-    this.right.append(rightHead, this.rightBody, this.chatSlot);
+    // The scroll-accepts notice sits under the rail head, outside the scrolling body: it stays in
+    // view and does not move when the rail scrolls or the line's box changes size (2026-09-21).
+    this.right.append(rightHead, this.provisionalEl, this.rightBody, this.chatSlot);
+    this.railFollow = new ScrollFollower({ scroller: this.rightBody, endTop: () => this.railEndTop(), name: 'rail' });
+    this.rightBody.append(this.railFollow.pillElement);
     this.right.setAttribute('role', 'complementary');
     this.left.setAttribute('role', 'navigation');
   }
@@ -1872,6 +2042,10 @@ export class ReadingWalkUI {
       tops: [...this.tops],
       constants: READING_WALK,
       error: this.lastError,
+      commits: this.commits.map(c => ({ ...c, ids: [...c.ids] })),
+      writing: isWriting(),
+      mode: this.modeEl.dataset.mode ?? null,
+      rail: this.railFollow?.debugState() ?? null,
     };
   }
 }

@@ -77,7 +77,7 @@ body.prw-right-collapsed .prw-right .prw-rail-head { padding: 6px 2px; justify-c
 .prw-focus[hidden] { display: none; }
 
 /* Right rail content */
-.prw-provisional { margin: 0 0 10px; padding: 8px 10px; border-radius: 10px; background: #f0fdf4; border: 1px dashed #16a34a; }
+.prw-provisional { flex-shrink: 0; margin: 8px 12px 0; padding: 8px 10px; border-radius: 10px; background: #f0fdf4; border: 1px dashed #16a34a; }
 .prw-provisional[hidden] { display: none; }
 .prw-provisional-text { margin: 0 0 6px; font-size: 12px; color: #166534; }
 .prw-commit { min-height: 32px; padding: 0 12px; border: none; border-radius: 8px; background: #16a34a; color: #fff; font: 600 13px system-ui, sans-serif; cursor: pointer; }
@@ -251,3 +251,20 @@ body.prw-strip-on .prw-strip:not([hidden]) {
 body.prw-strip-on #app #editor { padding-bottom: calc(100vh - 80px + var(--prw-strip-h, 64px)) !important; }
 body.prw-strip-on .soma-feedback-root { bottom: calc(var(--prw-strip-h, 64px) + 12px + env(safe-area-inset-bottom, 0px)); }
 body.prw-strip-on .plm-toast { bottom: calc(var(--prw-strip-h, 64px) + 16px); }
+
+/* Writing mode (2026-09-21, src/shared/reading-keys.ts): the caret blinks only while writing, and
+   the rail head says which mode the keys are in. */
+body.prw-on.pw-reading .ProseMirror { caret-color: transparent; }
+.prw-mode { flex-shrink: 0; min-height: 26px; padding: 2px 8px; border: 1px solid #d6d3cb; border-radius: 999px; background: #fff; color: #4b5563; font: 600 11px/1.2 system-ui, sans-serif; cursor: pointer; white-space: nowrap; }
+.prw-mode[data-mode="writing"] { background: #eef2ff; border-color: #c7d2fe; color: #3730a3; }
+.prw-mode:hover { background: #f3f4f6; }
+.prw-mode[data-mode="writing"]:hover { background: #e0e7ff; }
+
+/* Rail scrolling (2026-09-21, rail-follow.ts): each list scrolls on its own and never hands the
+   scroll on to the page; a list the person scrolled up in offers "New below ↓". */
+.prw-rail, .prw-rail-body, .prw-scroll-root { overscroll-behavior: contain; }
+.prw-follow-pill { display: block; position: sticky; bottom: 6px; z-index: 3; margin: 6px auto 0; min-height: 28px; padding: 3px 12px; border: 1px solid #bfdbfe; border-radius: 999px; background: #eff6ff; color: #1d4ed8; font: 600 12px/1.2 system-ui, sans-serif; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+.prw-follow-pill[hidden] { display: none; }
+.pch > .prw-follow-pill { position: relative; bottom: auto; align-self: center; margin: -36px auto 6px; }
+.prw-provisional[data-state="error"] { background: #fef2f2; border: 1px solid #fecaca; }
+.prw-provisional[data-state="error"] .prw-error { margin: 0; }

@@ -120,6 +120,20 @@ const counts = page => page.evaluate(() => ({
 }));
 
 async function typeInto(page, words, where = 'last') {
+  // Writing mode (2026-09-21): only a person's press on the text makes keys type (a caret put
+  // there by code is reading, and the keys would be swallowed). Press the text like a person does,
+  // at the end of the line, then pin the caret to the exact position below.
+  const at = await page.evaluate(where => {
+    const view = window.__proofLineMarks.editorView();
+    const lines = window.__proofLineMarks.lineList();
+    const line = where === 'first' ? lines[1] : lines[lines.length - 1];
+    const dom = view.nodeDOM(line.pos);
+    dom.scrollIntoView({ block: 'center', behavior: 'instant' });
+    const c = view.coordsAtPos(line.pos + line.nodeSize - 1);
+    return { x: c.left - 2, y: (c.top + c.bottom) / 2 };
+  }, where);
+  await page.mouse.click(at.x, at.y);
+  await page.waitForTimeout(80);
   await page.evaluate(where => {
     const view = window.__proofLineMarks.editorView();
     const lines = window.__proofLineMarks.lineList();

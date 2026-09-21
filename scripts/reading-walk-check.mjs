@@ -190,13 +190,11 @@ async function desktop(browser, base, style, width) {
     await page.keyboard.press('a');
     await waitFor(page, () => document.querySelector('.plm-dot[data-line="1"]')?.dataset.status === 'agreed');
   });
-  await check(`${tag}: keys typed into the document or an input do not mark or move`, async () => {
-    await page.evaluate(() => {
-      const pm = document.querySelector('.ProseMirror');
-      for (const key of ['a', 'j', 'r']) pm.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
-    });
+  await check(`${tag}: keys typed into an input do not mark or move`, async () => {
+    // (Typing into the document itself is checked at the end: it needs a press on the text,
+    // which starts writing — see scripts/mike-0921-check.mjs for every entry path.)
     let state = await walk(page);
-    assert.equal(state.focus, 1, 'moved while typing in the document');
+    assert.equal(state.focus, 1);
     assert.equal(await dotStatus(page, 1), 'agreed');
     await page.keyboard.press('j'); // line 2
     await page.keyboard.press('r');
@@ -258,7 +256,7 @@ async function desktop(browser, base, style, width) {
     const after = await page.evaluate(() => window.scrollY);
     assert.ok(Math.abs(after - before) <= 2, `page moved while stepping (${before} -> ${after})`);
     const rail = await page.locator('.prw-right .prw-provisional').innerText();
-    assert.ok(/3 changes accepted by scrolling/.test(rail), rail);
+    assert.ok(/scrolled past 3 changes, so they count as accepted by scrolling/.test(rail), rail);
     const hidden = await page.evaluate(() => [...document.querySelectorAll('.ProseMirror .mark-delete')].filter(e => getComputedStyle(e).display === 'none').length);
     assert.ok(hidden >= 3, `provisionally accepted old words still shown (${hidden})`);
     await page.screenshot({ path: path.join(shots, `${tag}-3-provisional.png`) });
@@ -335,6 +333,22 @@ async function desktop(browser, base, style, width) {
     await page.screenshot({ path: path.join(shots, `${tag}-4-collapsed.png`) });
     await page.locator('.prw-left .prw-collapse').click();
     await page.locator('.prw-right .prw-collapse').click();
+  });
+  await check(`${tag}: keys typed into the document (writing) do not mark or move`, async () => {
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.waitForTimeout(200);
+    // Line 5 was only skimmed (a line already agreed may be folded, and a click on a fold opens it).
+    const line5 = await page.locator('.ProseMirror > *').nth(5).boundingBox();
+    await page.mouse.click(line5.x + line5.width - 20, line5.y + 8);
+    await page.waitForTimeout(150);
+    const focus = (await walk(page)).focus;
+    const before = await page.evaluate(() => window.__proofLineMarks.editorView().state.doc.textContent.length);
+    for (const key of ['a', 'j', 'r']) await page.keyboard.press(key);
+    assert.equal(await page.evaluate(() => window.__proofLineMarks.editorView().state.doc.textContent.length), before + 3, 'the keys did not type');
+    assert.equal((await walk(page)).focus, focus, 'moved while typing in the document');
+    assert.equal(await page.locator('.prw-right .plm-reason input:not(.plm-condition)').isVisible().catch(() => false), false, 'R opened the reason field while typing');
+    for (let i = 0; i < 3; i += 1) await page.keyboard.press('Backspace');
+    await page.keyboard.press('Escape');
   });
   await bob.context.close();
   await a.context.close();

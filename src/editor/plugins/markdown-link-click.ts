@@ -1,18 +1,39 @@
+/**
+ * Links in the text (Mike, 2026-09-21: "Clicking a link should take you to the link, not through
+ * the Open Link device.").
+ *
+ * A plain click on a link opens it: a link to another page opens in a new tab (the reading place
+ * here is kept); a link to a heading in this document (`#section`) moves the focus line there.
+ * The "Open link" card that used to appear on hover, and the Cmd/Ctrl+click rule behind it, are
+ * gone. The press on a link does not put a caret in the text (so it never starts writing).
+ *
+ * Editing a link's words: Alt/Option+click on the link places the caret in it (nothing opens), or
+ * click the text beside the link and move in with the arrow keys. Policy: LINK_CLICK_POLICY.
+ * Authorship: Claude Opus 5 (worker proof-bugs6), 2026-09-21, replacing the hover card.
+ */
 import { Plugin, PluginKey } from '@milkdown/kit/prose/state';
 import type { EditorView } from '@milkdown/kit/prose/view';
 import { $prose } from '@milkdown/kit/utils';
 import { captureEvent } from '../../analytics/telemetry';
 
 const markdownLinkClickKey = new PluginKey('markdown-link-click');
-const AFFORDANCE_HORIZONTAL_GAP = 8;
-const AFFORDANCE_VERTICAL_GAP = 8;
-const AFFORDANCE_VIEWPORT_MARGIN = 10;
-const AFFORDANCE_HIDE_DELAY_MS = 180;
+
+export const LINK_CLICK_POLICY = {
+  /** A plain primary click (or tap) on a link opens it, in editing and reading alike. */
+  plainClickOpens: true,
+  /** Alt/Option+click places the caret in the link's words instead (to edit them). */
+  altClickEdits: true,
+  /** Where a link to another page opens. */
+  externalTarget: '_blank' as const,
+  /** A `#fragment` link to a heading in this document moves the focus line there. */
+  fragmentInPage: true,
+  /** Links inside suggested deletions are not followed (that text is on its way out). */
+  skipDeletedText: true,
+} as const;
 
 const ALLOWED_PROTOCOLS = new Set(['http:', 'https:', 'mailto:', 'tel:']);
 const HAS_SCHEME_RE = /^[a-zA-Z][a-zA-Z\d+.-]*:/;
 const FALLBACK_BASE_URL = 'https://proofeditor.ai/';
-const HOVER_LINK_CLASS = 'markdown-link-hover-target';
 
 type ClosestCapable = {
   closest: (selector: string) => unknown;
@@ -29,34 +50,9 @@ export type LinkTargetLike = {
 export type LinkClickEventLike = Pick<MouseEvent, 'button' | 'metaKey' | 'ctrlKey' | 'defaultPrevented'>;
 export type LinkModifierEventLike = Pick<MouseEvent, 'metaKey' | 'ctrlKey'>;
 
-export type LinkActionCardState = {
-  openLabel: string;
-  modifierTitle: string;
-  armed: boolean;
-};
+export type LinkPressEventLike = Pick<MouseEvent, 'button' | 'altKey'>;
 
-type LinkActionCardElements = {
-  root: HTMLDivElement;
-  openButton: HTMLButtonElement;
-};
-
-type LinkOpenTrigger = 'read_only_click' | 'modifier_click' | 'card_click';
-
-type PluginViewWithDestroy = {
-  update: (view: EditorView) => void;
-  destroy: () => void;
-};
-
-type LinkElement = Element & LinkTargetLike;
-
-const hoverControllers = new WeakMap<EditorView, MarkdownLinkHoverController>();
-
-function isMacPlatform(): boolean {
-  if (typeof navigator === 'undefined') return false;
-  const platform = navigator.platform || '';
-  const userAgent = navigator.userAgent || '';
-  return /Mac|iPhone|iPad|iPod/i.test(platform) || /Mac/i.test(userAgent);
-}
+type LinkOpenTrigger = 'read_only_click' | 'modifier_click' | 'plain_click';
 
 function hasClosest(value: unknown): value is ClosestCapable {
   return typeof value === 'object'
@@ -76,12 +72,6 @@ function hasGetAttribute(value: unknown): value is LinkTargetLike {
     && value !== null
     && 'getAttribute' in value
     && typeof (value as LinkTargetLike).getAttribute === 'function';
-}
-
-function isElementWithClassList(value: unknown): value is Element {
-  return typeof value === 'object'
-    && value !== null
-    && 'classList' in value;
 }
 
 function getClosestSearchTarget(target: unknown): ClosestCapable | null {
@@ -105,18 +95,14 @@ function extractLinkTarget(targetLike: unknown): LinkTargetLike | null {
   const target = getClosestSearchTarget(targetLike);
   if (!target) return null;
 
-  if (target.closest('[data-mark-id]')) {
+  // Text a suggestion deletes is not a place to go.
+  if (LINK_CLICK_POLICY.skipDeletedText && target.closest('.mark-delete, .mark-replace-delete')) {
     return null;
   }
 
   const linkTarget = target.closest('a[href]');
   if (!hasGetAttribute(linkTarget)) return null;
   return linkTarget;
-}
-
-function asLinkElement(target: LinkTargetLike | null): LinkElement | null {
-  if (!target || !isElementWithClassList(target)) return null;
-  return target as LinkElement;
 }
 
 function getLinkProtocol(normalizedHref: string): string {
@@ -140,13 +126,6 @@ function openLinkInNewTab(rawHref: string, context: { editable: boolean; trigger
 
   const protocol = getLinkProtocol(normalizedHref);
 
-  if (context.trigger === 'card_click') {
-    captureEvent('markdown_link_open_clicked', {
-      editable: context.editable,
-      protocol,
-    });
-  }
-
   if (context.trigger === 'modifier_click') {
     captureEvent('markdown_link_open_modifier_click', {
       editable: context.editable,
@@ -160,37 +139,50 @@ function openLinkInNewTab(rawHref: string, context: { editable: boolean; trigger
     trigger: context.trigger,
   });
 
-  const opened = window.open(normalizedHref, '_blank', 'noopener,noreferrer');
-  captureEvent(opened ? 'markdown_link_opened' : 'markdown_link_open_blocked', {
-    reason: opened ? 'opened' : 'popup_blocked',
+  // With noopener the browser returns null even when the tab opened, so the call is the result.
+  window.open(normalizedHref, LINK_CLICK_POLICY.externalTarget, 'noopener,noreferrer');
+  captureEvent('markdown_link_opened', {
+    reason: 'opened',
     editable: context.editable,
     protocol,
     trigger: context.trigger,
   });
 
-  return Boolean(opened);
+  return true;
 }
 
-export function shouldOpenLinkForEvent(event: LinkClickEventLike, isEditable: boolean): boolean {
+/**
+ * Does this click open the link? A primary click does, editable or not (Mike, 2026-09-21), and
+ * whether or not something default-prevented it (ProseMirror often does). Alt/Option+click edits.
+ */
+export function shouldOpenLinkForEvent(event: LinkClickEventLike & Partial<Pick<MouseEvent, 'altKey'>>, _isEditable: boolean): boolean {
   if (event.button !== 0) return false;
-  if (isEditable) {
-    // ProseMirror/contenteditable often default-prevents clicks; modifier-click should still activate links.
-    return isLinkModifierActive(event);
-  }
-  return !event.defaultPrevented;
+  if (LINK_CLICK_POLICY.altClickEdits && event.altKey) return false;
+  if (LINK_CLICK_POLICY.plainClickOpens) return true;
+  return isLinkModifierActive(event);
+}
+
+/** A press on a link: keep the caret out of the text unless the person asked to edit (Alt). */
+export function pressKeepsCaretOut(event: LinkPressEventLike): boolean {
+  return event.button === 0 && !(LINK_CLICK_POLICY.altClickEdits && event.altKey);
+}
+
+/** GitHub-style slug of a heading's text (what `#fragment` links name). */
+export function headingSlug(text: string): string {
+  return text.trim().toLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]/gu, '')
+    .replace(/\s/g, '-');
+}
+
+/** Is this href a link to a place in this document (`#fragment`)? Returns the decoded fragment. */
+export function inPageFragment(rawHref: string): string | null {
+  const trimmed = rawHref.trim();
+  if (!trimmed.startsWith('#') || trimmed.length < 2) return null;
+  try { return decodeURIComponent(trimmed.slice(1)); } catch { return trimmed.slice(1); }
 }
 
 export function isLinkModifierActive(event: LinkModifierEventLike): boolean {
   return Boolean(event.metaKey || event.ctrlKey);
-}
-
-export function getEditModeLinkCardState(isMac: boolean, modifierActive: boolean): LinkActionCardState {
-  const modifier = isMac ? 'Cmd' : 'Ctrl';
-  return {
-    openLabel: 'Open link',
-    modifierTitle: `${modifier}+click also works`,
-    armed: modifierActive,
-  };
 }
 
 export function normalizeAndValidateHref(rawHref: string, baseHref?: string): string | null {
@@ -226,378 +218,78 @@ export function extractLinkTargetFromEvent(event: Pick<MouseEvent, 'target'>): L
   return extractLinkTarget(event.target);
 }
 
-class MarkdownLinkHoverController {
-  private view: EditorView;
-  private isMac = isMacPlatform();
-  private cardElements: LinkActionCardElements | null = null;
-  private activeLink: LinkElement | null = null;
-  private activeRawHref: string | null = null;
-  private hideTimer: number | null = null;
-  private pointerOverCard = false;
-
-  constructor(view: EditorView) {
-    this.view = view;
-    if (typeof window !== 'undefined') {
-      window.addEventListener('resize', this.handleViewportChange);
-      window.addEventListener('scroll', this.handleViewportChange, true);
-    }
+/**
+ * A `#fragment` link: the heading (or element with that id) in this document. The page moves the
+ * focus line there when it listens for `proof:follow-in-page-link` (the reading walk does);
+ * otherwise the heading is scrolled into view.
+ */
+function followInPageLink(view: EditorView, fragment: string): boolean {
+  const wanted = headingSlug(fragment);
+  let target: HTMLElement | null = null;
+  for (const heading of Array.from(view.dom.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6'))) {
+    if (heading.id === fragment || headingSlug(heading.textContent ?? '') === wanted) { target = heading; break; }
   }
-
-  updateView(view: EditorView): void {
-    this.view = view;
-    if (!view.editable) this.hideCard();
+  if (!target) {
+    try { target = view.dom.querySelector<HTMLElement>(`#${CSS.escape(fragment)}`); } catch { target = null; }
   }
-
-  destroy(): void {
-    this.clearHideTimer();
-    this.hideCard();
-    if (typeof window !== 'undefined') {
-      window.removeEventListener('resize', this.handleViewportChange);
-      window.removeEventListener('scroll', this.handleViewportChange, true);
-    }
-    if (this.cardElements?.root.parentNode) {
-      this.cardElements.root.parentNode.removeChild(this.cardElements.root);
-    }
-    this.cardElements = null;
-  }
-
-  dismissCard(): void {
-    this.hideCard();
-  }
-
-  handleMouseMove(event: MouseEvent): void {
-    if (!this.view.editable) {
-      this.hideCard();
-      return;
-    }
-
-    const link = this.getLinkFromTarget(event.target);
-    if (link) {
-      this.showCardForLink(link, isLinkModifierActive(event));
-      return;
-    }
-
-    if (!this.pointerOverCard) {
-      this.scheduleHide();
-    }
-  }
-
-  handleMouseLeave(): void {
-    if (!this.pointerOverCard) {
-      this.scheduleHide();
-    }
-  }
-
-  handleModifierEvent(event: Pick<KeyboardEvent, 'metaKey' | 'ctrlKey'>): void {
-    if (!this.view.editable || !this.isCardVisible()) return;
-    this.updateCardState(isLinkModifierActive(event));
-  }
-
-  handleKeyDown(event: KeyboardEvent): boolean {
-    if (event.key === 'Escape' && this.isCardVisible()) {
-      event.preventDefault();
-      this.hideCard();
-      return true;
-    }
+  if (!target) {
+    captureEvent('markdown_link_open_blocked', { reason: 'fragment_not_found', editable: view.editable });
     return false;
   }
-
-  private getLinkFromTarget(target: unknown): LinkElement | null {
-    const link = asLinkElement(extractLinkTarget(target));
-    if (!link) return null;
-    if (!this.view.dom.contains(link)) return null;
-    return link;
-  }
-
-  private ensureCardElements(): LinkActionCardElements | null {
-    if (typeof document === 'undefined') return null;
-    if (this.cardElements) return this.cardElements;
-
-    const root = document.createElement('div');
-    root.className = 'markdown-link-action-card';
-    root.setAttribute('role', 'dialog');
-    root.setAttribute('aria-label', 'Link actions');
-    root.dataset.visible = 'false';
-    root.dataset.armed = 'false';
-
-    const openButton = document.createElement('button');
-    openButton.type = 'button';
-    openButton.className = 'markdown-link-action-card-open';
-
-    root.appendChild(openButton);
-
-    root.addEventListener('pointerenter', this.handleCardPointerEnter);
-    root.addEventListener('pointerleave', this.handleCardPointerLeave);
-    root.addEventListener('focusin', this.handleCardFocusIn);
-    root.addEventListener('focusout', this.handleCardFocusOut);
-    root.addEventListener('keydown', this.handleCardKeyDown);
-    root.addEventListener('mousedown', this.handleCardMouseDown);
-    openButton.addEventListener('click', this.handleCardOpenClick);
-
-    document.body.appendChild(root);
-
-    this.cardElements = { root, openButton };
-
-    return this.cardElements;
-  }
-
-  private updateCardState(modifierActive: boolean): void {
-    const elements = this.cardElements;
-    if (!elements) return;
-
-    const state = getEditModeLinkCardState(this.isMac, modifierActive);
-    elements.openButton.textContent = state.openLabel;
-    elements.openButton.removeAttribute('title');
-    elements.openButton.setAttribute('aria-label', `${state.openLabel}. ${state.modifierTitle}`);
-    elements.root.dataset.armed = state.armed ? 'true' : 'false';
-  }
-
-  private showCardForLink(link: LinkElement, modifierActive: boolean): void {
-    const href = link.getAttribute('href');
-    if (!href) {
-      if (!this.pointerOverCard) this.hideCard();
-      return;
-    }
-
-    const wasVisible = this.isCardVisible();
-    const changedLink = this.activeLink !== link;
-
-    this.clearHideTimer();
-
-    if (this.activeLink && this.activeLink !== link) {
-      this.activeLink.classList.remove(HOVER_LINK_CLASS);
-    }
-
-    this.activeLink = link;
-    this.activeRawHref = href;
-    this.activeLink.classList.add(HOVER_LINK_CLASS);
-
-    const elements = this.ensureCardElements();
-    if (!elements) return;
-
-    this.updateCardState(modifierActive);
-    elements.root.dataset.visible = 'true';
-    this.positionCard();
-
-    if (!wasVisible || changedLink) {
-      captureEvent('markdown_link_card_shown', {
-        editable: this.view.editable,
-        source: 'hover',
-        valid_href: Boolean(normalizeAndValidateHref(href)),
-      });
-    }
-  }
-
-  private positionCard(): void {
-    const elements = this.cardElements;
-    if (!elements || !this.activeLink) return;
-
-    const linkRect = this.activeLink.getBoundingClientRect();
-    if ((linkRect.width === 0 && linkRect.height === 0) || Number.isNaN(linkRect.left) || Number.isNaN(linkRect.top)) {
-      return;
-    }
-
-    const cardRect = elements.root.getBoundingClientRect();
-
-    let left = linkRect.right + AFFORDANCE_HORIZONTAL_GAP;
-    let top = linkRect.top + ((linkRect.height - cardRect.height) / 2);
-
-    if (left + cardRect.width > window.innerWidth - AFFORDANCE_VIEWPORT_MARGIN) {
-      left = linkRect.left - cardRect.width - AFFORDANCE_HORIZONTAL_GAP;
-    }
-
-    if (left < AFFORDANCE_VIEWPORT_MARGIN) {
-      left = linkRect.left;
-      top = linkRect.bottom + AFFORDANCE_VERTICAL_GAP;
-    }
-
-    const maxLeft = Math.max(AFFORDANCE_VIEWPORT_MARGIN, window.innerWidth - cardRect.width - AFFORDANCE_VIEWPORT_MARGIN);
-    const maxTop = Math.max(AFFORDANCE_VIEWPORT_MARGIN, window.innerHeight - cardRect.height - AFFORDANCE_VIEWPORT_MARGIN);
-
-    left = Math.min(Math.max(AFFORDANCE_VIEWPORT_MARGIN, left), maxLeft);
-    top = Math.min(Math.max(AFFORDANCE_VIEWPORT_MARGIN, top), maxTop);
-
-    elements.root.style.left = `${left}px`;
-    elements.root.style.top = `${top}px`;
-  }
-
-  private isCardVisible(): boolean {
-    return this.cardElements?.root.dataset.visible === 'true';
-  }
-
-  private clearHideTimer(): void {
-    if (this.hideTimer !== null) {
-      window.clearTimeout(this.hideTimer);
-      this.hideTimer = null;
-    }
-  }
-
-  private scheduleHide(delayMs = AFFORDANCE_HIDE_DELAY_MS): void {
-    this.clearHideTimer();
-    this.hideTimer = window.setTimeout(() => {
-      this.hideTimer = null;
-      if (this.pointerOverCard) return;
-      this.hideCard();
-    }, delayMs);
-  }
-
-  private hideCard(): void {
-    this.clearHideTimer();
-    if (this.activeLink) {
-      this.activeLink.classList.remove(HOVER_LINK_CLASS);
-      this.activeLink = null;
-    }
-    this.activeRawHref = null;
-    if (this.cardElements) {
-      this.cardElements.root.dataset.visible = 'false';
-      this.cardElements.root.dataset.armed = 'false';
-    }
-  }
-
-  private openActiveLinkFromCard(): void {
-    if (!this.activeRawHref) return;
-
-    openLinkInNewTab(this.activeRawHref, {
-      editable: this.view.editable,
-      trigger: 'card_click',
-    });
-
-    this.hideCard();
-    this.view.focus();
-  }
-
-  private handleViewportChange = (): void => {
-    if (!this.isCardVisible()) return;
-    this.positionCard();
-  };
-
-  private handleCardPointerEnter = (): void => {
-    this.pointerOverCard = true;
-    this.clearHideTimer();
-  };
-
-  private handleCardPointerLeave = (): void => {
-    this.pointerOverCard = false;
-    this.scheduleHide();
-  };
-
-  private handleCardFocusIn = (): void => {
-    this.clearHideTimer();
-  };
-
-  private handleCardFocusOut = (event: FocusEvent): void => {
-    const next = event.relatedTarget;
-    if (next instanceof Node && this.cardElements?.root.contains(next)) {
-      return;
-    }
-    this.scheduleHide();
-  };
-
-  private handleCardKeyDown = (event: KeyboardEvent): void => {
-    if (event.key !== 'Escape') return;
-    event.preventDefault();
-    this.hideCard();
-    this.view.focus();
-  };
-
-  private handleCardMouseDown = (event: MouseEvent): void => {
-    event.preventDefault();
-  };
-
-  private handleCardOpenClick = (event: MouseEvent): void => {
-    event.preventDefault();
-    event.stopPropagation();
-    this.openActiveLinkFromCard();
-  };
+  let pos = -1;
+  try { pos = view.posAtDOM(target, 0); } catch { pos = -1; }
+  const detail = { pos, element: target, handled: false };
+  window.dispatchEvent(new CustomEvent('proof:follow-in-page-link', { detail }));
+  if (!detail.handled) target.scrollIntoView({ block: 'center', behavior: 'auto' });
+  captureEvent('markdown_link_opened', { reason: 'in_page', editable: view.editable, protocol: 'fragment', trigger: 'plain_click' });
+  return true;
 }
+
+/** Test hook: the last link a click followed. */
+const followLog: Array<{ href: string; how: 'new-tab' | 'in-page' | 'blocked' }> = [];
+export function linkFollowLog(): ReadonlyArray<{ href: string; how: 'new-tab' | 'in-page' | 'blocked' }> { return followLog; }
 
 function handleLinkClick(view: EditorView, event: MouseEvent): boolean {
   const link = extractLinkTargetFromEvent(event);
   if (!link) return false;
-
   const href = link.getAttribute('href');
   if (!href) return false;
-
-  if (view.editable && event.button === 0 && !isLinkModifierActive(event)) {
-    hoverControllers.get(view)?.dismissCard();
-    captureEvent('markdown_link_open_blocked', {
-      reason: 'modifier_required',
-      editable: true,
-    });
+  if (!shouldOpenLinkForEvent(event, view.editable)) {
+    // Alt/Option+click edits: the caret is placed by the press; the browser must not also act on
+    // the link (Alt+click downloads in some browsers).
+    if (event.button === 0 && event.altKey) event.preventDefault();
     return false;
   }
-
-  const shouldOpen = shouldOpenLinkForEvent(event, view.editable);
-  if (!shouldOpen) {
-    const reason = event.button !== 0
-      ? 'non_primary'
-      : view.editable
-        ? 'modifier_required'
-        : 'default_prevented';
-
-    captureEvent('markdown_link_open_blocked', {
-      reason,
-      editable: view.editable,
-    });
-    return false;
-  }
-
   event.preventDefault();
-  hoverControllers.get(view)?.dismissCard();
-
-  const trigger: LinkOpenTrigger = view.editable ? 'modifier_click' : 'read_only_click';
-  openLinkInNewTab(href, {
-    editable: view.editable,
-    trigger,
-  });
-
+  const fragment = LINK_CLICK_POLICY.fragmentInPage ? inPageFragment(href) : null;
+  if (fragment !== null) {
+    const ok = followInPageLink(view, fragment);
+    followLog.push({ href, how: ok ? 'in-page' : 'blocked' });
+    return true;
+  }
+  const trigger: LinkOpenTrigger = !view.editable ? 'read_only_click' : isLinkModifierActive(event) ? 'modifier_click' : 'plain_click';
+  const opened = openLinkInNewTab(href, { editable: view.editable, trigger });
+  followLog.push({ href, how: opened ? 'new-tab' : 'blocked' });
+  if (followLog.length > 20) followLog.shift();
   return true;
 }
 
 export const markdownLinkClickPlugin = $prose(() => {
   return new Plugin({
     key: markdownLinkClickKey,
-    view(view): PluginViewWithDestroy {
-      const controller = new MarkdownLinkHoverController(view);
-      hoverControllers.set(view, controller);
-      return {
-        update(nextView) {
-          controller.updateView(nextView);
-        },
-        destroy() {
-          hoverControllers.delete(view);
-          controller.destroy();
-        },
-      };
-    },
     props: {
       handleDOMEvents: {
+        // The press on a link opens it on release; it does not put a caret in the text.
+        mousedown(_view, event) {
+          if (!(event instanceof MouseEvent)) return false;
+          if (!extractLinkTargetFromEvent(event)?.getAttribute('href')) return false;
+          if (!pressKeepsCaretOut(event)) return false;
+          event.preventDefault();
+          return true;
+        },
         click(view, event) {
           if (!(event instanceof MouseEvent)) return false;
           return handleLinkClick(view, event);
-        },
-        mousemove(view, event) {
-          if (!(event instanceof MouseEvent)) return false;
-          hoverControllers.get(view)?.handleMouseMove(event);
-          return false;
-        },
-        mouseleave(view, event) {
-          if (!(event instanceof MouseEvent)) return false;
-          hoverControllers.get(view)?.handleMouseLeave();
-          return false;
-        },
-        keydown(view, event) {
-          if (!(event instanceof KeyboardEvent)) return false;
-          return hoverControllers.get(view)?.handleKeyDown(event) ?? false;
-        },
-        keyup(view, event) {
-          if (!(event instanceof KeyboardEvent)) return false;
-          hoverControllers.get(view)?.handleModifierEvent(event);
-          return false;
-        },
-        blur(view) {
-          hoverControllers.get(view)?.handleMouseLeave();
-          return false;
         },
       },
     },

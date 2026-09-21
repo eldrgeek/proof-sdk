@@ -1,7 +1,10 @@
 import {
+  LINK_CLICK_POLICY,
   extractLinkTargetFromEvent,
-  getEditModeLinkCardState,
+  headingSlug,
+  inPageFragment,
   isLinkModifierActive,
+  pressKeepsCaretOut,
   normalizeAndValidateHref,
   shouldOpenLinkForEvent,
   type LinkClickEventLike,
@@ -18,11 +21,12 @@ function assertEqual<T>(actual: T, expected: T, message: string): void {
   }
 }
 
-function createEvent(overrides: Partial<LinkClickEventLike> = {}): LinkClickEventLike {
+function createEvent(overrides: Partial<LinkClickEventLike & { altKey: boolean }> = {}): LinkClickEventLike & { altKey: boolean } {
   return {
     button: 0,
     metaKey: false,
     ctrlKey: false,
+    altKey: false,
     defaultPrevented: false,
     ...overrides,
   };
@@ -42,16 +46,17 @@ type SelectorMap = {
 };
 
 class MockClosestTarget {
-  private selectors: SelectorMap;
+  private selectors: SelectorMap & { deleted?: MockClosestTarget | null };
   private attrs: Record<string, string>;
 
-  constructor(selectors: SelectorMap = {}, attrs: Record<string, string> = {}) {
+  constructor(selectors: SelectorMap & { deleted?: MockClosestTarget | null } = {}, attrs: Record<string, string> = {}) {
     this.selectors = selectors;
     this.attrs = attrs;
   }
 
   closest(selector: string): unknown {
     if (selector === '[data-mark-id]') return this.selectors.markWrapper ?? null;
+    if (selector === '.mark-delete, .mark-replace-delete') return this.selectors.deleted ?? null;
     if (selector === 'a[href]') return this.selectors.anchor ?? null;
     return null;
   }
@@ -69,72 +74,31 @@ class MockTextNode {
   }
 }
 
+// Mike, 2026-09-21: "Clicking a link should take you to the link, not through the Open Link device."
 function testShouldOpenLinkForEvent(): void {
-  assertEqual(
-    shouldOpenLinkForEvent(createEvent(), false),
-    true,
-    'Read-only mode should open link on plain primary click',
-  );
-  assertEqual(
-    shouldOpenLinkForEvent(createEvent(), true),
-    false,
-    'Editable mode should require modifier key',
-  );
-  assertEqual(
-    shouldOpenLinkForEvent(createEvent({ ctrlKey: true }), true),
-    true,
-    'Editable mode should allow Ctrl+click',
-  );
-  assertEqual(
-    shouldOpenLinkForEvent(createEvent({ metaKey: true }), true),
-    true,
-    'Editable mode should allow Cmd+click',
-  );
-  assertEqual(
-    shouldOpenLinkForEvent(createEvent({ button: 1 }), false),
-    false,
-    'Non-primary click should never trigger link opening',
-  );
-  assertEqual(
-    shouldOpenLinkForEvent(createEvent({ defaultPrevented: true }), false),
-    false,
-    'Read-only default-prevented events should not open links',
-  );
-  assertEqual(
-    shouldOpenLinkForEvent(createEvent({ defaultPrevented: true, metaKey: true }), true),
-    true,
-    'Editable mode should allow Cmd+click even when default is already prevented',
-  );
+  assertEqual(LINK_CLICK_POLICY.plainClickOpens, true, 'A plain click opens the link');
+  assertEqual(shouldOpenLinkForEvent(createEvent(), false), true, 'Read-only: a plain primary click opens');
+  assertEqual(shouldOpenLinkForEvent(createEvent(), true), true, 'Editable: a plain primary click opens too (no card, no modifier)');
+  assertEqual(shouldOpenLinkForEvent(createEvent({ ctrlKey: true }), true), true, 'Ctrl+click still opens');
+  assertEqual(shouldOpenLinkForEvent(createEvent({ metaKey: true }), true), true, 'Cmd+click still opens');
+  assertEqual(shouldOpenLinkForEvent(createEvent({ button: 1 }), false), false, 'A non-primary click never opens');
+  assertEqual(shouldOpenLinkForEvent(createEvent({ defaultPrevented: true }), true), true, 'ProseMirror default-preventing the click does not stop it');
+  assertEqual(shouldOpenLinkForEvent(createEvent({ altKey: true }), true), false, 'Alt/Option+click edits the link instead');
 }
 
-function testModifierAndCardState(): void {
-  assertEqual(
-    isLinkModifierActive(createModifierEvent({ metaKey: true })),
-    true,
-    'Meta key should arm markdown link opening',
-  );
-  assertEqual(
-    isLinkModifierActive(createModifierEvent({ ctrlKey: true })),
-    true,
-    'Ctrl key should arm markdown link opening',
-  );
-  assertEqual(
-    isLinkModifierActive(createModifierEvent()),
-    false,
-    'No modifier should keep markdown link opening unarmed',
-  );
-
-  const macIdle = getEditModeLinkCardState(true, false);
-  assertEqual(macIdle.openLabel, 'Open link', 'Card open button copy should describe the action clearly');
-  assertEqual(macIdle.modifierTitle, 'Cmd+click also works', 'Mac shortcut tooltip should mention Cmd');
-  assertEqual(macIdle.armed, false, 'Idle card state should not be armed');
-
-  const windowsIdle = getEditModeLinkCardState(false, false);
-  assertEqual(windowsIdle.modifierTitle, 'Ctrl+click also works', 'Windows shortcut tooltip should mention Ctrl');
-
-  const armed = getEditModeLinkCardState(true, true);
-  assertEqual(armed.openLabel, 'Open link', 'Armed card should keep the explicit open-action copy');
-  assertEqual(armed.armed, true, 'Armed card state should be marked armed');
+function testPressAndFragments(): void {
+  assertEqual(pressKeepsCaretOut(createEvent()), true, 'The press on a link places no caret');
+  assertEqual(pressKeepsCaretOut(createEvent({ altKey: true })), false, 'Alt/Option+press places the caret (to edit)');
+  assertEqual(pressKeepsCaretOut(createEvent({ button: 2 })), false, 'A right press is left alone');
+  assertEqual(isLinkModifierActive(createModifierEvent({ metaKey: true })), true, 'Meta is a modifier');
+  assertEqual(isLinkModifierActive(createModifierEvent()), false, 'No modifier');
+  assertEqual(inPageFragment('#the-end'), 'the-end', 'A #fragment is a place in this document');
+  assertEqual(inPageFragment('#caf%C3%A9'), 'café', 'Fragments are decoded');
+  assertEqual(inPageFragment('https://example.com/#x'), null, 'A link with a page is not in-page');
+  assertEqual(inPageFragment('#'), null, 'A bare # goes nowhere');
+  assertEqual(headingSlug('The end'), 'the-end', 'Headings slug like GitHub');
+  assertEqual(headingSlug('  Step 2: ship it!  '), 'step-2-ship-it', 'Punctuation drops, spaces become dashes');
+  assertEqual(headingSlug('Café & bar'), 'café--bar', 'Letters beyond ASCII stay');
 }
 
 function testNormalizeAndValidateHref(): void {
@@ -199,11 +163,15 @@ function testExtractLinkTargetFromEvent(): void {
   const extracted = extractLinkTargetFromEvent(event);
   assert(extracted === anchor, 'Should return closest anchor for non-mark clicks');
 
+  // A link inside a comment or a suggested insertion opens (Mike, 2026-09-21); one inside text a
+  // suggestion deletes does not.
   const markWrapper = new MockClosestTarget();
   const insideMark = new MockClosestTarget({ markWrapper, anchor });
   const markEvent = { target: insideMark } as Pick<MouseEvent, 'target'>;
-  const blocked = extractLinkTargetFromEvent(markEvent);
-  assert(blocked === null, 'Should not return anchor when click is inside mark wrapper');
+  assert(extractLinkTargetFromEvent(markEvent) === anchor, 'A link inside a comment or suggestion mark opens');
+  const deleted = new MockClosestTarget();
+  const insideDeleted = new MockClosestTarget({ markWrapper, anchor, deleted });
+  assert(extractLinkTargetFromEvent({ target: insideDeleted } as Pick<MouseEvent, 'target'>) === null, 'A link in deleted text does not open');
 
   const noClosestEvent = { target: { nodeType: 3 } } as Pick<MouseEvent, 'target'>;
   const noClosest = extractLinkTargetFromEvent(noClosestEvent);
@@ -216,7 +184,7 @@ function testExtractLinkTargetFromEvent(): void {
 
 function run(): void {
   testShouldOpenLinkForEvent();
-  testModifierAndCardState();
+  testPressAndFragments();
   testNormalizeAndValidateHref();
   testExtractLinkTargetFromEvent();
   console.log('✓ markdown link click behavior guards');

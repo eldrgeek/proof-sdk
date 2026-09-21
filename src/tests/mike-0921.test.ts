@@ -1,0 +1,149 @@
+/**
+ * Mike, 2026-09-21 (Waiting on Mike Accord): the reading keys never type (writing mode), and the
+ * pure parts of the rail scrolling and the top bar.
+ * Authorship: Claude Opus 5 (worker proof-bugs6), 2026-09-21.
+ */
+import assert from 'node:assert/strict';
+import {
+  READING_MODE_POLICY, isReadingCommandKey, isTextChangingKey, routeKey, type KeyTarget,
+} from '../shared/reading-keys';
+import {
+  EDITING_GUARD_POLICY, endWriting, isEditing, isWriting, keyTargetOf, noteEditingActivity, pressStartsWriting,
+  resetEditingGuardForTests, startWriting,
+} from '../editor/editing-guard';
+import { RAIL_FOLLOW_POLICY } from '../ui/rail-follow';
+
+let passed = 0;
+function test(name: string, fn: () => void): void {
+  fn();
+  passed += 1;
+  console.log(`✓ ${name}`);
+}
+
+const route = (key: string, target: KeyTarget, writing: boolean, mods: { ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean; isComposing?: boolean } = {}) =>
+  routeKey({ key, target, writing, ...mods });
+
+test('policy: the rule Mike reads is the rule the code follows', () => {
+  assert.equal(READING_MODE_POLICY.textPressStartsWriting, true);
+  assert.equal(READING_MODE_POLICY.enterStartsWriting, true);
+  assert.equal(READING_MODE_POLICY.escapeEndsWriting, true);
+  assert.equal(READING_MODE_POLICY.hoverEndsWriting, true);
+  assert.equal(READING_MODE_POLICY.hideCaretWhileReading, true);
+  for (const key of ['a', 'A', 'r', 'y', 'n', 't', 'd', 'e', 'j', 'k', '1', '9', 'ArrowUp', 'ArrowDown', 'Enter']) {
+    assert.equal(isReadingCommandKey(key), true, key);
+  }
+  for (const key of ['x', 'z', ' ', 'Escape', 'Tab', 'ArrowLeft', '0']) assert.equal(isReadingCommandKey(key), false, key);
+});
+
+test('writing: every key types into the text, the reading keys included', () => {
+  for (const key of ['a', 'r', 'j', 'x', ' ', 'Backspace', 'Enter', '1']) assert.equal(route(key, 'editor', true), 'type', key);
+});
+
+test('reading with the keyboard in the text (a caret the person did not put there): a key acts or does nothing, never both', () => {
+  for (const key of ['a', 'A', 'r', 'y', 'n', 't', 'd', 'e', 'j', 'k', '1', '5', 'ArrowDown', 'Enter']) {
+    assert.equal(route(key, 'editor', false), 'command', key);
+  }
+  for (const key of ['x', 'z', 'Q', ' ', 'Backspace', 'Delete', '0', '?']) assert.equal(route(key, 'editor', false), 'swallow', key);
+  for (const key of ['Escape', 'Tab', 'ArrowLeft', 'Shift', 'Home']) assert.equal(route(key, 'editor', false), 'pass', key);
+  // Option+A types "å" on a Mac: not a command, and not typed while reading.
+  assert.equal(route('å', 'editor', false, { altKey: true }), 'swallow');
+  assert.equal(route('å', 'editor', true, { altKey: true }), 'type');
+});
+
+test('shortcuts and composition are never reading commands', () => {
+  assert.equal(route('z', 'editor', false, { metaKey: true }), 'pass', 'Cmd+Z is the one Undo');
+  assert.equal(route('z', 'editor', true, { ctrlKey: true }), 'type');
+  assert.equal(route('a', 'other', false, { metaKey: true }), 'pass', 'Cmd+A is select all');
+  assert.equal(route('a', 'editor', false, { isComposing: true }), 'pass');
+  assert.equal(route('Process', 'editor', false), 'pass');
+});
+
+test('fields and controls: typing in a field always types; Enter and Space belong to a button', () => {
+  for (const key of ['a', 'j', 'Enter', ' ']) assert.equal(route(key, 'field', false), 'type', key);
+  assert.equal(route('a', 'control', false), 'command', 'A on a focused rail button still agrees');
+  assert.equal(route('Enter', 'control', false), 'pass', 'Enter presses the button');
+  assert.equal(route(' ', 'control', false), 'pass');
+  assert.equal(route('a', 'other', false), 'command');
+  assert.equal(route('Enter', 'other', false), 'command', 'Enter on the page starts writing on the focus line');
+  assert.equal(route('x', 'other', false), 'pass');
+});
+
+test('text-changing keys', () => {
+  assert.equal(isTextChangingKey('x'), true);
+  assert.equal(isTextChangingKey('Backspace'), true);
+  assert.equal(isTextChangingKey('ArrowLeft'), false);
+  assert.equal(isTextChangingKey('Escape'), false);
+});
+
+// A small fake DOM: an element that answers closest() for the selectors the guard asks about.
+function fakeEl(opts: { tag?: string; editable?: boolean; inEditor?: boolean; link?: boolean; widget?: boolean; button?: boolean } = {}) {
+  return {
+    tagName: (opts.tag ?? 'P').toUpperCase(),
+    isContentEditable: Boolean(opts.editable),
+    closest(selector: string) {
+      if (selector === '.ProseMirror') return opts.inEditor ? {} : null;
+      if (selector === 'a[href]') return opts.link ? {} : null;
+      if (selector.startsWith('button, input')) return opts.widget ? {} : null;
+      if (selector.startsWith('button, a[href], summary')) return opts.button || opts.link ? {} : null;
+      return null;
+    },
+  };
+}
+
+test('where a key is aimed', () => {
+  assert.equal(keyTargetOf(fakeEl({ tag: 'input' }) as unknown as EventTarget), 'field');
+  assert.equal(keyTargetOf(fakeEl({ editable: true, inEditor: true }) as unknown as EventTarget), 'editor');
+  assert.equal(keyTargetOf(fakeEl({ editable: true, inEditor: false }) as unknown as EventTarget), 'field', 'the chat composer or the title');
+  assert.equal(keyTargetOf(fakeEl({ tag: 'button', button: true }) as unknown as EventTarget), 'control');
+  assert.equal(keyTargetOf(fakeEl({ tag: 'button', button: true, inEditor: true }) as unknown as EventTarget), 'control', 'an ask button inside the text');
+  assert.equal(keyTargetOf(fakeEl({ tag: 'input', inEditor: true }) as unknown as EventTarget), 'field', "an ask's words field inside the text");
+  assert.equal(keyTargetOf(fakeEl({ tag: 'body' }) as unknown as EventTarget), 'other');
+  assert.equal(keyTargetOf(null), 'other');
+});
+
+test('a press on the text starts writing; a press on a link, a widget or outside the text does not', () => {
+  assert.equal(pressStartsWriting(fakeEl({ inEditor: true }) as unknown as EventTarget), true);
+  assert.equal(pressStartsWriting(fakeEl({ inEditor: true, link: true }) as unknown as EventTarget), false, 'a link opens');
+  assert.equal(pressStartsWriting(fakeEl({ inEditor: true, link: true }) as unknown as EventTarget, true), true, 'Alt+press on a link edits it');
+  assert.equal(pressStartsWriting(fakeEl({ inEditor: true, widget: true }) as unknown as EventTarget), false, 'a fold chip or a folded line');
+  assert.equal(pressStartsWriting(fakeEl({ inEditor: false }) as unknown as EventTarget), false);
+});
+
+test('writing needs the caret in the text; editing needs writing and recent activity', () => {
+  const g = globalThis as unknown as { document?: unknown };
+  const previous = g.document;
+  const editorEl = { isContentEditable: true, closest: (sel: string) => (sel === '.ProseMirror' ? {} : null), blur() { doc.activeElement = bodyEl; } };
+  const bodyEl = { isContentEditable: false, closest: () => null };
+  const doc: { activeElement: unknown; body: { classList: { toggle: () => void } } } = { activeElement: editorEl, body: { classList: { toggle: () => {} } } };
+  g.document = doc;
+  try {
+    resetEditingGuardForTests();
+    assert.equal(isWriting(), false, 'focus handed to the text by code is not writing');
+    assert.equal(isEditing(), false);
+    startWriting();
+    assert.equal(isWriting(), true, 'Enter / the chip start writing');
+    endWriting();
+    assert.equal(isWriting(), false, 'Esc ends writing');
+    assert.equal(doc.activeElement, bodyEl, 'ending writing takes the caret out of the text');
+    doc.activeElement = editorEl;
+    noteEditingActivity(1000);
+    assert.equal(isWriting(), true, 'typing in the text is writing');
+    assert.equal(isEditing(1000 + EDITING_GUARD_POLICY.graceMs - 1), true);
+    assert.equal(isEditing(1000 + EDITING_GUARD_POLICY.graceMs), false, 'the grace period ended (still writing)');
+    assert.equal(isWriting(), true);
+    doc.activeElement = bodyEl;
+    assert.equal(isWriting(), false, 'the caret left the text');
+  } finally {
+    resetEditingGuardForTests();
+    g.document = previous;
+  }
+});
+
+test('rail follow policy: following within a small slack of the end; the pill names what is new', () => {
+  assert.equal(RAIL_FOLLOW_POLICY.enabled, true);
+  assert.ok(RAIL_FOLLOW_POLICY.slackPx > 0 && RAIL_FOLLOW_POLICY.slackPx <= 40);
+  assert.equal(RAIL_FOLLOW_POLICY.pillLabel, 'New below ↓');
+  assert.equal(RAIL_FOLLOW_POLICY.containWheel, true);
+});
+
+console.log(`\nmike-0921 tests: ${passed} passed`);

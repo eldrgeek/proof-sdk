@@ -31,6 +31,7 @@ import {
   type ProofChatMessage,
 } from '../shared/chat';
 import type { LineMarksUI } from './line-marks';
+import { ScrollFollower } from './rail-follow';
 import './chat.css';
 
 export interface ChatHost {
@@ -147,6 +148,9 @@ export class ChatUI {
     this.list.setAttribute('aria-label', 'Messages');
     this.buildComposer();
     this.root.append(this.head, this.empty, this.list, this.composer);
+    // Rail scrolling (2026-09-21): the messages keep the newest in view unless the person scrolled up.
+    this.follower = new ScrollFollower({ scroller: this.list, name: 'chat' });
+    this.list.after(this.follower.pillElement);
     // Phone sheet.
     this.sheet.setAttribute('role', 'dialog');
     this.sheet.setAttribute('aria-label', 'Chat');
@@ -190,6 +194,15 @@ export class ChatUI {
   }
 
   private unsubscribe: (() => void) | null = null;
+  private follower!: ScrollFollower;
+  private followLine = -1;
+
+  /** The text's focus line changed: the messages show their newest (unless the person scrolled up). */
+  onFocusLine(index: number): void {
+    if (index === this.followLine) return;
+    this.followLine = index;
+    if (this.visible()) this.follower.follow();
+  }
 
   /** Desktop: the right rail hosts the chat. Called by the reading walk with its rail body. */
   private railHost: HTMLElement | null = null;
@@ -453,12 +466,12 @@ export class ChatUI {
     this.empty.hidden = this.messages.length > 0;
     this.composer.hidden = !this.canPost;
     if (sig !== this.listSig) {
-      const nearEnd = this.list.scrollHeight - this.list.scrollTop - this.list.clientHeight < 60;
       this.listSig = sig;
       const byId = new Map(this.messages.map(m => [m.id, m]));
       const names = this.mentionNames();
       this.list.replaceChildren(...this.messages.map(m => this.renderMessage(m, byId, names, marks)));
-      if (nearEnd || !this.list.dataset.scrolled) { this.list.dataset.scrolled = '1'; this.scrollToEnd(); }
+      // New messages: follow the end, or show "New below ↓" when the person scrolled up.
+      requestAnimationFrame(() => this.follower.follow());
     }
     this.renderPin();
     this.updateUnread();
@@ -883,6 +896,7 @@ export class ChatUI {
       sent: [...this.sent],
       pointerClicks: [...this.pointerClicks],
       lineCounts: [...this.lineCounts().entries()],
+      follow: this.follower.debugState(),
     };
   }
 }

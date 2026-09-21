@@ -457,6 +457,44 @@ A section closes itself when the reader leaves it and it has no Issues **for tha
 (`SECTION_AUTOCLOSE.countIssues = 'viewer'`) — not the team-wide count the fold chip's badge shows,
 which would hold a section open because a teammate has not read it yet.
 
+## Reading and writing, links, and the rail (2026-09-21)
+
+_Added 2026-09-21 by Claude Opus 5 (worker proof-bugs6) for Mike Wolf, from his notes in the
+Waiting on Mike Accord. Page behaviour only: no route changed._
+
+**Reading keys never type** (`READING_MODE_POLICY`, `src/shared/reading-keys.ts`). The page is in
+one of two modes, and the rail head says which ("Reading" / "Writing · Esc to read"; click it to
+switch):
+
+- **Writing**: the person pressed (or tapped) the text, or pressed Enter while reading (the caret
+  goes to the end of the focus line). The caret blinks and every key types.
+- **Reading**: everything else. A R Y N T D E J K 1-9 and ↑ ↓ are commands and never type; any
+  other key that would change the text does nothing. No caret blinks.
+- Writing ends with Esc, a click anywhere outside the text, resting the pointer on another line
+  once typing has paused (`EDITING_GUARD_POLICY.graceMs`), or scrolling the caret's line out of view.
+
+A caret that code put in the text (a dialog or popover handing focus back) is reading. The editing
+guard (`src/editor/editing-guard.ts`) routes every key in the capture phase before the editor sees
+it, so a key is a command or it types, never both. Scripts that type into the page must press the
+text first (as a person does); `view.focus()` alone no longer makes keys type.
+
+**Links** (`LINK_CLICK_POLICY`, `src/editor/plugins/markdown-link-click.ts`). A click on a link opens
+it: another page in a new tab, a `#heading` link by moving the focus line to that heading. The
+"Open link" hover card is gone. A press on a link places no caret. To edit a link's words,
+Alt/Option+click it, or click beside it and move in with the arrow keys.
+
+**Save the scroll-accepts.** "You scrolled past N changes…" sits under the rail head, outside the
+rail's scrolling list, with **Save N accepted changes**. Saving goes through the same accept as the
+Accept button and lands on the one Undo ("Undo accepted N changes"). A change that can no longer be
+accepted as it stands (edited since it was proposed) is dropped from the scroll-accepts, stays open,
+and the rest save; the notice says which line.
+
+**Rail scrolling** (`RAIL_FOLLOW_POLICY`, `src/ui/rail-follow.ts`). The rail's list and the chat's
+messages each scroll on their own and never hand the scroll on to the page. Each keeps its newest
+item in view (the rail: the focus line's box and changes; the chat: the newest message) when items
+arrive or the focus line changes, unless the person scrolled up in it; then a **New below ↓** pill
+offers the way back.
+
 ## Identity: who a mark or an answer names (Accord, Step B6)
 
 Line marks, asks and ask answers name one of three kinds of actor:
@@ -952,7 +990,7 @@ replies.
 
 In the page: the composer's `@` suggests team members (people and AIs); "📍 this line" attaches the
 focus line, or the lines selected with shift-click on margin dots; Enter sends, Shift+Enter is a new
-line; the reading keys (A R J K Y N T E 1-9) never fire while typing in chat. A pointer is a chip
+line; the reading keys (A R J K Y N T D E 1-9) never fire while typing in chat. A pointer is a chip
 that moves the focus line; a line that chat points at shows a speech bubble with the count in the
 margin (click it to open the chat there). Page routes: `GET /api/documents/<slug>/chat?after=`,
 `POST /api/documents/<slug>/chat` `{ by, text, lines: [anchor], mentions?, replyTo? }` (the actor is
