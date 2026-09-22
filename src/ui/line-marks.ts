@@ -116,7 +116,7 @@ import {
 import { tierViewKey, setTierDecorations, tierDecorationCount, type TierLineSpec } from '../editor/plugins/tier-view';
 import { buildTierRow, loadOnlyDecisions, renderTierControl, saveOnlyDecisions } from './line-tiers';
 import { HIGHLIGHT_POLICY, issueNeedsViewer, markedUpTo, needsYouLines, type MarkedUpTo } from '../shared/layout-status';
-import { MARGIN_POLICY, needsYouItems, type NeedsYouItem } from '../shared/layout-panels';
+import { MARGIN_POLICY, MARKED_BY_POLICY, markedByFold, needsYouItems, type NeedsYouItem } from '../shared/layout-panels';
 import { ISSUES_PILL_POLICY, NEXT_ISSUE_POLICY, issuesPillText, issuesPillTitle } from '../shared/layout-chrome';
 import './line-marks.css';
 
@@ -271,6 +271,8 @@ export class LineMarksUI {
   private flagsByLine = new Map<number, UncertainFlag[]>();
   private objectionViews: ObjectionView[] = [];
   private objectionsByLine = new Map<number, ObjectionView[]>();
+  /** Polish pass: the viewer's own open / close of a line's "Marked by N" fold, by line index. */
+  private teamFoldChoice = new Map<number, boolean>();
   private reviewMarkCache: ReviewMarkLike[] = [];
   /** Step B4c: this viewer's Issues in priority order (then document order). */
   private ranked: RankedIssue[] = [];
@@ -1331,12 +1333,45 @@ export class LineMarksUI {
       ? `${lead}Every team member has seen every line and no one has rejected anything. Team: ${summary.team.map(actorLabel).join(', ')}`
       : `${lead}${summary.counts.lineIssues} lines not yet seen by everyone or rejected; ${summary.counts.reviewMarkIssues} open comments or suggestions; ${summary.counts.askIssues} unanswered ${summary.counts.askIssues === 1 ? 'ask' : 'asks'}; ${summary.counts.uncertainIssues} uncertain ${summary.counts.uncertainIssues === 1 ? 'line' : 'lines'}; ${summary.counts.objectionIssues} open ${summary.counts.objectionIssues === 1 ? 'objection' : 'objections'}; ${summary.counts.alternativeIssues} ${summary.counts.alternativeIssues === 1 ? 'line' : 'lines'} with competing wordings; ${summary.counts.ttlIssues} expired ${summary.counts.ttlIssues === 1 ? 'claim' : 'claims'}; ${summary.counts.doIssues} unfinished ${summary.counts.doIssues === 1 ? 'action' : 'actions'}${this.blind ? '; blind marking is on' : ''}. Next issue goes by stakes: ${this.ranked.filter(r => r.urgent).length} urgent. Team: ${summary.team.map(actorLabel).join(', ')}`;
     this.nextBtn.disabled = n === 0;
-    this.setShort(n === 0 ? '✓ Aligned' : `${shown} ›`);
+    // Polish pass (COS, 2026-09-21): the phone pill reads as the mockup's "12 Issues".
+    this.setShort(n === 0 ? '✓ Aligned' : issuesPillText(shown, n));
     this.nextBtn.setAttribute('aria-label', n === 0 ? 'No issues: aligned' : `Next issue (${shown} ${shown === 1 ? 'issue needs' : 'issues need'} you; the team has ${n})`);
     this.renderAlignedAt(n === 0);
   }
 
   /** Step B3c: the snapshot link beside the Issue count. */
+  /**
+   * Polish pass (COS, 2026-09-21): the Line tab folds everyone's marks into "Marked by N"
+   * (MARKED_BY_POLICY). Open by default for a Reject or an open objection; a person's own open or
+   * close is kept for the line across re-renders.
+   */
+  private markedByFoldEl(index: number, list: HTMLElement, statuses: string[]): HTMLElement {
+    const fold = markedByFold(statuses, this.objectionsByLine.has(index));
+    const details = document.createElement('details');
+    details.className = 'plm-team-fold';
+    details.dataset.line = String(index);
+    details.dataset.count = String(fold.count);
+    details.dataset.auto = fold.open ? 'open' : 'closed';
+    details.open = this.teamFoldChoice.get(index) ?? fold.open;
+    const summary = document.createElement('summary');
+    summary.className = 'plm-team-sum';
+    const label = document.createElement('span');
+    label.className = 'plm-team-label';
+    label.textContent = fold.label;
+    summary.append(label);
+    if (fold.detail) {
+      const detail = document.createElement('span');
+      detail.className = 'plm-team-detail';
+      detail.textContent = fold.detail;
+      summary.append(detail);
+    }
+    summary.title = `${fold.count} of ${fold.total} ${fold.total === 1 ? 'person has' : 'people have'} marked this line. Show who marked what.`;
+    details.append(summary, list);
+    // A person's click (or Enter / Space) on the row records a choice; setting the default does not.
+    summary.addEventListener('click', () => { this.teamFoldChoice.set(index, !details.open); });
+    return details;
+  }
+
   private renderAlignedAt(aligned: boolean): void {
     const snap = this.snapshot;
     this.alignedEl.hidden = !snap;
@@ -1879,6 +1914,7 @@ export class LineMarksUI {
     const team = this.summary?.team ?? [];
     const list = document.createElement('ul');
     list.className = 'plm-team';
+    const teamStatuses: string[] = [];
     for (const member of team) {
       const entry = state?.marks.get(actorKey(member));
       const li = document.createElement('li');
@@ -1894,6 +1930,7 @@ export class LineMarksUI {
       const what = document.createElement('span');
       what.className = 'plm-team-status';
       const status = !entry ? 'unseen' : shownStatus(entry);
+      teamStatuses.push(status);
       what.dataset.status = status;
       what.textContent = status === 'changed' ? 'Changed since marked' : shownLabel(status);
       // Step B3b: how a Seen was earned ("Seen by scrolling" vs "Seen, marked").
@@ -1931,7 +1968,9 @@ export class LineMarksUI {
       }
       list.append(li);
     }
-    if (margin) tail.push(list); else root.append(list);
+    if (margin && MARKED_BY_POLICY.foldInLineTab) tail.push(this.markedByFoldEl(line.index, list, teamStatuses));
+    else if (margin) tail.push(list);
+    else root.append(list);
     return {
       root, openReason, scope: coverage, choose: (status, via) => choose(status, undefined, via ?? 'click'), ...(askControl ? { ask: askControl } : {}),
       flipTier: () => setTier(flippedTier(tierView?.tier ?? TIER_POLICY.defaultTier)),

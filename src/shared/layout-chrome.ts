@@ -44,8 +44,18 @@ export const TOOLBAR_POLICY = {
     centre: ['title', 'saved'],
     right: ['issues', 'share'],
   },
-  /** Phones keep only these, plus the ⋯ menu (COS, 2026-09-21). */
-  phoneKeeps: ['mode', 'issues', 'share'] as readonly string[],
+  /**
+   * Phones keep only these, plus the ⋯ menu, as in mockup-phone (COS, 2026-09-21, polish pass:
+   * "Phone toolbar matches the mockup"). The Issues pill reads "12 Issues" there, not "12 ›".
+   */
+  phoneKeeps: ['title', 'issues'] as readonly string[],
+  /** What moved off the phone toolbar, in order, at the top of its ⋯ menu. */
+  phoneMenuTop: ['mode', 'share'] as readonly string[],
+  /**
+   * The sync dot beside the title (the mockup has none): on phones it shows only while the state is
+   * not "Saved" (Saving, Syncing, Offline, Unsaved…), so a real problem is still visible there.
+   */
+  phoneSyncDotOnlyWhenNotSaved: true,
   /** The Undo button names what it would reverse ("Undo agreed line 6"); this caps its width (px). */
   undoMaxWidthPx: 260,
 } as const;
@@ -111,7 +121,7 @@ export function issuesPillTitle(viewerCount: number, teamCount: number): string 
 export interface MenuSearchEntry {
   menu: string;
   label: string;
-  /** Extra words that should find it ("download" finds "Download as Accord (.md)"). */
+  /** Extra words that should find it ("download" finds "Download as Accord (.accord.md)"). */
   keywords?: string;
   enabled: boolean;
 }

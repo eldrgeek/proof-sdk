@@ -20,7 +20,7 @@ import { UndoUI } from '../ui/undo';
 import { MenuBar, buildMenuItems, type MenuItemSpec, type MenuSpec } from '../ui/menu-bar';
 import { showShareDialog } from '../ui/share-dialog';
 import { FindBar, showAboutDialog, showKeysDialog, showMarksLegend, showOpenDialog, showWhoDialog } from '../ui/chrome-dialogs';
-import { MENU_BAR_POLICY, type ShareTab } from '../shared/layout-chrome';
+import { MENU_BAR_POLICY, TOOLBAR_POLICY, type ShareTab } from '../shared/layout-chrome';
 import { ClarifyUI } from '../ui/clarify';
 import { lineMarksViewPlugin } from './plugins/line-marks-view';
 import { foldViewPlugin } from './plugins/fold-view';
@@ -3710,6 +3710,9 @@ class ProofEditorImpl implements ProofEditor {
     }
 
     const statusText = this.getSyncStatusTextLabel(syncStatus.label);
+    // Phones hide the dot while "Saved" (TOOLBAR_POLICY.phoneSyncDotOnlyWhenNotSaved; CSS in chrome.css).
+    const inline = this.shareBannerSyncDotEl.parentElement;
+    if (inline) inline.dataset.sync = TOOLBAR_POLICY.phoneSyncDotOnlyWhenNotSaved && statusText === 'Saved' ? 'saved' : 'other';
     this.shareBannerSyncLabelEl.textContent = statusText;
     this.shareBannerSyncLabelEl.style.display = this.shouldShowStatusText(statusText) ? '' : 'none';
   }
@@ -3898,7 +3901,10 @@ class ProofEditorImpl implements ProofEditor {
     }
   }
 
-  /** File › Import: a .md file (a Proof Document or CriticMarkup keeps its marks) becomes a new document. */
+  /**
+   * File › Import: a .md file becomes a new document. An Accord dialect file keeps its marks, as
+   * `<title>.accord.md` or an older `<title>.proof.md`; so does CriticMarkup.
+   */
   private importMarkdown(): void {
     const input = document.createElement('input');
     input.type = 'file';
@@ -3909,7 +3915,7 @@ class ProofEditorImpl implements ProofEditor {
       if (!/\.(md|markdown|txt)$/i.test(file.name)) { this.showErrorBanner('Choose a .md, .markdown or .txt file.'); return; }
       const markdown = await file.text();
       const heading = markdown.match(/^#\s+(.+?)\s*$/m)?.[1]?.trim();
-      await this.newDocument(markdown, heading || file.name.replace(/\.(md|markdown|txt)$/i, ''));
+      await this.newDocument(markdown, heading || file.name.replace(/(\.(accord|proof))?\.(md|markdown|txt)$/i, ''));
     };
     input.click();
   }
@@ -3964,10 +3970,10 @@ class ProofEditorImpl implements ProofEditor {
       menu('file', () => [
         { id: 'file-new', label: `New ${noun}`, keywords: 'create blank document', run: () => { void this.newDocument(); } },
         { id: 'file-open', label: 'Open…', keywords: 'documents list library', detail: 'documents', run: () => { void this.openDocumentsDialog(); } },
-        { id: 'file-import', label: 'Import .md…', keywords: 'upload markdown file criticmarkup', run: () => this.importMarkdown() },
+        { id: 'file-import', label: 'Import .md…', keywords: 'upload markdown file criticmarkup accord dialect', run: () => this.importMarkdown() },
         { id: 'file-rename', label: 'Rename…', keywords: 'title', enabled: canEdit, separatorBefore: true, run: () => { this.shareBannerTitleEl?.click(); } },
         { id: 'file-copy-link', label: 'Copy link', keywords: 'share url', run: () => { void this.copyLinkWithFallback(this.getCanonicalShareUrl()); } },
-        { id: 'file-download', label: `Download as ${noun} (.md)`, keywords: 'export markdown save', run: () => { void this.downloadProofDocument(); } },
+        { id: 'file-download', label: `Download as ${noun} (.accord.md)`, keywords: 'export markdown save dialect', run: () => { void this.downloadProofDocument(); } },
         { id: 'file-activity', label: 'View activity', keywords: 'history log', run: () => this.openShareActivityModal() },
       ]),
       menu('edit', () => {
@@ -4271,6 +4277,28 @@ class ProofEditorImpl implements ProofEditor {
         menu.append(h);
       };
       const run = (spec: MenuItemSpec) => { close(); spec.run(); };
+      // Polish pass (COS, 2026-09-21: "Phone toolbar matches the mockup"): the phone toolbar is
+      // the title, the Issues pill and this ⋯ (TOOLBAR_POLICY.phoneKeeps). The Suggesting | Editing
+      // switch and Share lead this menu instead (TOOLBAR_POLICY.phoneMenuTop), in that order.
+      const moved = new Set<string>();
+      for (const part of TOOLBAR_POLICY.phoneMenuTop) {
+        if (part === 'mode' && this.isShareMode && this.collabCanEdit) {
+          const on = this.isSuggestionsEnabled();
+          const seg = document.createElement('div');
+          seg.className = 'apm-mode';
+          seg.setAttribute('role', 'group');
+          seg.setAttribute('aria-label', 'Suggesting or Editing');
+          seg.append(...buildMenuItems([
+            { id: 'phone-mode-suggest', label: 'Suggesting', kind: 'radio', checked: on, run: () => this.setSuggestingFromChrome(true) },
+            { id: 'phone-mode-edit', label: 'Editing', kind: 'radio', checked: !on, run: () => this.setSuggestingFromChrome(false) },
+          ], run));
+          menu.append(seg);
+          moved.add('edit-suggesting').add('edit-editing');
+        } else if (part === 'share') {
+          menu.append(...buildMenuItems([{ id: 'phone-share', label: 'Share…', keywords: 'link access invite', run: () => { this.openShareDialog('link'); } }], run));
+          moved.add('people-share');
+        }
+      }
       const phoneItems: MenuItemSpec[] = [];
       if (this.readingWalk) {
         // Accord layout stage 3 (decision 11): the Margin sheet on its Line tab, or its Room tab.
@@ -4282,9 +4310,15 @@ class ProofEditorImpl implements ProofEditor {
       if (this.readingWalk) {
         phoneItems.push({ id: 'phone-docs', label: 'Navigator', detail: 'Outline · Issues · Since you', run: () => this.readingWalk?.openSheet('left') });
       }
+      if (phoneItems.length && moved.size > 0) {
+        const sep = document.createElement('div');
+        sep.className = 'amb-sep';
+        sep.setAttribute('role', 'separator');
+        menu.append(sep);
+      }
       if (phoneItems.length) menu.append(...buildMenuItems(phoneItems, run));
       for (const spec of this.menus()) {
-        const items = spec.items().filter(entry => !entry.id.startsWith('view-navigator') && !entry.id.startsWith('view-margin') && entry.id !== 'help-search');
+        const items = spec.items().filter(entry => !entry.id.startsWith('view-navigator') && !entry.id.startsWith('view-margin') && entry.id !== 'help-search' && !moved.has(entry.id));
         if (items.length === 0) continue;
         heading(spec.label);
         // The phone list is plain items: a checkbox or radio says "on" at its right.
@@ -5191,8 +5225,9 @@ class ProofEditorImpl implements ProofEditor {
   }
 
   /**
-   * Proof dialect (2026-09-19): "Download as Proof Document (.md)" — the document with every mark
-   * stored beside it (GET /api/documents/<slug>/export?format=proof-dialect), saved as a file.
+   * The Accord dialect (2026-09-19; named 2026-09-21): "Download as Accord (.accord.md)" — the
+   * document with every mark stored beside it (GET /api/documents/<slug>/export?format=proof-dialect,
+   * the canonical machine value), saved as `<title>.accord.md`.
    */
   async downloadProofDocument(format: 'proof-dialect' | 'criticmarkup' | 'plain' = 'proof-dialect'): Promise<boolean> {
     const slug = shareClient.getSlug();
@@ -5205,7 +5240,7 @@ class ProofEditorImpl implements ProofEditor {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const text = await response.text();
       const disposition = response.headers.get('content-disposition') ?? '';
-      const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? `${slug}.proof.md`;
+      const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? `${slug}.accord.md`;
       const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' }));
       const link = document.createElement('a');
       link.href = url;

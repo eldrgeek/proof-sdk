@@ -266,3 +266,15 @@ body.plm-on #editor { padding-left:calc(var(--provenance-bar-width, 6px) + 48px)
 .plm-dot[data-needs-you="true"]:hover .plm-glyph { border-color:#b37300; }
 .plm-dot[data-uncertain="true"]::before { background:#7c3aed; }
 .plm-dot[data-uncertain="true"][data-objection="true"]::before { background:linear-gradient(#7c3aed 50%, #dc2626 50%); }
+
+/* Polish pass (COS, 2026-09-21): "Marked by N" folds everyone's marks in the Margin's Line tab. */
+.plm-team-fold { margin:10px 0 0; border-top:1px solid #ecebe6; padding-top:6px; font-size:12px; }
+.plm-team-sum { display:flex; align-items:baseline; gap:8px; min-height:28px; padding:4px 2px; cursor:pointer; color:#374151; font-weight:600; list-style:none; }
+.plm-team-sum::-webkit-details-marker { display:none; }
+.plm-team-sum::before { content:'▸'; color:#6b7280; font-size:13px; width:12px; flex:none; }
+.plm-team-fold[open] > .plm-team-sum::before { content:'▾'; }
+.plm-team-detail { margin-left:auto; color:#6b7280; font-weight:400; text-align:right; overflow-wrap:anywhere; }
+.plm-team-fold > .plm-team { margin-top:4px; border-top:none; padding-top:0; }
+@media (max-width: 700px) {
+  .plm-team-sum { min-height:44px; font-size:14px; }
+}

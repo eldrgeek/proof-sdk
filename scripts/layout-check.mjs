@@ -468,7 +468,7 @@ async function desktop2(browser, base, style) {
     await page.keyboard.press('Alt+KeyF');
     await page.locator('.amb-menu[data-menu="file"]').waitFor();
     assert.equal(await page.evaluate(() => document.activeElement?.closest('.amb-menu') !== null), true, 'the first item has no focus');
-    assert.deepEqual((await menuItems(page)).map(i => i.label), ['New Accord', 'Open…', 'Import .md…', 'Rename…', 'Copy link', 'Download as Accord (.md)', 'View activity']);
+    assert.deepEqual((await menuItems(page)).map(i => i.label), ['New Accord', 'Open…', 'Import .md…', 'Rename…', 'Copy link', 'Download as Accord (.accord.md)', 'View activity']);
     await page.keyboard.press('ArrowDown');
     assert.equal(await page.evaluate(() => document.activeElement?.textContent), 'Open…documents');
     await page.keyboard.press('a');
@@ -545,7 +545,7 @@ async function desktop2(browser, base, style) {
     await dialog.waitFor({ state: 'visible' });
     assert.deepEqual(await dialog.getByRole('tab').allTextContents(), ['Link', 'People', 'AIs']);
     assert.equal(await dialog.getByRole('tab', { name: 'Link' }).getAttribute('aria-selected'), 'true');
-    await dialog.getByRole('button', { name: 'Download as Accord (.md)' }).waitFor();
+    await dialog.getByRole('button', { name: 'Download as Accord (.accord.md)' }).waitFor();
     await dialog.getByRole('button', { name: 'Copy link' }).waitFor();
     await dialog.getByRole('tab', { name: 'People' }).click();
     assert.match(await dialog.locator('#share-panel-people').innerText(), /Only an Owner can invite/);
@@ -610,18 +610,30 @@ async function phone2(browser, base, style) {
     ...devices['iPhone 13'], viewport, screen: viewport, hasTouch: true, isMobile: true,
   });
   activePage = page;
-  await check(`${tag}: no menu bar; the toolbar keeps Suggesting / Editing, Issues and Share, plus ⋯`, async () => {
+  // Polish pass (COS, 2026-09-21: "Phone toolbar matches the mockup"): only the title, the Issues
+  // count and ⋯, as in mockup-phone.png; Suggesting | Editing and Share lead the ⋯ menu.
+  await check(`${tag}: no menu bar; the toolbar is the mockup's: the title, "N Issues" and ⋯, nothing else`, async () => {
     const c = await chrome(page);
     assert.equal(c.menubar, null, 'the menu bar shows on a phone');
     assert.equal(c.toolbar.top, 0);
-    const names = c.controls.join(' | ');
-    assert.match(names, /Suggesting/);
-    assert.match(names, /Next issue/);
-    assert.match(names, /Share/);
-    assert.match(names, /More options/);
+    assert.equal(c.controls.length, 3, `phone toolbar controls: ${c.controls.join(' | ')}`);
+    assert.match(c.controls[0], /Waiting on Mike/);
+    assert.match(c.controls[1], /^Next issue/);
+    assert.match(c.controls[2], /^More options/);
+    assert.equal(c.seg && c.seg.width > 0 ? 'shown' : 'gone', 'gone', 'Suggesting | Editing is still in the phone toolbar');
+    assert.ok(!c.share || c.share.width === 0, 'Share is still in the phone toolbar');
     assert.equal(c.undo, null, 'Undo is in the phone toolbar');
     const lines = await amber(page);
     assert.equal(c.pillText, `${lines.length} Issues`);
+    // Regions as in the mockup: title at the left, the pill then ⋯ at the right.
+    const pos = await page.evaluate(() => {
+      const r = sel => document.querySelector(sel).getBoundingClientRect();
+      return { title: r('#share-banner .share-pill-title'), next: r('#share-banner .plm-next'), more: r('#share-banner .share-pill-overflow'), nextText: document.querySelector('#share-banner .plm-next').innerText.trim(), dot: getComputedStyle(document.querySelector('#share-banner .share-pill-status-inline')).display };
+    });
+    assert.ok(pos.title.left <= 24, `title starts at ${pos.title.left}`);
+    assert.ok(pos.next.left > pos.title.right - 1 && pos.more.left >= pos.next.right - 1 && pos.more.right >= 390 - 12, 'the pill and ⋯ are not at the right, in that order');
+    assert.equal(pos.nextText, `${lines.length} Issues`, 'the pill does not read "N Issues"');
+    assert.equal(pos.dot, 'none', 'the Saved dot shows on a phone');
     assert.equal((await bar(page)).count, lines.length);
     const fits = await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1);
     assert.ok(fits, 'the page scrolls sideways');
@@ -634,6 +646,12 @@ async function phone2(browser, base, style) {
     const text = await menu.innerText();
     for (const heading of ['FILE', 'EDIT', 'VIEW', 'PEOPLE', 'HELP']) assert.ok(text.toUpperCase().includes(heading), `no ${heading} group`);
     for (const label of ['Open…', 'Reading settings…', 'Share…', 'Add agent…', 'Keyboard shortcuts']) assert.ok(text.includes(label), `no ${label}`);
+    // The switch and Share lead the menu (TOOLBAR_POLICY.phoneMenuTop), each only once.
+    const top = await menu.evaluate(m => [...m.querySelectorAll('.amb-item')].slice(0, 3).map(b => ({ label: b.querySelector('.amb-label').textContent, checked: b.getAttribute('aria-checked') })));
+    assert.deepEqual(top.map(t => t.label), ['Suggesting', 'Editing', 'Share…']);
+    assert.equal(top[0].checked, 'true', 'Suggesting is not the chosen mode');
+    const count = label => menu.evaluate((m, l) => [...m.querySelectorAll('.amb-item .amb-label')].filter(n => n.textContent === l).length, label);
+    for (const label of ['Suggesting', 'Editing', 'Share…']) assert.equal(await count(label), 1, `${label} appears twice`);
     await page.screenshot({ path: path.join(shots, `${tag}-overflow.png`) });
     await menu.getByRole('menuitem', { name: /Reading settings/ }).tap();
     const panel = page.locator('#reading-settings');
@@ -642,6 +660,20 @@ async function phone2(browser, base, style) {
     assert.ok(Math.abs(r.y + r.height - 844) <= 2 && r.width >= 388, `the settings are not a bottom sheet: ${JSON.stringify(r)}`);
     await page.screenshot({ path: path.join(shots, `${tag}-settings.png`) });
     await panel.getByRole('button', { name: 'Close reading settings' }).tap();
+  });
+  await check(`${tag}: ⋯ › Editing switches the mode; ⋯ › Suggesting switches it back`, async () => {
+    await page.getByRole('button', { name: /^More options/ }).tap();
+    await page.locator('.proof-share-overflow-menu .apm-mode').getByRole('menuitemradio', { name: 'Editing' }).tap();
+    await page.locator('.proof-share-overflow-menu').waitFor({ state: 'detached' });
+    await page.getByRole('button', { name: /^More options/ }).tap();
+    const state = await page.locator('.proof-share-overflow-menu .apm-mode .amb-item').evaluateAll(bs => bs.map(b => b.getAttribute('aria-checked')));
+    assert.deepEqual(state, ['false', 'true'], 'Editing did not take');
+    await page.locator('.proof-share-overflow-menu .apm-mode').getByRole('menuitemradio', { name: 'Suggesting' }).tap();
+    await page.getByRole('button', { name: /^More options/ }).tap();
+    const back = await page.locator('.proof-share-overflow-menu .apm-mode .amb-item').evaluateAll(bs => bs.map(b => b.getAttribute('aria-checked')));
+    assert.deepEqual(back, ['true', 'false'], 'Suggesting did not take');
+    await page.screenshot({ path: path.join(shots, `${tag}-menu-top.png`) });
+    await page.keyboard.press('Escape');
   });
   await check(`${tag}: ⋯ › Share… opens the Share dialog; it fits the phone`, async () => {
     await page.getByRole('button', { name: /^More options/ }).tap();
@@ -682,6 +714,19 @@ async function openMore(page) {
   if ((await btn.getAttribute('aria-expanded')) !== 'true') await btn.click();
   await page.locator('.prw-right .plm-more').waitFor({ state: 'visible' });
 }
+
+// Polish pass (COS, 2026-09-21): everyone's marks on a line fold into "Marked by N" in the Line tab,
+// open by default only for a Reject or an open objection; a person's open / close is kept.
+async function seedTeamMarks(created) {
+  await created.post('/marks/line', { by: 'ai:dee', status: 'agreed', quote: para(2) });
+  await created.post('/marks/line', { by: 'ai:cos', status: 'seen', quote: para(2) });
+  await created.post('/marks/line', { by: 'ai:dee', status: 'rejected', reason: 'Say which list', quote: para(3) });
+}
+const teamFold = (page, scope) => page.evaluate(sel => {
+  const d = document.querySelector(`${sel} .plm-team-fold`);
+  if (!d) return null;
+  return { open: d.open, auto: d.dataset.auto, line: Number(d.dataset.line), label: d.querySelector('.plm-team-label').textContent, detail: d.querySelector('.plm-team-detail')?.textContent ?? '', rows: [...d.querySelectorAll('.plm-team li')].map(li => li.innerText.replace(/\s+/g, ' ').trim()), listShown: d.querySelector('.plm-team').checkVisibility() };
+}, scope);
 
 async function desktop3(browser, base, style) {
   const created = await createDoc(base, 'Ada');
@@ -901,6 +946,37 @@ async function desktop3(browser, base, style) {
     await page.locator('.amb-menu .amb-item', { hasText: 'Navigator' }).click();
     await waitFor(page, () => !document.body.classList.contains('prw-left-collapsed'));
   });
+  await check(`${tag}: everyone's marks fold into "Marked by N" in the Line tab; open by default only for a Reject; a person's choice is kept`, async () => {
+    await seedTeamMarks(created);
+    await page.evaluate(i => window.__proofReadingWalk.focusLine(i), L.S1);
+    // The page polls for other people's marks; the viewer's own scroll-Seen may be a third mark.
+    await waitFor(page, () => /1 Agreed/.test(document.querySelector('.prw-right .plm-team-fold .plm-team-detail')?.textContent ?? ''), null, 15000);
+    let f = await teamFold(page, '.prw-right');
+    assert.equal(f.line, L.S1);
+    assert.equal(f.open, false, 'a line with no Reject opens its marks');
+    assert.equal(f.listShown, false, 'the list shows while folded');
+    assert.match(f.detail, /^1 Agreed · [12] Seen$/);
+    assert.match(f.label, /^Marked by [23]$/);
+    assert.equal(await page.locator('.prw-right .plm-team-fold > .plm-team').isVisible(), false);
+    await page.screenshot({ path: path.join(shots, `layout-polish-${style}-1440-marked-by-folded.png`), clip: { x: 1090, y: 60, width: 350, height: 640 } });
+    await page.locator('.prw-right .plm-team-sum').click();
+    f = await teamFold(page, '.prw-right');
+    assert.equal(f.open, true);
+    assert.ok(f.rows.some(r => /Agreed/.test(r)) && f.rows.some(r => /Seen/.test(r)), `who marked what: ${f.rows}`);
+    // Kept across a re-render (another line, then back).
+    await page.evaluate(i => window.__proofReadingWalk.focusLine(i), L.S2);
+    await waitFor(page, i => Number(document.querySelector('.prw-right .plm-team-fold')?.dataset.line) === i, L.S2);
+    f = await teamFold(page, '.prw-right');
+    assert.equal(f.open, true, 'a line with a Reject is folded');
+    assert.equal(f.auto, 'open');
+    assert.ok(f.rows.some(r => /Rejected: Say which list/.test(r)), `the Reject and its reason: ${f.rows}`);
+    await page.screenshot({ path: path.join(shots, `layout-polish-${style}-1440-marked-by-reject.png`), clip: { x: 1090, y: 60, width: 350, height: 640 } });
+    await page.evaluate(i => window.__proofReadingWalk.focusLine(i), L.S1);
+    await waitFor(page, i => Number(document.querySelector('.prw-right .plm-team-fold')?.dataset.line) === i, L.S1);
+    assert.equal((await teamFold(page, '.prw-right')).open, true, 'the person\'s open was not kept');
+    await page.locator('.prw-right .plm-team-sum').click();
+    assert.equal((await teamFold(page, '.prw-right')).open, false);
+  });
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.locator(`.prw-left .anv-issue[data-line="${L.ASK}"]`).click();
   await page.waitForTimeout(400);
@@ -991,6 +1067,24 @@ async function phone3(browser, base, style) {
     await waitFor(page, i => window.__proofReadingWalk.debugState().cursor === i, L.CHANGE);
     assert.equal(await page.locator('.prw-left.prw-sheet-open').count(), 0, 'the Navigator stayed open');
     assert.equal(await page.locator('.prw-strip-where').innerText(), `Line ${L.CHANGE + 1} of 25`);
+  });
+  await check(`${tag}: the sheet's Line tab folds everyone's marks into "Marked by N"; a Reject opens it; the row is touch-sized`, async () => {
+    await seedTeamMarks(created);
+    await page.evaluate(i => window.__proofReadingWalk.focusLine(i), L.S2);
+    await page.getByRole('button', { name: /^More options/ }).tap();
+    await page.locator('.proof-share-overflow-menu').getByRole('menuitem', { name: /This line/ }).tap();
+    await page.locator('.prw-right.prw-sheet-open').waitFor({ state: 'visible' });
+    await waitFor(page, () => document.querySelector('.prw-right.prw-sheet-open .plm-team-fold')?.dataset.auto === 'open', null, 15000);
+    const f = await teamFold(page, '.prw-right.prw-sheet-open');
+    assert.equal(f.line, L.S2);
+    assert.equal(f.open, true, 'the Reject did not open the fold');
+    const sum = await page.locator('.prw-right.prw-sheet-open .plm-team-sum').boundingBox();
+    assert.ok(sum.height >= 44, `the row is too small to tap: ${sum.height}`);
+    await page.locator('.prw-right.prw-sheet-open .plm-team-fold').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(shots, `layout-polish-${style}-phone-390x844-marked-by.png`) });
+    await page.locator('.prw-right.prw-sheet-open .plm-team-sum').tap();
+    assert.equal((await teamFold(page, '.prw-right.prw-sheet-open')).open, false);
+    await page.locator('.prw-strip-grab').tap();
   });
   await context.close();
 }

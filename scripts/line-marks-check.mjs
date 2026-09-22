@@ -279,7 +279,7 @@ async function phone(browser, base) {
     assert.ok(h <= 60, `bar height ${h}`);
     const btn = page.locator('#share-banner .plm-next');
     assert.ok(await btn.isVisible(), 'issue button hidden');
-    await waitFor(page, n => (document.querySelector('#share-banner .plm-issues-count')?.dataset.teamCount === String(n) && document.querySelector('#share-banner .plm-next')?.innerText.trim() === `${document.querySelector('#share-banner .plm-issues-count').dataset.viewerCount} ›`), LINE_COUNT - 1);
+    await waitFor(page, n => (document.querySelector('#share-banner .plm-issues-count')?.dataset.teamCount === String(n) && document.querySelector('#share-banner .plm-next')?.innerText.trim() === ((v) => `${v} ${v === '1' ? 'Issue' : 'Issues'}`)(document.querySelector('#share-banner .plm-issues-count').dataset.viewerCount)), LINE_COUNT - 1);
     const r = await btn.boundingBox();
     assert.ok(r.height >= 44 && r.width >= 44, `issue button ${r.width}x${r.height}`);
   });
@@ -318,7 +318,7 @@ async function phone(browser, base) {
     assert.ok(box.height >= 44, `Agree button ${box.height}px tall`);
     await agree.tap();
     await waitFor(page, () => document.querySelector('.plm-dot[data-line="1"]')?.dataset.status === 'agreed');
-    await waitFor(page, n => (document.querySelector('#share-banner .plm-issues-count')?.dataset.teamCount === String(n) && document.querySelector('#share-banner .plm-next')?.innerText.trim() === `${document.querySelector('#share-banner .plm-issues-count').dataset.viewerCount} ›`), LINE_COUNT - 2);
+    await waitFor(page, n => (document.querySelector('#share-banner .plm-issues-count')?.dataset.teamCount === String(n) && document.querySelector('#share-banner .plm-next')?.innerText.trim() === ((v) => `${v} ${v === '1' ? 'Issue' : 'Issues'}`)(document.querySelector('#share-banner .plm-issues-count').dataset.viewerCount)), LINE_COUNT - 2);
   });
   await check(`${tag}: Reject asks for a reason on the phone`, async () => {
     await page.locator('.plm-dot[data-line="4"]').tap();

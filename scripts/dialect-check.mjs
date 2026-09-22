@@ -1,12 +1,13 @@
 #!/usr/bin/env node
-// Check for the Proof dialect (2026-09-19): a Mike-like document on a running server (Mike signs in
+// Check for the Accord dialect (2026-09-19; named 2026-09-21, machine value proof-dialect): a Mike-like document on a running server (Mike signs in
 // and marks lines, answers an ask, objects and tags a decision line; Claude, through its agent key,
 // suggests, comments, flags, sets a time-to-live, reads with evidence and tags context) is
-// exported as a Proof Document, re-imported with the operator key, and the two documents' /state
+// exported as an Accord dialect file, re-imported with the operator key, and the two documents' /state
 // are compared (every live mark the same, by the same identity, on the same line). The imported
-// document's export must equal the first export. Then the page: "Download as Accord (.md)"
+// document's export must equal the first export. Then the page: "Download as Accord (.accord.md)"
 // from the Share menu at 1440 and from the ⋯ menu on a 390 phone, both review styles, downloads
-// the same file.
+// the same file, named <title>.accord.md. Polish pass (2026-09-21): format=accord-dialect is an
+// alias of proof-dialect (export and import), and File › Import takes .accord.md and .proof.md.
 // Authorship: Claude Opus 5 (worker proof-dialect), 2026-09-19, in the style of line-tiers-check.mjs.
 // Starts an isolated local server on the current dist/ build (run `npm run build` first).
 // Usage: node scripts/dialect-check.mjs [--style playmaker|proof] [--shots dir]
@@ -246,17 +247,34 @@ async function run(browser, style) {
       assert.equal(again.status, 200);
       assert.equal(again.text, first);
     });
+    await check(`${tag}: format=accord-dialect is an alias of proof-dialect; the file is <title>.accord.md; links keep proof-dialect`, async () => {
+      const r = await fetch(`${base}/api/agent/${slug}/export?format=accord-dialect`, { headers: CLAUDE });
+      assert.equal(r.status, 200);
+      assert.equal(await r.text(), (await exportText(base, slug, CLAUDE)).text);
+      assert.match(r.headers.get('content-disposition') ?? '', /filename="Q3-launch-plan\.accord\.md"/);
+      const bad = await fetch(`${base}/api/agent/${slug}/export?format=nonsense`, { headers: CLAUDE });
+      assert.equal(bad.status, 400);
+      assert.match((await bad.json()).error, /proof-dialect, criticmarkup, plain \(accord-dialect is accepted for proof-dialect\)/);
+      const state = await agent(base, slug, CLAUDE, 'GET', '/state');
+      const links = JSON.stringify(state.body._links ?? state.body.links ?? {});
+      if (links.includes('export')) assert.ok(links.includes('format=proof-dialect') && !links.includes('accord-dialect'), links);
+      const imported = await fetch(`${base}/share/markdown`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': OPERATOR_KEY }, body: JSON.stringify({ markdown: first, format: 'accord-dialect' }) }).then(r => r.json());
+      assert.equal(imported.success, true, JSON.stringify(imported));
+      assert.equal(imported.import.authority, 'operator');
+      const again = await exportText(base, imported.slug, { ...clientHeaders, 'x-share-token': imported.ownerSecret });
+      assert.equal(again.text, first, 'an accord-dialect import is the same as a proof-dialect one');
+    });
 
     // ------------------------------------------------------------ the page: Share menu download
     await openDoc(mike, base, slug);
     // Accord layout stage 2: the download lives in File (and in the Share dialog's Link tab).
-    await check(`${tag}: File › "Download as Accord (.md)" saves the same file`, async () => {
+    await check(`${tag}: File › "Download as Accord (.accord.md)" saves the same file`, async () => {
       await mike.locator('#accord-menubar .amb-top[data-menu="file"]').click();
-      const item = mike.getByRole('menuitem', { name: /Download as Accord \(\.md\)/ });
+      const item = mike.getByRole('menuitem', { name: /Download as Accord \(\.accord\.md\)/ });
       await item.waitFor({ state: 'visible' });
       await mike.screenshot({ path: path.join(shots, `${tag}-1-menu.png`) });
       const [download] = await Promise.all([mike.waitForEvent('download'), item.click()]);
-      assert.match(download.suggestedFilename(), /^Q3-launch-plan\.proof\.md$/);
+      assert.match(download.suggestedFilename(), /^Q3-launch-plan\.accord\.md$/);
       const file = readFileSync(await download.path(), 'utf8');
       const pageExport = await mike.evaluate(async ({ s, h }) => (await fetch(`/api/documents/${s}/export`, { credentials: "same-origin", headers: h })).text(), { s: slug, h: clientHeaders });
       assert.equal(file, pageExport, `download = page export: ${diffHint(pageExport, file)}`);
@@ -264,6 +282,24 @@ async function run(browser, style) {
       const fresh = await exportText(base, slug, CLAUDE);
       assert.equal(file, fresh.text, `Mike (signed in) gets the same file as the API export: ${diffHint(fresh.text, file)}`);
       assert.ok(file.includes('{rejected @mw') && file.includes('{changed @claude'), 'the marks are in it');
+    });
+    // Polish pass: File › Import takes <title>.accord.md (this file) and an older <title>.proof.md.
+    await check(`${tag}: File › Import takes a .accord.md file (its marks kept) and a .proof.md file (title without the suffix)`, async () => {
+      const importVia = async (name, text) => {
+        await mike.locator('#accord-menubar .amb-top[data-menu="file"]').click();
+        const [chooser] = await Promise.all([mike.waitForEvent('filechooser'), mike.getByRole('menuitem', { name: /Import \.md/ }).click()]);
+        const before = mike.url();
+        await chooser.setFiles({ name, mimeType: 'text/markdown', buffer: Buffer.from(text, 'utf8') });
+        await mike.waitForURL(url => url.toString() !== before && /\/d\//.test(url.toString()), { timeout: 15_000 });
+        return mike.url().match(/\/d\/([^/?#]+)/)[1];
+      };
+      const accordSlug = await importVia('Q3-launch-plan.accord.md', first);
+      const accordExport = await mike.evaluate(async ({ s, h }) => (await fetch(`/api/documents/${s}/export`, { credentials: 'same-origin', headers: h })).text(), { s: accordSlug, h: clientHeaders });
+      assert.ok(accordExport.includes('{rejected @mw'), `Mike's own marks came in with the .accord.md file\n${accordExport.slice(0, 600)}`);
+      const proofSlug = await importVia('Notes-from-Eric.proof.md', 'Plain line one, written before the rename.\n\nPlain line two.\n');
+      assert.notEqual(proofSlug, accordSlug);
+      await mike.waitForFunction(() => /Notes-from-Eric/.test(document.title), null, { timeout: 10_000 });
+      assert.ok(!/\.proof/.test(await mike.title()), `the .proof suffix is in the title: ${await mike.title()}`);
     });
     await ctx.close();
 
@@ -274,7 +310,7 @@ async function run(browser, style) {
     const phone = await signIn(phoneCtx, cli, base, MIKE_EMAIL);
     activePage = phone;
     await openDoc(phone, base, slug);
-    await check(`${ptag}: ⋯ → Download (Accord .md) saves the same file; touch-sized; no sideways scroll`, async () => {
+    await check(`${ptag}: ⋯ → Download (Accord .accord.md) saves the same file; touch-sized; no sideways scroll`, async () => {
       await phone.locator('#share-banner .share-pill-overflow').tap();
       const item = phone.locator('.proof-share-overflow-menu [role="menuitem"]', { hasText: 'Download' });
       await item.waitFor({ state: 'visible' });
@@ -285,6 +321,7 @@ async function run(browser, style) {
       assert.ok(sw[0] <= sw[1] + 1, `no sideways scroll ${sw}`);
       await phone.screenshot({ path: path.join(shots, `${ptag}-1-menu.png`) });
       const [download] = await Promise.all([phone.waitForEvent('download'), item.tap()]);
+      assert.match(download.suggestedFilename(), /^Q3-launch-plan\.accord\.md$/);
       const file = readFileSync(await download.path(), 'utf8');
       const fresh = await exportText(base, slug, CLAUDE);
       assert.equal(file, fresh.text);

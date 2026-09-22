@@ -1144,11 +1144,19 @@ Staging soak (live browser viewers + repeated `/edit` + `/edit/v2`):
   SOAK_DURATION_MS=300000 \
   npx tsx scripts/staging-collab-projection-soak.ts
 
-## Accords as files: the dialect, export and import
+## Accords as files: the Accord dialect, export and import
 
 _Added 2026-09-19 by Claude Opus 5 (worker proof-dialect) for Mike Wolf, who specified the dialect
 and approved its form. Codec: `src/shared/proof-dialect.ts` (`DIALECT_POLICY`, `CRITIC_POLICY`);
-server: `server/proof-dialect.ts` (`EXPORT_POLICY`, `IMPORT_POLICY`)._
+server: `server/proof-dialect.ts` (`EXPORT_POLICY`, `IMPORT_POLICY`, `FORMAT_ALIASES`,
+`DIALECT_FILE_POLICY`). Named the **Accord dialect** on 2026-09-21 (Mike: "Accord it is, use it
+everywhere"; polish pass by Claude Opus 5)._
+
+The file format is called the **Accord dialect**. Its machine value is still `proof-dialect`: every
+response, link and `formats` list says `proof-dialect`, and `format=accord-dialect` is accepted
+everywhere as an alias of it. An exported file is named `<title>.accord.md`; import takes
+`<title>.accord.md` and files exported before the rename as `<title>.proof.md` (the front-matter
+key stays `proof:`).
 
 An Accord is markdown with marks. A mark is a group in braces: the type (a bare lowercase
 word), then its source (`@handle`), then `key=value` fields (`key="quoted value"`, escapes `\"`
@@ -1174,16 +1182,18 @@ ifyes`) + `answer` (`choice words`), `objection` (`id reason if`, on each covere
 `alternative` (`id text`) + `pick`, `do` (`state to action`=JSON), `proxy` (`for status confidence
 evidence`), `history`, and `authored` with `?authored=1`. Chat is not exported.
 
-  GET /api/agent/<slug>/export?format=proof-dialect | criticmarkup | plain   (any access)
-  GET /api/documents/<slug>/export?format=…                                 (the page: Share ▾ →
-      "Download as Accord (.md)"; phone: ⋯ → Download)
+  GET /api/agent/<slug>/export?format=proof-dialect | criticmarkup | plain   (any access;
+      format=accord-dialect is an alias of proof-dialect; the file is <title>.accord.md)
+  GET /api/documents/<slug>/export?format=…                                 (the page: File →
+      "Download as Accord (.accord.md)", or Share → Link; phone: ⋯ → Download)
 
 `criticmarkup` writes suggestions and comments only (`{++ ++} {-- --} {~~ ~> ~~} {== ==}{>>@mw: …<<}`)
 and says so in a header comment. `plain` is the text without pending changes. While blind marking is
 on, anyone but the owner credential gets only their own positions.
 
-Import: `POST /share/markdown` with `format: "proof-dialect" | "criticmarkup" | "auto"` (or any text
-whose front matter has a `proof:` block). The library's New document → upload does the same with
+Import: `POST /share/markdown` with `format: "proof-dialect" | "criticmarkup" | "auto"` (`"accord-dialect"`
+is an alias of `"proof-dialect"`), or any text whose front matter has a `proof:` block. On the page,
+File → Import .md… takes a `.accord.md` or `.proof.md` file. The library's New document → upload does the same with
 `auto` whenever the file carries marks. The response has `import`: `{ authority, created, history,
 guests, warnings }`. Text marks become real suggestions and comments; line marks become stored line
 marks (`at` kept, never later than now).

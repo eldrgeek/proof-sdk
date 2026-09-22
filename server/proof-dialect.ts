@@ -99,6 +99,36 @@ import {
 export const EXPORT_FORMATS = ['proof-dialect', 'criticmarkup', 'plain'] as const;
 export type ExportFormat = typeof EXPORT_FORMATS[number];
 
+/**
+ * Naming tail (Mike, 2026-09-19: "Accord it is, use it everywhere"): the file format is the
+ * **Accord dialect** in every user-facing sentence. `format=accord-dialect` (and `accord`) is
+ * accepted as an alias; `proof-dialect` stays the canonical machine value, so responses, links
+ * and `formats` lists keep saying `proof-dialect` and nothing machine-visible changes.
+ */
+export const FORMAT_ALIASES: Readonly<Record<string, ExportFormat>> = {
+  'accord-dialect': 'proof-dialect',
+  accord: 'proof-dialect',
+};
+
+/** Accord dialect files: exports are named `<title>.accord.md`; import takes either extension. */
+export const DIALECT_FILE_POLICY = {
+  exportSuffix: '.accord.md',
+  /** Earlier exports were `<title>.proof.md`; both still import (both end in .md). */
+  importSuffixes: ['.accord.md', '.proof.md'] as readonly string[],
+  criticSuffix: '.critic.md',
+} as const;
+
+/** A `format` query value as the canonical format, or null when it is not one (aliases resolved). */
+export function normalizeExportFormat(raw: unknown): ExportFormat | null {
+  const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (!value) return 'proof-dialect';
+  if ((EXPORT_FORMATS as readonly string[]).includes(value)) return value as ExportFormat;
+  return FORMAT_ALIASES[value] ?? null;
+}
+
+/** The 400 message for a bad `format`. */
+export const EXPORT_FORMAT_ERROR = `format must be one of ${EXPORT_FORMATS.join(', ')} (accord-dialect is accepted for proof-dialect)`;
+
 export const EXPORT_POLICY = {
   formats: EXPORT_FORMATS,
   /** "authored" (who wrote which text) marks are noisy; written only with ?authored=1. */
@@ -374,7 +404,7 @@ function fields(entries: Array<[string, unknown]>): Record<string, string> {
 
 function fileNameFor(title: string | null | undefined, slug: string, format: ExportFormat): string {
   const base = String(title ?? '').normalize('NFKD').replace(/[^\w\s.-]+/g, '').trim().replace(/\s+/g, '-').slice(0, 80) || slug;
-  return format === 'proof-dialect' ? `${base}.proof.md` : format === 'criticmarkup' ? `${base}.critic.md` : `${base}.md`;
+  return format === 'proof-dialect' ? `${base}${DIALECT_FILE_POLICY.exportSuffix}` : format === 'criticmarkup' ? `${base}${DIALECT_FILE_POLICY.criticSuffix}` : `${base}.md`;
 }
 
 /** Finds a stored mark's span in the body: every occurrence of its quote, the one nearest startRel wins. */

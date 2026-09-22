@@ -248,6 +248,8 @@ async function run(browser, style) {
       const box = eric.locator('.prw-right .plm-box[data-line="2"], .plm-menu').first();
       await box.waitFor({ state: 'visible' });
       // Accord layout stage 3: everyone's marks on the line follow the line's changes in the Margin.
+      // Polish pass: they fold into "Marked by N"; open it.
+      await eric.waitForFunction(() => { document.querySelectorAll('.prw-right .plm-team-fold:not([open]) > summary').forEach(s => s.click()); return !!document.querySelector('.plm-menu .plm-team, .prw-right .plm-team-fold[open]'); });
       await eric.locator('.prw-right .amg-tail .plm-team li, .plm-menu .plm-team li', { hasText: 'added by Eric' }).first().waitFor();
       await eric.screenshot({ path: path.join(shots, `${tag}-2-sponsor-on-mark.png`) });
     });

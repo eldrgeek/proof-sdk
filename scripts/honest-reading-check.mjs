@@ -203,13 +203,14 @@ async function desktop(browser, base, style) {
   await check(`${tag}: the rail says how a Seen was earned: "by scrolling" vs "marked"`, async () => {
     await page.locator(`.plm-dot[data-line="${L.LONG}"]`).click();
     await waitFor(page, i => window.__proofReadingWalk.debugState().focus === i, L.LONG);
-    await waitFor(page, () => /Seen \(by scrolling\)/.test(document.querySelector('.prw-right .plm-team')?.innerText ?? ''));
+    // Polish pass: everyone's marks fold into "Marked by N"; open it (a person's click, kept for the line).
+    await waitFor(page, () => { document.querySelectorAll('.prw-right .plm-team-fold:not([open]) > summary').forEach(s => s.click()); return /Seen \(by scrolling\)/.test(document.querySelector('.prw-right .plm-team')?.innerText ?? ''); });
     await page.locator(`.plm-dot[data-line="${L.SHORT}"]`).click();
     await waitFor(page, i => window.__proofReadingWalk.debugState().focus === i, L.SHORT);
     // Accord layout stage 3 (decision 8): Seen is under the line's ⋯ More.
     await rail.locator('.plm-box .plm-more-btn').click();
     await rail.locator('.plm-box .plm-more').getByRole('button', { name: /^•\s*Seen$/ }).click();
-    await waitFor(page, () => /Seen \(marked\)/.test(document.querySelector('.prw-right .plm-team')?.innerText ?? ''));
+    await waitFor(page, () => { document.querySelectorAll('.prw-right .plm-team-fold:not([open]) > summary').forEach(s => s.click()); return /Seen \(marked\)/.test(document.querySelector('.prw-right .plm-team')?.innerText ?? ''); });
     assert.equal((await myMark(page, L.SHORT)).via, 'click');
   });
 

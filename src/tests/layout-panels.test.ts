@@ -8,8 +8,8 @@ import assert from 'node:assert/strict';
 import type { ProofIssue } from '../shared/line-marks';
 import { needsYouLines } from '../shared/layout-status';
 import {
-  CURSOR_POLICY, MARGIN_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY,
-  needsYouItems, needsYouLabel, outlineRows, parseRailState,
+  CURSOR_POLICY, MARGIN_POLICY, MARKED_BY_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY,
+  markedByFold, needsYouItems, needsYouLabel, outlineRows, parseRailState,
 } from '../shared/layout-panels';
 
 let passed = 0;
@@ -90,6 +90,20 @@ test('rail state: open / closed and each rail\'s tab are remembered; junk is dro
   assert.deepEqual(parseRailState('{"leftTab":"documents","rightTab":"third","left":"yes"}'), {});
   assert.deepEqual(parseRailState('not json'), {});
   assert.deepEqual(parseRailState(null), {});
+});
+
+test('markedByFold: "Marked by N" folds; open only for a current Reject or an open objection', () => {
+  assert.equal(MARKED_BY_POLICY.foldInLineTab, true);
+  const quiet = markedByFold(['agreed', 'seen', 'unseen', 'agreed'], false);
+  assert.deepEqual(quiet, { count: 3, total: 4, open: false, label: 'Marked by 3', detail: '2 Agreed · 1 Seen' });
+  const reject = markedByFold(['agreed', 'rejected', 'unseen'], false);
+  assert.equal(reject.open, true);
+  assert.equal(reject.detail, '1 Rejected · 1 Agreed');
+  // A Reject made before the line changed is not a current Reject.
+  assert.equal(markedByFold(['changed', 'agreed'], false).open, false);
+  assert.equal(markedByFold(['agreed'], true).open, true, 'an open objection opens it');
+  assert.equal(markedByFold(['unseen', 'unseen'], false).label, 'Not marked yet');
+  assert.equal(markedByFold(['hidden', 'seen'], false).count, 2, 'a blind mark still counts as a mark');
 });
 
 console.log(`\n${passed} layout-panels tests passed`);

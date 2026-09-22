@@ -64,6 +64,59 @@ export const MARGIN_POLICY = {
   replyToNewestComment: true,
 } as const;
 
+/**
+ * Polish pass (COS, 2026-09-21): everyone's marks on a line fold, in the Margin's Line tab, into
+ * one row "Marked by N"; expanding it shows who marked what. The row is open by default only when
+ * the line has a Reject or an open objection, because those are the marks a reader must see. A
+ * person who opens or closes it keeps that choice for the line (explicit beats automatic).
+ */
+export const MARKED_BY_POLICY = {
+  /** Fold the list in the Line tab (the popover and the phone's dot sheet keep the flat list). */
+  foldInLineTab: true,
+  /** What opens the fold by default. */
+  openWhen: { reject: true, openObjection: true },
+  /**
+   * Who N counts: everyone whose mark on the line is there, current or out of date, including a
+   * mark blind marking hides. People who have not marked the line are listed only when expanded.
+   */
+  countsUnseen: false,
+} as const;
+
+export interface MarkedByFold {
+  /** How many people have a mark on the line. */
+  count: number;
+  /** The team's size (everyone the list names). */
+  total: number;
+  /** Open by default (a Reject or an open objection). */
+  open: boolean;
+  /** "Marked by 3", or "Not marked yet". */
+  label: string;
+  /** The statuses in words, most serious first: "1 Rejected · 2 Agreed". */
+  detail: string;
+}
+
+const MARKED_BY_ORDER = ['rejected', 'changed', 'approved', 'agreed', 'seen', 'skimmed', 'stale', 'hidden'] as const;
+const MARKED_BY_WORD: Record<string, string> = {
+  rejected: 'Rejected', changed: 'Changed since marked', approved: 'Approved', agreed: 'Agreed',
+  seen: 'Seen', skimmed: 'Skimmed', stale: 'Stale', hidden: 'Hidden',
+};
+
+/**
+ * The "Marked by N" row for one line. `statuses` has one entry per team member, as the page shows
+ * it: 'unseen' (no mark), 'changed' (marked before the line changed), 'hidden' (blind), 'stale',
+ * or a stored status. A Reject counts only while it is current (a 'changed' Reject is not one).
+ */
+export function markedByFold(statuses: readonly string[], hasOpenObjection: boolean): MarkedByFold {
+  const marked = statuses.filter(status => MARKED_BY_POLICY.countsUnseen || status !== 'unseen');
+  const count = marked.length;
+  const tally = new Map<string, number>();
+  for (const status of marked) tally.set(status, (tally.get(status) ?? 0) + 1);
+  const detail = MARKED_BY_ORDER.filter(status => tally.has(status)).map(status => `${tally.get(status)} ${MARKED_BY_WORD[status]}`).join(' · ');
+  const open = (MARKED_BY_POLICY.openWhen.reject && tally.has('rejected'))
+    || (MARKED_BY_POLICY.openWhen.openObjection && hasOpenObjection);
+  return { count, total: statuses.length, open, label: count === 0 ? 'Not marked yet' : `Marked by ${count}`, detail };
+}
+
 /** The Navigator (decision 7): three tabs, lists of the whole document. */
 export type NavigatorTab = 'outline' | 'issues' | 'since';
 export const NAVIGATOR_POLICY = {

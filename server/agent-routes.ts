@@ -207,7 +207,7 @@ import {
   releaseMutationReservation,
   type MutationReservation,
 } from './mutation-idempotency.js';
-import { EXPORT_FORMATS, exportProofDocument, historyNotesForState, type ExportFormat } from './proof-dialect.js';
+import { EXPORT_FORMATS, EXPORT_FORMAT_ERROR, exportProofDocument, historyNotesForState, normalizeExportFormat } from './proof-dialect.js';
 import { productName } from '../src/shared/product-identity.js';
 
 export const agentRoutes = Router({ mergeParams: true });
@@ -3709,8 +3709,8 @@ agentRoutes.post('/:slug/marks/line', async (req: Request, res: Response) => {
 });
 
 // ============================================================================
-// Proof dialect export (2026-09-19): the document and every mark stored beside it as one
-// markdown file. ?format=proof-dialect (default) | criticmarkup | plain; ?authored=1 adds
+// Accord dialect export (2026-09-19): the document and every mark stored beside it as one
+// markdown file. ?format=proof-dialect (default; alias accord-dialect) | criticmarkup | plain; ?authored=1 adds
 // "authored" marks. Import is POST /share/markdown with format=proof-dialect|criticmarkup|auto.
 // ============================================================================
 
@@ -3719,9 +3719,10 @@ agentRoutes.get('/:slug/export', async (req: Request, res: Response) => {
   if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
   const role = checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot']);
   if (!role) return;
-  const format = (typeof req.query.format === 'string' && req.query.format ? req.query.format : 'proof-dialect') as ExportFormat;
-  if (!(EXPORT_FORMATS as readonly string[]).includes(format)) {
-    res.status(400).json({ success: false, code: 'INVALID_FORMAT', error: `format must be one of ${EXPORT_FORMATS.join(', ')}` });
+  // Naming tail: format=accord-dialect is an alias of proof-dialect (FORMAT_ALIASES).
+  const format = normalizeExportFormat(req.query.format);
+  if (!format) {
+    res.status(400).json({ success: false, code: 'INVALID_FORMAT', error: EXPORT_FORMAT_ERROR });
     return;
   }
   try {

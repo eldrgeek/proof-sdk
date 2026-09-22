@@ -146,7 +146,7 @@ try {
     const r = await call(`/api/agent/${slug}/export?format=proof-dialect`, 'GET', undefined, OWNER);
     assert.equal(r.status, 200, r.text);
     assert.match(r.headers.get('content-type') ?? '', /text\/markdown/);
-    assert.match(r.headers.get('content-disposition') ?? '', /attachment; filename="Launch-plan\.proof\.md"/);
+    assert.match(r.headers.get('content-disposition') ?? '', /attachment; filename="Launch-plan\.accord\.md"/);
     exported = r.text;
     if (process.env.DIALECT_DEBUG) console.log(exported);
     const p = dialect.parseProofDocument(exported);
@@ -258,6 +258,39 @@ try {
     assert.equal(again.status, 200, again.text);
     const third = await call(`/api/agent/${again.body.slug}/export`, 'GET', undefined, { 'x-share-token': again.body.ownerSecret });
     assert.equal(third.text, exported, diffHint(exported, third.text));
+  });
+
+  // Naming tail (2026-09-21): the file format is the Accord dialect; format=accord-dialect is an
+  // alias; proof-dialect stays the canonical machine value; the file is <title>.accord.md.
+  await test('naming: format=accord-dialect is an alias of proof-dialect (export and import); the file is <title>.accord.md', async () => {
+    const alias = await call(`/api/agent/${slug}/export?format=accord-dialect`, 'GET', undefined, OWNER);
+    assert.equal(alias.status, 200, alias.text);
+    assert.equal(alias.text, exported);
+    assert.match(alias.headers.get('content-disposition') ?? '', /filename="Launch-plan\.accord\.md"/);
+    const upper = await call(`/api/agent/${slug}/export?format=Accord-Dialect`, 'GET', undefined, OWNER);
+    assert.equal(upper.status, 200);
+    const bad = await call(`/api/agent/${slug}/export?format=word`, 'GET', undefined, OWNER);
+    assert.equal(bad.status, 400);
+    assert.equal(bad.body.code, 'INVALID_FORMAT');
+    assert.match(String(bad.body.error), /accord-dialect is accepted for proof-dialect/);
+    const state = await call(`/api/agent/${slug}/state`, 'GET', undefined, OWNER);
+    const link = JSON.stringify(state.body).match(/export\?format=[a-z-]+/)?.[0];
+    if (link) assert.equal(link, 'export?format=proof-dialect', 'the canonical machine value in responses');
+    const imported = await call('/api/share/markdown', 'POST', { markdown: exported, format: 'accord-dialect' }, OPERATOR);
+    assert.equal(imported.status, 200, imported.text);
+    assert.equal(imported.body.import?.authority, 'operator');
+    const back = await call(`/api/agent/${imported.body.slug}/export`, 'GET', undefined, { 'x-share-token': imported.body.ownerSecret });
+    assert.equal(back.text, exported, diffHint(exported, back.text));
+    const serverDialect = await import('../../server/proof-dialect');
+    assert.equal(serverDialect.normalizeExportFormat('accord-dialect'), 'proof-dialect');
+    assert.equal(serverDialect.normalizeExportFormat(undefined), 'proof-dialect');
+    assert.equal(serverDialect.normalizeExportFormat('criticmarkup'), 'criticmarkup');
+    assert.equal(serverDialect.normalizeExportFormat('word'), null);
+    assert.deepEqual([...serverDialect.EXPORT_FORMATS], ['proof-dialect', 'criticmarkup', 'plain']);
+    assert.deepEqual([...serverDialect.DIALECT_FILE_POLICY.importSuffixes], ['.accord.md', '.proof.md']);
+    // The CriticMarkup header names the product and the Accord dialect; an older "from Proof" header is still recognised.
+    assert.match(dialect.CRITIC_POLICY.exportHeader, /^<!-- CriticMarkup export from Accord: .*export the Accord dialect \(format=proof-dialect\)/);
+    assert.ok(dialect.CRITIC_POLICY.exportHeaderPattern.test('<!-- CriticMarkup export from Proof: old header -->\n'));
   });
 
   // ------------------------------------------------------------------ security

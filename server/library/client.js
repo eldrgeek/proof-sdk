@@ -309,7 +309,7 @@
     document.getElementById('markdown').value = markdown;
     document.getElementById('file-name').textContent = file.name;
     const titleInput = document.getElementById('new-title');
-    if (!titleInput.value.trim()) titleInput.value = titleFromMarkdown(markdown) || file.name.replace(/\.(md|markdown|txt)$/i, '');
+    if (!titleInput.value.trim()) titleInput.value = titleFromMarkdown(markdown) || file.name.replace(/(\.(accord|proof))?\.(md|markdown|txt)$/i, '');
   };
 
   document.getElementById('new-document').addEventListener('click', () => openNew());

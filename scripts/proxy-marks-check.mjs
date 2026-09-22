@@ -261,6 +261,8 @@ async function run(browser, style) {
       assert.match(await done.innerText(), /Ratified 3 lines as Agreed \(from Claude\)/);
       assert.equal(await mike.evaluate(l => document.querySelector(`.plm-dot[data-line="${l}"]`)?.dataset.status, L.BUDGET), 'agreed');
       await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.BUDGET);
+      // Polish pass: everyone's marks fold into "Marked by N"; open it.
+      await mike.waitForFunction(() => { document.querySelectorAll('.prw-right .plm-team-fold:not([open]) > summary').forEach(s => s.click()); return !!document.querySelector('.prw-right .plm-team-fold[open]'); });
       const team = await mike.locator('.prw-right .plm-team').innerText();
       assert.match(team, /ratified from Claude, confidence 0\.95/);
       assert.match(team, /Evidence: Budget matches the finance sheet/);
@@ -336,7 +338,7 @@ async function run(browser, style) {
       assert.equal(c.status, 200);
       await mike.evaluate(() => window.__proofLineMarks.refresh());
       await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.CLOSING);
-      await waitFor(mike, () => !!document.querySelector('.prw-right .plm-team .plm-claimed'));
+      await waitFor(mike, () => { document.querySelectorAll('.prw-right .plm-team-fold:not([open]) > summary').forEach(s => s.click()); return !!document.querySelector('.prw-right .plm-team-fold[open] .plm-team .plm-claimed'); });
       const team = await mike.locator('.prw-right .plm-team').innerText();
       // Cross invitation: an AI's row now reads "Critic — added by <the human who added it>".
       assert.match(team, /critic(\s*—\s*added by[^\n]*)?\s*Agreed\s*claimed/i);

@@ -145,12 +145,12 @@ import {
   buildProofSdkLinks,
 } from './proof-sdk-routes.js';
 import {
-  EXPORT_FORMATS,
+  EXPORT_FORMAT_ERROR,
   IMPORT_POLICY,
   applyImportedMarks,
   exportProofDocument,
+  normalizeExportFormat,
   parseImport,
-  type ExportFormat,
   type ImportAuthority,
   type ImportSummary,
 } from './proof-dialect.js';
@@ -1165,7 +1165,8 @@ export async function createProofDocument(input: {
 /** Import format for /share/markdown: explicit, or the dialect when a "proof:" front matter block is present. */
 function resolveImportFormat(raw: unknown, markdown: string): 'proof-dialect' | 'criticmarkup' | 'auto' | null {
   const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
-  if (value === 'proof-dialect' || value === 'proof' || value === 'dialect') return 'proof-dialect';
+  // Naming tail: "accord-dialect" / "accord" are aliases (FORMAT_ALIASES in server/proof-dialect.ts).
+  if (value === 'proof-dialect' || value === 'proof' || value === 'dialect' || value === 'accord-dialect' || value === 'accord') return 'proof-dialect';
   if (value === 'criticmarkup' || value === 'critic') return 'criticmarkup';
   if (value === 'auto') return 'auto';
   if (value === 'markdown' || value === 'plain') return null;
@@ -2079,7 +2080,7 @@ function viewerIdentity(req: Request, slug: string, access: ReturnType<typeof re
   return { actor: '', trust: 'guest', name: '', signInUrl, ...(access.guestMustSignIn ? { markNeedsSignIn: true } : {}) };
 }
 
-// Proof dialect export for the page ("Download as Proof Document (.md)"): same output as
+// Accord dialect export for the page ("Download as Accord (.accord.md)"): same output as
 // GET /api/agent/<slug>/export. While blind marking is on, the reader sees only their own positions.
 apiRoutes.get('/documents/:slug/export', async (req: Request, res: Response) => {
   const slug = getSlugParam(req);
@@ -2087,9 +2088,10 @@ apiRoutes.get('/documents/:slug/export', async (req: Request, res: Response) => 
   if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
   const access = resolveLineMarkAccess(req, slug, doc);
   if (!access.canRead) { res.status(403).json({ success: false, error: 'No read access' }); return; }
-  const format = (typeof req.query.format === 'string' && req.query.format ? req.query.format : 'proof-dialect') as ExportFormat;
-  if (!(EXPORT_FORMATS as readonly string[]).includes(format)) {
-    res.status(400).json({ success: false, code: 'INVALID_FORMAT', error: `format must be one of ${EXPORT_FORMATS.join(', ')}` });
+  // Naming tail: format=accord-dialect is an alias of proof-dialect (FORMAT_ALIASES).
+  const format = normalizeExportFormat(req.query.format);
+  if (!format) {
+    res.status(400).json({ success: false, code: 'INVALID_FORMAT', error: EXPORT_FORMAT_ERROR });
     return;
   }
   try {

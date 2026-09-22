@@ -44,6 +44,7 @@
 // POLICY
 // ============================================================================
 
+import { productName } from './product-identity';
 export const DIALECT_POLICY = {
   version: 1,
   /** A mark's type: a bare lowercase word (so Pandoc {.class #id} attributes are never marks). */
@@ -1263,9 +1264,16 @@ export function countOccurrences(hay: string, needle: string): number {
 export const CRITIC_POLICY = {
   /** Comments may name their author as a leading "@handle:" or "@handle " (a common convention). */
   authorPrefix: /^@([A-Za-z0-9][A-Za-z0-9._-]*):?\s+/,
-  /** Header written at the top of a CriticMarkup export (and ignored on import). */
-  exportHeader: '<!-- CriticMarkup export from Proof: suggestions and comments only (lossy). Line marks, asks, tiers, flags, objections, alternatives, {do} lines and proxies are NOT included; use format=proof-dialect to keep them. -->',
-  exportHeaderPattern: /^<!-- CriticMarkup export from Proof:[^\n]*-->\n*/,
+  /**
+   * Header written at the top of a CriticMarkup export (and ignored on import). Naming tail
+   * (2026-09-21): it names the product from src/shared/product-identity.ts and calls the full
+   * format the Accord dialect; `format=proof-dialect` stays the machine value it points to.
+   */
+  get exportHeader(): string {
+    return `<!-- CriticMarkup export from ${productName()}: suggestions and comments only (lossy). Line marks, asks, tiers, flags, objections, alternatives, {do} lines and proxies are NOT included; export the ${productName()} dialect (format=proof-dialect) to keep them. -->`;
+  },
+  /** Any product name, so files exported before the rename ("from Proof") are still recognised. */
+  exportHeaderPattern: /^<!-- CriticMarkup export from [^:\n]+:[^\n]*-->\n*/,
 };
 
 /**

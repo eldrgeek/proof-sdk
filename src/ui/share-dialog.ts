@@ -117,7 +117,7 @@ export function showShareDialog(host: ShareDialogHost, tab: ShareTab = 'link'): 
   link.append(guestHost);
   if (!host.invite) link.append(el('p', 'asd-note', 'Only an Owner can change who may open it without signing in.'));
   const more = el('div', 'asd-more');
-  const download = el('button', 'asd-btn', `Download as ${host.documentNoun} (.md)`);
+  const download = el('button', 'asd-btn', `Download as ${host.documentNoun} (.accord.md)`);
   download.type = 'button';
   download.onclick = () => host.download();
   const activity = el('button', 'asd-btn', 'View activity');

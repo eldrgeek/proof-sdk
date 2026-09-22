@@ -22,7 +22,11 @@ test('policy: the five menus in Docs order, a 28 px bar over a 44 px toolbar', (
   assert.equal(MENU_BAR_POLICY.heightPx, 28);
   assert.equal(TOOLBAR_POLICY.heightPx, 44);
   assert.deepEqual(TOOLBAR_POLICY.groups, { left: ['mode', 'undo'], centre: ['title', 'saved'], right: ['issues', 'share'] });
-  assert.deepEqual([...TOOLBAR_POLICY.phoneKeeps], ['mode', 'issues', 'share']);
+  // Polish pass (COS, 2026-09-21): the phone toolbar is the mockup's: title, Issues, ⋯; the
+  // switch and Share lead the ⋯ menu.
+  assert.deepEqual([...TOOLBAR_POLICY.phoneKeeps], ['title', 'issues']);
+  assert.deepEqual([...TOOLBAR_POLICY.phoneMenuTop], ['mode', 'share']);
+  assert.equal(TOOLBAR_POLICY.phoneSyncDotOnlyWhenNotSaved, true);
 });
 
 test('policy: the pill counts the viewer; Next goes to the viewer first; Share has three tabs; settings leave the view', () => {
@@ -62,13 +66,13 @@ test('menuForKey: Alt+letter while reading, Ctrl+Option+letter always, never in 
 test('searchMenus: every word must start a word; enabled first; shorter labels first', () => {
   const entries = [
     { menu: 'View', label: 'Reading settings…', keywords: 'reading speed sitting budget', enabled: true },
-    { menu: 'File', label: 'Download as Accord (.md)', keywords: 'export markdown', enabled: true },
+    { menu: 'File', label: 'Download as Accord (.accord.md)', keywords: 'export markdown', enabled: true },
     { menu: 'People', label: 'Invite person…', enabled: false },
     { menu: 'People', label: 'Share…', enabled: true },
     { menu: 'Edit', label: 'Undo', enabled: true },
   ];
   assert.deepEqual(searchMenus(entries, 'sitting').map(e => e.label), ['Reading settings…']);
-  assert.deepEqual(searchMenus(entries, 'exp mark').map(e => e.label), ['Download as Accord (.md)']);
+  assert.deepEqual(searchMenus(entries, 'exp mark').map(e => e.label), ['Download as Accord (.accord.md)']);
   assert.deepEqual(searchMenus(entries, 'people').map(e => e.label), ['Share…', 'Invite person…']);
   assert.deepEqual(searchMenus(entries, 'zzz'), []);
   assert.deepEqual(searchMenus(entries, '  '), []);

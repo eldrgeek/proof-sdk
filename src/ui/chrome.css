@@ -268,3 +268,23 @@
   #share-banner .share-pill-share-btn > button { padding: 0 10px !important; }
   #share-banner .plm-issues .plm-next { padding: 0 8px !important; }
 }
+
+/* Polish pass (COS, 2026-09-21: "Phone toolbar matches the mockup"): the phone toolbar is the
+   title, the Issues pill ("12 Issues") and ⋯ (TOOLBAR_POLICY.phoneKeeps). Suggesting | Editing and
+   Share lead the ⋯ menu. The sync dot shows only when the state is not "Saved". */
+@media (max-width: 700px) {
+  body.amb-on #share-banner .share-pill-suggest-toggle,
+  body.amb-on #share-banner .share-pill-share-btn,
+  body.amb-on #share-banner .share-pill-undo,
+  body.amb-on #share-banner .share-pill-status-inline[data-sync="saved"] { display: none !important; }
+  body.amb-on #share-banner { padding-left: max(16px, env(safe-area-inset-left, 0px)) !important; gap: 8px !important; }
+  body.amb-on #share-banner .share-pill-title { font-size: 17px !important; color: #111827 !important; }
+  body.amb-on #share-banner .plm-issues .plm-next { padding: 0 14px !important; border-radius: 999px !important; font-size: 14px !important; font-weight: 600; }
+  .proof-share-overflow-menu .apm-mode { display: flex; margin: 2px 4px 6px; border: 1px solid #d9dde3; border-radius: 10px; overflow: hidden; }
+  .proof-share-overflow-menu .apm-mode .amb-item { flex: 1 1 0; justify-content: center; border-radius: 0; min-height: 44px; }
+  .proof-share-overflow-menu .apm-mode .amb-item[aria-checked="false"] { background: #fff; }
+  .proof-share-overflow-menu .apm-mode .amb-item[aria-checked="true"] { background: #1c1f24; }
+  .proof-share-overflow-menu .apm-mode .amb-item:focus-visible { outline: 2px solid #2f6fed; outline-offset: -3px; }
+  .proof-share-overflow-menu .apm-mode .amb-item[aria-checked="true"] .amb-label { color: #fff; }
+  .proof-share-overflow-menu .apm-mode .amb-item .amb-label::after { content: none; }
+}
