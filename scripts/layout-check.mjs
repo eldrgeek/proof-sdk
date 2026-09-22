@@ -4,6 +4,10 @@
 //   Stage 1: the status bar under the page (Line N of M, "You marked up to line K", Issues left,
 //            Reading / Writing), the "You marked up to here" rule in the page, and two highlight
 //            states only (blue bar = you are here, amber margin dot = needs you).
+//   Stage 2: the menu bar, the one toolbar row, the Share dialog, the settings in View.
+//   Stage 3: one cursor (hover previews the Margin; a key or a Margin click commits), the Margin's
+//            Line N / Room tabs, the Navigator's Outline / Issues / Since you, the phone strip and
+//            the Margin sheet (worker accord-layout3, 2026-09-21).
 // Region checks compare against the mockups in Ren's proposal (regions present and positioned,
 // not pixel-perfect): the status bar sits at the bottom of the page column between the rails, its
 // state word at its right end; the rule sits inside the page between two lines.
@@ -11,7 +15,7 @@
 // Starts an isolated local server on the current dist/ build (run `npm run build` first) in both
 // review styles, at 1440 and on a 390x844 phone. Screenshots go to .preview/ (or --shots <dir>).
 // Exit 0 only if every check passes.
-// Usage: node scripts/layout-check.mjs [--style playmaker|proof] [--stage 1|2] [--shots dir] [--peek]
+// Usage: node scripts/layout-check.mjs [--style playmaker|proof] [--stage 1|2|3] [--shots dir] [--peek]
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -27,7 +31,7 @@ const shots = arg('--shots') || path.join(root, '.preview');
 mkdirSync(shots, { recursive: true });
 const styles = arg('--style') ? [arg('--style')] : ['playmaker', 'proof'];
 const peek = process.argv.includes('--peek');
-const stages = arg('--stage') ? [Number(arg('--stage'))] : [1, 2];
+const stages = arg('--stage') ? [Number(arg('--stage'))] : [1, 2, 3];
 
 const clientHeaders = { 'X-Proof-Client-Version': '0.31.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 let failures = 0;
@@ -262,8 +266,10 @@ async function desktop(browser, base, style) {
     await waitFor(page, n => Number(document.querySelector('.pst-issues')?.dataset.count) === n, lines.length);
   });
 
-  await check(`${tag}: one "you are here" look — the hovered line gets the same bar and tint as the reading line`, async () => {
-    const style = () => page.evaluate(() => { const f = document.querySelector('.prw-focus'); const s = getComputedStyle(f); return { source: f.dataset.source, bg: s.backgroundColor, shadow: s.boxShadow }; });
+  // Stage 3 (decision 4, one cursor): hovering another line previews it in the Margin only; the one
+  // "you are here" bar stays on the cursor (proposal: "the text never changes").
+  await check(`${tag}: one "you are here" look — the bar stays on the cursor while another line is hovered`, async () => {
+    const style = () => page.evaluate(() => { const f = document.querySelector('.prw-focus'); const s = getComputedStyle(f); return { source: f.dataset.source, line: Number(f.dataset.line), bg: s.backgroundColor, shadow: s.boxShadow }; });
     await page.mouse.move(5, 450);
     await page.keyboard.press('j');
     await page.waitForTimeout(200);
@@ -271,10 +277,14 @@ async function desktop(browser, base, style) {
     await hoverLine(page, L.LAST - 3);
     await page.waitForTimeout(250);
     const hover = await style();
-    assert.equal(hover.source, 'hover');
+    // (hoverLine may scroll the line into view first; scrolling reads, so the cursor can move then.)
+    const w = await walk(page);
+    assert.equal(w.preview, L.LAST - 3, 'the hovered line is not previewed');
+    assert.notEqual(w.cursor, L.LAST - 3, 'the hover moved the cursor');
     assert.equal(reading.source, 'reading');
+    assert.equal(hover.source, 'reading', 'the hover drew its own band');
+    assert.equal(hover.line, w.cursor, 'the bar left the cursor on hover');
     assert.equal(hover.bg, reading.bg);
-    assert.equal(hover.shadow, reading.shadow);
     const alpha = Number(/rgba?\([^)]*?([\d.]+)\)$/.exec(hover.bg)?.[1] ?? '1');
     assert.ok(alpha >= 0.1, `the band is too faint (alpha ${alpha})`);
     assert.match(hover.shadow, /inset/, 'no left bar');
@@ -326,35 +336,29 @@ async function phone(browser, base, style) {
   });
   activePage = page;
   if (peek) { await page.screenshot({ path: path.join(shots, `${tag}-peek.png`) }); await context.close(); return; }
-  await check(`${tag}: a compact one-line status bar sits right above the bottom strip`, async () => {
+  // Stage 3 (decision 11): the status bar folds into the bottom strip; it shows again, one line,
+  // only while the strip steps aside (the caret in the text).
+  await check(`${tag}: the status bar folds into the bottom strip (Line N of M in the strip, no second bar)`, async () => {
     const b = await bar(page);
-    assert.ok(b, 'no status bar');
+    assert.ok(b, 'no status bar element');
+    assert.equal(await page.locator('.pst-bar').isVisible(), false, 'a second bar shows over the strip');
     const strip = await page.locator('.prw-strip').boundingBox();
     assert.ok(strip, 'no strip');
-    assert.ok(Math.abs(b.bottom - strip.y) <= 2, `bar bottom ${b.bottom}, strip top ${strip.y}`);
-    assert.ok(b.height <= 28, `bar height ${b.height}`);
-    assert.ok(b.left <= 1 && b.right >= 389, 'the bar does not span the phone');
-    const fits = await page.evaluate(() => { const e = document.querySelector('.pst-bar'); return e.scrollWidth <= e.clientWidth + 1; });
-    assert.ok(fits, 'the bar overflows its one line');
+    assert.ok(Math.abs(strip.y + strip.height - 844) <= 2, `strip bottom ${strip.y + strip.height}`);
+    assert.match(await page.locator('.prw-strip-where').innerText(), /^Line 1 of 25$/);
     assert.equal(b.line, 'Line 1 of 25');
     assert.match(b.issues, /^4 Issues left$/);
-    assert.equal(b.mode, 'Reading');
     const chip = await page.locator('.soma-feedback-root').boundingBox().catch(() => null);
-    if (chip) assert.ok(chip.y + chip.height <= b.top + 1, 'the feedback chip covers the bar');
+    if (chip) assert.ok(chip.y + chip.height <= strip.y + 1, 'the feedback chip covers the strip');
     await page.screenshot({ path: path.join(shots, `${tag}-statusbar.png`) });
   });
-  await check(`${tag}: amber dots match the count; marking a line shows "Marked to line K"`, async () => {
+  await check(`${tag}: amber dots match the count; marking a line shows "Marked up to line K ↑" in the strip`, async () => {
     assert.deepEqual(await amber(page), [L.ASK, L.CHANGE, L.COMMENT, L.ASK2]);
     await page.locator('.prw-strip-agree').tap();
+    await waitFor(page, () => document.querySelector('.prw-strip-marked')?.textContent === 'Marked up to line 1 ↑');
     await waitFor(page, () => /line 1/.test(document.querySelector('.pst-bar .pst-marked')?.textContent ?? ''));
-    // Phones say "Marked to line 1" (the label's first words come from the link's ::before).
-    const text = await page.evaluate(() => {
-      const link = document.querySelector('.pst-bar .pst-marked-link');
-      return `${getComputedStyle(link, '::before').content.replace(/"/g, '')}${link.textContent}`;
-    });
-    assert.equal(text, 'Marked to line 1');
-    const fits = await page.evaluate(() => { const e = document.querySelector('.pst-bar'); return e.scrollWidth <= e.clientWidth + 1; });
-    assert.ok(fits, 'the bar overflows its one line');
+    const fits = await page.evaluate(() => { const e = document.querySelector('.prw-strip'); return e.scrollWidth <= e.clientWidth + 1; });
+    assert.ok(fits, 'the strip overflows');
     await page.screenshot({ path: path.join(shots, `${tag}-marked.png`) });
   });
   await check(`${tag}: a tap on the text shows Writing; the bar stays on screen when the strip steps aside`, async () => {
@@ -362,8 +366,12 @@ async function phone(browser, base, style) {
     const box = await block(page, L.S1).boundingBox();
     await page.touchscreen.tap(box.x + 60, box.y + 10);
     await waitFor(page, () => document.querySelector('.pst-bar .pst-mode')?.textContent === 'Writing');
+    await page.locator('.pst-bar').waitFor({ state: 'visible' });
     const b = await bar(page);
     assert.ok(b.bottom <= b.innerHeight + 1 && b.top >= 0, 'the bar left the screen');
+    assert.ok(b.height <= 28, `bar height ${b.height}`);
+    const fits = await page.evaluate(() => { const e = document.querySelector('.pst-bar'); return e.scrollWidth <= e.clientWidth + 1; });
+    assert.ok(fits, 'the bar overflows its one line');
     await page.screenshot({ path: path.join(shots, `${tag}-writing.png`) });
   });
   await context.close();
@@ -517,11 +525,14 @@ async function desktop2(browser, base, style) {
     await page.locator('#share-banner .amb-seg-opt[data-mode="suggest"]').click();
     await waitFor(page, () => window.proof.isSuggestionsEnabled() === true);
   });
-  await check(`${tag}: the toolbar's Undo names what it reverses and reverses it; Edit › Undo is the same Undo`, async () => {
+  await check(`${tag}: the toolbar's Undo says Undo, names what it reverses in its tooltip, and reverses it; Edit › Undo is the same Undo`, async () => {
     await hoverLine(page, L.S1 + 2);
     await page.keyboard.press('a');
     const undo = page.locator('#share-banner .pundo-btn').first();
-    await waitFor(page, () => /Undo agreed line 5/.test(document.querySelector('#share-banner .pundo-btn')?.textContent ?? ''));
+    // Stage 3 (COS): the toolbar button says just "Undo"; its tooltip and Edit › Undo name what it reverses.
+    await waitFor(page, () => /Undo: agreed line 5/.test(document.querySelector('#share-banner .pundo-btn')?.title ?? ''));
+    assert.equal((await undo.textContent()).trim(), 'Undo');
+    assert.equal(await undo.getAttribute('aria-label'), 'Undo agreed line 5');
     await page.locator('#accord-menubar .amb-top[data-menu="edit"]').click();
     assert.equal((await menuItems(page))[0].label, 'Undo agreed line 5');
     await page.keyboard.press('Escape');
@@ -644,6 +655,346 @@ async function phone2(browser, base, style) {
   await context.close();
 }
 
+// ---------------------------------------------------------------------------------------------
+// Stage 3: one cursor, the Margin (Line N · Room), the Navigator (Outline · Issues · Since you) and
+// the phone's bottom strip (proposal "One cursor", "The Margin: two tabs", "The Navigator",
+// "Phone"; decisions 4, 6, 7, 8, 11).
+// Mockup regions (mockup-desktop.html at 1440 x 900): menu bar 0-28, toolbar 28-72, Navigator
+// x 0-240 and Margin x 1100-1440 from the toolbar to the bottom, the status bar 28 px at the
+// bottom of the page column between them. Phone (mockup-phone.html, 390 x 844): the strip at the
+// bottom, 56 px, with the position, Agree, Reject and ⋯; the sheet under it holds Line · Room.
+// ---------------------------------------------------------------------------------------------
+const MOCKUP_DESKTOP = { toolbarBottom: 72, navRight: 240, marginLeft: 1100, statusHeight: 28 };
+const regions = page => page.evaluate(() => {
+  const r = s => { const n = document.querySelector(s); if (!n) return null; const b = n.getBoundingClientRect(); return { top: b.top, bottom: b.bottom, left: b.left, right: b.right, width: b.width, height: b.height }; };
+  return {
+    left: r('.prw-left'), right: r('.prw-right'), bar: r('.pst-bar'), text: r('.ProseMirror'), toolbar: r('#share-banner'),
+    navTabs: [...document.querySelectorAll('.prw-left .anv-tab')].map(t => t.firstChild?.textContent?.trim() ?? ''),
+    marginTabs: [...document.querySelectorAll('.prw-right .amg-tab')].map(t => t.querySelector('.amg-tab-label')?.textContent ?? t.textContent),
+    selectedNav: document.querySelector('.prw-left .anv-tab[aria-selected="true"]')?.dataset.tab ?? null,
+    selectedMargin: document.querySelector('.prw-right .amg-tab[aria-selected="true"]')?.dataset.tab ?? null,
+    innerWidth, innerHeight,
+  };
+});
+const near = (a, b, tol, what) => assert.ok(Math.abs(a - b) <= tol, `${what}: ${a} vs mockup ${b}`);
+async function openMore(page) {
+  const btn = page.locator('.prw-right .plm-more-btn');
+  if ((await btn.getAttribute('aria-expanded')) !== 'true') await btn.click();
+  await page.locator('.prw-right .plm-more').waitFor({ state: 'visible' });
+}
+
+async function desktop3(browser, base, style) {
+  const created = await createDoc(base, 'Ada');
+  const tag = `layout-3-${style}-1440`;
+  const { context, page } = await openDoc(browser, base, created.slug, 'Ada', { viewport: { width: 1440, height: 900 } });
+  activePage = page;
+
+  await check(`${tag}: three regions as in the mockup — Navigator 240 px left, Margin 340 px right, the page and its status bar between`, async () => {
+    const g = await regions(page);
+    near(g.left.top, MOCKUP_DESKTOP.toolbarBottom, 2, 'Navigator top');
+    near(g.right.top, MOCKUP_DESKTOP.toolbarBottom, 2, 'Margin top');
+    near(g.left.left, 0, 1, 'Navigator left');
+    near(g.left.right, MOCKUP_DESKTOP.navRight, 2, 'Navigator right');
+    near(g.right.left, MOCKUP_DESKTOP.marginLeft, 2, 'Margin left');
+    near(g.right.right, 1440, 1, 'Margin right');
+    near(g.left.bottom, 900, 1, 'Navigator bottom');
+    near(g.right.bottom, 900, 1, 'Margin bottom');
+    near(g.bar.left, g.left.right, 2, 'status bar left');
+    near(g.bar.right, g.right.left, 2, 'status bar right');
+    near(g.bar.height, MOCKUP_DESKTOP.statusHeight, 1, 'status bar height');
+    assert.ok(g.text.left >= g.left.right + 16 && g.text.right <= g.right.left - 16, 'the text runs under a side');
+    const mid = (g.left.right + g.right.left) / 2;
+    assert.ok(Math.abs((g.text.left + g.text.right) / 2 - mid) <= 40, 'the text is not centred between the sides');
+    assert.deepEqual(g.navTabs, ['Outline', 'Issues', 'Since you']);
+    assert.deepEqual(g.marginTabs, ['Line 1', 'Room']);
+    assert.equal(g.selectedNav, 'issues', 'the Navigator opens on Issues (the mockup)');
+    assert.equal(g.selectedMargin, 'line');
+    assert.equal(await page.locator('.prw-left .prw-docs, .prw-left .prw-doc').count(), 0, 'the documents list is still in the Navigator');
+    await page.screenshot({ path: path.join(shots, `${tag}-regions.png`) });
+  });
+
+  await check(`${tag}: Issues lists the viewer's own Issues — the same lines as the amber dots and the pill — each with its kind and line`, async () => {
+    const lines = await amber(page);
+    const items = await page.evaluate(() => [...document.querySelectorAll('.prw-left .anv-issue')].map(b => ({ line: Number(b.dataset.line), title: b.querySelector('.anv-issue-title').textContent, kind: b.querySelector('.anv-issue-kind').textContent })));
+    assert.deepEqual(items.map(i => i.line), lines);
+    assert.equal(await page.locator('.prw-left .anv-tab[data-tab="issues"] .anv-badge').textContent(), String(lines.length));
+    assert.equal((await chrome(page)).pillText, `${lines.length} Issues`);
+    assert.match(items[0].kind, new RegExp(`^Ask · line ${L.ASK + 1}$`));
+    assert.match(items[1].kind, new RegExp(`^Change from \\w+ · line ${L.CHANGE + 1}$`));
+    assert.match(items[2].kind, new RegExp(`^Comment from \\w+ · line ${L.COMMENT + 1}$`));
+    assert.match(items[0].title, /turn on the cloud backup/);
+    await page.screenshot({ path: path.join(shots, `${tag}-issues.png`), clip: { x: 0, y: 60, width: 260, height: 420 } });
+  });
+  await check(`${tag}: clicking an Issue moves the one cursor there — the bar, the status bar and the Line tab all name that line`, async () => {
+    await page.locator(`.prw-left .anv-issue[data-line="${L.CHANGE}"]`).click();
+    await waitFor(page, i => window.__proofReadingWalk.debugState().focus === i, L.CHANGE);
+    const w = await walk(page);
+    assert.equal(w.cursor, L.CHANGE);
+    assert.equal(w.target, L.CHANGE);
+    assert.equal(await page.evaluate(() => Number(document.querySelector('.prw-focus').dataset.line)), L.CHANGE);
+    assert.equal((await bar(page)).line, `Line ${L.CHANGE + 1} of 25`);
+    assert.equal(await page.locator('.prw-right .amg-tab[data-tab="line"] .amg-tab-label').textContent(), `Line ${L.CHANGE + 1}`);
+    assert.equal(await page.locator(`.prw-left .anv-issue[data-line="${L.CHANGE}"]`).getAttribute('aria-current'), 'true');
+  });
+  await check(`${tag}: the Line tab is the thread on the line — quote, Agree A / Reject R / ⋯, then its changes with Accept / Reject / Reply, and a reply box`, async () => {
+    const info = await page.evaluate(() => {
+      const pane = document.querySelector('.prw-right .amg-pane[data-tab="line"]');
+      const quote = pane.querySelector('.plm-quote');
+      const primary = [...pane.querySelectorAll('.plm-primary-row > button')].map(b => b.getAttribute('aria-label') || [...b.querySelectorAll('span:not(.plm-choice-glyph), kbd')].map(n => n.textContent).join(' '));
+      const order = ['.plm-quote', '.plm-primary-row', '.prw-changes', '.amg-reply'].map(s => pane.querySelector(s)?.getBoundingClientRect().top ?? -1);
+      return { quote: quote?.textContent ?? '', primary, order, card: [...pane.querySelectorAll('.prw-card .prw-card-actions button')].map(b => b.textContent), reply: pane.querySelector('.amg-reply-input')?.placeholder };
+    });
+    assert.match(info.quote, /^The reviewer could not read that list/);
+    assert.deepEqual(info.primary, ['Agree A', 'Reject R', 'More marks for this line']);
+    assert.deepEqual(info.card, ['Accept', 'Reject', 'Reply']);
+    assert.equal(info.reply, 'Reply on this line…');
+    for (let i = 1; i < info.order.length; i += 1) assert.ok(info.order[i] > info.order[i - 1], `the Line tab is out of order: ${info.order}`);
+    await page.screenshot({ path: path.join(shots, `${tag}-line-tab.png`), clip: { x: 1090, y: 60, width: 350, height: 640 } });
+  });
+  await check(`${tag}: ⋯ More holds Seen, Clear my mark, Flag uncertain, Offer another wording, Explain, Time-to-live and the tier`, async () => {
+    assert.equal(await page.locator('.prw-right .plm-more').isVisible(), false, 'More is open before it is asked for');
+    await openMore(page);
+    const text = await page.locator('.prw-right .plm-more').innerText();
+    for (const label of ['Seen', 'Flag uncertain', 'Offer another wording', 'Explain', 'Time-to-live', 'Make context']) assert.ok(text.includes(label), `More lacks ${label}: ${text}`);
+    await page.screenshot({ path: path.join(shots, `${tag}-more.png`), clip: { x: 1090, y: 60, width: 350, height: 640 } });
+    await page.locator('.prw-right .plm-more .plm-choice[data-status="seen"]').click();
+    await waitFor(page, i => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i && m.status === 'seen'), L.CHANGE);
+    await openMore(page);
+    assert.ok((await page.locator('.prw-right .plm-more').innerText()).includes('Clear my mark'));
+    await page.locator('.prw-right .plm-more .plm-clear').click();
+  });
+  await check(`${tag}: "Reply on this line…" replies to the line's comment, or opens a new thread on a plain line`, async () => {
+    await page.locator(`.prw-left .anv-issue[data-line="${L.COMMENT}"]`).click();
+    await waitFor(page, i => window.__proofReadingWalk.debugState().focus === i, L.COMMENT);
+    await page.locator('.prw-right .amg-reply-input').fill('Thanks, that settles it.');
+    await page.locator('.prw-right .amg-reply-input').press('Enter');
+    await waitFor(page, () => (window.proof.getAllMarks() ?? []).some(m => m.kind === 'comment' && (m.data?.replies ?? []).some(r => r.text === 'Thanks, that settles it.')));
+    await page.evaluate(() => document.activeElement?.blur());
+    await page.locator('.prw-left .anv-tab[data-tab="outline"]').click();
+    await page.locator(`.prw-left .anv-heading[data-line="${L.H1}"]`).click();
+    await waitFor(page, i => window.__proofReadingWalk.debugState().focus === i, L.H1);
+    await page.keyboard.press('j');
+    await waitFor(page, () => window.__proofReadingWalk.debugState().focus === 1);
+    await page.locator('.prw-right .amg-reply-input').fill('Is this line still true?');
+    await page.locator('.prw-right .amg-reply-send').click();
+    await waitFor(page, () => window.__proofReadingWalk.debugState().replies.some(r => r.line === 1));
+    await waitFor(page, () => (window.proof.getAllMarks() ?? []).some(m => m.kind === 'comment' && m.data?.text === 'Is this line still true?'));
+    await page.evaluate(() => document.activeElement?.blur());
+  });
+  await check(`${tag}: Outline lists the headings with fold chips and counts; a chip folds its section, a heading moves the cursor`, async () => {
+    const rows = await page.evaluate(() => [...document.querySelectorAll('.prw-left .anv-row')].map(r => ({ heading: Number(r.dataset.heading), count: r.querySelector('.anv-count').textContent, text: r.querySelector('.anv-heading').textContent })));
+    assert.deepEqual(rows.map(r => r.heading), [L.H1, 5]);
+    assert.equal(rows[1].text, 'Needs your hands');
+    assert.match(rows[1].count, /^\d+$/);
+    for (const label of ['Fold every section', 'Unfold every section']) assert.equal(await page.locator('.prw-left .anv-tools').getByRole('button', { name: label, exact: true }).count(), 1, `${label} is not on the Outline`);
+    await page.locator('.prw-left .anv-row[data-heading="5"] .anv-fold').click();
+    await waitFor(page, () => window.__proofFolding.isFolded(5) === true);
+    assert.equal(await page.locator('.prw-left .anv-row[data-heading="5"] .anv-fold').getAttribute('data-folded'), 'true');
+    await page.screenshot({ path: path.join(shots, `${tag}-outline.png`), clip: { x: 0, y: 60, width: 260, height: 300 } });
+    await page.locator('.prw-left .anv-row[data-heading="5"] .anv-fold').click();
+    await waitFor(page, () => window.__proofFolding.isFolded(5) === false);
+    await page.locator('.prw-left .anv-heading[data-line="5"]').click();
+    await waitFor(page, () => window.__proofReadingWalk.debugState().focus === 5);
+    assert.equal(await page.locator('.prw-left .anv-row[data-heading="5"]').getAttribute('aria-current'), 'true');
+  });
+  await check(`${tag}: Since you holds the Since-you list; no rail keeps the documents, the blind switch or the reading settings`, async () => {
+    await page.locator('.prw-left .anv-tab[data-tab="since"]').click();
+    assert.equal(await page.locator('.prw-left .anv-pane[data-tab="since"]').isVisible(), true);
+    assert.equal(await page.locator('.prw-left .anv-pane[data-tab="since"] .prw-since').count(), 1);
+    assert.equal(await page.locator('.prw-rail .plm-blind, .prw-rail .prw-rate, .prw-rail .plm-budget, .prw-rail .prw-docs').count(), 0);
+    await page.locator('.prw-left .anv-tab[data-tab="issues"]').click();
+  });
+
+  await check(`${tag}: hover previews the Margin — the Line tab says preview, the bar and the status bar stay on the cursor, the dot gets a ring`, async () => {
+    await page.locator(`.prw-left .anv-issue[data-line="${L.ASK}"]`).click();
+    await waitFor(page, i => window.__proofReadingWalk.debugState().focus === i, L.ASK);
+    await hoverLine(page, L.S2 + 5);
+    const w = await walk(page);
+    assert.equal(w.cursor, L.ASK, 'hover moved the cursor');
+    assert.equal(w.preview, L.S2 + 5);
+    assert.equal(await page.evaluate(() => Number(document.querySelector('.prw-focus').dataset.line)), L.ASK, 'the bar followed the hover');
+    assert.equal((await bar(page)).line, `Line ${L.ASK + 1} of 25`, 'the status bar followed the hover');
+    const tab = page.locator('.prw-right .amg-tab[data-tab="line"]');
+    assert.equal(await tab.locator('.amg-tab-label').textContent(), `Line ${L.S2 + 6}`);
+    assert.equal(await tab.locator('.amg-preview').textContent(), 'preview');
+    assert.equal(await page.locator(`.plm-dot[data-line="${L.S2 + 5}"]`).getAttribute('data-preview'), 'true');
+    await page.screenshot({ path: path.join(shots, `${tag}-preview.png`) });
+  });
+  await check(`${tag}: a key commits the preview — A marks the previewed line, and the cursor moves there without scrolling`, async () => {
+    const y = await page.evaluate(() => window.scrollY);
+    await page.keyboard.press('a');
+    await waitFor(page, i => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i && m.status === 'agreed'), L.S2 + 5);
+    const w = await walk(page);
+    assert.equal(w.cursor, L.S2 + 5);
+    assert.equal(w.preview, null);
+    assert.ok(w.previewCommits.some(c => c.line === L.S2 + 5 && c.via === 'key'));
+    assert.equal(await page.evaluate(() => window.scrollY), y, 'the page moved under the reader');
+    assert.equal((await bar(page)).line, `Line ${L.S2 + 6} of 25`);
+    assert.equal(await page.locator(`.plm-dot[data-preview="true"]`).count(), 0);
+  });
+  await check(`${tag}: a click in the Margin commits the preview first (⋯ More acts on the previewed line)`, async () => {
+    await hoverLine(page, L.S2 + 7);
+    await page.mouse.move(1300, 200, { steps: 4 });
+    await page.waitForTimeout(250);
+    assert.equal((await walk(page)).preview, L.S2 + 7, 'the preview ended on the way to the Margin');
+    await page.locator('.prw-right .plm-more-btn').click();
+    await waitFor(page, i => window.__proofReadingWalk.debugState().cursor === i, L.S2 + 7);
+    assert.ok((await walk(page)).previewCommits.some(c => c.line === L.S2 + 7 && c.via === 'margin'));
+    await page.locator('.prw-right .plm-more').waitFor({ state: 'visible' });
+    await page.locator('.prw-right .plm-more .plm-choice[data-status="seen"]').click();
+    await waitFor(page, i => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i && m.status === 'seen'), L.S2 + 7);
+  });
+  await check(`${tag}: the preview ends over the Navigator; J moves the cursor, never the preview`, async () => {
+    await hoverLine(page, L.S2 + 9);
+    await page.mouse.move(120, 600, { steps: 3 });
+    await waitFor(page, () => window.__proofReadingWalk.debugState().preview === null);
+    const before = (await walk(page)).cursor;
+    await page.mouse.move(5, 450);
+    await page.keyboard.press('j');
+    await waitFor(page, n => window.__proofReadingWalk.debugState().cursor > n, before);
+  });
+
+  await check(`${tag}: Room is the chat, full height; its badge counts unread @mentions; the tab never switches itself`, async () => {
+    await page.locator('.prw-right .amg-tab[data-tab="room"]').click();
+    const room = page.locator('.prw-right .amg-pane[data-tab="room"]');
+    await room.locator('.pch-input').waitFor({ state: 'visible' });
+    const r = await room.boundingBox();
+    assert.ok(r.y + r.height >= 898 && r.height >= 700, `the Room is not full height: ${JSON.stringify(r)}`);
+    assert.equal(await page.locator('.prw-right .amg-pane[data-tab="line"]').isVisible(), false);
+    await page.mouse.move(5, 450);
+    await page.keyboard.press('j');
+    await page.keyboard.press('j');
+    await page.waitForTimeout(200);
+    assert.equal((await regions(page)).selectedMargin, 'room', 'the tab switched itself when the cursor moved');
+    // The Line tab still names the line A and R hit.
+    const cursor = (await walk(page)).cursor;
+    assert.equal(await page.locator('.prw-right .amg-tab[data-tab="line"] .amg-tab-label').textContent(), `Line ${cursor + 1}`);
+    await page.screenshot({ path: path.join(shots, `${tag}-room.png`) });
+    await page.locator('.prw-right .amg-tab[data-tab="line"]').click();
+  });
+  await check(`${tag}: both sides collapse, and the collapsed state and the chosen tabs are remembered on reload`, async () => {
+    await page.locator('.prw-left .anv-tab[data-tab="outline"]').click();
+    await page.locator('.prw-right .amg-tab[data-tab="room"]').click();
+    await page.locator('.prw-left .prw-collapse').click();
+    await page.locator('.prw-right .prw-collapse').click();
+    await waitFor(page, () => document.body.classList.contains('prw-left-collapsed') && document.body.classList.contains('prw-right-collapsed'));
+    let g = await regions(page);
+    assert.ok(g.left.width <= 48 && g.right.width <= 48, 'a collapsed side is still wide');
+    await page.reload();
+    await page.waitForFunction(() => window.__proofReadingWalk?.debugState().ready === true, null, { timeout: 20_000 });
+    await page.waitForTimeout(400);
+    assert.equal(await page.evaluate(() => document.body.classList.contains('prw-left-collapsed') && document.body.classList.contains('prw-right-collapsed')), true, 'the collapsed state was forgotten');
+    await page.locator('.prw-left .prw-collapse').click();
+    await page.locator('.prw-right .prw-collapse').click();
+    await page.waitForTimeout(200);
+    g = await regions(page);
+    assert.equal(g.selectedNav, 'outline', 'the Navigator tab was forgotten');
+    assert.equal(g.selectedMargin, 'room', 'the Margin tab was forgotten');
+    await page.locator('.prw-left .anv-tab[data-tab="issues"]').click();
+    await page.locator('.prw-right .amg-tab[data-tab="line"]').click();
+  });
+  await check(`${tag}: View › Navigator and View › Margin show and hide the sides`, async () => {
+    await page.locator('#accord-menubar .amb-top[data-menu="view"]').click();
+    await page.locator('.amb-menu .amb-item', { hasText: 'Navigator' }).click();
+    await waitFor(page, () => document.body.classList.contains('prw-left-collapsed'));
+    await page.locator('#accord-menubar .amb-top[data-menu="view"]').click();
+    await page.locator('.amb-menu .amb-item', { hasText: 'Navigator' }).click();
+    await waitFor(page, () => !document.body.classList.contains('prw-left-collapsed'));
+  });
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.locator(`.prw-left .anv-issue[data-line="${L.ASK}"]`).click();
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: path.join(shots, `${tag}-overview.png`) });
+  await context.close();
+}
+
+async function phone3(browser, base, style) {
+  const created = await createDoc(base, 'Pat');
+  const viewport = { width: 390, height: 844 };
+  const tag = `layout-3-${style}-phone-390x844`;
+  const { context, page } = await openDoc(browser, base, created.slug, 'Pat', {
+    ...devices['iPhone 13'], viewport, screen: viewport, hasTouch: true, isMobile: true,
+  });
+  activePage = page;
+  const strip = page.locator('.prw-strip');
+  await check(`${tag}: the bottom strip is the position, Agree, Reject and ⋯ (mockup: 56 px at the bottom)`, async () => {
+    await strip.waitFor({ state: 'visible' });
+    const r = await strip.boundingBox();
+    assert.ok(Math.abs(r.y + r.height - 844) <= 2, `strip bottom ${r.y + r.height}`);
+    assert.ok(r.height >= 56 && r.height <= 80, `strip height ${r.height}`);
+    assert.equal(await page.locator('.prw-strip-where').innerText(), 'Line 1 of 25');
+    const buttons = await page.evaluate(() => [...document.querySelectorAll('.prw-strip-actions button')].map(b => b.textContent));
+    assert.deepEqual(buttons, ['Agree', 'Reject', '⋯']);
+    const boxes = await page.evaluate(() => ['.prw-strip-agree', '.prw-strip-reject', '.prw-strip-more'].map(s => document.querySelector(s).getBoundingClientRect().height));
+    for (const h of boxes) assert.ok(h >= 44, `a strip button is too small to tap: ${h}`);
+    await page.screenshot({ path: path.join(shots, `${tag}-strip.png`) });
+  });
+  await check(`${tag}: a swipe up on the strip opens the Margin as a sheet — the strip on top, then Line · Room`, async () => {
+    const r = await strip.boundingBox();
+    const cdp = await context.newCDPSession(page);
+    const x = r.x + 60;
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y: r.y + 30 }] });
+    for (const dy of [10, 25, 45, 60]) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: r.y + 30 - dy }] });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await page.locator('.prw-right.prw-sheet-open').waitFor({ state: 'visible' });
+    const sheet = await page.locator('.prw-right.prw-sheet-open').boundingBox();
+    const s2 = await strip.boundingBox();
+    assert.ok(Math.abs(sheet.y + sheet.height - 844) <= 2, 'the sheet is not at the bottom');
+    assert.ok(s2.y >= sheet.y - 1 && s2.y <= sheet.y + 20, 'the strip is not the top of the sheet');
+    const tabs = await page.evaluate(() => [...document.querySelectorAll('.prw-right.prw-sheet-open .amg-tab')].map(t => t.querySelector('.amg-tab-label').textContent));
+    assert.deepEqual(tabs, ['Line 1', 'Room']);
+    assert.ok(sheet.y > 844 * 0.2, 'the sheet covers the whole page');
+    await page.screenshot({ path: path.join(shots, `${tag}-sheet.png`) });
+  });
+  await check(`${tag}: the sheet's Room tab is the chat; a swipe down (or the grab bar) closes the sheet`, async () => {
+    await page.locator('.prw-right.prw-sheet-open .amg-tab[data-tab="room"]').tap();
+    await page.locator('.prw-right.prw-sheet-open .pch-input').waitFor({ state: 'visible' });
+    assert.equal(await page.evaluate(() => window.__proofChat.debugState().visible), true);
+    await page.screenshot({ path: path.join(shots, `${tag}-room.png`) });
+    await page.locator('.prw-right.prw-sheet-open .amg-tab[data-tab="line"]').tap();
+    await page.locator('.prw-strip-grab').tap();
+    await page.locator('.prw-right.prw-sheet-open').waitFor({ state: 'detached' }).catch(() => {});
+    assert.equal(await page.locator('.prw-right.prw-sheet-open').count(), 0);
+    const r = await strip.boundingBox();
+    assert.ok(Math.abs(r.y + r.height - 844) <= 2, 'the strip did not go back to the bottom');
+  });
+  await check(`${tag}: ⋯ in the strip opens the sheet with More showing (Seen, Flag uncertain, …) for the cursor's line`, async () => {
+    await page.evaluate(i => window.__proofReadingWalk.focusLine(i), L.S1);
+    await page.waitForTimeout(300);
+    await page.locator('.prw-strip-more').tap();
+    const more = page.locator('.prw-right.prw-sheet-open .plm-more');
+    await more.waitFor({ state: 'visible' });
+    assert.match(await more.innerText(), /Seen[\s\S]*Flag uncertain/);
+    assert.equal(await page.locator('.prw-right.prw-sheet-open .plm-box').getAttribute('data-line'), String(L.S1));
+    await page.screenshot({ path: path.join(shots, `${tag}-more.png`) });
+    await more.locator('.plm-choice[data-status="seen"]').tap();
+    await waitFor(page, i => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i && m.status === 'seen'), L.S1);
+    await page.locator('.prw-strip-grab').tap();
+  });
+  await check(`${tag}: Agree in the strip marks the cursor's line; "Marked up to line K ↑" takes you back there`, async () => {
+    await page.locator('.prw-strip-agree').tap();
+    await waitFor(page, i => document.querySelector('.prw-strip-marked')?.textContent === `Marked up to line ${i + 1} ↑`, L.S1);
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight / 2));
+    await page.waitForTimeout(500);
+    await page.locator('.prw-strip-marked').tap();
+    await waitFor(page, i => window.__proofReadingWalk.debugState().cursor === i, L.S1);
+  });
+  await check(`${tag}: the ⋯ menu opens the Navigator as a sheet; an Issue there moves the cursor and closes it`, async () => {
+    await page.getByRole('button', { name: /^More options/ }).tap();
+    await page.locator('.proof-share-overflow-menu').getByRole('menuitem', { name: /Navigator/ }).tap();
+    const nav = page.locator('.prw-left.prw-sheet-open');
+    await nav.waitFor({ state: 'visible' });
+    const tabs = await page.evaluate(() => [...document.querySelectorAll('.prw-left.prw-sheet-open .anv-tab')].map(t => t.firstChild.textContent.trim()));
+    assert.deepEqual(tabs, ['Outline', 'Issues', 'Since you']);
+    await page.screenshot({ path: path.join(shots, `${tag}-navigator.png`) });
+    await nav.locator(`.anv-issue[data-line="${L.CHANGE}"]`).tap();
+    await waitFor(page, i => window.__proofReadingWalk.debugState().cursor === i, L.CHANGE);
+    assert.equal(await page.locator('.prw-left.prw-sheet-open').count(), 0, 'the Navigator stayed open');
+    assert.equal(await page.locator('.prw-strip-where').innerText(), `Line ${L.CHANGE + 1} of 25`);
+  });
+  await context.close();
+}
+
 const browser = await chromium.launch();
 try {
   for (const style of styles) {
@@ -651,6 +1002,7 @@ try {
     try {
       if (stages.includes(1)) { await desktop(browser, base, style); await phone(browser, base, style); }
       if (stages.includes(2) && !peek) { await desktop2(browser, base, style); await phone2(browser, base, style); }
+      if (stages.includes(3) && !peek) { await desktop3(browser, base, style); await phone3(browser, base, style); }
     } finally {
       await stop();
     }

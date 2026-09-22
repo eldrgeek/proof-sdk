@@ -233,6 +233,12 @@ export class FoldingUI {
   // --------------------------------------------------------------------------
 
   sectionList(): DocSection[] { return this.sections; }
+  /** Accord layout stage 3: the Issues left in a section (the Outline's count, same as its chip). */
+  sectionIssues(headingIndex: number): number {
+    const section = sectionByHeading(this.sections, headingIndex);
+    if (!section) return 0;
+    return sectionIssueCount(section, this.lines, this.host.lineMarks().issueSummary()).total;
+  }
   hiddenLines(): ReadonlySet<number> { return this.hidden; }
   isHidden(lineIndex: number): boolean { return this.hidden.has(lineIndex); }
 

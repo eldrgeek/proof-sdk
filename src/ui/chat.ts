@@ -53,6 +53,13 @@ export interface ChatHost {
   onUnread(count: number): void;
   /** Phones: other bottom sheets close when the chat sheet opens. */
   closeOtherSheets?(): void;
+  /**
+   * Accord layout stage 3 (decision 6): the chat is the Margin's Room tab on every screen size.
+   * `railOpen` then means "the Room tab is on screen", `openRail` opens the Margin on Room, and
+   * `closeRail` closes the phone's Margin sheet. The chat keeps no sheet of its own.
+   */
+  inMargin?(): boolean;
+  closeRail?(): void;
 }
 
 const PHONE_QUERY = '(max-width: 700px)';
@@ -120,6 +127,8 @@ export class ChatUI {
   /** The reader's own choice (null: never chosen; then CHAT_POLICY decides). */
   private collapsedPref: boolean | null = null;
   private get collapsed(): boolean {
+    // The Room tab is the chat's header: it never folds there.
+    if (this.inMargin()) return false;
     if (this.collapsedPref !== null) return this.collapsedPref;
     // Short windows: an empty chat starts folded so the line's box keeps its room.
     return this.loaded && this.messages.length === 0 && window.innerHeight < CHAT_POLICY.foldEmptyChatBelowHeightPx;
@@ -214,7 +223,22 @@ export class ChatUI {
   /** A room broadcast or an event said the chat changed. */
   notifyRemoteChange(): void { void this.refresh(); }
 
+  private inMargin(): boolean { return this.host.inMargin?.() === true; }
+
+  /** The Room tab came on screen (or may have): show the newest message and mark @mentions read. */
+  roomShown(): void {
+    if (!this.visible()) return;
+    this.scrollToEnd();
+    this.markReadIfVisible();
+  }
+
   private place(): void {
+    if (this.inMargin()) {
+      if (this.railHost && this.root.parentElement !== this.railHost) this.railHost.append(this.root);
+      this.root.classList.toggle('pch-in-sheet', isPhone());
+      this.applyCollapsed();
+      return;
+    }
     if (isPhone()) {
       if (this.root.parentElement !== this.sheet) this.sheet.append(this.root);
     } else {
@@ -345,7 +369,10 @@ export class ChatUI {
 
   /** Opens the chat (the rail section on desktop, the bottom sheet on a phone) and focuses the composer. */
   open(focus = false): void {
-    if (isPhone()) {
+    if (this.inMargin()) {
+      this.host.openRail();
+      if (isPhone()) this.syncKeyboard();
+    } else if (isPhone()) {
       this.host.closeOtherSheets?.();
       this.sheetOpen = true;
       this.sheet.hidden = false;
@@ -360,13 +387,18 @@ export class ChatUI {
   }
 
   closeSheet(): void {
+    if (this.inMargin()) {
+      if (isPhone() && this.host.railOpen()) this.host.closeRail?.();
+      this.closeSuggest();
+      return;
+    }
     if (!this.sheetOpen) return;
     this.sheetOpen = false;
     this.sheet.hidden = true;
     this.closeSuggest();
   }
 
-  isSheetOpen(): boolean { return this.sheetOpen; }
+  isSheetOpen(): boolean { return this.inMargin() ? isPhone() && this.host.railOpen() : this.sheetOpen; }
 
   private setCollapsed(collapsed: boolean): void {
     this.collapsedPref = collapsed;
@@ -385,6 +417,7 @@ export class ChatUI {
   /** The chat is on screen for the viewer right now. */
   private visible(): boolean {
     if (document.visibilityState !== 'visible') return false;
+    if (this.inMargin()) return this.host.railOpen() && Boolean(this.railHost?.isConnected);
     if (isPhone()) return this.sheetOpen;
     return this.host.railOpen() && !this.collapsed && Boolean(this.railHost?.isConnected);
   }
@@ -820,7 +853,7 @@ export class ChatUI {
     this.replyTo = message;
     this.replyBar.hidden = false;
     this.replyBar.replaceChildren(el('span', undefined, `Replying to ${this.label(message.by)}: ${message.text.slice(0, 60)}`), button('×', 'pch-chip-x', () => this.cancelReply()));
-    if (isPhone() && !this.sheetOpen) this.open();
+    if (isPhone() && !this.isSheetOpen()) this.open();
     this.input.focus({ preventScroll: true });
   }
 
@@ -889,7 +922,7 @@ export class ChatUI {
       messages: this.messages.map(m => ({ id: m.id, by: m.by, text: m.text, kind: m.kind, lines: m.lines.length, mentions: m.mentions, suggestion: m.suggestion?.markId ?? null, commentMarkId: m.commentMarkId, replyTo: m.replyTo })),
       unread: this.unreadCount(),
       lastRead: this.lastRead(),
-      sheetOpen: this.sheetOpen,
+      sheetOpen: this.isSheetOpen(),
       collapsed: this.collapsed,
       visible: this.visible(),
       attachments: this.attachments.map(a => a.index),

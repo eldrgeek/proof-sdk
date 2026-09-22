@@ -4,7 +4,7 @@
 //        scrolled past faster is "skimmed" (hollow dot, still an Issue); the rail says how a Seen
 //        was earned; a spelling fix carries marks forward (tilde badge, "Was:", Mark unseen) while
 //        a number change resets them.
-//   B3c: "Since you last marked" in the right rail (items move the focus line) with the ringer
+//   B3c: "Since you last marked" (the Navigator's Since you tab since Accord layout stage 3; items move the focus line) with the ringer
 //        list; "Aligned as of <time>" in the top bar once the Issue count reaches 0, opening the
 //        snapshot's markdown ledger; a later rejection starts a new round ("Last aligned").
 // Authorship: Claude Opus 5 (worker proof-honest), 2026-09-18, in the style of reading-walk-check.mjs.
@@ -206,7 +206,9 @@ async function desktop(browser, base, style) {
     await waitFor(page, () => /Seen \(by scrolling\)/.test(document.querySelector('.prw-right .plm-team')?.innerText ?? ''));
     await page.locator(`.plm-dot[data-line="${L.SHORT}"]`).click();
     await waitFor(page, i => window.__proofReadingWalk.debugState().focus === i, L.SHORT);
-    await rail.locator('.plm-box').getByRole('button', { name: /^•\s*Seen$/ }).click();
+    // Accord layout stage 3 (decision 8): Seen is under the line's ⋯ More.
+    await rail.locator('.plm-box .plm-more-btn').click();
+    await rail.locator('.plm-box .plm-more').getByRole('button', { name: /^•\s*Seen$/ }).click();
     await waitFor(page, () => /Seen \(marked\)/.test(document.querySelector('.prw-right .plm-team')?.innerText ?? ''));
     assert.equal((await myMark(page, L.SHORT)).via, 'click');
   });
@@ -244,7 +246,9 @@ async function desktop(browser, base, style) {
     await agent(base, created, '/marks/suggest-replace', { quote: 'six whole seconds', content: 'six full seconds', by: 'ai:check' });
     await page.reload();
     await page.waitForFunction(() => window.__proofReadingWalk?.debugState().since !== null, null, { timeout: 15_000 });
-    const since = rail.locator('.prw-since');
+    // Accord layout stage 3 (decision 7): Since you is the Navigator's third tab.
+    await page.locator('.prw-left .anv-tab[data-tab="since"]').click();
+    const since = page.locator('.prw-left .prw-since');
     await since.waitFor({ state: 'visible' });
     const text = await since.innerText();
     assert.match(text, /Since you last marked/);
@@ -310,7 +314,7 @@ async function phone(browser, base, style) {
     assert.ok(info.sw <= info.cw + 1, `scrollWidth ${info.sw}`);
     await page.screenshot({ path: path.join(shots, `${tag}-1-skimmed.png`) });
   });
-  await check(`${tag}: ⋯ › Reading settings holds the reading speed; the "This line" sheet holds Since you; items are big enough to tap`, async () => {
+  await check(`${tag}: ⋯ › Reading settings holds the reading speed; the Navigator sheet holds Since you; items are big enough to tap`, async () => {
     // Pat marks a line on purpose, then an AI edits and rejects: Since you has items on reload.
     await agent(base, created, '/marks/line', { by: 'guest:Pat', status: 'agreed', lineIndex: L.PRICE });
     await new Promise(r => setTimeout(r, 30));
@@ -325,9 +329,10 @@ async function phone(browser, base, style) {
     assert.ok(await settings.locator('.prw-rate select').isVisible(), 'no reading speed in Reading settings');
     await settings.getByRole('button', { name: 'Close reading settings' }).tap();
     await page.locator('#share-banner .share-pill-overflow').tap();
-    await page.getByRole('menuitem', { name: /This line/ }).tap();
-    const sheet = page.locator('.prw-right.prw-sheet-open');
+    await page.getByRole('menuitem', { name: /Navigator/ }).tap();
+    const sheet = page.locator('.prw-left.prw-sheet-open');
     await sheet.waitFor({ state: 'visible' });
+    await sheet.locator('.anv-tab[data-tab="since"]').tap();
     const since = sheet.locator('.prw-since');
     await since.waitFor({ state: 'visible' });
     assert.match(await since.innerText(), /Too long/);
@@ -337,7 +342,7 @@ async function phone(browser, base, style) {
     await page.screenshot({ path: path.join(shots, `${tag}-2-since-sheet.png`) });
     await item.tap();
     await waitFor(page, () => window.__proofReadingWalk.debugState().focus === 5);
-    assert.equal(await page.locator('.prw-right.prw-sheet-open').count(), 0, 'the sheet closes after moving the focus');
+    assert.equal(await page.locator('.prw-left.prw-sheet-open').count(), 0, 'the sheet closes after moving the focus');
   });
   await context.close();
 }

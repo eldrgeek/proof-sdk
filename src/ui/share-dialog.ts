@@ -21,6 +21,8 @@ export interface ShareDialogHost {
   copyLink(): Promise<boolean>;
   download(): void;
   activity(): void;
+  /** Accord layout stage 3: more document settings in the Link tab (blind marking). */
+  linkExtras?: HTMLElement[];
   /** Present only for an Owner: inviting and the guest setting are an Owner's acts. */
   invite: InvitePersonActions | null;
   agents: AgentKeyActions;
@@ -123,6 +125,9 @@ export function showShareDialog(host: ShareDialogHost, tab: ShareTab = 'link'): 
   activity.onclick = () => { dialog.close(); host.activity(); };
   more.append(download, activity);
   link.append(more);
+  const extras = el('div', 'asd-link-extras');
+  extras.append(...(host.linkExtras ?? []));
+  if (extras.childElementCount) link.append(extras);
 
   // ---- People ----
   const people = panels.get('people')!;

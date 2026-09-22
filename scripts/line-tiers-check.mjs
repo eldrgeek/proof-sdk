@@ -163,7 +163,7 @@ async function run(browser, style) {
       const t = await tierState(mike);
       assert.equal(t.anyTagged, false);
       assert.deepEqual(await dot(mike, L.BUDGET), { tier: null, diamond: null, proposed: null });
-      assert.equal(await mike.locator('.prw-right .plm-tiers').isHidden(), true);
+      assert.equal(await mike.locator('.prw-rail .plm-tiers').isHidden(), true);
       assert.equal(t.counts.context.lines, 0);
     });
 
@@ -193,7 +193,9 @@ async function run(browser, style) {
       assert.ok(t.myIssueLines.includes(L.HISTORY));
       assert.ok(!t.myIssueLines.includes(L.INTRO) && !t.myIssueLines.includes(L.BACKGROUND));
       assert.deepEqual(t.skippable, [L.INTRO, L.BACKGROUND]);
-      const control = mike.locator('.prw-right .plm-tiers');
+      // Accord layout stage 3: the counts and "Show only decisions" sit with the Outline's tools.
+      await mike.locator('.prw-left .anv-tab[data-tab="outline"]').click();
+      const control = mike.locator('.prw-left .plm-tiers');
       await control.waitFor({ state: 'visible' });
       assert.match(await control.innerText(), /◆ 4 decision lines[\s\S]*3 context \(2 read for you, 1 open\)[\s\S]*Show only decisions/);
       await mike.screenshot({ path: path.join(shots, `${tag}-1-tagged.png`) });
@@ -201,6 +203,8 @@ async function run(browser, style) {
 
     await check(`${tag}: the rail box says "AI proposed context — read for you by Claude"; Mike confirms it (recorded with his name)`, async () => {
       await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.INTRO);
+      // Accord layout stage 3 (decision 8): the tier is under the line's ⋯ More.
+      await mike.locator('.prw-right .plm-box .plm-more-btn').click();
       const row = mike.locator('.prw-right .plm-box .plm-tier-row');
       await row.waitFor({ state: 'visible' });
       assert.match(await row.locator('.plm-tier-text').innerText(), /AI proposed context — read for you by Claude/);
@@ -212,6 +216,7 @@ async function run(browser, style) {
       const v = (await tierState(mike)).views.find(x => x.line === L.INTRO);
       assert.equal(v.by, MIKE);
       await waitFor(mike, () => /^Context — read for you by Claude/.test(document.querySelector('.prw-right .plm-box .plm-tier-text')?.textContent ?? ''));
+      if (!(await mike.locator('.prw-right .plm-box .plm-more').isVisible())) await mike.locator('.prw-right .plm-box .plm-more-btn').click();
       assert.equal(await mike.locator('.prw-right .plm-box .plm-tier-confirm').count(), 0);
       const history = await call(base, slug, CLAUDE, 'GET', '/tiers');
       assert.deepEqual(history.body.history.map(h => h.by), ['ai:claude', 'ai:claude', 'ai:claude', MIKE]);
@@ -242,7 +247,7 @@ async function run(browser, style) {
       await mike.keyboard.press('d');
       await waitFor(mike, i => window.__proofLineMarks.debugState().tiers.views.some(v => v.line === i && v.tier === 'context' && !v.proposed), L.CLOSING);
       if (mine) await waitFor(mike, m => window.__proofLineMarks.debugState().issues === m - 1, n);
-      assert.match(await mike.locator('.prw-right .plm-box .plm-tier-flip').innerText(), /Make decision/);
+      await waitFor(mike, () => /Make decision/.test(document.querySelector('.prw-right .plm-box .plm-tier-flip')?.textContent ?? ''));
       await mike.keyboard.press('d');
       await waitFor(mike, i => !window.__proofLineMarks.debugState().tiers.views.some(v => v.line === i && v.tier === 'context'), L.CLOSING);
       await waitFor(mike, m => window.__proofLineMarks.debugState().issues === m, n);
@@ -255,7 +260,8 @@ async function run(browser, style) {
     await check(`${tag}: "Show only decisions" folds the covered context lines (view only); the unread one stays; off restores`, async () => {
       const onFolded = async () => (await lm(mike)).marks.filter(m => m.by === MIKE && [L.INTRO, L.BACKGROUND].includes(m.anchor.ordinal)).map(m => `${m.id}:${m.status}`).sort().join(',');
       const marksBefore = await onFolded();
-      await mike.locator('.prw-right .plm-tiers-only input').check();
+      await mike.locator('.prw-left .anv-tab[data-tab="outline"]').click();
+      await mike.locator('.prw-left .plm-tiers-only input').check();
       await waitFor(mike, () => window.__proofLineMarks.debugState().tiers.folded.length === 2);
       assert.deepEqual((await tierState(mike)).folded, [L.INTRO, L.BACKGROUND]);
       await waitFor(mike, i => (window.__proofLineMarks.editorView().nodeDOM(window.__proofLineMarks.lineList()[i].pos)?.getBoundingClientRect().height ?? 1) === 0, L.INTRO);
@@ -264,7 +270,7 @@ async function run(browser, style) {
       assert.ok((await lineClass(mike, L.BUDGET)).h > 0);
       assert.equal(await mike.locator(`.plm-dot[data-line="${L.INTRO}"]`).count(), 0, 'no dot on a folded line');
       await mike.screenshot({ path: path.join(shots, `${tag}-3-only-decisions.png`) });
-      await mike.locator('.prw-right .plm-tiers-only input').uncheck();
+      await mike.locator('.prw-left .plm-tiers-only input').uncheck();
       await waitFor(mike, () => window.__proofLineMarks.debugState().tiers.folded.length === 0);
       await waitFor(mike, i => (window.__proofLineMarks.editorView().nodeDOM(window.__proofLineMarks.lineList()[i].pos)?.getBoundingClientRect().height ?? 0) > 0, L.INTRO);
       assert.equal(await onFolded(), marksBefore, 'folding marked nothing on the folded lines');
@@ -305,10 +311,11 @@ async function run(browser, style) {
       await waitFor(phone, i => !window.__proofLineMarks.debugState().tiers.views.some(v => v.line === i && v.tier === 'context'), L.BACKGROUND);
       assert.ok((await tierState(phone)).myIssueLines.includes(L.BACKGROUND), 'a decision line needs Mike again');
     });
-    await check(`${ptag}: the rail sheet has the counts and "Show only decisions" (touch-sized)`, async () => {
+    await check(`${ptag}: the Navigator sheet's Outline has the counts and "Show only decisions" (touch-sized)`, async () => {
       await phone.keyboard.press('Escape').catch(() => {});
-      await phone.evaluate(() => { document.querySelector('.plm-menu')?.remove(); window.__proofReadingWalk.openSheet('right'); });
-      const control = phone.locator('.prw-right.prw-sheet-open .plm-tiers');
+      await phone.evaluate(() => { document.querySelector('.plm-menu')?.remove(); window.__proofReadingWalk.openSheet('left'); });
+      await phone.locator('.prw-left.prw-sheet-open .anv-tab[data-tab="outline"]').tap();
+      const control = phone.locator('.prw-left.prw-sheet-open .plm-tiers');
       await control.waitFor({ state: 'visible' });
       assert.match(await control.innerText(), /◆ 5 decision lines[\s\S]*2 context/);
       const lb = await control.locator('.plm-tiers-only').boundingBox();

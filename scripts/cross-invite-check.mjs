@@ -247,7 +247,8 @@ async function run(browser, style) {
       await eric.locator('.plm-dot[data-line="2"]').click();
       const box = eric.locator('.prw-right .plm-box[data-line="2"], .plm-menu').first();
       await box.waitFor({ state: 'visible' });
-      await box.locator('.plm-team li', { hasText: 'added by Eric' }).first().waitFor();
+      // Accord layout stage 3: everyone's marks on the line follow the line's changes in the Margin.
+      await eric.locator('.prw-right .amg-tail .plm-team li, .plm-menu .plm-team li', { hasText: 'added by Eric' }).first().waitFor();
       await eric.screenshot({ path: path.join(shots, `${tag}-2-sponsor-on-mark.png`) });
     });
 

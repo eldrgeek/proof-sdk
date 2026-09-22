@@ -151,16 +151,18 @@ async function desktop(browser, base, style, width) {
     assert.ok(info.sw <= info.cw + 1, 'page scrolls sideways');
   });
   if (style === 'playmaker') {
-    await check(`${tag}: the PlayMaker Marks panel lives in the right rail, not over the text`, async () => {
+    // Accord layout stage 3: the Marks panel is a whole-document list, so it docks under the
+    // Navigator's Issues list (left side), never over the text.
+    await check(`${tag}: the PlayMaker Marks panel lives in the Navigator's Issues tab, not over the text`, async () => {
       const info = await page.evaluate(() => {
         const panel = document.querySelector('.pm-review-panel');
         const t = document.querySelector('.ProseMirror').getBoundingClientRect();
         const p = panel?.getBoundingClientRect();
-        return { inRail: !!panel?.closest('.prw-right'), hidden: panel?.hidden, pLeft: p?.left, tRight: t.right };
+        return { inRail: !!panel?.closest('.prw-left .anv-pane[data-tab="issues"]'), hidden: panel?.hidden, pRight: p?.right, tLeft: t.left };
       });
-      assert.ok(info.inRail, 'panel not in the rail');
+      assert.ok(info.inRail, 'panel not in the Navigator');
       assert.equal(info.hidden, false, 'panel hidden');
-      assert.ok(info.pLeft >= info.tRight, 'panel overlaps the text');
+      assert.ok(info.pRight <= info.tLeft, 'panel overlaps the text');
     });
   }
   await check(`${tag}: on open the first line is the focus line, highlighted, with its mark box in the right rail`, async () => {

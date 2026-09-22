@@ -45,6 +45,8 @@ export class UndoUI {
   private unsubscribe: (() => void) | null = null;
   private noticeTimer: ReturnType<typeof setTimeout> | null = null;
   private sig = '';
+  /** Accord layout stage 3: the toolbar's button says just "Undo" (the description is its tooltip). */
+  private compact = false;
   /** Test hook: every run this page made, newest last. */
   readonly runs: Array<{ action: 'undo' | 'redo'; ok: boolean; message: string }> = [];
 
@@ -158,10 +160,10 @@ export class UndoUI {
     const next = stack.next();
     const nextRedo = stack.nextRedo();
     const running = stack.isRunning();
-    const sig = `${next?.id ?? ''}|${nextRedo?.id ?? ''}|${running}`;
+    const sig = `${next?.id ?? ''}|${nextRedo?.id ?? ''}|${running}|${this.compact}`;
     if (sig === this.sig) return;
     this.sig = sig;
-    const label = next && UNDO_UI_POLICY.showNextAction ? `Undo ${next.description}` : 'Undo';
+    const label = next && UNDO_UI_POLICY.showNextAction && !this.compact ? `Undo ${next.description}` : 'Undo';
     this.undoButton.textContent = label.length > 46 ? `${label.slice(0, 45)}…` : label;
     this.undoButton.disabled = !next || running;
     this.undoButton.title = next ? `Undo: ${next.description} (⌘Z / Ctrl+Z)` : 'Nothing to undo';
@@ -171,6 +173,14 @@ export class UndoUI {
     this.redoButton.disabled = !nextRedo || running;
     this.redoButton.title = nextRedo ? `Redo: ${nextRedo.description}` : '';
     this.controlsEl.hidden = !next && !nextRedo;
+  }
+
+  /** Toolbar placement: the button says just "Undo"; its tooltip and the Edit menu name what it reverses. */
+  setCompact(compact: boolean): void {
+    if (compact === this.compact) return;
+    this.compact = compact;
+    this.controlsEl.dataset.compact = String(compact);
+    this.render();
   }
 
   /** Test hook. */

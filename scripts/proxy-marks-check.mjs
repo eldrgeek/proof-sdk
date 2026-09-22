@@ -169,8 +169,8 @@ async function run(browser, style) {
     assert.equal(ask.status, 200, JSON.stringify(ask.body));
     await openDoc(mike, base, slug);
 
-    await check(`${tag}: "My Familiar" sits in the rail's header and lists the AIs present; Mike chooses Claude`, async () => {
-      const select = mike.locator('.prw-right .prw-rail-head .ppx-familiar-select');
+    await check(`${tag}: "My Familiar" sits in the Line tab's footer (with who you are) and lists the AIs present; Mike chooses Claude`, async () => {
+      const select = mike.locator('.prw-right .amg-me .ppx-familiar-select');
       await select.waitFor({ state: 'visible' });
       const options = await select.locator('option').allInnerTexts();
       assert.equal(options[0], 'none');
@@ -261,7 +261,7 @@ async function run(browser, style) {
       assert.match(await done.innerText(), /Ratified 3 lines as Agreed \(from Claude\)/);
       assert.equal(await mike.evaluate(l => document.querySelector(`.plm-dot[data-line="${l}"]`)?.dataset.status, L.BUDGET), 'agreed');
       await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.BUDGET);
-      const team = await mike.locator('.prw-right .plm-box .plm-team').innerText();
+      const team = await mike.locator('.prw-right .plm-team').innerText();
       assert.match(team, /ratified from Claude, confidence 0\.95/);
       assert.match(team, /Evidence: Budget matches the finance sheet/);
       await mike.screenshot({ path: path.join(shots, `${tag}-2-ratified.png`) });
@@ -281,7 +281,11 @@ async function run(browser, style) {
 
     await check(`${tag}: the line's box says the proxy is not Mike's, with its evidence`, async () => {
       await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.SUPPORT);
-      const note = mike.locator('.prw-right .plm-box .plm-proxy-note');
+      // Accord layout stage 3: the Familiar's note folds to "Familiar says (1)" after the line's changes.
+      const fold = mike.locator('.prw-right .plm-familiar-fold');
+      await fold.locator('summary').click();
+      assert.equal(await fold.locator('summary').innerText(), 'Familiar says (1)');
+      const note = mike.locator('.prw-right .plm-familiar-fold .plm-proxy-note');
       await note.waitFor({ state: 'visible' });
       const text = await note.innerText();
       assert.match(text, /Your Familiar Claude recommends rejecting this line/);
@@ -332,8 +336,8 @@ async function run(browser, style) {
       assert.equal(c.status, 200);
       await mike.evaluate(() => window.__proofLineMarks.refresh());
       await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.CLOSING);
-      await waitFor(mike, () => !!document.querySelector('.prw-right .plm-box .plm-claimed'));
-      const team = await mike.locator('.prw-right .plm-box .plm-team').innerText();
+      await waitFor(mike, () => !!document.querySelector('.prw-right .plm-team .plm-claimed'));
+      const team = await mike.locator('.prw-right .plm-team').innerText();
       // Cross invitation: an AI's row now reads "Critic — added by <the human who added it>".
       assert.match(team, /critic(\s*—\s*added by[^\n]*)?\s*Agreed\s*claimed/i);
       assert.match(team, /claude[\s\S]*Evidence: Read the cancelled closing line/i);

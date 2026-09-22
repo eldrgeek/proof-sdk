@@ -314,10 +314,13 @@ async function run(browser, style) {
 
     await check(`${tag}: a person flags a line from the rail; the flag is theirs to clear`, async () => {
       await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.DELTA);
+      // Accord layout stage 3 (decision 8): "Flag uncertain…" is under the line's ⋯ More.
+      const box = mike.locator('.prw-right .plm-box');
+      await box.locator('.plm-more-btn').click();
+      await box.locator('.plm-more .plm-flag-open').click();
+      await box.locator('.plm-more .plm-flag-form input').fill('Is October still true?');
+      await box.locator('.plm-more .plm-flag-form button[type="submit"]').click();
       const row = mike.locator('.prw-right .plm-box .plm-flag');
-      await row.locator('.plm-flag-open').click();
-      await row.locator('.plm-flag-form input').fill('Is October still true?');
-      await row.locator('.plm-flag-form button[type="submit"]').click();
       await waitFor(mike, () => window.__proofLineMarks.debugState().aids.flags.length === 2);
       await waitFor(mike, i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.uncertain === 'true', L.DELTA);
       await row.locator('.plm-flag-note', { hasText: 'You flagged' }).locator('.plm-flag-clear').click();

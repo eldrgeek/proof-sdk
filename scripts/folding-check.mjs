@@ -320,8 +320,10 @@ async function desktop(browser, base, style, width) {
     await page.screenshot({ path: path.join(shots, `${tag}-4-resolved.png`) });
   });
 
-  await check(`${tag}: Fold all, level and Unfold all controls in the right rail`, async () => {
-    const controls = page.locator('.prw-right .pfold-controls');
+  // Accord layout stage 3 (decision 7): the fold controls live on the Navigator's Outline tab.
+  await check(`${tag}: Fold all, level and Unfold all controls on the Navigator's Outline tab`, async () => {
+    await page.locator('.prw-left .anv-tab[data-tab="outline"]').click();
+    const controls = page.locator('.prw-left .pfold-controls');
     await controls.getByRole('button', { name: 'Fold every section', exact: true }).click();
     let f = await fold(page);
     assert.equal(f.folded.length, 6);
@@ -339,7 +341,7 @@ async function desktop(browser, base, style, width) {
   });
 
   await check(`${tag}: Next issue unfolds the section that holds the next issue`, async () => {
-    await page.locator('.prw-right .pfold-controls').getByRole('button', { name: 'Fold every section', exact: true }).click();
+    await page.locator('.prw-left .pfold-controls').getByRole('button', { name: 'Fold every section', exact: true }).click();
     const hiddenBefore = new Set((await fold(page)).hidden);
     let unfoldedOne = false;
     for (let i = 0; i < 6 && !unfoldedOne; i += 1) {
@@ -350,7 +352,7 @@ async function desktop(browser, base, style, width) {
       if (hiddenBefore.has(s.focus)) unfoldedOne = true;
     }
     assert.ok(unfoldedOne, 'Next issue never went into a folded section');
-    await page.locator('.prw-right .pfold-controls').getByRole('button', { name: 'Unfold every section', exact: true }).click();
+    await page.locator('.prw-left .pfold-controls').getByRole('button', { name: 'Unfold every section', exact: true }).click();
   });
 
   await bob.context.close();

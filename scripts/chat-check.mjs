@@ -140,20 +140,23 @@ async function run(browser, style) {
     const eric = await signIn(ericCtx, cli, base, ERIC_EMAIL);
     await openDoc(eric, base, slug);
 
-    await check(`${tag}: the chat sits in the right rail below the line's box, and says it is empty`, async () => {
+    // Accord layout stage 3 (decision 6): the chat is the Margin's Room tab (the Line tab is the line's thread).
+    await check(`${tag}: the chat is the Margin's Room tab, full height, and says it is empty`, async () => {
+      assert.equal(await mike.evaluate(() => window.__proofChat.debugState().visible), false, 'the chat shows while the Line tab is selected');
+      for (const page of [mike, eric]) await page.locator('.prw-right .amg-tab[data-tab="room"]').click();
       const info = await mike.evaluate(() => {
         const rail = document.querySelector('.prw-right');
-        const kids = [...rail.children].map(c => c.className.split(' ')[0]);
-        const box = document.querySelector('.prw-right .prw-linebox').getBoundingClientRect();
-        const pane = document.querySelector('.prw-right .prw-chat').getBoundingClientRect();
+        const pane = document.querySelector('.prw-right .amg-pane[data-tab="room"]');
         const input = document.querySelector('.prw-right .pch-input').getBoundingClientRect();
-        return { kids, boxTop: box.top, paneTop: pane.top, inputBottom: input.bottom, railBottom: rail.getBoundingClientRect().bottom, empty: document.querySelector('.prw-right .pch-empty')?.textContent, visible: !!document.querySelector('.prw-right .pch-input')?.offsetParent };
+        return { inRoom: !!document.querySelector('.prw-right .amg-pane[data-tab="room"] .prw-chat .pch'), paneHeight: pane.getBoundingClientRect().height, inputBottom: input.bottom, railBottom: rail.getBoundingClientRect().bottom, empty: document.querySelector('.prw-right .pch-empty')?.textContent, visible: !!document.querySelector('.prw-right .pch-input')?.offsetParent, lineHidden: document.querySelector('.prw-right .amg-pane[data-tab="line"]').hidden };
       });
-      assert.ok(info.kids.indexOf('prw-chat') > info.kids.indexOf('prw-rail-body'), info.kids.join(','));
-      assert.ok(info.paneTop > info.boxTop, 'the chat pane is below the line box');
+      assert.ok(info.inRoom, 'the chat is not in the Room tab');
+      assert.equal(info.lineHidden, true);
+      assert.ok(info.paneHeight >= 600, `the Room is not full height (${info.paneHeight})`);
       assert.ok(info.inputBottom <= info.railBottom, 'the composer is in view without scrolling the rail');
       assert.match(info.empty, /No messages yet/);
       assert.equal(info.visible, true);
+      assert.equal(await mike.evaluate(() => window.__proofChat.debugState().visible), true);
     });
 
     await check(`${tag}: typing in the composer never fires the reading keys (A R J K Y N T E 1-9)`, async () => {
@@ -254,7 +257,7 @@ async function run(browser, style) {
       assert.equal(await mike.locator('.prw-right .prw-collapse .prw-badge').count(), 0);
     });
 
-    await check(`${tag}: with Eric's rail closed, an @mention of Eric is a badge on the rail toggle; opening the rail reads it`, async () => {
+    await check(`${tag}: with Eric's Margin closed, an @mention of Eric is a badge on its toggle; opening it on Room reads it`, async () => {
       await eric.locator('.prw-right .prw-collapse').click();
       await waitFor(eric, () => document.body.classList.contains('prw-right-collapsed'));
       const r = await agentCall(base, slug, KEY, 'POST', '/chat', { text: '@Eric can you confirm the Middle paragraph?', lines: [{ lineIndex: 3 }] });
@@ -265,6 +268,7 @@ async function run(browser, style) {
       await eric.screenshot({ path: path.join(shots, `${tag}-3-badge.png`) });
       await eric.locator('.prw-right .prw-collapse').click();
       await waitFor(eric, () => window.__proofChat.debugState().unread === 0 && !document.querySelector('.prw-right .prw-collapse .prw-badge'));
+      assert.equal(await eric.locator('.prw-right .amg-tab[data-tab="room"] .amg-badge').isVisible(), false, 'the Room badge stayed');
       assert.equal((await chatState(eric)).messages.find(m => m.text.startsWith('@Eric')).mentions[0], 'human:eric@example.test');
     });
 
@@ -317,21 +321,23 @@ async function run(browser, style) {
       assert.equal(r.status, 200);
       await waitFor(phone, () => document.querySelector('#share-banner .share-pill-overflow .pch-overflow-badge')?.textContent === '1', null, 15000);
       await phone.locator('#share-banner .share-pill-overflow').tap();
-      const item = phone.locator('.proof-share-overflow-menu [role="menuitem"]', { hasText: 'Chat' });
+      const item = phone.locator('.proof-share-overflow-menu [role="menuitem"]', { hasText: 'Room' });
       await item.waitFor({ state: 'visible' });
       assert.match(await item.innerText(), /1 @you/);
       await phone.screenshot({ path: path.join(shots, `${ptag}-1-menu.png`) });
       await item.tap();
     });
-    await check(`${ptag}: Chat opens as a bottom sheet that fits the screen, with touch-sized controls; the mention is read`, async () => {
-      const sheet = phone.locator('.pch-sheet');
+    // Accord layout stage 3 (decision 11): the chat opens as the Margin sheet on its Room tab.
+    await check(`${ptag}: Room opens the Margin sheet on its Room tab: it fits the screen, with touch-sized controls; the mention is read`, async () => {
+      const sheet = phone.locator('.prw-right.prw-sheet-open');
       await sheet.waitFor({ state: 'visible' });
       await waitFor(phone, () => window.__proofChat.debugState().unread === 0);
       const info = await phone.evaluate(() => {
         const r = (sel) => document.querySelector(sel)?.getBoundingClientRect().toJSON();
         return {
-          sheet: r('.pch-sheet'), input: r('.pch-sheet .pch-input'), send: r('.pch-sheet .pch-send'), pin: r('.pch-sheet .pch-pin'),
-          sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, font: getComputedStyle(document.querySelector('.pch-sheet .pch-input')).fontSize,
+          sheet: r('.prw-right.prw-sheet-open'), input: r('.prw-sheet-open .pch-input'), send: r('.prw-sheet-open .pch-send'), pin: r('.prw-sheet-open .pch-pin'),
+          sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, font: getComputedStyle(document.querySelector('.prw-sheet-open .pch-input')).fontSize,
+          tab: document.querySelector('.prw-sheet-open .amg-tab[aria-selected="true"]')?.dataset.tab,
         };
       });
       assert.ok(info.sw <= info.cw + 1, `no sideways scroll ${info.sw}`);
@@ -339,26 +345,27 @@ async function run(browser, style) {
       assert.ok(info.input.bottom <= 844 && info.send.bottom <= 844, 'the composer is on screen');
       assert.ok(info.send.height >= 44 && info.pin.height >= 44, `touch targets ${info.send.height} ${info.pin.height}`);
       assert.equal(info.font, '16px', 'no zoom-on-focus on iOS');
+      assert.equal(info.tab, 'room');
       assert.equal(await phone.locator('#share-banner .share-pill-overflow .pch-overflow-badge').count(), 0);
       await phone.screenshot({ path: path.join(shots, `${ptag}-2-sheet.png`) });
     });
     await check(`${ptag}: with the keyboard up, the composer stays above it (--proof-keyboard-offset)`, async () => {
       await phone.evaluate(() => document.documentElement.style.setProperty('--proof-keyboard-offset', '300px'));
-      const r = await phone.evaluate(() => ({ sheet: document.querySelector('.pch-sheet').getBoundingClientRect().toJSON(), input: document.querySelector('.pch-sheet .pch-input').getBoundingClientRect().toJSON() }));
+      const r = await phone.evaluate(() => ({ sheet: document.querySelector('.prw-right.prw-sheet-open').getBoundingClientRect().toJSON(), input: document.querySelector('.prw-sheet-open .pch-input').getBoundingClientRect().toJSON() }));
       assert.ok(Math.abs(r.sheet.bottom - (844 - 300)) <= 1, `sheet bottom ${r.sheet.bottom}`);
       assert.ok(r.input.bottom <= 844 - 300 && r.input.top >= 0, `input ${JSON.stringify(r.input)}`);
       await phone.screenshot({ path: path.join(shots, `${ptag}-3-keyboard.png`) });
       await phone.evaluate(() => document.documentElement.style.setProperty('--proof-keyboard-offset', '0px'));
     });
     await check(`${ptag}: a message sent from the phone; tapping a pointer closes the sheet and moves the focus line`, async () => {
-      await phone.locator('.pch-sheet .pch-input').tap();
+      await phone.locator('.prw-sheet-open .pch-input').tap();
       await phone.keyboard.type('Sent from my phone');
-      await phone.locator('.pch-sheet .pch-send').tap();
+      await phone.locator('.prw-sheet-open .pch-send').tap();
       await waitFor(phone, () => window.__proofChat.debugState().sent.length === 1);
-      const pointer = phone.locator(`.pch-sheet .pch-pointer[data-line="${L.MIDDLE}"]`).first();
+      const pointer = phone.locator(`.prw-sheet-open .pch-pointer[data-line="${L.MIDDLE}"]`).first();
       await pointer.scrollIntoViewIfNeeded();
       await pointer.tap();
-      await waitFor(phone, () => document.querySelector('.pch-sheet').hidden === true);
+      await waitFor(phone, () => !document.querySelector('.prw-right.prw-sheet-open'));
       await waitFor(phone, l => window.__proofReadingWalk.debugState().focus === l, L.MIDDLE);
       await phone.screenshot({ path: path.join(shots, `${ptag}-4-pointer.png`) });
     });

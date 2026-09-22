@@ -116,7 +116,10 @@ async function mark(page, line, label, reason) {
   await page.locator(`.plm-dot[data-line="${line}"]`).click();
   const menu = markBox(page, line);
   await menu.waitFor({ state: 'visible' });
-  await menu.getByRole('button', { name: label }).click();
+  // Accord layout stage 3 (decision 8): in the Margin, Seen and Approve are under ⋯ More.
+  const button = menu.getByRole('button', { name: label }).first();
+  if (!(await button.isVisible()) && await menu.locator('.plm-more-btn').count()) await menu.locator('.plm-more-btn').click();
+  await button.click();
   if (reason !== undefined) {
     await menu.getByRole('textbox', { name: /Reason/ }).fill(reason);
     await menu.locator('.plm-reason button[type="submit"]').click();
@@ -158,6 +161,8 @@ async function desktop(browser, base) {
   await check(`${tag}: Agree and Reject (with a reason) set the dot; Approve is hidden for a non-owner`, async () => {
     await page.locator('.plm-dot[data-line="1"]').click();
     await markBox(page, 1).waitFor({ state: 'visible' });
+    if (await markBox(page, 1).locator('.plm-more-btn').count()) await markBox(page, 1).locator('.plm-more-btn').click();
+    await markBox(page, 1).getByRole('button', { name: /Seen/ }).first().waitFor({ state: 'visible' });
     const count = await markBox(page, 1).getByRole('button', { name: /Approve/ }).count();
     assert.equal(count, 0, 'non-owner sees Approve');
     await mark(page, 1, /Agree/);
@@ -168,7 +173,8 @@ async function desktop(browser, base) {
     await page.locator('.plm-dot[data-line="2"]').click();
     await markBox(page, 2).waitFor({ state: 'visible' });
     await page.screenshot({ path: path.join(shots, `${tag}-1-menu.png`) });
-    assert.ok((await markBox(page, 2).innerText()).includes('Needs a source'));
+    // Everyone's marks (with the reason) follow the line's changes in the Margin.
+    assert.ok((await page.locator('.prw-right .amg-tail, .plm-menu').first().innerText()).includes('Needs a source'));
   });
   await check(`${tag}: marks survive a reload`, async () => {
     await page.reload();

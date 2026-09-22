@@ -3855,6 +3855,9 @@ class ProofEditorImpl implements ProofEditor {
     const walk = this.readingWalk;
     if (!undo || !walk) return;
     const phone = window.matchMedia?.('(max-width: 700px)').matches ?? window.innerWidth <= 700;
+    // Accord layout stage 3 (COS): the toolbar's Undo says just "Undo"; what it reverses is its
+    // tooltip and the Edit menu's item. On a phone (the Line tab) it keeps the full description.
+    undo.setCompact(!phone);
     if (phone) walk.mountTool(undo.controlsEl, { first: true });
     else if (undo.controlsEl.parentElement !== this.toolbarUndoSlot) this.toolbarUndoSlot.append(undo.controlsEl);
   }
@@ -4019,7 +4022,12 @@ class ProofEditorImpl implements ProofEditor {
         }
         if (style === 'playmaker' && this.playmakerReview) {
           const review = this.playmakerReview;
-          items.push({ id: 'view-marks', label: 'Marks panel', kind: 'checkbox', checked: review.panelOpen(), keywords: 'review comments suggestions', run: () => { if (review.panelOpen()) review.closePanel(); else review.openPanel(); } });
+          items.push({ id: 'view-marks', label: 'Marks panel', kind: 'checkbox', checked: review.panelOpen(), keywords: 'review comments suggestions', run: () => {
+            if (review.panelOpen()) { review.closePanel(); return; }
+            // Accord layout stage 3: the panel docks under the Navigator's Issues list.
+            walk?.showMarksPanel();
+            review.openPanel();
+          } });
         }
         if (!REVIEW_STYLE_POLICY.locked) {
           items.push({ id: 'view-review-style', label: 'Review style', detail: style === 'playmaker' ? 'PlayMaker' : productName(), run: () => setReviewStyle(style === 'playmaker' ? 'proof' : 'playmaker') });
@@ -4134,6 +4142,7 @@ class ProofEditorImpl implements ProofEditor {
         },
         playmaker: () => this.playmakerReview,
         reviewStyle: () => getReviewStyle(),
+        folding: () => this.folding,
         // Step B2 folded sections, plus line tiers' "Show only decisions" (folded context lines).
         hiddenLines: () => {
           const hidden = new Set<number>(this.folding?.hiddenLines() ?? []);
@@ -4195,8 +4204,11 @@ class ProofEditorImpl implements ProofEditor {
           this.editor?.action(ctx => { marks = getMarks(ctx.get(editorViewCtx).state); });
           return marks;
         },
-        railOpen: () => walkUi.isRightRailOpen(),
-        openRail: () => walkUi.openRightRail(),
+        // Accord layout stage 3 (decision 6): the chat is the Margin's Room tab.
+        inMargin: () => true,
+        railOpen: () => walkUi.isRoomVisible(),
+        openRail: () => walkUi.openRoom(),
+        closeRail: () => walkUi.closeSheets(),
         onUnread: (count) => {
           this.chatUnread = count;
           walkUi.setChatUnread(count);
@@ -4205,6 +4217,8 @@ class ProofEditorImpl implements ProofEditor {
         closeOtherSheets: () => { walkUi.closeSheets(); this.playmakerReview?.closePanel(); },
       });
       this.chat.mountIn(walkUi.chatSlot);
+      const chatUi = this.chat;
+      walkUi.onRoomShown(() => chatUi.roomShown());
       (window as unknown as { __proofChat?: ChatUI }).__proofChat = this.chat;
     }
     this.lineMarks.start();
@@ -4259,13 +4273,14 @@ class ProofEditorImpl implements ProofEditor {
       const run = (spec: MenuItemSpec) => { close(); spec.run(); };
       const phoneItems: MenuItemSpec[] = [];
       if (this.readingWalk) {
-        phoneItems.push({ id: 'phone-line', label: 'This line', detail: 'mark · changes', run: () => { this.chat?.closeSheet(); this.readingWalk?.openSheet('right'); } });
+        // Accord layout stage 3 (decision 11): the Margin sheet on its Line tab, or its Room tab.
+        phoneItems.push({ id: 'phone-line', label: 'This line', detail: 'Margin · Line', run: () => { this.readingWalk?.selectMarginTab('line'); this.readingWalk?.openSheet('right'); } });
       }
       if (this.chat) {
-        phoneItems.push({ id: 'phone-chat', label: 'Chat', detail: this.chatUnread > 0 ? `${this.chatUnread} @you` : 'team', run: () => this.chat?.open(true) });
+        phoneItems.push({ id: 'phone-chat', label: 'Room', detail: this.chatUnread > 0 ? `chat · ${this.chatUnread} @you` : 'chat', run: () => this.chat?.open(true) });
       }
       if (this.readingWalk) {
-        phoneItems.push({ id: 'phone-docs', label: 'Documents', detail: 'list', run: () => this.readingWalk?.openSheet('left') });
+        phoneItems.push({ id: 'phone-docs', label: 'Navigator', detail: 'Outline · Issues · Since you', run: () => this.readingWalk?.openSheet('left') });
       }
       if (phoneItems.length) menu.append(...buildMenuItems(phoneItems, run));
       for (const spec of this.menus()) {
@@ -5443,6 +5458,9 @@ class ProofEditorImpl implements ProofEditor {
       copyLink: () => this.copyLinkWithFallback(this.getCanonicalShareUrl()),
       download: () => { void this.downloadProofDocument(); },
       activity: () => this.openShareActivityModal(),
+      // Accord layout stage 3 (COS): blind marking, an Owner's document setting, left the rail for
+      // the Link tab (it hides itself for everyone else while it is off).
+      linkExtras: this.lineMarks ? [this.lineMarks.blindEl] : [],
       invite: owner ? {
         load: () => this.teamRequest<TeamState>('GET', ''),
         invite: (email, name) => this.teamRequest<InviteResult>('POST', '/invites', { email, name }),

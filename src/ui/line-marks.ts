@@ -116,6 +116,7 @@ import {
 import { tierViewKey, setTierDecorations, tierDecorationCount, type TierLineSpec } from '../editor/plugins/tier-view';
 import { buildTierRow, loadOnlyDecisions, renderTierControl, saveOnlyDecisions } from './line-tiers';
 import { HIGHLIGHT_POLICY, issueNeedsViewer, markedUpTo, needsYouLines, type MarkedUpTo } from '../shared/layout-status';
+import { MARGIN_POLICY, needsYouItems, type NeedsYouItem } from '../shared/layout-panels';
 import { ISSUES_PILL_POLICY, NEXT_ISSUE_POLICY, issuesPillText, issuesPillTitle } from '../shared/layout-chrome';
 import './line-marks.css';
 
@@ -162,6 +163,14 @@ export interface MarkBoxOptions {
   onChosen?(status: StatusChoice): void;
   /** Called with the chosen status before it is written (the reading walk commits scroll-accepts). */
   onExplicit?(status: StatusChoice | 'tier'): void;
+  /**
+   * Accord layout stage 3 (decision 8): 'margin' is the Margin's Line tab — the quote, Agree and
+   * Reject as the two primary buttons, and ⋯ More holding Approve, Seen, Clear my mark, Flag
+   * uncertain, Offer another wording, Explain, Time-to-live and the tier. The Familiar's note and
+   * everyone's marks come back separately in `tail`. 'full' (the default) is the popover and the
+   * phone's dot sheet, unchanged.
+   */
+  layout?: 'full' | 'margin';
 }
 
 export interface MarkBox {
@@ -176,6 +185,12 @@ export interface MarkBox {
   scope?: number[];
   /** Line tiers: flips the line's tier (D). Returns false when tagging is not allowed. */
   flipTier?(): boolean;
+  /** Margin layout: what goes after the line's changes (the Familiar's note, folded; everyone's marks). */
+  tail?: HTMLElement[];
+  /** Margin layout: shows ⋯ More. */
+  openMore?(): void;
+  /** Margin layout: shows or hides ⋯ More (the phone strip's ⋯ while the sheet is open). */
+  toggleMore?(): void;
 }
 
 export type StatusChoice = LineMarkStatus | 'unseen';
@@ -647,7 +662,7 @@ export class LineMarksUI {
         tiers: tierIssueInput(this.tierEval),
       });
       this.computeTierFold();
-      this.needsYou = needsYouLines(this.summary.issues, this.me(), pos => this.lineAtPos(pos));
+      this.needsYou = needsYouLines(this.summary.issues, this.me(), pos => this.lineAtPos(pos), [this.host.actor()]);
       this.needsYouSet = new Set(this.needsYou);
       this.ranked = rankIssues(this.summary.issues, { viewer: this.me(), explicitFor: explicitPriorityLookup(this.serverNotes, this.lines) });
       this.computeBrief(reviewMarks);
@@ -715,6 +730,24 @@ export class LineMarksUI {
   issueSummary(): IssueSummary | null { return this.summary; }
   /** Accord layout: the lines with an amber "needs you" dot (the status bar's Issues left). */
   needsYouLines(): readonly number[] { return this.needsYou; }
+  /** Accord layout stage 3: the Navigator's Issues list (the same lines as the amber dots, with their kinds). */
+  needsYouItems(): NeedsYouItem[] {
+    if (!this.summary) return [];
+    return needsYouItems(this.summary.issues, this.me(), pos => this.lineAtPos(pos), [this.host.actor()]);
+  }
+  /** A display name for an actor (an AI by its name, a person by their label). */
+  displayName(actor: string): string { return isAiActor(actor) ? this.aiName(actor) : actorLabel(actor); }
+  /** Readers who can comment (guests read and comment). */
+  canCommentHere(): boolean { return this.host.canComment?.() !== false; }
+  /**
+   * Accord layout stage 3, "Reply on this line…": a new comment thread on the whole line. Returns the
+   * new comment's id, or null when it could not be placed.
+   */
+  commentLine(index: number, text: string): string | null {
+    const line = this.lines[index];
+    if (!line || !text.trim() || !this.canCommentHere()) return null;
+    return this.host.commentOnLine?.(line, text.trim()) ?? null;
+  }
   /** Accord layout: the viewer's last explicit mark ("You marked up to line K"). */
   markedUpTo(): MarkedUpTo | null { return markedUpTo(this.states, this.me()); }
   editorView(): EditorView | null { return this.view; }
@@ -1503,10 +1536,22 @@ export class LineMarksUI {
     const root = document.createElement('div');
     root.className = 'plm-box';
     root.dataset.line = String(line.index);
+    const margin = options.layout === 'margin';
+    if (margin) root.classList.add('plm-box-margin');
     const excerpt = document.createElement('p');
-    excerpt.className = 'plm-excerpt';
+    excerpt.className = margin ? 'plm-excerpt plm-quote' : 'plm-excerpt';
     excerpt.textContent = line.text.length > 140 ? `${line.text.slice(0, 140)}…` : line.text;
     root.append(excerpt);
+    // Margin layout: ⋯ More (built below) and the parts that follow the primary buttons.
+    const more = document.createElement('div');
+    more.className = 'plm-more';
+    more.id = `plm-more-${line.index}-${Math.random().toString(36).slice(2, 8)}`;
+    more.hidden = true;
+    more.setAttribute('role', 'group');
+    more.setAttribute('aria-label', 'More marks for this line');
+    const thread = document.createElement('div');
+    thread.className = 'plm-thread';
+    const place = (node: HTMLElement) => { (margin ? thread : root).append(node); };
     // Line tiers: what the line asks of you (decision / context: read for you by ...), and the flip.
     const tierView = this.tierEval?.views[line.index];
     const setTier = (tier: LineTier): boolean => {
@@ -1516,8 +1561,9 @@ export class LineMarksUI {
       void this.setTiers([fresh.index], tier);
       return true;
     };
+    let tierRow: HTMLElement | null = null;
     if (tierView) {
-      root.append(buildTierRow({
+      tierRow = buildTierRow({
         view: tierView,
         anyTagged: this.tierEval?.anyTagged ?? false,
         canTag: this.canMark,
@@ -1525,48 +1571,71 @@ export class LineMarksUI {
         name: actor => (isAiActor(actor) ? this.aiName(actor) : actorLabel(actor)),
         when: formatWhen,
         set: tier => { setTier(tier); },
-      }));
+      });
+      if (!margin) root.append(tierRow);
     }
 
     // Step B3: the line's ask comes first: it is the decision the line carries.
     const askView = this.askForLine(line.index);
     const askControl = askView ? this.buildAskControlFor(askView, 'box') : undefined;
-    if (askControl) root.append(askControl.root);
+    if (askControl) place(askControl.root);
     // {do}: the line's action, with Approve (for the people named) and the disabled Run.
     const doView = this.doForLine(line.index);
-    if (doView && doView.state !== 'withdrawn') root.append(this.buildDoControlFor(doView, 'box'));
+    if (doView && doView.state !== 'withdrawn') place(this.buildDoControlFor(doView, 'box'));
     // Step B4d: open objections on this line (with Clear / Keep for the objector).
-    for (const objection of this.objectionsByLine.get(line.index) ?? []) root.append(this.buildObjectionCard(objection));
+    for (const objection of this.objectionsByLine.get(line.index) ?? []) place(this.buildObjectionCard(objection));
     // Step B4c: the writer's uncertainty (flag, note, Clear), or "Flag uncertain…".
-    root.append(this.buildFlagRow(line));
+    const flagRow = this.buildFlagRow(line);
+    place(flagRow);
+    // Margin layout: "Flag uncertain…" and its form go under ⋯ More; the flags themselves stay.
+    const flagMore = margin ? [...flagRow.querySelectorAll<HTMLElement>(':scope > .plm-flag-open, :scope > .plm-flag-form')] : [];
     // Step B4f: disagreement revealed by blind marking, competing wordings, time-to-live, Explain.
     if (this.disagreement.has(line.index)) {
       const note = document.createElement('p');
       note.className = 'plm-disagree';
       note.setAttribute('role', 'status');
       note.textContent = 'The team disagrees on this line: someone agreed and someone rejected it. It is a priority Issue.';
-      root.append(note);
+      place(note);
     }
     if (this.blind && this.hiddenOnLine(line.index) > 0) {
       const note = document.createElement('p');
       note.className = 'plm-blind-note';
       const n = this.hiddenOnLine(line.index);
       note.textContent = `Blind marking: ${n} ${n === 1 ? 'mark is' : 'marks are'} hidden until you mark this line.`;
-      root.append(note);
+      place(note);
     }
     const altSet = this.altsByLine.get(line.index);
-    if (altSet) root.append(this.buildAltSection(line, altSet));
-    root.append(this.buildExtrasRow(line, Boolean(altSet)));
+    if (altSet) place(this.buildAltSection(line, altSet));
+    const extras = this.buildExtrasRow(line, Boolean(altSet));
+    if (!margin) root.append(extras);
+    else {
+      // The time-to-live status (when the line is perishable) stays in view; the links go under More.
+      const ttlStatus = extras.querySelector<HTMLElement>('.plm-ttl-status');
+      if (ttlStatus) { const row = document.createElement('div'); row.className = 'plm-ttl plm-ttl-shown'; row.append(ttlStatus); thread.append(row); }
+    }
     const history = this.altHistoryFor(line.index);
-    if (history.length) root.append(this.buildAltHistory(history));
+    if (history.length) place(this.buildAltHistory(history));
 
     const proxyItem = this.briefByLine.get(line.index);
-    if (proxyItem) root.append(this.buildProxyNote(proxyItem));
+    const tail: HTMLElement[] = [];
+    if (proxyItem) {
+      const note = this.buildProxyNote(proxyItem);
+      if (margin && MARGIN_POLICY.familiarFolds) {
+        // "Familiar says (1)": the note folds to its headline in the Margin.
+        const fold = document.createElement('details');
+        fold.className = 'plm-familiar-fold';
+        const summary = document.createElement('summary');
+        summary.textContent = 'Familiar says (1)';
+        fold.append(summary, note);
+        tail.push(fold);
+      } else if (margin) tail.push(note);
+      else root.append(note);
+    }
     if (mine && !mine.current) {
       const changed = document.createElement('p');
       changed.className = 'plm-changed';
       changed.textContent = `Changed since you marked it ${STATUS_LABEL[mine.mark.status]}. Mark it again.`;
-      root.append(changed);
+      place(changed);
     }
     // Step B3b: a mark carried over a small edit: say what changed, and let the reader undo it.
     if (mine?.carried) {
@@ -1592,13 +1661,13 @@ export class LineMarksUI {
       revert.disabled = !this.canMark;
       revert.onclick = () => { options.onChosen?.('unseen'); void this.writeMark(line, 'unseen'); };
       carried.append(revert);
-      root.append(carried);
+      place(carried);
     }
     if (mine?.current && mine.mark.status === 'skimmed') {
       const skim = document.createElement('p');
       skim.className = 'plm-skimmed-note';
       skim.textContent = 'You scrolled past this line faster than its reading time, so it is not Seen yet. Stay on it, or mark it.';
-      root.append(skim);
+      place(skim);
     }
 
     // Step B2: on a folded heading a mark applies to every line of the section (policy).
@@ -1607,7 +1676,7 @@ export class LineMarksUI {
       const note = document.createElement('p');
       note.className = 'plm-section-note';
       note.textContent = `Folded section: Seen, Agree${this.canApprove || !LINE_MARK_POLICY.approveRequiresOwner ? ' and Approve' : ''} apply to all ${scope.lines.length} lines in it.`;
-      root.append(note);
+      place(note);
     }
     const sectionHint = document.createElement('p');
     sectionHint.className = 'plm-section-hint';
@@ -1733,21 +1802,40 @@ export class LineMarksUI {
       reasonRow.hidden = false;
       reasonInput.focus({ preventScroll: true });
     };
-    for (const choice of choices) {
+    // Margin layout (decision 8): Agree and Reject first, as the two primary buttons; the rest under More.
+    const moreMarks = document.createElement('div');
+    moreMarks.className = 'plm-actions plm-more-marks';
+    const ordered = margin
+      ? [...MARGIN_POLICY.primaryMarks.filter(c => choices.includes(c as StatusChoice)), ...MARGIN_POLICY.moreItems.filter(c => choices.includes(c as StatusChoice))] as StatusChoice[]
+      : choices;
+    for (const choice of ordered) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'plm-choice';
       btn.dataset.status = choice;
       btn.setAttribute('aria-pressed', String(current === choice));
+      const primary = margin && MARGIN_POLICY.primaryMarks.includes(choice);
       const g = document.createElement('span'); g.className = 'plm-choice-glyph'; g.textContent = STATUS_GLYPH[choice];
-      const l = document.createElement('span'); l.textContent = choice === 'rejected' ? 'Reject…' : STATUS_LABEL[choice].replace('Agreed', 'Agree').replace('Approved', 'Approve');
+      const l = document.createElement('span');
+      l.textContent = primary
+        ? (choice === 'agreed' ? (current === 'agreed' ? 'Agreed' : 'Agree') : (current === 'rejected' ? 'Rejected' : 'Reject'))
+        : choice === 'rejected' ? 'Reject…' : STATUS_LABEL[choice].replace('Agreed', 'Agree').replace('Approved', 'Approve');
       btn.append(g, l);
+      if (primary) {
+        const key = document.createElement('kbd');
+        key.className = 'plm-key';
+        key.textContent = choice === 'agreed' ? 'A' : 'R';
+        key.setAttribute('aria-hidden', 'true');
+        btn.append(key);
+        btn.classList.add('plm-primary');
+        btn.title = choice === 'agreed' ? 'Agree with this line (key A)' : 'Reject this line, with a one-line reason (key R)';
+      }
       btn.disabled = !this.canMark;
       btn.onclick = () => {
         if (choice === 'rejected') { openReason(); return; }
         choose(choice);
       };
-      actions.append(btn);
+      (margin && !primary ? moreMarks : actions).append(btn);
     }
     if (mine) {
       const clear = document.createElement('button');
@@ -1760,9 +1848,32 @@ export class LineMarksUI {
         if (scope && FOLDING.sectionClearAllowed) { void this.writeSectionMark(scope, 'unseen'); return; }
         void this.writeMark(line, 'unseen');
       };
-      actions.append(clear);
+      (margin ? moreMarks : actions).append(clear);
     }
-    root.append(actions, reasonRow, sectionHint);
+    let openMore: (() => void) | undefined;
+    let toggleMore: (() => void) | undefined;
+    if (margin) {
+      actions.classList.add('plm-primary-row');
+      const moreBtn = document.createElement('button');
+      moreBtn.type = 'button';
+      moreBtn.className = 'plm-more-btn';
+      moreBtn.textContent = '⋯';
+      moreBtn.setAttribute('aria-label', 'More marks for this line');
+      moreBtn.setAttribute('aria-expanded', 'false');
+      moreBtn.setAttribute('aria-controls', more.id);
+      moreBtn.title = 'More: Approve, Seen, Clear my mark, Flag uncertain, Offer another wording, Explain, Time-to-live, decision or context';
+      const setMore = (open: boolean) => { more.hidden = !open; moreBtn.setAttribute('aria-expanded', String(open)); };
+      moreBtn.onclick = () => setMore(more.hidden);
+      toggleMore = () => setMore(more.hidden);
+      openMore = () => { setMore(true); (more.querySelector('button:not(:disabled)') as HTMLButtonElement | null)?.focus({ preventScroll: true }); };
+      actions.append(moreBtn);
+      more.append(moreMarks, ...flagMore);
+      if (extras.querySelector('.plm-extras-links')?.childElementCount || extras.querySelector('form')) more.append(extras);
+      if (tierRow) more.append(tierRow);
+      root.append(actions, more, reasonRow, sectionHint, thread);
+    } else {
+      root.append(actions, reasonRow, sectionHint);
+    }
 
     // Everyone's marks on this line.
     const team = this.summary?.team ?? [];
@@ -1820,10 +1931,11 @@ export class LineMarksUI {
       }
       list.append(li);
     }
-    root.append(list);
+    if (margin) tail.push(list); else root.append(list);
     return {
       root, openReason, scope: coverage, choose: (status, via) => choose(status, undefined, via ?? 'click'), ...(askControl ? { ask: askControl } : {}),
       flipTier: () => setTier(flippedTier(tierView?.tier ?? TIER_POLICY.defaultTier)),
+      ...(margin ? { tail, openMore, toggleMore } : {}),
     };
   }
 
@@ -2092,7 +2204,7 @@ export class LineMarksUI {
     // Accord layout stage 2: the Issues that need the viewer (the pill's count) come first.
     if (NEXT_ISSUE_POLICY.viewerFirst) {
       const me = this.me();
-      const mine = ranked.filter(r => issueNeedsViewer(r.issue, me));
+      const mine = ranked.filter(r => issueNeedsViewer(r.issue, me, [this.host.actor()]));
       ranked = [...mine, ...ranked.filter(r => !mine.includes(r))];
     }
     const view = this.view;

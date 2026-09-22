@@ -206,11 +206,13 @@ async function runDesktop(browser, base, tag) {
   });
 
   await check(`${tag}: Fold closed folds opened lines again; Unfold closed opens them all`, async () => {
-    await page.locator('.prw-right .pclose-refold').click();
+    // Accord layout stage 3: these outline tools live on the Navigator's Outline tab.
+    await page.locator('.prw-left .anv-tab[data-tab="outline"]').click();
+    await page.locator('.prw-left .pclose-refold').click();
     await page.waitForFunction(() => document.querySelector('.ProseMirror .pclose-folded[data-pclose-line="6"]'), null, { timeout: 2000 });
-    await page.locator('.prw-right .pclose-unfold').click();
+    await page.locator('.prw-left .pclose-unfold').click();
     await page.waitForFunction(() => !document.querySelector('.ProseMirror .pclose-folded'), null, { timeout: 2000 });
-    await page.locator('.prw-right .pclose-refold').click();
+    await page.locator('.prw-left .pclose-refold').click();
     await page.waitForFunction(() => document.querySelector('.ProseMirror .pclose-folded[data-pclose-line="6"]'), null, { timeout: 2000 });
   });
 
@@ -301,16 +303,19 @@ async function runPhone(browser, base, tag) {
     assert.equal(await row.count(), 0, 'a tap did not open the folded line');
   });
 
-  await check(`${tag}: More… opens the line's sheet`, async () => {
+  // Accord layout stage 3 (decision 11): ⋯ opens the Margin sheet on the Line tab with More showing.
+  await check(`${tag}: ⋯ opens the Margin sheet with the line's More marks`, async () => {
     await page.evaluate(() => document.activeElement?.blur());
     await page.waitForTimeout(200);
     await page.locator('.prw-strip-more').tap();
-    const sheet = page.locator('.plm-menu.plm-sheet');
+    const sheet = page.locator('.prw-right.prw-sheet-open');
     await sheet.waitFor({ state: 'visible', timeout: 3000 });
+    await sheet.locator('.plm-more').waitFor({ state: 'visible', timeout: 3000 });
     const focus = (await walk(page)).target;
-    assert.equal(await sheet.getAttribute('data-line'), String(focus));
+    assert.equal(await sheet.locator('.plm-box').getAttribute('data-line'), String(focus));
     await page.screenshot({ path: path.join(shots, `${tag}-more-sheet.png`) });
-    await page.locator('.plm-sheet .plm-close').tap();
+    await page.locator('.prw-strip-grab').tap();
+    await page.waitForFunction(() => !document.querySelector('.prw-right.prw-sheet-open'), null, { timeout: 2000 });
   });
 
   await check(`${tag}: tapping text still edits, and the strip steps aside while the keyboard is up`, async () => {

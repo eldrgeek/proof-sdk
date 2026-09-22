@@ -1,0 +1,209 @@
+/*
+ * Accord layout stage 3 (Ren's proposal, Mike ruled 2026-09-21; decisions 4, 6, 7, 8, 11):
+ * the Navigator (left, Outline · Issues · Since you) and the Margin (right, Line N · Room) sit
+ * flush under the toolbar as in the mockup; the page between them is a sheet on a grey ground;
+ * phones get the bottom strip and the Margin as a sheet under it.
+ * Authorship: Claude Opus 5 (worker accord-layout3), 2026-09-21.
+ */
+body.prw-on {
+  --prw-left: 240px;
+  --prw-right: 340px;
+  --prw-collapsed: 40px;
+  --acc-ink: #1c1f24; --acc-mute: #6b7280; --acc-line: #e3e6ea; --acc-here: #2f6fed; --acc-here-tint: #eef3ff;
+  --acc-need: #d98c00; --acc-need-tint: #fff6e3;
+}
+body.prw-on.prw-left-collapsed { --prw-left: var(--prw-collapsed); }
+body.prw-on.prw-right-collapsed { --prw-right: var(--prw-collapsed); }
+
+@media (min-width: 701px) {
+  /* The rails: flush panels from the toolbar to the bottom of the window (mockup regions). */
+  body.prw-on .prw-rail,
+  body.prw-on.amb-on .prw-rail {
+    top: var(--prw-chrome, 72px); bottom: 0; border-radius: 0; border: none; background: #fff; color: var(--acc-ink);
+    font: 14px/1.45 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+  }
+  body.prw-on .prw-left { left: 0; width: var(--prw-left); border-right: 1px solid var(--acc-line); }
+  body.prw-on .prw-right { right: 0; width: var(--prw-right); border-left: 1px solid var(--acc-line); }
+  body.prw-on.prw-left-collapsed .prw-left { left: 0; width: var(--prw-collapsed); }
+  body.prw-on.prw-right-collapsed .prw-right { right: 0; width: var(--prw-collapsed); }
+  /* The page column: a white sheet on a grey ground, as in the mockup. */
+  body.prw-on { background: #f6f7f9 !important; }
+  body.prw-on #app { background: transparent; }
+  body.prw-on #editor-container {
+    background: #fff; border: 1px solid var(--acc-line); border-radius: 10px; margin-top: 6px !important; margin-bottom: 40px;
+    box-sizing: border-box;
+  }
+  /* The feedback chip sits over the Navigator's foot: its lists keep that space empty. */
+  body.prw-on .prw-left .anv-pane { padding-bottom: 72px; }
+}
+
+/* Tabs (both rails): the mockup's underlined tabs. */
+.anv-head, .amg-head { padding: 0 6px 0 0 !important; gap: 0 !important; border-bottom: 1px solid var(--acc-line, #e3e6ea) !important; align-items: stretch !important; min-height: 40px; }
+.anv-tabs, .amg-tabs { display: flex; flex: 1; min-width: 0; align-items: stretch; }
+.anv-tab, .amg-tab {
+  display: inline-flex; align-items: center; gap: 5px; padding: 9px 10px; margin-bottom: -1px; border: none; border-bottom: 2px solid transparent;
+  background: none; color: var(--acc-mute, #6b7280); font: 13.5px/1.2 -apple-system, system-ui, sans-serif; cursor: pointer; white-space: nowrap;
+}
+.anv-tab:hover, .amg-tab:hover { color: var(--acc-ink, #1c1f24); }
+.anv-tab[aria-selected="true"], .amg-tab[aria-selected="true"] { color: var(--acc-ink, #1c1f24); font-weight: 600; border-bottom-color: var(--acc-ink, #1c1f24); }
+.anv-tab:focus-visible, .amg-tab:focus-visible { outline: 2px solid var(--acc-here, #2f6fed); outline-offset: -2px; }
+.anv-badge, .amg-badge { min-width: 18px; padding: 0 6px; border-radius: 999px; color: #fff; font: 600 11px/17px system-ui, sans-serif; text-align: center; box-sizing: border-box; }
+.anv-badge { background: var(--acc-need, #d98c00); }
+.amg-badge { background: var(--acc-here, #2f6fed); }
+.anv-badge[hidden], .amg-badge[hidden] { display: none; }
+.amg-preview { padding: 0 6px; border-radius: 999px; background: #f3f4f6; color: var(--acc-mute, #6b7280); font: 500 11px/16px system-ui, sans-serif; }
+.anv-head .prw-collapse, .amg-head .prw-collapse { align-self: center; width: 28px; height: 28px; margin-left: 4px; border-color: transparent; background: transparent; }
+.anv-head .prw-collapse:hover, .amg-head .prw-collapse:hover { background: #f3f4f6; }
+/* Collapsed (desktop): only the toggle shows. Phones have no collapsed state, only sheets. */
+@media (min-width: 701px) {
+  body.prw-left-collapsed .prw-left .anv-tabs, body.prw-left-collapsed .prw-left .anv-pane,
+  body.prw-right-collapsed .prw-right .amg-tabs, body.prw-right-collapsed .prw-right .amg-pane { display: none !important; }
+  body.prw-left-collapsed .anv-head, body.prw-right-collapsed .amg-head { justify-content: center; padding: 6px 0 !important; border-bottom: none !important; }
+}
+
+/* Panes */
+/* The Navigator is 240 px: its three tabs share the row with the toggle. */
+.anv-tab { padding: 9px 6px; font-size: 13px; flex: 0 1 auto; }
+.anv-tabs { gap: 2px; padding-left: 4px; }
+.anv-pane[hidden], .amg-pane[hidden] { display: none !important; }
+.anv-pane { flex: 1; min-height: 0; overflow: auto; padding: 6px 0 14px !important; }
+.amg-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.amg-pane > .prw-rail-body { padding: 12px 14px 16px; }
+.anv-empty { padding: 8px 14px; }
+
+/* Navigator: Issues */
+.anv-issues, .anv-outline { list-style: none; margin: 0; padding: 2px 0; }
+.anv-issue {
+  display: flex; gap: 8px; align-items: flex-start; width: 100%; padding: 7px 12px 7px 14px; border: none; background: none;
+  color: #333; text-align: left; font: 13px/1.4 -apple-system, system-ui, sans-serif; cursor: pointer;
+}
+.anv-issue:hover { background: #f6f7f9; }
+.anv-issue[aria-current="true"] { background: var(--acc-here-tint, #eef3ff); }
+.anv-dot { width: 8px; height: 8px; margin-top: 6px; border-radius: 50%; background: var(--acc-need, #d98c00); flex: none; }
+.anv-issue-body { min-width: 0; display: flex; flex-direction: column; }
+.anv-issue-title { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.anv-issue-kind { color: var(--acc-mute, #6b7280); font-size: 12px; }
+/* The PlayMaker Marks panel docks under the Issues list (View › Marks panel). */
+.anv-pane .prw-dock:not(:empty) { margin: 10px 12px 0; padding-top: 10px; border-top: 1px solid var(--acc-line, #e3e6ea); }
+
+/* Navigator: Outline */
+.anv-tools { padding: 4px 12px 8px; display: grid; gap: 6px; }
+.anv-tools:empty { display: none; }
+.anv-tools .pfold-controls { margin: 0; }
+.anv-row { display: flex; align-items: center; gap: 6px; padding: 3px 10px 3px 8px; }
+.anv-row[aria-current="true"] { background: var(--acc-here-tint, #eef3ff); }
+.anv-fold {
+  display: inline-flex; align-items: center; gap: 3px; flex: none; min-width: 40px; height: 22px; padding: 0 6px; border: 1px solid #e5e7eb;
+  border-radius: 999px; background: #fff; color: #4b5563; font: 600 11px/1 system-ui, sans-serif; cursor: pointer;
+}
+.anv-fold[data-state="issues"] { border-color: #f0d9a6; background: var(--acc-need-tint, #fff6e3); color: #7a4f00; }
+.anv-fold[data-state="resolved"] .anv-count { color: #15803d; }
+.anv-heading {
+  flex: 1; min-width: 0; padding: 4px 2px; border: none; background: none; color: #26303c; text-align: left; cursor: pointer;
+  font: 13px/1.35 -apple-system, system-ui, sans-serif; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.anv-row[data-level="1"] .anv-heading { font-weight: 600; }
+.anv-heading:hover { color: var(--acc-here, #2f6fed); }
+
+/* Margin: the Line tab (decision 8). */
+.plm-box-margin .plm-quote {
+  margin: 0 0 10px; padding: 6px 10px; border-left: 3px solid var(--acc-here, #2f6fed); background: var(--acc-here-tint, #eef3ff);
+  color: #444; font-size: 13px; line-height: 1.45;
+}
+.plm-box-margin .plm-primary-row { display: flex; gap: 8px; margin: 8px 0; }
+.plm-box-margin .plm-primary-row .plm-choice.plm-primary {
+  flex: 1; justify-content: center; min-height: 40px; padding: 8px 0; border-radius: 8px; font: 600 13.5px/1.2 system-ui, sans-serif;
+}
+.plm-box-margin .plm-primary .plm-choice-glyph { display: none; }
+.plm-box-margin .plm-choice.plm-primary[data-status="agreed"] { border-color: #9ccfb0; color: #177245; background: #f0faf3; }
+.plm-box-margin .plm-choice.plm-primary[data-status="rejected"] { border-color: #e4a9a3; color: #b3261e; background: #fdf2f1; }
+.plm-box-margin .plm-choice.plm-primary[aria-pressed="true"][data-status="agreed"] { background: #dcf3e4; box-shadow: inset 0 0 0 1px #177245; }
+.plm-box-margin .plm-choice.plm-primary[aria-pressed="true"][data-status="rejected"] { background: #fbe1de; box-shadow: inset 0 0 0 1px #b3261e; }
+.plm-key { margin-left: 6px; font: 400 11px/1 system-ui, sans-serif; opacity: .7; }
+.plm-more-btn {
+  flex: 0 0 52px; min-height: 40px; border: 1px solid var(--acc-line, #e3e6ea); border-radius: 8px; background: #fff; color: var(--acc-mute, #6b7280);
+  font: 400 16px/1 system-ui, sans-serif; cursor: pointer;
+}
+.plm-more-btn[aria-expanded="true"] { background: #f3f4f6; color: var(--acc-ink, #1c1f24); }
+.plm-more { margin: 0 0 10px; padding: 8px; border: 1px solid var(--acc-line, #e3e6ea); border-radius: 10px; background: #fafafa; }
+.plm-more[hidden] { display: none; }
+.plm-more .plm-more-marks { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.plm-more .plm-flag-open, .plm-more .plm-extras { margin-top: 8px; }
+.plm-more .plm-flag-open { display: block; }
+.plm-more .plm-flag-form { margin-top: 6px; }
+.plm-more .plm-tier-row { margin-top: 8px; }
+.plm-thread > * + * { margin-top: 10px; }
+.plm-box-margin .plm-thread .pask, .plm-box-margin .plm-thread .plm-objection { border-radius: 10px; }
+.prw-linebox .prw-keys { margin: 6px 0 0; color: #8a9099; font-size: 11px; }
+.amg-tail:not([hidden]) { margin-top: 12px; }
+.amg-tail[hidden] { display: none; }
+.plm-familiar-fold > summary { cursor: pointer; color: var(--acc-mute, #6b7280); font-size: 12.5px; margin: 6px 0; }
+.plm-familiar-fold[open] > summary { margin-bottom: 4px; }
+.amg-reply { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; }
+.amg-reply[hidden] { display: none; }
+.amg-reply-input {
+  flex: 1; min-width: 0; min-height: 36px; padding: 8px 10px; border: 1px solid var(--acc-line, #e3e6ea); border-radius: 8px;
+  font: 13px/1.3 system-ui, sans-serif; color: var(--acc-ink, #1c1f24);
+}
+.amg-reply-input:focus { outline: 2px solid var(--acc-here, #2f6fed); outline-offset: -1px; }
+.amg-reply-send { min-height: 36px; padding: 0 12px; border: 1px solid var(--acc-ink, #1c1f24); border-radius: 8px; background: var(--acc-ink, #1c1f24); color: #fff; font: 600 12.5px system-ui, sans-serif; cursor: pointer; }
+.amg-resolve-note { flex-basis: 100%; margin: 4px 0 0; color: var(--acc-mute, #6b7280); font-size: 12.5px; }
+.amg-me { margin-top: 14px; padding-top: 8px; border-top: 1px solid #ecebe6; display: grid; gap: 6px; }
+.amg-me .prw-me { white-space: normal; }
+.amg-tools:empty { display: none; }
+.amg-tools { margin-bottom: 10px; }
+/* The change cards follow the mockup: a light card with the three actions. */
+.amg-pane .prw-changes { margin-top: 12px; padding-top: 0; border-top: none; }
+.amg-pane .prw-card { border: 1px solid var(--acc-line, #e3e6ea); border-left: 3px solid var(--review-author, #9ca3af); border-radius: 10px; padding: 10px 12px; }
+.amg-pane .prw-card-actions .prw-accept { background: var(--acc-ink, #1c1f24); color: #fff; border-color: var(--acc-ink, #1c1f24) !important; }
+/* The Room tab: the chat, full height. */
+.amg-pane[data-tab="room"] .prw-chat { flex: 1; max-height: none; border-top: none; padding: 10px 12px; }
+.amg-pane[data-tab="room"] .pch-head { display: none; }
+.amg-pane[data-tab="room"] .pch[data-collapsed="true"] > :not(.pch-head) { display: revert; }
+
+/* The hover preview: a ring on the previewed line's margin dot (the text never changes). */
+.plm-dot[data-preview="true"] .plm-glyph { box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--acc-here, #2f6fed); }
+
+/* Phones (decision 11): the strip, and the Margin as a sheet under it. */
+.prw-strip-grab { display: none; }
+@media (max-width: 700px) {
+  body.prw-strip-on .prw-strip:not([hidden]) {
+    border-left: none; border-top: 1px solid var(--acc-line, #e3e6ea); border-radius: 14px 14px 0 0; box-shadow: 0 -4px 16px rgba(0, 0, 0, .08);
+    padding: 12px 12px calc(6px + env(safe-area-inset-bottom, 0px)); gap: 8px;
+  }
+  .prw-strip-grab { display: block; position: absolute; top: 0; left: 50%; width: 64px; height: 14px; margin-left: -32px; padding: 0; border: none; background: none; cursor: pointer; }
+  .prw-strip-grab::before { content: ""; display: block; width: 36px; height: 4px; margin: 5px auto 0; border-radius: 2px; background: #d0d3d8; }
+  .prw-strip-where { display: block; padding: 0; border: none; background: none; color: #333; font: 13.5px/1.2 system-ui, sans-serif; text-align: left; }
+  .prw-strip-where b { font-weight: 600; }
+  .prw-strip-marked { display: block; padding: 0; border: none; background: none; color: #333; font: 12.5px/1.25 system-ui, sans-serif; text-align: left; }
+  .prw-strip-actions button { min-height: 44px; border-radius: 8px; }
+  .prw-strip-actions .prw-strip-agree { min-width: 84px; background: #f0faf3; border-color: #9ccfb0; color: #177245; }
+  .prw-strip-actions .prw-strip-reject { min-width: 84px; background: #fdf2f1; border-color: #e4a9a3; color: #b3261e; }
+  .prw-strip-actions .prw-strip-more { min-width: 48px; color: var(--acc-mute, #6b7280); font-weight: 400; font-size: 18px; }
+  /* The status bar folds into the strip: it shows only while the strip steps aside (the caret in the text). */
+  body.prw-strip-on .pst-bar { display: none; }
+  /* The Margin sheet: the strip at its top, then Line · Room, then the pane. */
+  body.prw-on .prw-right.prw-sheet-open { max-height: min(78dvh, 640px); background: #fff; border-radius: 14px 14px 0 0; }
+  body.prw-margin-sheet .prw-right.prw-sheet-open > .prw-strip:not([hidden]) {
+    position: relative; bottom: auto; left: auto; right: auto; box-shadow: none; border-top: none; border-radius: 14px 14px 0 0; flex-shrink: 0;
+  }
+  body.prw-margin-sheet .prw-right.prw-sheet-open .amg-head { border-top: 1px solid var(--acc-line, #e3e6ea); }
+  .prw-sheet-open .amg-tab, .prw-sheet-open .anv-tab { min-height: 44px; padding: 0 14px; font-size: 14px; }
+  .prw-sheet-open .plm-box-margin .plm-primary-row .plm-choice.plm-primary, .prw-sheet-open .plm-more-btn { min-height: 48px; }
+  .prw-sheet-open .anv-issue, .prw-sheet-open .anv-heading { min-height: 44px; font-size: 14px; }
+  .prw-sheet-open .anv-fold { height: 32px; min-width: 48px; }
+  .prw-sheet-open .amg-reply-input, .prw-sheet-open .amg-reply-send { min-height: 44px; font-size: 16px; }
+  /* The strip already carries the line, Agree, Reject and ⋯: the sheet's Line tab starts with the thread. */
+  body.prw-margin-sheet .prw-right.prw-sheet-open .plm-box-margin .plm-quote,
+  body.prw-margin-sheet .prw-right.prw-sheet-open .plm-box-margin .plm-primary-row,
+  body.prw-margin-sheet .prw-right.prw-sheet-open .prw-keys { display: none; }
+  /* Sheets size to their content (the rail has only a max height): panes grow, not shrink to zero. */
+  .prw-sheet-open .anv-pane, .prw-sheet-open .amg-pane { flex: 1 1 auto; }
+  body.prw-on .prw-rail.prw-sheet-open .anv-pane:not([hidden]) { display: block !important; }
+  body.prw-on .prw-rail.prw-sheet-open .amg-pane:not([hidden]) { display: flex !important; }
+  body.prw-on .prw-rail.prw-sheet-open .anv-tabs, body.prw-on .prw-rail.prw-sheet-open .amg-tabs { display: flex !important; }
+  body.prw-on .prw-left.prw-sheet-open { height: min(70dvh, 560px); background: #fff; }
+  /* The chat in the Room tab of the sheet. */
+  .prw-sheet-open .amg-pane[data-tab="room"] .prw-chat { display: flex; }
+  .prw-sheet-open .amg-pane { overflow: auto; }
+}

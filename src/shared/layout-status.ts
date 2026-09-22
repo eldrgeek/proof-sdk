@@ -85,17 +85,22 @@ function includesActor(list: readonly string[] | undefined, viewer: string): boo
   return (list ?? []).some(actor => sameActor(actor, viewer));
 }
 
-/** Does this Issue need the viewer (NEEDS_YOU_POLICY)? */
-export function issueNeedsViewer(issue: ProofIssue, viewer: string): boolean {
+/**
+ * Does this Issue need the viewer (NEEDS_YOU_POLICY)? `aliases` are the viewer's other actor
+ * strings (the editor writes a guest's comments as `human:<name>` while line marks name them
+ * `guest:<name>`): the viewer's own change or comment never needs them, under either name.
+ */
+export function issueNeedsViewer(issue: ProofIssue, viewer: string, aliases: readonly string[] = []): boolean {
+  const mine = (by: string | null | undefined) => Boolean(by) && [viewer, ...aliases].some(me => sameActor(by!, me));
   switch (issue.type) {
     case 'ask':
       if (!NEEDS_YOU_POLICY.ask || !includesActor(issue.openFor, viewer)) return false;
       return NEEDS_YOU_POLICY.snoozedAsk || !includesActor(issue.snoozedFor, viewer);
     case 'suggestion':
     case 'comment':
-      return NEEDS_YOU_POLICY[issue.type] && !(issue.by && sameActor(issue.by, viewer));
+      return NEEDS_YOU_POLICY[issue.type] && !mine(issue.by);
     case 'objection':
-      return NEEDS_YOU_POLICY.objection && !sameActor(issue.by, viewer);
+      return NEEDS_YOU_POLICY.objection && !mine(issue.by);
     case 'uncertain':
     case 'alternative':
     case 'ttl':
@@ -113,10 +118,10 @@ export function issueNeedsViewer(issue: ProofIssue, viewer: string): boolean {
  * The lines that need the viewer, in document order (one amber dot each). An Issue with no line
  * (a nomination, a review mark whose text is gone) has no dot and is not counted here.
  */
-export function needsYouLines(issues: readonly ProofIssue[], viewer: string, lineAtPos: (pos: number) => number): number[] {
+export function needsYouLines(issues: readonly ProofIssue[], viewer: string, lineAtPos: (pos: number) => number, aliases: readonly string[] = []): number[] {
   const lines = new Set<number>();
   for (const issue of issues) {
-    if (!issueNeedsViewer(issue, viewer)) continue;
+    if (!issueNeedsViewer(issue, viewer, aliases)) continue;
     let index: number | null = 'lineIndex' in issue && typeof issue.lineIndex === 'number' ? issue.lineIndex : null;
     if (index === null && typeof issue.pos === 'number') {
       const at = lineAtPos(issue.pos);

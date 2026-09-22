@@ -147,40 +147,37 @@ async function runDesktop(browser, base, tag) {
   await page.waitForTimeout(400);
 
   // ---- item 5: the hovered line is visibly highlighted ---------------------
-  await check(`${tag}: item 5 — the hovered line is visibly highlighted and the rail follows it`, async () => {
+  // Accord layout stage 3 (decisions 4 and 5, Mike 2026-09-21): hover previews the Margin and rings
+  // the line's margin dot; the text never changes and the blue bar stays on the one cursor.
+  await check(`${tag}: item 5 — the hovered line is visibly marked (a ring on its dot) and the Margin follows it`, async () => {
+    const cursor = (await page.evaluate(() => window.__proofReadingWalk.debugState())).cursor;
     await hoverLine(page, 4);
     await page.waitForFunction(() => window.__proofReadingWalk.debugState().target === 4, null, { timeout: 1500, polling: 20 });
-    const band = await page.evaluate(() => {
+    const look = await page.evaluate(() => {
       const el = document.querySelector('.prw-focus');
-      if (!el || el.hidden) return null;
-      const style = getComputedStyle(el);
-      const rect = el.getBoundingClientRect();
-      return { source: el.dataset.source, background: style.backgroundColor, shadow: style.boxShadow, width: rect.width, height: rect.height };
+      const ring = document.querySelector('.plm-dot[data-line="4"][data-preview="true"] .plm-glyph');
+      return { source: el?.dataset.source, bandLine: Number(el?.dataset.line), ring: ring ? getComputedStyle(ring).boxShadow : null };
     });
-    assert.ok(band, 'no focus band while hovering');
-    assert.equal(band.source, 'hover');
-    const alpha = Number(/rgba?\([^)]*?([\d.]+)\)$/.exec(band.background)?.[1] ?? '1');
-    assert.ok(alpha >= 0.1, `the hover band is too faint to see (alpha ${alpha})`);
-    const inset = /(\d+)px 0px 0px 0px inset/.exec(band.shadow);
-    assert.ok(inset && Number(inset[1]) >= 5, `the hover bar is thin: ${band.shadow}`);
-    // The band is on the hovered line, and the rail's mark box points at it.
-    await page.waitForTimeout(400); // the band slides into place (.12s transition)
-    const line = await block(page, 4).boundingBox();
-    const rect = await page.locator('.prw-focus').boundingBox();
-    assert.ok(Math.abs(rect.y - line.y) < 16, `the band is at ${Math.round(rect.y)}, the line at ${Math.round(line.y)}`);
+    assert.ok(look.ring && /rgb\(47, 111, 237\)/.test(look.ring), `no ring on the hovered line's dot: ${look.ring}`);
+    assert.equal(look.bandLine, cursor, 'the blue bar followed the hover (the text must not change on hover)');
     await page.waitForFunction(() => document.querySelector('.prw-linebox .plm-box')?.getAttribute('data-line') === '4', null, { timeout: 1000 });
+    assert.match(await page.locator('.prw-right .amg-tab[data-tab="line"]').innerText(), /Line 5\s*preview/);
     await page.screenshot({ path: path.join(shots, `${tag}-hover-highlight.png`) });
   });
 
   // ---- item 1: the one Undo ------------------------------------------------
-  await check(`${tag}: item 1 — the rail's Undo names the action it would reverse`, async () => {
+  await check(`${tag}: item 1 — the Undo names the action it would reverse (its name and tooltip)`, async () => {
     await hoverLine(page, 5);
     await page.waitForFunction(() => window.__proofReadingWalk.debugState().target === 5, null, { timeout: 1500 });
     await page.keyboard.press('a');
     await page.waitForFunction(i => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i && m.status === 'agreed'), 5, { timeout: 4000 });
     const button = page.locator('.pundo-btn').first();
     await button.waitFor({ state: 'visible', timeout: 3000 });
-    assert.match(await button.innerText(), /Undo agreed line 6/);
+    // Accord layout stage 3 (COS): the toolbar button says just "Undo"; its name, tooltip and
+    // Edit › Undo say what it reverses.
+    assert.equal((await button.innerText()).trim(), 'Undo');
+    assert.equal(await button.getAttribute('aria-label'), 'Undo agreed line 6');
+    assert.match(await button.getAttribute('title'), /Undo: agreed line 6/);
     await page.screenshot({ path: path.join(shots, `${tag}-undo-button.png`) });
   });
 

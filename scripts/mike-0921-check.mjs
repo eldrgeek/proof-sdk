@@ -312,7 +312,8 @@ async function desktop(browser, base, style) {
     await page.mouse.click(box.x + 60, box.y + 10);
     await page.waitForTimeout(120);
     assert.equal(await writing(page), true);
-    await page.locator('.prw-right .prw-rail-head strong').first().click();
+    // Accord layout stage 3: the Margin's Line tab (a control in the rail, not the text).
+    await page.locator('.prw-right .amg-tab[data-tab="line"]').click();
     await page.waitForTimeout(100);
     assert.equal(await writing(page), false, 'a click in the rail did not return to reading');
     const text = await docText(page);
@@ -379,7 +380,8 @@ async function desktop(browser, base, style) {
     const notice = page.locator('.prw-right .prw-provisional');
     assert.match(await notice.innerText(), /You scrolled past 3 changes, so they count as accepted by scrolling\. They are not saved yet/);
     assert.equal(await page.locator('.prw-right .prw-commit').innerText(), 'Save 3 accepted changes');
-    assert.equal(await notice.evaluate(n => n.parentElement.classList.contains('prw-right')), true, 'the notice is inside the scrolling list');
+    // Accord layout stage 3: the notice sits at the top of the Line tab, outside its scrolling list.
+    assert.equal(await notice.evaluate(n => Boolean(n.closest('.prw-right')) && !n.closest('.prw-rail-body')), true, 'the notice is inside the scrolling list');
     await page.screenshot({ path: path.join(shots, `${tag}-save-accepted.png`), clip: { x: 1080, y: 0, width: 360, height: 500 } });
   });
   await check(`${tag}: item 3 — the Save button commits through the accept bridge, updates the counter, and the one Undo reverses it`, async () => {
@@ -403,7 +405,8 @@ async function desktop(browser, base, style) {
     assert.ok((await docText(page)).includes('ALPHA word'), 'the change was not applied');
     const undo = page.locator('.pundo-btn').first();
     await undo.waitFor({ state: 'visible' });
-    assert.match(await undo.innerText(), /Undo accepted 3 changes/);
+    // Accord layout stage 3 (COS): the toolbar's Undo says "Undo"; its name says what it reverses.
+    assert.match(await undo.getAttribute('aria-label'), /Undo accepted 3 changes/);
     await undo.click();
     await waitFor(page, n => (window.proof?.getAllMarks?.() ?? []).filter(m => m.data?.status === 'pending').length === n, pendingBefore)
       .catch(async () => { throw new Error(`undo did not bring the changes back: ${JSON.stringify(await page.evaluate(() => ({ pending: (window.proof?.getAllMarks?.() ?? []).filter(m => m.data?.status === 'pending').length, undo: window.__proofUndo?.debugState() })))}`); });
@@ -505,7 +508,8 @@ async function desktop(browser, base, style) {
     await waitFor(page, () => (window.__proofChat?.debugState().messages.length ?? 0) >= 14, null, 12_000);
     await page.waitForTimeout(300);
     const list = page.locator('.prw-right .pch-list');
-    if (!(await list.isVisible())) await page.locator('.prw-right .pch-toggle, .prw-right .pch-head button').first().click();
+    // Accord layout stage 3 (decision 6): the chat is the Margin's Room tab.
+    if (!(await list.isVisible())) await page.locator('.prw-right .amg-tab[data-tab="room"]').click();
     await page.waitForTimeout(300);
     let f = (await page.evaluate(() => window.__proofChat.debugState().follow));
     assert.ok(f.scrollHeight - f.clientHeight - f.scrollTop <= 2, `the chat is not at its newest ${JSON.stringify(f)}`);

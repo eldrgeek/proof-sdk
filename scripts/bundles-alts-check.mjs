@@ -345,8 +345,11 @@ async function run(browser, style) {
     });
 
     await check(`${tag}: blind marking: the AI's reject is hidden until Mike marks the line; the reveal puts the disagreement first`, async () => {
-      const box = mike.locator('.prw-right .plm-blind .plm-blind-setting input');
+      // Accord layout stage 3: blind marking (an Owner's document setting) is in Share › Link.
+      await mike.getByRole('button', { name: 'Share', exact: true }).click();
+      const box = mike.locator('#share-dialog #share-panel-link .plm-blind .plm-blind-setting input');
       await box.check();
+      await mike.getByRole('button', { name: 'Close share dialog' }).click();
       await waitFor(mike, () => window.__proofLineMarks.debugState().extras.blind === true);
       const rej = await agent('POST', '/marks/line', { quote: 'Every open Issue shows', status: 'rejected', reason: 'The count lags a minute' });
       assert.equal(rej.status, 200, JSON.stringify(rej.body));
@@ -356,7 +359,7 @@ async function run(browser, style) {
       await waitFor(mike, () => window.__proofLineMarks.debugState().extras.hiddenMarks >= 1, null, 10000);
       await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.USE);
       await mike.locator('.prw-right .plm-box .plm-blind-note').waitFor({ state: 'visible' });
-      const claude = mike.locator('.prw-right .plm-box .plm-team li', { hasText: 'claude' }).locator('.plm-team-status');
+      const claude = mike.locator('.prw-right .plm-team li', { hasText: 'claude' }).locator('.plm-team-status');
       assert.equal(await claude.getAttribute('data-status'), 'hidden');
       await mike.screenshot({ path: path.join(shots, `${tag}-5-blind-hidden.png`) });
       await mike.evaluate(() => document.activeElement?.blur());
@@ -385,13 +388,18 @@ async function run(browser, style) {
     });
 
     await check(`${tag}: a time-to-live runs out: Mike's Agree goes stale, the AI re-checks first; "no longer true" reopens it for Mike`, async () => {
-      await mike.locator('.prw-right .plm-blind .plm-blind-setting input').uncheck();
+      await mike.getByRole('button', { name: 'Share', exact: true }).click();
+      await mike.locator('#share-dialog #share-panel-link .plm-blind .plm-blind-setting input').uncheck();
+      await waitFor(mike, () => window.__proofLineMarks.debugState().extras.blind === false);
+      await mike.getByRole('button', { name: 'Close share dialog' }).click();
       await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.PRICING);
       await mike.evaluate(() => document.activeElement?.blur());
       await mike.keyboard.press('a');
       await waitFor(mike, i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.status === 'agreed', L.PRICING);
       await mike.waitForTimeout(300);
       const box = mike.locator('.prw-right .plm-box');
+      // Accord layout stage 3 (decision 8): Time-to-live is under the line's ⋯ More.
+      await box.locator('.plm-more-btn').click();
       await box.locator('.plm-ttl-open').click();
       await box.locator('.plm-ttl-form input').fill('2s');
       await box.locator('.plm-ttl-form button[type="submit"]').click();
