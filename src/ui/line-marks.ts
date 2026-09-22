@@ -115,7 +115,8 @@ import {
 } from '../shared/line-tiers';
 import { tierViewKey, setTierDecorations, tierDecorationCount, type TierLineSpec } from '../editor/plugins/tier-view';
 import { buildTierRow, loadOnlyDecisions, renderTierControl, saveOnlyDecisions } from './line-tiers';
-import { HIGHLIGHT_POLICY, markedUpTo, needsYouLines, type MarkedUpTo } from '../shared/layout-status';
+import { HIGHLIGHT_POLICY, issueNeedsViewer, markedUpTo, needsYouLines, type MarkedUpTo } from '../shared/layout-status';
+import { ISSUES_PILL_POLICY, NEXT_ISSUE_POLICY, issuesPillText, issuesPillTitle } from '../shared/layout-chrome';
 import './line-marks.css';
 
 export interface LineMarksHost {
@@ -1284,14 +1285,21 @@ export class LineMarksUI {
       return;
     }
     const n = summary.counts.total;
-    this.bannerEl.dataset.state = n === 0 ? 'aligned' : 'issues';
-    this.countEl.textContent = n === 0 ? 'Aligned' : `${n} ${n === 1 ? 'issue' : 'issues'}`;
+    // Accord layout stage 2 (COS, 2026-09-21): the pill counts the viewer's own Issues (the amber
+    // dots, the status bar's "Issues left"); the team's count is in the title and People › Who is here.
+    const mine = this.needsYou.length;
+    const shown = ISSUES_PILL_POLICY.counts === 'viewer' ? mine : n;
+    this.bannerEl.dataset.state = n === 0 ? 'aligned' : shown === 0 ? 'clear' : 'issues';
+    this.countEl.dataset.teamCount = String(n);
+    this.countEl.dataset.viewerCount = String(mine);
+    this.countEl.textContent = ISSUES_PILL_POLICY.counts === 'viewer' ? issuesPillText(mine, n) : (n === 0 ? 'Aligned' : `${n} ${n === 1 ? 'issue' : 'issues'}`);
+    const lead = ISSUES_PILL_POLICY.teamCountInTitle ? `${issuesPillTitle(mine, n)} ` : '';
     this.countEl.title = n === 0
-      ? `Every team member has seen every line and no one has rejected anything. Team: ${summary.team.map(actorLabel).join(', ')}`
-      : `${summary.counts.lineIssues} lines not yet seen by everyone or rejected; ${summary.counts.reviewMarkIssues} open comments or suggestions; ${summary.counts.askIssues} unanswered ${summary.counts.askIssues === 1 ? 'ask' : 'asks'}; ${summary.counts.uncertainIssues} uncertain ${summary.counts.uncertainIssues === 1 ? 'line' : 'lines'}; ${summary.counts.objectionIssues} open ${summary.counts.objectionIssues === 1 ? 'objection' : 'objections'}; ${summary.counts.alternativeIssues} ${summary.counts.alternativeIssues === 1 ? 'line' : 'lines'} with competing wordings; ${summary.counts.ttlIssues} expired ${summary.counts.ttlIssues === 1 ? 'claim' : 'claims'}; ${summary.counts.doIssues} unfinished ${summary.counts.doIssues === 1 ? 'action' : 'actions'}${this.blind ? '; blind marking is on' : ''}. Next issue goes by stakes: ${this.ranked.filter(r => r.urgent).length} urgent. Team: ${summary.team.map(actorLabel).join(', ')}`;
+      ? `${lead}Every team member has seen every line and no one has rejected anything. Team: ${summary.team.map(actorLabel).join(', ')}`
+      : `${lead}${summary.counts.lineIssues} lines not yet seen by everyone or rejected; ${summary.counts.reviewMarkIssues} open comments or suggestions; ${summary.counts.askIssues} unanswered ${summary.counts.askIssues === 1 ? 'ask' : 'asks'}; ${summary.counts.uncertainIssues} uncertain ${summary.counts.uncertainIssues === 1 ? 'line' : 'lines'}; ${summary.counts.objectionIssues} open ${summary.counts.objectionIssues === 1 ? 'objection' : 'objections'}; ${summary.counts.alternativeIssues} ${summary.counts.alternativeIssues === 1 ? 'line' : 'lines'} with competing wordings; ${summary.counts.ttlIssues} expired ${summary.counts.ttlIssues === 1 ? 'claim' : 'claims'}; ${summary.counts.doIssues} unfinished ${summary.counts.doIssues === 1 ? 'action' : 'actions'}${this.blind ? '; blind marking is on' : ''}. Next issue goes by stakes: ${this.ranked.filter(r => r.urgent).length} urgent. Team: ${summary.team.map(actorLabel).join(', ')}`;
     this.nextBtn.disabled = n === 0;
-    this.setShort(n === 0 ? '✓ Aligned' : `${n} ›`);
-    this.nextBtn.setAttribute('aria-label', n === 0 ? 'No issues: aligned' : `Next issue (${n} ${n === 1 ? 'issue' : 'issues'})`);
+    this.setShort(n === 0 ? '✓ Aligned' : `${shown} ›`);
+    this.nextBtn.setAttribute('aria-label', n === 0 ? 'No issues: aligned' : `Next issue (${shown} ${shown === 1 ? 'issue needs' : 'issues need'} you; the team has ${n})`);
     this.renderAlignedAt(n === 0);
   }
 
@@ -2080,7 +2088,13 @@ export class LineMarksUI {
    */
   gotoNextIssue(): void {
     if (this.walkOnly) { this.gotoNextFlagged(); return; }
-    const ranked = this.ranked.filter(r => r.issue.pos !== null);
+    let ranked = this.ranked.filter(r => r.issue.pos !== null);
+    // Accord layout stage 2: the Issues that need the viewer (the pill's count) come first.
+    if (NEXT_ISSUE_POLICY.viewerFirst) {
+      const me = this.me();
+      const mine = ranked.filter(r => issueNeedsViewer(r.issue, me));
+      ranked = [...mine, ...ranked.filter(r => !mine.includes(r))];
+    }
     const view = this.view;
     if (!view || ranked.length === 0) return;
     if (this.sittingStopped) this.startSitting();

@@ -130,8 +130,9 @@ async function openInviteDialog(page, phone) {
     await page.locator('#share-banner .share-pill-overflow').click();
     await page.locator('.proof-share-overflow-menu [role="menuitem"]', { hasText: 'Invite person' }).click();
   } else {
-    await page.getByRole('button', { name: 'Share options' }).click();
-    await page.getByRole('menuitem', { name: /Invite person/ }).click();
+    // Accord layout stage 2: People › Invite person… opens the Share dialog's People tab.
+    await page.locator('#accord-menubar .amb-top[data-menu="people"]').click();
+    await page.locator('.amb-menu [role="menuitem"]', { hasText: 'Invite person' }).click();
   }
   const dialog = page.locator('#invite-person-dialog');
   await dialog.waitFor({ state: 'visible' });
@@ -171,7 +172,7 @@ async function run(browser, style) {
     await check(`${tag}: Share → Invite person opens the dialog for the Owner`, async () => {
       dialog = await openInviteDialog(mike, false);
       assert.match(await dialog.innerText(), /Nobody invited yet/);
-      const checked = await dialog.locator('[data-guest] input:checked').getAttribute('value');
+      const checked = await dialog.page().locator('#share-dialog [data-guest] input:checked').getAttribute('value');
       assert.equal(checked, 'comment', 'the default guest setting is read and comment');
     });
 
@@ -185,7 +186,7 @@ async function run(browser, style) {
       await row.waitFor();
       assert.equal(await row.locator('.ip-status').innerText(), 'invited');
       await mike.screenshot({ path: path.join(shots, `${tag}-1-invited.png`) });
-      await dialog.getByRole('button', { name: 'Close invite dialog' }).click();
+      await dialog.page().locator('#share-dialog').getByRole('button', { name: 'Close share dialog' }).click();
     });
 
     // Eric opens the emailed link in his own browser.
@@ -215,7 +216,7 @@ async function run(browser, style) {
       assert.deepEqual(list.documents.map(d => d.slug), [slug]);
       dialog = await openInviteDialog(mike, false);
       await dialog.locator('.ip-status', { hasText: 'joined' }).waitFor();
-      await dialog.getByRole('button', { name: 'Close invite dialog' }).click();
+      await dialog.page().locator('#share-dialog').getByRole('button', { name: 'Close share dialog' }).click();
     });
 
     const guestCtx = await newContext(browser, base, desk);
@@ -227,7 +228,7 @@ async function run(browser, style) {
       const me = guest.locator('.prw-right .prw-me');
       await me.waitFor({ state: 'visible' });
       assert.match(await me.innerText(), /Sign in to mark/);
-      assert.equal(await guest.locator('#share-banner').getByRole('button', { name: 'Share options' }).count() >= 0, true);
+      assert.equal(await guest.locator('#share-banner').getByRole('button', { name: 'Share', exact: true }).count() >= 0, true);
       // Editing: typing changes nothing on the server.
       await guest.locator('.ProseMirror p').first().click();
       await guest.keyboard.type('GUESTTYPED');
@@ -248,9 +249,11 @@ async function run(browser, style) {
 
     await check(`${tag}: the private setting shuts guests out ("Sign in to open this document")`, async () => {
       dialog = await openInviteDialog(mike, false);
-      await dialog.locator('[data-guest] input[value="private"]').check();
-      await dialog.locator('[data-status]', { hasText: /Saved/ }).waitFor();
-      await dialog.getByRole('button', { name: 'Close invite dialog' }).click();
+      // Accord layout stage 2: the guest setting sits under the Share dialog's Link tab.
+      await dialog.page().locator('#share-dialog').getByRole('tab', { name: 'Link' }).click();
+      await dialog.page().locator('#share-dialog [data-guest] input[value="private"]').check();
+      await dialog.page().locator('#share-dialog .ip-guest-section [data-status]', { hasText: /Saved/ }).waitFor();
+      await dialog.page().locator('#share-dialog').getByRole('button', { name: 'Close share dialog' }).click();
       const res = await guest.goto(`${base}/d/${slug}`);
       assert.equal(res.status(), 401);
       await guest.getByRole('heading', { name: 'Sign in to open this document' }).waitFor();
@@ -274,7 +277,7 @@ async function run(browser, style) {
       await dialog.getByRole('button', { name: 'Remove Eric' }).click();
       await dialog.locator('[data-status]', { hasText: /was removed/ }).waitFor();
       await mike.screenshot({ path: path.join(shots, `${tag}-5-removed.png`) });
-      await dialog.getByRole('button', { name: 'Close invite dialog' }).click();
+      await dialog.page().locator('#share-dialog').getByRole('button', { name: 'Close share dialog' }).click();
       const refused = await pagePost(eric, `/api/documents/${slug}/line-marks`, { by: 'Eric', status: 'agreed', anchor: { hash: 'x', occurrence: 0, ordinal: 2, kind: 'paragraph', excerpt: 'Middle' } });
       assert.equal(refused.status, 403);
       const res = await eric.goto(`${base}/d/${slug}`);
@@ -302,7 +305,7 @@ async function run(browser, style) {
       const info = await pMike.evaluate(() => ({ cw: document.documentElement.clientWidth, r: document.querySelector('#invite-person-dialog').getBoundingClientRect().toJSON() }));
       assert.ok(info.r.left >= 0 && info.r.right <= info.cw + 1, `the dialog fits: ${JSON.stringify(info)}`);
       await pMike.screenshot({ path: path.join(shots, `${ptag}-1-dialog.png`) });
-      await d.getByRole('button', { name: 'Close invite dialog' }).click();
+      await d.page().locator('#share-dialog').getByRole('button', { name: 'Close share dialog' }).click();
     });
     await pCtx.close();
     const adaCtx = await newContext(browser, base, phoneOpts);

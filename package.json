@@ -44,7 +44,7 @@
     "test:cross-invite": "tsx src/tests/cross-invitation.test.ts",
     "test:ux-consistency": "tsx src/tests/ux-consistency.test.ts",
     "test:mike-0921": "tsx src/tests/mike-0921.test.ts && tsx src/tests/markdown-link-click.test.ts",
-    "test:layout": "tsx src/tests/layout-status.test.ts"
+    "test:layout": "tsx src/tests/layout-status.test.ts && tsx src/tests/layout-chrome.test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.879.0",

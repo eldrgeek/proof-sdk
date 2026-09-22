@@ -8,6 +8,7 @@
  */
 import { PROXY_POLICY, briefHeadline, flaggedWhy, HOLD_LABEL, type ProxyItem } from '../shared/proxy-marks';
 import type { LineMarksUI } from './line-marks';
+import { SETTINGS_POLICY } from '../shared/layout-chrome';
 import './proxy-marks.css';
 
 export interface ProxyMarksHost {
@@ -30,6 +31,16 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, t
   if (className) node.className = className;
   if (text !== undefined) node.textContent = text;
   return node;
+}
+
+const BRIEF_OPEN_KEY = 'proof:proxy-brief-open';
+function loadBriefOpen(): boolean {
+  try {
+    const saved = localStorage.getItem(BRIEF_OPEN_KEY);
+    if (saved === '1') return true;
+    if (saved === '0') return false;
+  } catch { /* optional */ }
+  return SETTINGS_POLICY.proxyBriefFolds ? SETTINGS_POLICY.proxyBriefDefaultOpen : true;
 }
 
 export class ProxyMarksUI {
@@ -143,7 +154,7 @@ export class ProxyMarksUI {
     const undoable = this.lastRatify && lm.undoableRatifications().some(r => r.id === this.lastRatify!.id) ? this.lastRatify : null;
     const sig = JSON.stringify([
       brief ? [brief.familiar, brief.counts, brief.items.map(i => [i.proxy.id, i.bucket, i.lineIndex])] : null,
-      walk, undoable?.id ?? null, this.busy, this.message,
+      walk, undoable?.id ?? null, this.busy, this.message, this.briefOpen,
     ]);
     if (sig === this.briefSig) return;
     this.briefSig = sig;
@@ -155,8 +166,20 @@ export class ProxyMarksUI {
     this.briefEl.dataset.read = String(brief.counts.read);
     const head = el('p', 'ppx-headline');
     head.append(el('strong', undefined, briefHeadline(brief, familiar)));
-    this.briefEl.append(head);
-    this.briefEl.append(el('p', 'ppx-note', 'Its marks are not yours until you ratify them. Every one carries its evidence.'));
+    // Accord layout stage 2 (decision 10): the brief folds; its headline stays, the rest opens on request.
+    const row = el('div', 'ppx-head-row');
+    const toggle = el('button', 'ppx-fold-toggle', this.briefOpen ? 'Fold' : 'Open');
+    toggle.type = 'button';
+    toggle.setAttribute('aria-expanded', String(this.briefOpen));
+    toggle.setAttribute('aria-label', this.briefOpen ? 'Fold your Familiar’s brief' : 'Open your Familiar’s brief');
+    toggle.onclick = () => this.setBriefOpen(!this.briefOpen);
+    row.append(head, toggle);
+    this.briefEl.append(row);
+    const body = el('div', 'ppx-body');
+    body.hidden = !this.briefOpen;
+    this.briefEl.dataset.folded = String(!this.briefOpen);
+    this.briefEl.append(body);
+    body.append(el('p', 'ppx-note', 'Its marks are not yours until you ratify them. Every one carries its evidence.'));
 
     const actions = el('div', 'ppx-actions');
     if (brief.ratify.length > 0) {
@@ -183,7 +206,7 @@ export class ProxyMarksUI {
       stop.onclick = () => lm.stopReviewFlagged();
       actions.append(status, next, stop);
     }
-    if (actions.childElementCount) this.briefEl.append(actions);
+    if (actions.childElementCount) body.append(actions);
 
     if (undoable) {
       const done = el('div', 'ppx-done');
@@ -194,14 +217,29 @@ export class ProxyMarksUI {
       undo.disabled = this.busy;
       undo.onclick = () => { void this.undo(); };
       done.append(undo);
-      this.briefEl.append(done);
+      body.append(done);
     }
-    if (this.message) this.briefEl.append(el('p', 'ppx-message', this.message));
+    if (this.message) body.append(el('p', 'ppx-message', this.message));
 
     // The ringer list (MDP): name every line the one click would cover, with its evidence.
-    if (brief.ratify.length) this.briefEl.append(this.itemList(`What ${familiar} covered: ${brief.ratify.length} to ratify`, brief.ratify, 'ratify', true));
-    if (brief.flagged.length) this.briefEl.append(this.itemList(`Flagged for you (${brief.flagged.length})`, brief.flagged, 'flagged', true));
-    if (brief.seen.length) this.briefEl.append(this.itemList(`Read, no position (${brief.seen.length}): these still need you`, brief.seen, 'seen', false));
+    if (brief.ratify.length) body.append(this.itemList(`What ${familiar} covered: ${brief.ratify.length} to ratify`, brief.ratify, 'ratify', true));
+    if (brief.flagged.length) body.append(this.itemList(`Flagged for you (${brief.flagged.length})`, brief.flagged, 'flagged', true));
+    if (brief.seen.length) body.append(this.itemList(`Read, no position (${brief.seen.length}): these still need you`, brief.seen, 'seen', false));
+  }
+
+  /** Accord layout stage 2: the brief's fold (View › Familiar's brief opens it). Per browser. */
+  private briefOpen = loadBriefOpen();
+
+  isBriefOpen(): boolean { return this.briefOpen; }
+  /** Is there a brief to show (the Familiar read something)? */
+  hasBrief(): boolean { return !this.briefEl.hidden; }
+
+  setBriefOpen(open: boolean): void {
+    if (this.briefOpen === open) return;
+    this.briefOpen = open;
+    try { localStorage.setItem(BRIEF_OPEN_KEY, open ? '1' : '0'); } catch { /* optional */ }
+    this.briefSig = '';
+    this.renderBrief();
   }
 
   private itemList(title: string, items: ProxyItem[], kind: string, open: boolean): HTMLElement {
@@ -287,7 +325,7 @@ export class ProxyMarksUI {
     const text = el('span', 'ppx-pill-text', `${familiar} read ${brief.counts.read} for you: ${brief.counts.agreed} to ratify`);
     const open = el('button', 'ppx-pill-open', 'Open');
     open.type = 'button';
-    open.onclick = () => { this.pillDismissed = true; this.pillEl.hidden = true; this.host.openBrief?.(); };
+    open.onclick = () => { this.pillDismissed = true; this.pillEl.hidden = true; this.setBriefOpen(true); this.host.openBrief?.(); };
     const close = el('button', 'ppx-pill-close', '×');
     close.type = 'button';
     close.setAttribute('aria-label', 'Dismiss');
@@ -298,6 +336,7 @@ export class ProxyMarksUI {
   debugState(): Record<string, unknown> {
     return {
       briefHidden: this.briefEl.hidden,
+      briefOpen: this.briefOpen,
       familiarHidden: this.familiarEl.hidden,
       pillHidden: this.pillEl.hidden,
       lastRatify: this.lastRatify,

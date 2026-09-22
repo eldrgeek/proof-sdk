@@ -249,9 +249,9 @@ async function run(browser, style) {
 
     // ------------------------------------------------------------ the page: Share menu download
     await openDoc(mike, base, slug);
-    await check(`${tag}: Share ▾ → "Download as Accord (.md)" saves the same file`, async () => {
-      const share = mike.locator('#share-banner button', { hasText: 'Share' }).first();
-      await share.click();
+    // Accord layout stage 2: the download lives in File (and in the Share dialog's Link tab).
+    await check(`${tag}: File › "Download as Accord (.md)" saves the same file`, async () => {
+      await mike.locator('#accord-menubar .amb-top[data-menu="file"]').click();
       const item = mike.getByRole('menuitem', { name: /Download as Accord \(\.md\)/ });
       await item.waitFor({ state: 'visible' });
       await mike.screenshot({ path: path.join(shots, `${tag}-1-menu.png`) });

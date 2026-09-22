@@ -178,7 +178,10 @@ async function desktop(browser, base, style) {
       const first = document.querySelector('.ProseMirror > *').getBoundingClientRect();
       return { top: bar.top, h: bar.height, bottom: bar.bottom, tallest: Math.max(...buttons.map(b => b.height)), shortest: Math.min(...buttons.map(b => b.height)), firstTop: first.top };
     });
-    assert.ok(info.top <= 10, `bar top ${info.top}`);
+    // Accord layout stage 2: the toolbar sits right under the 28 px menu bar, which starts at 0.
+    const menubar = await page.evaluate(() => document.getElementById('accord-menubar').getBoundingClientRect().toJSON());
+    assert.equal(menubar.top, 0);
+    assert.ok(Math.abs(info.top - menubar.bottom) <= 1, `bar top ${info.top}, menu bar bottom ${menubar.bottom}`);
     assert.ok(info.h <= 50, `bar height ${info.h} (was 82)`);
     assert.ok(info.h - info.tallest <= 12, `whitespace above+below the buttons ${info.h - info.tallest}`);
     assert.ok(info.shortest >= 28, `a button is ${info.shortest} px tall`);

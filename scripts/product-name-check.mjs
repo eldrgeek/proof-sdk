@@ -161,7 +161,7 @@ async function pageChecks(browser, base, slug, style, tag, contextOptions) {
   await check(`${tag}: the top bar's wordmark reads "${NAME}"`, async () => {
     // The phone layout hides the wordmark to save width, so assert on the DOM, not on visibility:
     // whichever top-bar link is the wordmark must carry the product name and no other brand.
-    const texts = await page.evaluate(() => Array.from(document.querySelectorAll('#share-banner a'))
+    const texts = await page.evaluate(() => Array.from(document.querySelectorAll('#share-banner a, #accord-menubar a'))
       .map(a => (a.textContent || '').trim()).filter(Boolean));
     const NAME_FROM_NODE = NAME;
     assert.ok(texts.length > 0, 'the top bar has no links');

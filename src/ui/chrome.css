@@ -1,0 +1,254 @@
+/*
+ * Accord layout stage 2 (Ren's proposal, Mike ruled 2026-09-21): the menu bar, the one toolbar row,
+ * the Share dialog, Reading settings, and the small dialogs the menus open.
+ * Authorship: Claude Opus 5 (worker accord-layout2), 2026-09-21, after Ren's mockup-desktop.html.
+ */
+
+/* ---------------- Menu bar (28 px) ---------------- */
+.amb-bar {
+  position: fixed; top: 0; left: 0; right: 0; height: 28px; z-index: 1001; box-sizing: border-box;
+  display: flex; align-items: center; gap: 2px; padding: 0 10px 0 14px;
+  background: #fff; border-bottom: 1px solid #e3e6ea; color: #1c1f24;
+  font: 13px/1 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+.amb-brand { font-weight: 700; letter-spacing: .2px; margin-right: 10px; color: #1c1f24; text-decoration: none; font-size: 13px; }
+.amb-top {
+  height: 24px; padding: 0 8px; border: 0; border-radius: 5px; background: transparent; color: #1c1f24;
+  font: inherit; cursor: pointer;
+}
+.amb-top:hover, .amb-top-open, .amb-top:focus-visible { background: #eef0f3; outline: none; }
+.amb-spacer { flex: 1; }
+.amb-right { display: flex; align-items: center; gap: 4px; min-width: 0; }
+/* People here: the toolbar's avatars and AI faces sit small at the menu bar's right. */
+.amb-right .share-pill-human-avatars { min-height: 26px !important; min-width: 0 !important; }
+.amb-right .share-pill-human-avatars .share-pill-human-count { display: none; }
+.amb-right .proof-avatar-wrap { width: 22px !important; height: 26px !important; }
+.amb-right .proof-avatar-wrap > span:first-child { width: 20px !important; height: 20px !important; font-size: 10px !important; border-width: 1px !important; }
+.amb-right .share-pill-agent-trigger { min-height: 26px !important; min-width: 26px !important; padding: 0 2px !important; }
+.amb-right .share-pill-agent-trigger:not(.has-agents) { display: none !important; }
+.amb-right .share-pill-agent-face { transform: scale(.66); }
+.amb-right .proof-avatar-tooltip { top: calc(100% + 4px) !important; bottom: auto !important; }
+
+.amb-menu {
+  position: fixed; z-index: 10010; min-width: 240px; max-width: min(360px, calc(100vw - 16px));
+  max-height: calc(100vh - 40px); overflow: auto; box-sizing: border-box; padding: 6px;
+  background: #fff; border: 1px solid #d9dde3; border-radius: 8px; box-shadow: 0 10px 30px #1c1f2426;
+  font: 13px/1.3 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #1c1f24;
+}
+.amb-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; min-height: 30px; padding: 4px 10px 4px 6px;
+  border: 0; border-radius: 5px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.amb-item:hover:not(:disabled), .amb-item:focus-visible { background: #eef3ff; outline: none; }
+.amb-item:disabled { color: #9aa1ab; cursor: default; }
+.amb-check { width: 16px; flex: none; text-align: center; color: #2f6fed; font-size: 12px; }
+.amb-label { flex: 1; min-width: 0; }
+.amb-detail { color: #6b7280; font-size: 12px; white-space: nowrap; }
+.amb-sep { height: 1px; margin: 5px 4px; background: #e3e6ea; }
+.amb-group { padding: 8px 10px 2px 28px; color: #6b7280; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+
+.amb-search {
+  position: fixed; z-index: 10011; width: 340px; max-width: calc(100vw - 16px); box-sizing: border-box; padding: 8px;
+  background: #fff; border: 1px solid #d9dde3; border-radius: 8px; box-shadow: 0 10px 30px #1c1f2426;
+  font: 13px/1.3 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+.amb-search-centered { top: 64px; left: 50%; transform: translateX(-50%); }
+.amb-search-input { width: 100%; box-sizing: border-box; min-height: 32px; padding: 6px 8px; border: 1px solid #9ca3af; border-radius: 6px; font: inherit; }
+.amb-search-results { margin-top: 6px; display: flex; flex-direction: column; }
+.amb-search-option {
+  display: flex; gap: 8px; align-items: center; min-height: 30px; padding: 4px 8px; border: 0; border-radius: 5px;
+  background: transparent; font: inherit; text-align: left; cursor: pointer; color: #1c1f24;
+}
+.amb-search-option[aria-selected="true"], .amb-search-option:hover { background: #eef3ff; }
+.amb-search-option:disabled { color: #9aa1ab; }
+.amb-search-none { margin: 6px 4px; color: #6b7280; }
+
+/* ---------------- The toolbar (44 px), under the menu bar ---------------- */
+@media (min-width: 701px) {
+  body.amb-on #share-banner {
+    left: 0 !important; right: 0 !important; transform: none !important; width: auto !important;
+    min-width: 0 !important; max-width: none !important; height: 44px; box-sizing: border-box;
+    border-radius: 0 !important; border: 0 !important; border-bottom: 1px solid #e3e6ea !important;
+    box-shadow: none !important; background: #fff !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+    padding: 0 14px !important; gap: 10px !important; display: flex !important; align-items: center;
+  }
+  body.amb-on #share-banner .share-pill-group { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+  body.amb-on #share-banner .share-pill-left { flex: 1 1 0; }
+  body.amb-on #share-banner .share-pill-right { flex: 1 1 0; justify-content: flex-end; }
+  body.amb-on #share-banner .share-pill-center { flex: 0 1 auto; justify-content: center; max-width: 44%; }
+  body.amb-on #share-banner .share-pill-title {
+    flex: 0 1 auto !important; min-width: 0; font-size: 14px !important; font-weight: 600 !important; color: #1c1f24 !important;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 32px !important; line-height: 32px !important;
+  }
+  body.amb-on #share-banner .share-pill-status-inline .status-label { font-size: 12px; color: #6b7280; }
+  body.amb-on #share-banner .share-pill-hidden { display: none !important; }
+  /* The Undo button, beside the switch: it names what it would reverse, capped in width. */
+  body.amb-on #share-banner .pundo { margin: 0; flex-wrap: nowrap; position: relative; }
+  body.amb-on #share-banner .pundo[hidden] { display: flex !important; }
+  body.amb-on #share-banner .pundo[hidden] .pundo-btn:not(.pundo-redo) { opacity: .45; }
+  body.amb-on #share-banner .pundo-btn { min-height: 32px !important; max-width: 260px; font-weight: 500; font-size: 13px; }
+  body.amb-on #share-banner .pundo-btn:not(.pundo-redo)::before { content: '↶ '; }
+  body.amb-on #share-banner .pundo-redo { display: none; }
+  body.amb-on #share-banner .pundo-notice {
+    position: absolute; top: calc(100% + 8px); left: 0; z-index: 5; white-space: nowrap; margin: 0; padding: 4px 8px;
+    background: #fff; border: 1px solid #d9dde3; border-radius: 6px; box-shadow: 0 4px 14px #1c1f241a;
+  }
+  /* The Issues pill with Next, amber like the mockup. */
+  body.amb-on #share-banner .plm-issues {
+    display: inline-flex; align-items: center; gap: 0; border-radius: 999px; padding: 0 4px 0 12px; min-height: 32px;
+    background: #fff6e3; color: #7a4f00; border: 1px solid #f0d9a6;
+  }
+  body.amb-on #share-banner .plm-issues[data-state="aligned"], body.amb-on #share-banner .plm-issues[data-state="clear"] { background: #f0faf3; color: #177245; border-color: #9ccfb0; }
+  body.amb-on #share-banner .plm-issues .plm-issues-count { font-weight: 700; font-size: 13px; background: transparent !important; color: inherit !important; padding: 0 !important; }
+  body.amb-on #share-banner .plm-issues .plm-next {
+    min-height: 30px !important; border: 0 !important; background: transparent !important; color: inherit !important;
+    font-size: 13px; padding: 0 8px !important; box-shadow: none !important;
+  }
+  /* "12 Issues · Next ›" as in the mockup; the button's accessible name stays "Next issue (…)". */
+  body.amb-on #share-banner .plm-issues .plm-next .plm-next-long,
+  body.amb-on #share-banner .plm-issues .plm-next .plm-next-short { display: none; }
+  body.amb-on #share-banner .plm-issues .plm-next::after { content: '· Next ›'; }
+  body.amb-on #share-banner .plm-issues .plm-aligned-at { font-size: 12px; }
+  body.amb-on #share-banner .share-pill-share-btn > button { min-height: 32px !important; border-radius: 8px !important; padding: 0 14px !important; }
+  body.amb-on #share-banner .share-pill-share-btn > button > span + span { display: none; }
+  /* The rails start under the toolbar; the text starts below them. */
+  body.amb-on .prw-rail { top: var(--prw-top, 80px); }
+}
+
+/* The Suggesting | Editing segmented switch (the only mode a person chooses). */
+.share-pill-suggest-toggle.amb-seg { align-items: stretch !important; padding: 0 !important; gap: 0 !important; overflow: hidden; border-radius: 8px !important; background: #fff !important; border: 1px solid #d9dde3 !important; }
+.amb-seg .amb-seg-opt { display: inline-flex; align-items: center; padding: 0 12px; color: #1c1f24; font-weight: 500; }
+.amb-seg .amb-seg-opt[data-on="true"] { background: #1c1f24; color: #fff; }
+@media (min-width: 701px) {
+  body.amb-on #share-banner .share-pill-suggest-toggle { min-height: 32px !important; font-size: 13px !important; }
+}
+@media (max-width: 700px) {
+  .amb-seg .amb-seg-opt[data-on="false"] { display: none; }
+  .amb-seg .amb-seg-opt { padding: 0 10px; }
+  body.amb-on #accord-menubar { display: none; }
+}
+@media (max-width: 440px) {
+  #share-banner .share-pill-suggest-toggle.amb-seg::after { content: none !important; }
+  .amb-seg .amb-seg-opt { font-size: 12px; padding: 0 8px; }
+}
+
+/* Phone ⋯ menu: grouped like the menu bar, scrolling when long. */
+.proof-share-overflow-menu { max-height: calc(100vh - 72px); overflow: auto; }
+.proof-share-overflow-menu .amb-group { padding-left: 12px; }
+.proof-share-overflow-menu .amb-sep { margin: 4px 8px; }
+.proof-share-overflow-menu .amb-check { display: none; }
+.proof-share-overflow-menu .amb-item[aria-checked="true"] .amb-label::after { content: ' ✓'; color: #2f6fed; }
+
+/* ---------------- Share dialog ---------------- */
+.asd-dialog {
+  margin: auto; width: 580px; max-width: calc(100vw - 32px); max-height: 88vh; overflow: auto; box-sizing: border-box;
+  padding: 20px 24px 24px; border: 1px solid #d1d5db; border-radius: 16px; background: #fff; color: #111827;
+  box-shadow: 0 20px 70px #0004; font: 14px/1.5 system-ui, -apple-system, sans-serif;
+}
+.asd-dialog::backdrop { background: #0006; }
+.asd-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.asd-title { margin: 0; font-size: 20px; overflow-wrap: anywhere; }
+.asd-dialog button { font: inherit; cursor: pointer; border: 1px solid #d1d5db; border-radius: 8px; background: #f9fafb; color: #111827; padding: 8px 12px; min-height: 44px; }
+.asd-tabs { display: flex; gap: 4px; margin: 14px 0 4px; border-bottom: 1px solid #e5e7eb; }
+.asd-dialog .asd-tab { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: #6b7280; padding: 8px 12px; margin-bottom: -1px; }
+.asd-dialog .asd-tab[aria-selected="true"] { color: #111827; font-weight: 600; border-bottom-color: #111827; }
+.asd-panel { padding-top: 8px; }
+.asd-note { color: #4b5563; margin: 10px 0; }
+.asd-link-row { display: flex; gap: 8px; }
+.asd-url { flex: 1; min-width: 0; box-sizing: border-box; min-height: 44px; padding: 8px 10px; border: 1px solid #9ca3af; border-radius: 8px; font: inherit; }
+.asd-dialog .asd-primary { background: #111827; color: #fff; border-color: #111827; }
+.asd-status { min-height: 1.5em; margin: 6px 0; color: #166534; }
+.asd-more { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.asd-guest h3, .asd-dialog .ip-guest-section h3 { margin: 16px 0 6px; font-size: 15px; }
+.ip-guest-section .ip-guest label { display: flex; gap: 10px; align-items: flex-start; font-weight: 400; padding: 8px 0; min-height: 32px; cursor: pointer; }
+.ip-guest-section .ip-guest input { margin-top: 4px; width: 18px; height: 18px; }
+.asd-dialog #invite-person-dialog, .asd-dialog #agent-key-dialog { display: block; }
+
+/* ---------------- Reading settings (View › Reading settings) ---------------- */
+.ars-panel {
+  position: fixed; top: 84px; left: 50%; transform: translateX(-50%); z-index: 10005; width: 380px; max-width: calc(100vw - 24px);
+  box-sizing: border-box; padding: 14px 16px 12px; background: #fff; border: 1px solid #d9dde3; border-radius: 12px;
+  box-shadow: 0 16px 40px #1c1f2433; color: #26303c; font: 14px/1.45 system-ui, -apple-system, sans-serif;
+}
+.ars-panel[hidden] { display: none; }
+.ars-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.ars-title { margin: 0; font-size: 16px; }
+.ars-close { min-height: 32px; padding: 4px 12px; border: 1px solid #d1d5db; border-radius: 8px; background: #f9fafb; font: inherit; cursor: pointer; }
+.ars-body { display: flex; flex-direction: column; gap: 12px; }
+.ars-body .prw-rate { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ars-body .plm-budget { margin: 0; }
+.ars-note { margin: 10px 0 0; font-size: 12px; color: #6b7280; }
+@media (max-width: 700px) {
+  .ars-panel { top: auto; bottom: 0; left: 0; right: 0; transform: none; width: auto; max-width: none; border-radius: 14px 14px 0 0; padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px)); }
+  .ars-close { min-height: 44px; }
+  .ars-body select { min-height: 44px; }
+}
+
+/* The Familiar's brief folds (decision 10). */
+.ppx-head-row { display: flex; align-items: flex-start; gap: 8px; }
+.ppx-head-row .ppx-headline { flex: 1; margin: 0; }
+.ppx-fold-toggle { flex: none; min-height: 28px; padding: 2px 10px; border: 1px solid #d4d4cf; border-radius: 8px; background: #fff; font: 600 12px/1.2 system-ui, sans-serif; cursor: pointer; }
+.ppx-body[hidden] { display: none; }
+
+/* ---------------- Small dialogs (File › Open, Who is here, Help) ---------------- */
+.acd-dialog {
+  margin: auto; width: 520px; max-width: calc(100vw - 32px); max-height: 85vh; overflow: auto; box-sizing: border-box;
+  padding: 20px 24px; border: 1px solid #d1d5db; border-radius: 16px; background: #fff; color: #111827;
+  box-shadow: 0 20px 70px #0004; font: 14px/1.5 system-ui, -apple-system, sans-serif;
+}
+.acd-dialog::backdrop { background: #0005; }
+.acd-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.acd-title { margin: 0; font-size: 19px; }
+.acd-close { min-height: 40px; padding: 6px 12px; border: 1px solid #d1d5db; border-radius: 8px; background: #f9fafb; font: inherit; cursor: pointer; }
+.acd-body h3 { margin: 16px 0 6px; font-size: 14px; }
+.acd-note { color: #4b5563; }
+.acd-docs, .acd-who { list-style: none; margin: 0; padding: 0; }
+.acd-doc { display: flex; align-items: center; gap: 8px; padding: 10px 8px; border-radius: 8px; color: #111827; text-decoration: none; min-height: 24px; }
+.acd-doc:hover { background: #f3f4f6; }
+.acd-doc[aria-current="page"] { background: #eef3ff; }
+.acd-doc-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.acd-doc-here { color: #6b7280; font-size: 12px; }
+.acd-doc-count { min-width: 20px; padding: 0 6px; border-radius: 999px; background: #d98c00; color: #fff; font-size: 12px; text-align: center; }
+.acd-all { display: inline-block; margin-top: 10px; color: #2456b8; }
+.acd-who li { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.acd-face { width: 22px; height: 22px; border-radius: 50%; color: #fff; font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+.acd-counts { font-weight: 600; }
+.acd-keys { width: 100%; border-collapse: collapse; }
+.acd-keys td { padding: 4px 6px; border-top: 1px solid #eef0f3; vertical-align: top; }
+.acd-keys td:first-child { width: 130px; white-space: nowrap; }
+.acd-keys kbd { font: 600 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 1px 6px; border: 1px solid #d1d5db; border-radius: 4px; background: #f9fafb; }
+.acd-legend { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; }
+.acd-legend dt { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.acd-legend dd { margin: 0; color: #374151; }
+.acd-swatch { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; border-radius: 3px; font-size: 11px; }
+.acd-swatch-here { background: #2f6fed; }
+.acd-swatch-need { background: #d98c00; border-radius: 50%; }
+.acd-swatch-settled { color: #6b7280; }
+.acd-swatch-change { width: auto; padding: 0 3px; background: #e6f4ea; color: #177245; }
+.acd-swatch-status { background: #e5e7eb; border-radius: 50%; }
+
+/* Edit › Find */
+.afd-bar {
+  position: fixed; top: 80px; right: 360px; z-index: 10004; display: flex; align-items: center; gap: 6px; padding: 6px 8px;
+  background: #fff; border: 1px solid #d9dde3; border-radius: 10px; box-shadow: 0 8px 24px #1c1f2426; font: 13px system-ui, sans-serif;
+}
+.afd-bar[hidden] { display: none; }
+.afd-input { width: 220px; min-height: 30px; padding: 4px 8px; border: 1px solid #9ca3af; border-radius: 6px; font: inherit; }
+.afd-count { min-width: 64px; color: #6b7280; font-size: 12px; }
+.afd-btn { min-width: 30px; min-height: 30px; border: 1px solid #d1d5db; border-radius: 6px; background: #f9fafb; cursor: pointer; font: inherit; }
+@media (max-width: 700px) {
+  .afd-bar { top: 52px; left: 8px; right: 8px; }
+  .afd-input { flex: 1; width: auto; min-height: 44px; }
+  .afd-btn { min-width: 44px; min-height: 44px; }
+}
+
+/* The ⋯ menu's older rule greys a button's last span; menu labels stay ink, disabled ones grey. */
+.proof-share-overflow-menu .amb-item .amb-label { color: #111827; font-size: 15px; }
+.proof-share-overflow-menu .amb-item:disabled .amb-label { color: #9aa1ab; }
+
+/* Narrow phones: the ⋯ menu must never be pushed off the bar. */
+@media (max-width: 440px) {
+  #share-banner { gap: 4px !important; }
+  #share-banner .share-pill-share-btn > button { padding: 0 10px !important; }
+  #share-banner .plm-issues .plm-next { padding: 0 8px !important; }
+}

@@ -243,15 +243,24 @@ async function desktop(browser, base) {
   const created = await createDoc(base);
   const { context, page } = await openDoc(browser, base, created.slug, { viewport: { width: 1280, height: 800 } });
   await page.screenshot({ path: path.join(shots, `desktop-1280.png`) });
-  await check('desktop 1280: overflow button hidden, full controls shown', async () => {
+  // Accord layout stage 2: a menu bar and one full-width toolbar row replace the floating pill;
+  // Add agent and Marks moved into People and View.
+  await check('desktop 1280: overflow button hidden; the menu bar holds People › Add agent and View › Marks', async () => {
     assert.equal(await visible(page, '.share-pill-overflow'), false);
     assert.equal(await visible(page, '.share-pill-share-btn'), true);
-    assert.equal(await visible(page, '.share-pill-agent-trigger'), true);
-    if (style === 'playmaker') assert.equal(await visible(page, '.review-style-control'), true);
+    assert.equal(await visible(page, '#accord-menubar'), true);
+    await page.locator('#accord-menubar .amb-top[data-menu="people"]').click();
+    await page.locator('.amb-menu .amb-item', { hasText: 'Add agent' }).waitFor();
+    await page.keyboard.press('Escape');
+    if (style === 'playmaker') {
+      await page.locator('#accord-menubar .amb-top[data-menu="view"]').click();
+      await page.locator('.amb-menu .amb-item', { hasText: 'Marks panel' }).waitFor();
+      await page.keyboard.press('Escape');
+    }
   });
-  await check('desktop 1280: floating pill bar keeps its shape', async () => {
-    const b = await page.evaluate(() => { const el = document.getElementById('share-banner'); const r = el.getBoundingClientRect(); return { h: r.height, w: r.width, radius: getComputedStyle(el).borderTopLeftRadius }; });
-    assert.ok(b.h < 100 && b.w < 1280 && b.radius === '36px', JSON.stringify(b));
+  await check('desktop 1280: the toolbar is one full-width 44 px row under the menu bar', async () => {
+    const b = await page.evaluate(() => { const el = document.getElementById('share-banner'); const r = el.getBoundingClientRect(); return { top: r.top, h: r.height, w: r.width, radius: getComputedStyle(el).borderTopLeftRadius }; });
+    assert.ok(b.top === 28 && Math.abs(b.h - 44) <= 1 && b.w >= 1280 && b.radius === '0px', JSON.stringify(b));
   });
   if (style === 'playmaker') {
     await check('desktop 1280: Marks sidebar still shown (reserved gutter)', async () => {

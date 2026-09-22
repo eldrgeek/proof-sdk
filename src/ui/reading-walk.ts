@@ -33,6 +33,8 @@ import { editingGuardDebug, editingRemainingMs, endWriting, installEditingGuard,
 import { READING_MODE_POLICY } from '../shared/reading-keys';
 import { Selection } from '@milkdown/kit/prose/state';
 import { ProxyMarksUI } from './proxy-marks';
+import { ReadingSettingsUI } from './reading-settings';
+import { SETTINGS_POLICY } from '../shared/layout-chrome';
 import { ScrollFollower, containRailWheel } from './rail-follow';
 import { TIER_POLICY } from '../shared/line-tiers';
 import { HIGHLIGHT_POLICY, MARKED_UP_TO_POLICY, STATUS_BAR_POLICY, formatAgo, issuesLeftText } from '../shared/layout-status';
@@ -184,6 +186,7 @@ export class ReadingWalkUI {
   private readonly dockHost = el('div', 'prw-dock');
   /** Step B7: the chat pane's place in the right rail (below the line's box and changes). */
   readonly chatSlot = el('div', 'prw-chat');
+  private rightHeadEl: HTMLElement | null = null;
   /** Step B7: unread @mentions of the viewer in the chat (a badge on the rail toggle). */
   private chatUnread = 0;
   private readonly focusEl = el('div', 'prw-focus');
@@ -256,6 +259,8 @@ export class ReadingWalkUI {
 
   /** Familiar proxy marks: My Familiar (header), the brief (top of the rail), the phone pill. */
   readonly proxy: ProxyMarksUI;
+  /** Accord layout stage 2 (decision 10): reading speed and This sitting live in View › Reading settings. */
+  readonly settings = new ReadingSettingsUI();
 
   constructor(private readonly host: ReadingWalkHost) {
     this.proxy = new ProxyMarksUI({
@@ -263,7 +268,7 @@ export class ReadingWalkUI {
       // Ratify is an explicit action: the provisional (scroll) accepts are committed first.
       beforeRatify: () => { const ids = this.walk?.commitAll() ?? []; if (ids.length) this.commit(ids); },
       focusLine: (index) => { this.host.lineMarks().revealLine(index); this.focusLine(index); if (isPhone()) this.closeSheets(); },
-      openBrief: () => { if (isPhone()) this.openSheet('right'); else this.setCollapsed('right', false); },
+      openBrief: () => { if (isPhone()) this.openSheet('right'); else this.setCollapsed('right', false); this.proxy.briefEl.scrollIntoView({ block: 'nearest' }); },
     });
     this.left.setAttribute('aria-label', 'Documents');
     this.right.setAttribute('aria-label', 'Reading: this line and its changes');
@@ -307,15 +312,17 @@ export class ReadingWalkUI {
     this.agoTimer = setInterval(() => { this.statusSig = ''; this.renderStatusBar(); }, MARKED_UP_TO_POLICY.refreshMs);
     try { window.matchMedia(PHONE_QUERY).addEventListener('change', this.onResize); } catch { /* old browsers */ }
     try { window.matchMedia(TOUCH_FOCUS_POLICY.query).addEventListener('change', this.onResize); } catch { /* old browsers */ }
-    // Step B4c: "This sitting" (the budget setting and its status) sits under the reading speed.
+    // Step B4c: "This sitting" (the budget setting and its status) sits under the reading speed,
+    // both in View › Reading settings since Accord layout stage 2 (decision 10).
     const budget = this.host.lineMarks().budgetEl;
-    if (budget.parentElement !== this.rightBody) this.rightBody.insertBefore(budget, this.sinceHost);
-    // Step B4f: blind marking (an Owner's switch) sits under "This sitting".
+    if (SETTINGS_POLICY.readingSettingsInView) this.settings.mount(this.rateEl, budget);
+    else { this.rightHeadEl?.append(this.rateEl); if (budget.parentElement !== this.rightBody) this.rightBody.insertBefore(budget, this.sinceHost); }
+    // Step B4f: blind marking (an Owner's switch for the whole document) stays in the rail.
     const blind = this.host.lineMarks().blindEl;
     if (blind.parentElement !== this.rightBody) this.rightBody.insertBefore(blind, this.sinceHost);
     // Line tiers: decision / context counts and "Show only decisions".
     const tiers = this.host.lineMarks().tierEl;
-    if (tiers.parentElement !== this.rightBody) this.rightBody.insertBefore(tiers, budget);
+    if (tiers.parentElement !== this.rightBody) this.rightBody.insertBefore(tiers, blind);
     // Familiar proxy marks: the brief is the first thing in the rail.
     this.rightBody.prepend(this.proxy.briefEl);
     this.proxy.start();
@@ -368,6 +375,7 @@ export class ReadingWalkUI {
     this.resizeObserver?.disconnect();
     this.host.playmaker()?.dock(null);
     this.left.remove(); this.right.remove(); this.focusEl.remove(); this.styleEl.remove();
+    this.settings.remove();
   }
 
   /** Step B2: a section folded or unfolded. Rebuild the walk's hidden lines and the rail box. */
@@ -761,12 +769,49 @@ export class ReadingWalkUI {
 
   /** Step B4c: Next issue hit the sitting budget: show the rail's "This sitting" status. */
   budgetReached(): void {
-    if (isPhone()) this.openSheet('right');
-    else if (document.body.classList.contains('prw-right-collapsed')) this.setCollapsed('right', false);
     const el = this.host.lineMarks().budgetEl;
+    if (SETTINGS_POLICY.budgetReachedOpensSettings && this.settings.el.contains(el)) {
+      this.settings.open(false);
+    } else if (isPhone()) this.openSheet('right');
+    else if (document.body.classList.contains('prw-right-collapsed')) this.setCollapsed('right', false);
     el.scrollIntoView({ block: 'nearest' });
     (el.querySelector('.plm-budget-stop') as HTMLButtonElement | null)?.focus({ preventScroll: true });
   }
+
+  /** Accord layout stage 2: View › Reading settings. */
+  openReadingSettings(): void {
+    if (isPhone()) this.closeSheets();
+    this.settings.open();
+  }
+
+  /** Accord layout stage 2: View › Navigator / Margin show or hide a rail (phones: open its sheet). */
+  toggleRailFromMenu(side: 'left' | 'right'): void {
+    if (isPhone()) { this.openSheet(side); return; }
+    this.setCollapsed(side, !document.body.classList.contains(`prw-${side}-collapsed`));
+  }
+
+  railShown(side: 'left' | 'right'): boolean {
+    return !document.body.classList.contains(`prw-${side}-collapsed`);
+  }
+
+  /** Accord layout stage 2: File › Open lists the same documents as the left rail. */
+  documentsList(): { docs: Array<{ slug: string; title: string; current: boolean; count: number }> | null; message: string } {
+    const slug = this.host.slug();
+    const issues = this.host.lineMarks().needsYouLines().length;
+    if (!this.docs) return { docs: null, message: this.docsMessage };
+    return {
+      docs: this.docs.map(doc => ({
+        slug: doc.slug,
+        title: doc.title || 'Untitled document',
+        current: doc.slug === slug,
+        count: doc.slug === slug ? issues : (doc.pendingSuggestions ?? 0) + (doc.openComments ?? 0),
+      })),
+      message: this.docsMessage,
+    };
+  }
+
+  /** Re-reads the documents list (File › Open does before it shows it). */
+  reloadDocuments(): Promise<void> { return this.loadDocuments(); }
 
   /** Step B3: the viewer answered the ask on `line` (from any control): an explicit action. */
   askAnswered(line: number): void {
@@ -1863,7 +1908,8 @@ export class ReadingWalkUI {
     rightToggle.onclick = () => this.toggleRail('right');
     // Accord layout stage 1: "Line N of M" and Reading / Writing moved to the status bar.
     this.buildStatusBar();
-    rightHead.append(rightTitle, rightToggle, this.meEl, this.proxy.familiarEl, this.rateEl);
+    rightHead.append(rightTitle, rightToggle, this.meEl, this.proxy.familiarEl);
+    this.rightHeadEl = rightHead;
     this.meEl.setAttribute('aria-live', 'polite');
     this.provisionalEl.hidden = true;
     this.provisionalEl.setAttribute('aria-live', 'polite');

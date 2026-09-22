@@ -17,6 +17,10 @@ import { ChatUI } from '../ui/chat';
 import { FoldingUI } from '../ui/folding';
 import { ClosedFoldUI } from '../ui/closed-fold';
 import { UndoUI } from '../ui/undo';
+import { MenuBar, buildMenuItems, type MenuItemSpec, type MenuSpec } from '../ui/menu-bar';
+import { showShareDialog } from '../ui/share-dialog';
+import { FindBar, showAboutDialog, showKeysDialog, showMarksLegend, showOpenDialog, showWhoDialog } from '../ui/chrome-dialogs';
+import { MENU_BAR_POLICY, type ShareTab } from '../shared/layout-chrome';
 import { ClarifyUI } from '../ui/clarify';
 import { lineMarksViewPlugin } from './plugins/line-marks-view';
 import { foldViewPlugin } from './plugins/fold-view';
@@ -26,7 +30,7 @@ import { proofExtrasViewPlugin } from './plugins/proof-extras-view';
 import { tierViewPlugin } from './plugins/tier-view';
 import { closedFoldViewPlugin } from './plugins/closed-fold-view';
 import { getReviewStyle, setReviewStyle, REVIEW_STYLE_POLICY } from './review-style';
-import { isEditing } from './editing-guard';
+import { isEditing, isWriting } from './editing-guard';
 import { ReviewDecisionHistory, reconnectNativeUndoManager } from './review-decision-history';
 
 import { getAgentPresenceDisplay } from '../shared/agent-presence';
@@ -227,8 +231,7 @@ import {
 import { keybindingsPlugin, setShowAgentInputCallback, type AgentInputContext } from './plugins/keybindings';
 import { tableKeyboardPlugin } from './plugins/table-keyboard';
 import { showAgentInputDialog } from '../ui/agent-input-dialog';
-import { showAgentKeyDialog } from '../ui/agent-key-dialog';
-import { showInvitePersonDialog, type InviteResult, type TeamState } from '../ui/invite-person-dialog';
+import type { InviteResult, TeamState } from '../ui/invite-person-dialog';
 import { ShareEventPoller } from '../bridge/share-event-poller';
 import { initContextMenu } from '../ui/context-menu';
 import {
@@ -1167,6 +1170,11 @@ class ProofEditorImpl implements ProofEditor {
   private closedFold: ClosedFoldUI | null = null;
   /** The one Undo (Mike, 2026-09-19): the rail button and Cmd/Ctrl+Z. */
   private undoUI: UndoUI | null = null;
+  /** Accord layout stage 2: the menu bar, the toolbar's Undo slot, Edit › Find. */
+  private menuBar: MenuBar | null = null;
+  private readonly toolbarUndoSlot = document.createElement('span');
+  private findBar: FindBar | null = null;
+  private undoPlacementQuery: MediaQueryList | null = null;
   /** Item 3 (Mike, 2026-09-19): typing "?" after a sentence asks the AIs to clarify it. */
   private clarifyUI: ClarifyUI | null = null;
   /** When the person last typed in the document (so Cmd+Z reverses whichever came last). */
@@ -3163,7 +3171,7 @@ class ProofEditorImpl implements ProofEditor {
       #share-banner .share-pill-agent-trigger:not(.has-agents) > span:first-child {
         font-size: 20px !important;
       }
-      #share-banner .share-pill-share-btn > button > span:last-child {
+      #share-banner .share-pill-share-btn > button > span + span {
         font-size: 14px !important;
       }
       #share-banner .share-pill-human-count { display: none; }
@@ -3322,7 +3330,7 @@ class ProofEditorImpl implements ProofEditor {
         }
         #share-banner .share-pill-status-inline { order: 0; }
         #share-banner .share-pill-human-count { font-size: 13px !important; }
-        #share-banner .share-pill-title { min-width: 72px !important; }
+        #share-banner .share-pill-title { min-width: 36px !important; }
         /* An AI that is present stays visible in the bar; only the empty Add agent button moves to the menu. */
         #share-banner .share-pill-agent-slot:has(.share-pill-agent-trigger.has-agents) { display: inline-flex !important; flex-shrink: 0; }
         #share-banner .share-pill-suggest-toggle {
@@ -3337,12 +3345,11 @@ class ProofEditorImpl implements ProofEditor {
           font-size: 14px !important;
           width: auto !important;
         }
-        #share-banner .share-pill-share-btn > button > span:last-child { display: none; }
+        #share-banner .share-pill-share-btn > button > span + span { display: none; }
       }
       /* Narrow phones: Suggesting/Editing becomes a pencil pill (green dot = suggesting); its aria-label and title keep the words. */
-      @media (max-width: 440px) {
-        #share-banner .share-pill-suggest-toggle > span:last-child { display: none; }
-        #share-banner .share-pill-suggest-toggle::after { content: '✎'; font-size: 16px; line-height: 1; }
+      @media (max-width: 700px) {
+        #share-banner .share-pill-group { display: contents; }
         #share-banner .share-pill-overflow {
           display: inline-flex;
           align-items: center;
@@ -3734,17 +3741,6 @@ class ProofEditorImpl implements ProofEditor {
     this.closePresenceMenu();
     this.closeAgentMenu();
 
-    const wordmark = document.createElement('a');
-    wordmark.textContent = productName();
-    wordmark.href = productIdentity().homeUrl;
-    wordmark.target = '_blank';
-    wordmark.rel = 'noopener';
-    wordmark.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;min-height:44px;min-width:44px;padding:0 8px;border-radius:10px;font-weight:600;color:#333;font-size:13px;letter-spacing:-0.2px;flex-shrink:0;text-decoration:none;';
-
-    const separator = document.createElement('span');
-    separator.className = 'share-pill-sep';
-    separator.style.cssText = 'width:1px;height:16px;background:rgba(0,0,0,0.1);flex-shrink:0';
-
     const title = document.createElement('span');
     title.className = 'share-pill-title';
     title.style.cssText = 'font-weight:500;color:#374151;font-size:13px;flex:1 1 auto;min-width:0;';
@@ -3779,26 +3775,273 @@ class ProofEditorImpl implements ProofEditor {
 
     const suggestToggle = this.createSuggestToggleButton();
     const suggestionReview = this.createShareSuggestionReviewButton();
+    // Accord layout stage 2 (proposal, "Toolbar (44 px), one row, three groups"): left, the
+    // Suggesting | Editing switch and Undo; centre, the title and "Saved"; right, the Issues pill
+    // with Next, and Share. Nothing else: the wordmark, the people here and the AI faces moved to
+    // the menu bar; Marks, the suggestion count and Add agent moved into the menus and Share.
+    const group = (name: string, ...children: HTMLElement[]) => {
+      const node = document.createElement('span');
+      node.className = `share-pill-group share-pill-${name}`;
+      node.append(...children);
+      return node;
+    };
+    this.toolbarUndoSlot.className = 'share-pill-undo';
+    const hidden = group('hidden', syncStatusSep, this.createReviewStyleControl(), suggestionReview);
+    hidden.setAttribute('aria-hidden', 'true');
     banner.replaceChildren(
-      wordmark,
-      separator,
-      title,
-      syncStatusSep,
-      syncStatusInline,
-      avatars,
-      suggestToggle,
-      this.createReviewStyleControl(),
-      suggestionReview,
-      this.ensureLineMarks().bannerEl,
-      agentSlot,
-      shareBtn,
+      group('left', suggestToggle, this.toolbarUndoSlot),
+      group('center', title, syncStatusInline),
+      group('right', this.ensureLineMarks().bannerEl, shareBtn),
+      hidden,
       this.createShareOverflowButton(),
     );
+    this.placeMenuBarPresence(avatars, agentSlot);
     this.updateSuggestToggleDisplay();
     this.updateShareSuggestionReviewDisplay();
     this.scheduleBannerLayoutUpdate();
   }
 
+
+
+  // --------------------------------------------------------------------------
+  // Accord layout stage 2: the menu bar (File · Edit · View · People · Help)
+  // --------------------------------------------------------------------------
+
+  private mountMenuBar(): void {
+    if (this.menuBar) {
+      if (!this.menuBar.el.isConnected) document.body.append(this.menuBar.el);
+      document.body.classList.add('amb-on');
+      return;
+    }
+    const brand = document.createElement('a');
+    brand.textContent = productName();
+    brand.href = productIdentity().homeUrl;
+    brand.target = '_blank';
+    brand.rel = 'noopener';
+    this.menuBar = new MenuBar({
+      menus: () => this.menus(),
+      writing: () => isWriting(),
+      beforeOpen: () => {
+        this.closeShareMenu();
+        this.closeAgentMenu();
+        this.closePresenceMenu();
+        this.closeSuggestionReviewMenu();
+      },
+    }, brand);
+    document.body.append(this.menuBar.el);
+    document.body.classList.add('amb-on');
+    this.menuBar.install();
+    (window as unknown as { __proofMenuBar?: MenuBar }).__proofMenuBar = this.menuBar;
+  }
+
+  private unmountMenuBar(): void {
+    this.menuBar?.destroy();
+    this.menuBar = null;
+    this.findBar?.remove();
+    this.findBar = null;
+    document.body.classList.remove('amb-on');
+  }
+
+  /** The people here and the AI faces sit at the menu bar's right (the mockup's avatars). */
+  private placeMenuBarPresence(...nodes: HTMLElement[]): void {
+    const slot = this.menuBar?.rightSlot;
+    if (!slot) return;
+    for (const node of nodes) if (node.parentElement !== slot) slot.append(node);
+  }
+
+  /** The one Undo: in the toolbar on desktop, at the top of the rail (and its sheet) on phones. */
+  private placeUndo(): void {
+    const undo = this.undoUI;
+    const walk = this.readingWalk;
+    if (!undo || !walk) return;
+    const phone = window.matchMedia?.('(max-width: 700px)').matches ?? window.innerWidth <= 700;
+    if (phone) walk.mountTool(undo.controlsEl, { first: true });
+    else if (undo.controlsEl.parentElement !== this.toolbarUndoSlot) this.toolbarUndoSlot.append(undo.controlsEl);
+  }
+
+  /** Edit › Undo / Redo: the one Undo. A typed edit that came last goes to the text's own history. */
+  private undoFromMenu(redo: boolean): void {
+    if (this.undoUI?.handleKey(redo)) return;
+    this.editor?.action(ctx => {
+      const view = ctx.get(editorViewCtx);
+      const manager = yUndoPluginKey.getState(view.state)?.undoManager as { undo(): void; redo(): void } | undefined;
+      if (redo) manager?.redo(); else manager?.undo();
+    });
+  }
+
+  private undoLabel(redo: boolean): { label: string; enabled: boolean } {
+    const state = (this.undoUI?.debugState() ?? {}) as { next?: { description: string } | null; nextRedo?: { description: string } | null };
+    const entry = redo ? state.nextRedo : state.next;
+    const text = this.lastLocalTextEditAt > 0;
+    if (entry) return { label: `${redo ? 'Redo' : 'Undo'} ${entry.description}`, enabled: true };
+    return { label: redo ? 'Redo' : 'Undo', enabled: text };
+  }
+
+  /** File › New: a blank document in the library, then open it. */
+  private async newDocument(markdown?: string, title?: string): Promise<void> {
+    try {
+      const response = await fetch('/library/api/documents', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ title: title || 'Untitled document', ...(markdown === undefined ? {} : { markdown }) }),
+      });
+      const body = await response.json().catch(() => ({})) as { url?: string; error?: string };
+      if (response.ok && body.url) { window.location.href = body.url; return; }
+      this.showErrorBanner(response.status === 401 || response.status === 403
+        ? `Sign in to make a new ${documentNoun()}.`
+        : (body.error || `Could not make a new ${documentNoun()}.`));
+    } catch {
+      this.showErrorBanner(`Could not make a new ${documentNoun()}.`);
+    }
+  }
+
+  /** File › Import: a .md file (a Proof Document or CriticMarkup keeps its marks) becomes a new document. */
+  private importMarkdown(): void {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.md,.markdown,.txt,text/markdown,text/plain';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      if (!/\.(md|markdown|txt)$/i.test(file.name)) { this.showErrorBanner('Choose a .md, .markdown or .txt file.'); return; }
+      const markdown = await file.text();
+      const heading = markdown.match(/^#\s+(.+?)\s*$/m)?.[1]?.trim();
+      await this.newDocument(markdown, heading || file.name.replace(/\.(md|markdown|txt)$/i, ''));
+    };
+    input.click();
+  }
+
+  private async openDocumentsDialog(): Promise<void> {
+    const walk = this.readingWalk;
+    if (!walk) return;
+    await walk.reloadDocuments();
+    const identity = productIdentity();
+    showOpenDialog(walk.documentsList(), `Open ${identity.documentNounArticle} ${identity.documentNoun}`, identity.documentNounPlural);
+  }
+
+  private openFindBar(): void {
+    const lineMarks = this.lineMarks;
+    const walk = this.readingWalk;
+    if (!lineMarks || !walk) return;
+    if (!this.findBar) {
+      this.findBar = new FindBar({
+        lines: () => lineMarks.lineList().map(line => line.text),
+        focusLine: index => { lineMarks.revealLine(index); return walk.focusLine(index); },
+        from: () => walk.focusIndex(),
+      });
+    }
+    this.findBar.open();
+  }
+
+  private openWhoDialog(): void {
+    const summary = this.lineMarks?.issueSummary();
+    showWhoDialog({
+      people: this.getHumanCollaboratorAvatars(),
+      ais: this.getConnectedAgentEntries().map(agent => ({ name: agent.name, state: getAgentPresenceDisplay(agent).label })),
+      viewerIssues: this.lineMarks?.needsYouLines().length ?? 0,
+      teamIssues: summary?.counts.total ?? 0,
+      team: (summary?.team ?? []).map(actor => actor.replace(/^(human|ai|guest):/i, '')),
+    });
+  }
+
+  /** The menus, built when one opens so every label and state is current. */
+  private menus(): MenuSpec[] {
+    const noun = documentNoun();
+    const canEdit = this.isShareMode && this.collabCanEdit;
+    const lm = this.lineMarks;
+    const walk = this.readingWalk;
+    const folding = this.folding;
+    const sections = folding?.sectionList() ?? [];
+    const levels = [...new Set(sections.map(section => section.level))].sort((a, b) => a - b);
+    const pending = getReviewStyle() === 'proof' && canEdit ? this.getAnchoredPendingSuggestions().length : 0;
+    const style = getReviewStyle();
+    const find = (id: string) => MENU_BAR_POLICY.menus.find(menu => menu.id === id)!;
+    const menu = (id: MenuSpec['id'], items: () => MenuItemSpec[]): MenuSpec => ({ ...find(id), items });
+    return [
+      menu('file', () => [
+        { id: 'file-new', label: `New ${noun}`, keywords: 'create blank document', run: () => { void this.newDocument(); } },
+        { id: 'file-open', label: 'Open…', keywords: 'documents list library', detail: 'documents', run: () => { void this.openDocumentsDialog(); } },
+        { id: 'file-import', label: 'Import .md…', keywords: 'upload markdown file criticmarkup', run: () => this.importMarkdown() },
+        { id: 'file-rename', label: 'Rename…', keywords: 'title', enabled: canEdit, separatorBefore: true, run: () => { this.shareBannerTitleEl?.click(); } },
+        { id: 'file-copy-link', label: 'Copy link', keywords: 'share url', run: () => { void this.copyLinkWithFallback(this.getCanonicalShareUrl()); } },
+        { id: 'file-download', label: `Download as ${noun} (.md)`, keywords: 'export markdown save', run: () => { void this.downloadProofDocument(); } },
+        { id: 'file-activity', label: 'View activity', keywords: 'history log', run: () => this.openShareActivityModal() },
+      ]),
+      menu('edit', () => {
+        const undo = this.undoLabel(false);
+        const redo = this.undoLabel(true);
+        const items: MenuItemSpec[] = [
+          { id: 'edit-undo', label: undo.label, detail: '⌘Z', keywords: 'undo', enabled: undo.enabled, run: () => this.undoFromMenu(false) },
+          { id: 'edit-redo', label: redo.label, detail: '⇧⌘Z', keywords: 'redo', enabled: redo.enabled, run: () => this.undoFromMenu(true) },
+          { id: 'edit-find', label: 'Find…', keywords: 'search text', separatorBefore: true, run: () => this.openFindBar() },
+          { id: 'edit-suggesting', label: 'Suggesting', kind: 'radio', checked: this.isSuggestionsEnabled(), enabled: canEdit, separatorBefore: true, keywords: 'mode track changes', run: () => this.setSuggestingFromChrome(true) },
+          { id: 'edit-editing', label: 'Editing', kind: 'radio', checked: !this.isSuggestionsEnabled(), enabled: canEdit, keywords: 'mode direct', run: () => this.setSuggestingFromChrome(false) },
+        ];
+        if (style === 'proof' && canEdit) {
+          items.push(
+            { id: 'edit-next-suggestion', label: 'Next suggestion', enabled: pending > 0, separatorBefore: true, run: () => { const id = this.navigateToNextSuggestion(); if (id) this.openSuggestionPopover(id); } },
+            { id: 'edit-accept-all', label: `Accept all suggestions${pending ? ` (${pending})` : ''}…`, enabled: pending > 0, run: () => {
+              if (window.confirm(`Accept all ${pending} suggestion${pending === 1 ? '' : 's'}?`)) withHumanReviewWrite(() => this.markAcceptAll());
+            } },
+            { id: 'edit-reject-all', label: `Reject all suggestions${pending ? ` (${pending})` : ''}…`, enabled: pending > 0, run: () => {
+              if (window.confirm(`Reject all ${pending} suggestion${pending === 1 ? '' : 's'}?`)) withHumanReviewWrite(() => this.markRejectAll());
+            } },
+          );
+        }
+        return items;
+      }),
+      menu('view', () => {
+        const items: MenuItemSpec[] = [];
+        if (walk) {
+          items.push(
+            { id: 'view-navigator', label: 'Navigator', kind: 'checkbox', checked: walk.railShown('left'), keywords: 'left rail documents', run: () => walk.toggleRailFromMenu('left') },
+            { id: 'view-margin', label: 'Margin', kind: 'checkbox', checked: walk.railShown('right'), keywords: 'right rail this line', run: () => walk.toggleRailFromMenu('right') },
+          );
+        }
+        if (folding && sections.length > 0) {
+          items.push({ id: 'view-fold-all', label: 'Fold all sections', keywords: 'outline collapse', separatorBefore: true, run: () => folding.foldAll() });
+          items.push({ id: 'view-unfold-all', label: 'Unfold all sections', keywords: 'outline expand', run: () => folding.unfoldAll() });
+          for (const level of levels.slice(0, 3)) {
+            items.push({ id: `view-fold-${level}`, label: `Fold to headings level ${level}`, detail: `H${level}`, keywords: 'outline level', run: () => folding.foldLevel(level) });
+          }
+        }
+        if (lm) {
+          items.push({ id: 'view-only-decisions', label: 'Show only decisions', kind: 'checkbox', checked: lm.onlyDecisionsOn(), enabled: lm.tiersTagged(), separatorBefore: true, keywords: 'tiers context fold', run: () => lm.setOnlyDecisions(!lm.onlyDecisionsOn()) });
+        }
+        if (walk) {
+          items.push({ id: 'view-reading-settings', label: 'Reading settings…', keywords: 'reading speed sitting budget words per second', separatorBefore: !lm, run: () => walk.openReadingSettings() });
+          const proxy = walk.proxy;
+          items.push({ id: 'view-brief', label: 'Familiar’s brief', kind: 'checkbox', checked: proxy.isBriefOpen(), enabled: proxy.hasBrief(), keywords: 'proxy familiar ratify', run: () => {
+            const open = !proxy.isBriefOpen();
+            proxy.setBriefOpen(open);
+            if (open) { if (!walk.railShown('right') || window.innerWidth <= 700) walk.toggleRailFromMenu('right'); proxy.briefEl.scrollIntoView({ block: 'nearest' }); }
+          } });
+        }
+        if (style === 'playmaker' && this.playmakerReview) {
+          const review = this.playmakerReview;
+          items.push({ id: 'view-marks', label: 'Marks panel', kind: 'checkbox', checked: review.panelOpen(), keywords: 'review comments suggestions', run: () => { if (review.panelOpen()) review.closePanel(); else review.openPanel(); } });
+        }
+        if (!REVIEW_STYLE_POLICY.locked) {
+          items.push({ id: 'view-review-style', label: 'Review style', detail: style === 'playmaker' ? 'PlayMaker' : productName(), run: () => setReviewStyle(style === 'playmaker' ? 'proof' : 'playmaker') });
+        }
+        items.push({ id: 'view-keys', label: 'Keyboard shortcuts', keywords: 'keys help', separatorBefore: true, run: () => showKeysDialog() });
+        return items;
+      }),
+      menu('people', () => [
+        { id: 'people-share', label: 'Share…', keywords: 'link access', run: () => { this.openShareDialog('link'); } },
+        { id: 'people-invite', label: 'Invite person…', keywords: 'email team member', enabled: this.teamCanManage === true, run: () => { this.openShareDialog('people'); } },
+        { id: 'people-agent', label: 'Add agent…', keywords: 'ai key runtime sponsor', run: () => { this.openShareDialog('ais'); } },
+        { id: 'people-who', label: 'Who is here', keywords: 'presence collaborators team issues', separatorBefore: true, run: () => this.openWhoDialog() },
+      ]),
+      menu('help', () => [
+        { id: 'help-search', label: 'Search the menus', detail: 'Alt+/', run: () => this.menuBar?.openSearch() },
+        { id: 'help-keys', label: 'Keyboard shortcuts', keywords: 'keys', run: () => showKeysDialog() },
+        { id: 'help-marks', label: 'What the marks mean', keywords: 'legend colours dots amber blue', run: () => showMarksLegend() },
+        { id: 'help-agent-docs', label: 'Agent docs', keywords: 'api ai', separatorBefore: true, run: () => { window.open('/agent-docs', '_blank', 'noopener'); } },
+        { id: 'help-about', label: `About ${productName()}`, run: () => { const id = productIdentity(); showAboutDialog(id.name, id.tagline, id.engineName); } },
+      ]),
+    ];
+  }
 
   private shareOverflowMenuCleanup: (() => void) | null = null;
 
@@ -3922,7 +4165,13 @@ class ProofEditorImpl implements ProofEditor {
       // The one Undo: at the top of the right rail, above the outline controls.
       this.undoUI = new UndoUI({ stack: () => lineMarks.undoStack(), lastTextEditAt: () => this.lastLocalTextEditAt });
       (window as unknown as { __proofUndo?: UndoUI }).__proofUndo = this.undoUI;
-      walkUi.mountTool(this.undoUI.controlsEl, { first: true });
+      this.placeUndo();
+      if (!this.undoPlacementQuery) {
+        try {
+          this.undoPlacementQuery = window.matchMedia('(max-width: 700px)');
+          this.undoPlacementQuery.addEventListener('change', () => this.placeUndo());
+        } catch { /* old browsers: it stays where it was placed */ }
+      }
       // Item 3: a lone "?" typed at the end of a line becomes a clarify request to the AIs.
       this.clarifyUI = new ClarifyUI({
         view: () => { let v: EditorView | null = null; this.editor?.action(ctx => { v = ctx.get(editorViewCtx); }); return v; },
@@ -3998,37 +4247,39 @@ class ProofEditorImpl implements ProofEditor {
         close();
       };
       const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') { close(); btn.focus(); } };
-      const item = (label: string, detail: string, action: () => void) => {
-        const entry = document.createElement('button');
-        entry.type = 'button';
-        entry.setAttribute('role', 'menuitem');
-        const main = document.createElement('span'); main.textContent = label;
-        const side = document.createElement('span'); side.textContent = detail;
-        entry.append(main, side);
-        entry.onclick = () => { close(); action(); };
-        menu.append(entry);
+      // Accord layout stage 2: on phones the menu bar folds into this menu. First the phone's own
+      // sheets (this line, the chat, the documents), then File, Edit, View, People and Help.
+      const heading = (text: string) => {
+        const h = document.createElement('div');
+        h.className = 'amb-group';
+        h.setAttribute('role', 'presentation');
+        h.textContent = text;
+        menu.append(h);
       };
-      const style = getReviewStyle();
-      if (style === 'playmaker' && this.playmakerReview) {
-        item('Marks', 'review', () => this.playmakerReview?.openPanel());
+      const run = (spec: MenuItemSpec) => { close(); spec.run(); };
+      const phoneItems: MenuItemSpec[] = [];
+      if (this.readingWalk) {
+        phoneItems.push({ id: 'phone-line', label: 'This line', detail: 'mark · changes', run: () => { this.chat?.closeSheet(); this.readingWalk?.openSheet('right'); } });
       }
       if (this.chat) {
-        item('Chat', this.chatUnread > 0 ? `${this.chatUnread} @you` : 'team', () => this.chat?.open(true));
+        phoneItems.push({ id: 'phone-chat', label: 'Chat', detail: this.chatUnread > 0 ? `${this.chatUnread} @you` : 'team', run: () => this.chat?.open(true) });
       }
       if (this.readingWalk) {
-        item('This line', 'mark · changes', () => { this.chat?.closeSheet(); this.readingWalk?.openSheet('right'); });
-        item('Documents', 'list', () => this.readingWalk?.openSheet('left'));
+        phoneItems.push({ id: 'phone-docs', label: 'Documents', detail: 'list', run: () => this.readingWalk?.openSheet('left') });
       }
-      if (this.folding && this.folding.sectionList().length > 0) {
-        item('Fold all', 'outline', () => this.folding?.foldAll());
-        item('Unfold all', 'outline', () => this.folding?.unfoldAll());
+      if (phoneItems.length) menu.append(...buildMenuItems(phoneItems, run));
+      for (const spec of this.menus()) {
+        const items = spec.items().filter(entry => !entry.id.startsWith('view-navigator') && !entry.id.startsWith('view-margin') && entry.id !== 'help-search');
+        if (items.length === 0) continue;
+        heading(spec.label);
+        // The phone list is plain items: a checkbox or radio says "on" at its right.
+        menu.append(...buildMenuItems(items.map((entry, index) => ({
+          ...entry,
+          kind: 'item' as const,
+          detail: entry.kind === 'checkbox' || entry.kind === 'radio' ? (entry.checked ? 'on' : '') : entry.detail,
+          separatorBefore: index > 0 && entry.separatorBefore,
+        })), run));
       }
-      if (!REVIEW_STYLE_POLICY.locked) item('Review style', style === 'playmaker' ? 'PlayMaker' : productName(), () => {
-        setReviewStyle(style === 'playmaker' ? 'proof' : 'playmaker');
-      });
-      if (this.teamCanManage) item('Invite person', 'by email', () => { this.openInvitePersonDialog(); });
-      item('Add agent', 'manage keys', () => { this.openAgentKeyDialog(); });
-      item('Download', `${documentNoun()} (.md)`, () => { void this.downloadProofDocument(); });
       document.body.append(menu);
       btn.setAttribute('aria-expanded', 'true');
       document.addEventListener('pointerdown', outside, true);
@@ -4266,13 +4517,27 @@ class ProofEditorImpl implements ProofEditor {
     `;
     btn.onmouseenter = () => { btn.style.background = '#fff'; btn.style.borderColor = 'rgba(17,24,39,0.20)'; };
     btn.onmouseleave = () => { btn.style.background = 'rgba(255,255,255,0.7)'; btn.style.borderColor = 'rgba(17,24,39,0.10)'; };
-    btn.onclick = () => {
-      const enabled = this.toggleSuggestions();
-      try { window.localStorage.setItem(this.suggestModeStorageKey(), enabled ? 'suggest' : 'edit'); } catch { /* ignore */ }
-      this.updateSuggestToggleDisplay();
+    btn.classList.add('amb-seg');
+    // Accord layout stage 2: a segmented switch. A click on the half already chosen does nothing.
+    btn.onclick = (event) => {
+      const half = (event.target as HTMLElement | null)?.closest?.('[data-mode]') as HTMLElement | null;
+      const on = this.isSuggestionsEnabled();
+      // Phones show only the chosen half: a tap on it switches.
+      const other = btn.querySelector<HTMLElement>(`[data-mode="${on ? 'edit' : 'suggest'}"]`);
+      const otherShown = Boolean(other && other.getClientRects().length > 0);
+      if (half && otherShown && (half.dataset.mode === 'suggest') === on) return;
+      this.setSuggestingFromChrome(!on);
     };
     this.shareBannerSuggestBtnEl = btn;
     return btn;
+  }
+
+  /** Suggesting (true) or Editing (false), from the switch or Edit › Suggesting / Editing. */
+  private setSuggestingFromChrome(suggesting: boolean): void {
+    if (!this.collabCanEdit || this.isSuggestionsEnabled() === suggesting) return;
+    const enabled = this.toggleSuggestions();
+    try { window.localStorage.setItem(this.suggestModeStorageKey(), enabled ? 'suggest' : 'edit'); } catch { /* ignore */ }
+    this.updateSuggestToggleDisplay();
   }
 
   private updateSuggestToggleDisplay(): void {
@@ -4283,11 +4548,14 @@ class ProofEditorImpl implements ProofEditor {
     if (!visible) return;
     const on = this.isSuggestionsEnabled();
     btn.replaceChildren();
-    const dot = document.createElement('span');
-    dot.style.cssText = `width:7px;height:7px;border-radius:50%;display:inline-block;flex-shrink:0;background:${on ? '#16a34a' : '#9ca3af'};`;
-    const label = document.createElement('span');
-    label.textContent = on ? 'Suggesting' : 'Editing';
-    btn.append(dot, label);
+    for (const [mode, text] of [['suggest', 'Suggesting'], ['edit', 'Editing']] as const) {
+      const half = document.createElement('span');
+      half.className = 'amb-seg-opt';
+      half.dataset.mode = mode;
+      half.dataset.on = String((mode === 'suggest') === on);
+      half.textContent = text;
+      btn.append(half);
+    }
     btn.setAttribute('aria-pressed', String(on));
     btn.setAttribute('aria-label', on ? 'Suggesting: your edits are tracked. Click to edit directly.' : 'Editing directly. Click to suggest changes instead.');
     btn.title = on ? 'Suggesting: your edits appear as tracked changes others can accept or reject' : 'Editing: your edits change the text directly';
@@ -5051,37 +5319,9 @@ class ProofEditorImpl implements ProofEditor {
     }
   }
 
-  private openInvitePersonDialog(): boolean {
-    showInvitePersonDialog({
-      load: () => this.teamRequest<TeamState>('GET', ''),
-      invite: (email, name) => this.teamRequest<InviteResult>('POST', '/invites', { email, name }),
-      resend: id => this.teamRequest<InviteResult>('POST', `/invites/${encodeURIComponent(id)}/resend`, {}),
-      remove: id => this.teamRequest<TeamState>('POST', `/invites/${encodeURIComponent(id)}/remove`, {}),
-      setGuestAccess: mode => this.teamRequest<TeamState>('PUT', '/guest-access', { mode }),
-      copy: text => this.copyTextToClipboard(text),
-      // Cross invitation (2026-09-19): the Owner answers what an AI proposed.
-      confirmNomination: async id => {
-        const body = await this.teamRequest<{ team: TeamState; emailed?: boolean }>('POST', `/nominations/${encodeURIComponent(id)}/confirm`, {});
-        return { team: body.team, emailed: body.emailed };
-      },
-      declineNomination: id => this.teamRequest<TeamState>('POST', `/nominations/${encodeURIComponent(id)}/decline`, {}),
-      revokeAttestation: id => this.teamRequest<TeamState>('POST', `/attestations/${encodeURIComponent(id)}/revoke`, {}),
-      setDirectInvite: (tokenId, allow) => this.teamRequest<TeamState>('PUT', `/agents/${encodeURIComponent(tokenId)}/direct-invite`, { allow }),
-    });
-    return true;
-  }
-
+  /** Add agent is the Share dialog's AIs tab (decision 12). */
   private openAgentKeyDialog(): boolean {
-    showAgentKeyDialog({
-      // A2 will add team-only documents; today this notice depends on member sign-in.
-      isSignedInMember: Boolean(window.__PROOF_LIBRARY_MEMBER__),
-      create: (label, runtime) => shareClient.createAgentKey(label, runtime),
-      list: () => shareClient.listAgentKeys(),
-      revoke: id => shareClient.revokeAgentKey(id),
-      invite: token => this.getAgentInviteMessage(token),
-      copy: text => this.copyTextToClipboard(text),
-    });
-    return true;
+    return this.openShareDialog('ais');
   }
 
   private showShareWelcomeToastOnce(capabilities?: { canComment: boolean; canEdit: boolean } | null): void {
@@ -5161,6 +5401,7 @@ class ProofEditorImpl implements ProofEditor {
     }
   }
 
+  /** Accord layout stage 2: one Share button; it opens the Share dialog (decision 12). */
   private createShareMenuButton(): HTMLElement {
     const container = document.createElement('div');
     container.className = 'share-pill-share-btn';
@@ -5168,164 +5409,67 @@ class ProofEditorImpl implements ProofEditor {
 
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.setAttribute('aria-label', 'Share options');
+    btn.setAttribute('aria-label', 'Share');
+    btn.setAttribute('aria-haspopup', 'dialog');
     btn.style.cssText = `
       display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:44px;min-width:44px;padding:0 16px;background:#111;
       border:none;border-radius:22px;color:#fff;font-size:13px;font-weight:600;
       cursor:pointer;transition:background 0.15s;flex-shrink:0;font-family:inherit;
     `;
-
     const label = document.createElement('span');
     label.textContent = 'Share';
-    const caret = document.createElement('span');
-    caret.textContent = '▾';
-    caret.style.cssText = 'font-size:10px;opacity:0.7';
-    btn.append(label, caret);
-
-    btn.onmouseenter = () => {
-      btn.style.background = '#333';
-    };
-    btn.onmouseleave = () => {
-      btn.style.background = '#111';
-    };
-
-    const openMenu = () => {
-      this.closeAgentMenu();
-      this.closePresenceMenu();
-      this.closeSuggestionReviewMenu();
-      if (this.shareMenuCleanup) {
-        this.closeShareMenu();
-        return;
-      }
-
-      const menu = document.createElement('div');
-      menu.setAttribute('role', 'menu');
-      menu.style.cssText = `
-        position:absolute;top:calc(100% + 8px);right:0;min-width:240px;
-        background:rgba(17,24,39,0.96);border:1px solid rgba(255,255,255,0.12);
-        border-radius:12px;padding:6px;z-index:1002;
-        box-shadow:0 16px 40px rgba(0,0,0,0.35);
-        backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
-      `;
-
-      const addItem = (title: string, onSelect: (itemLabel: HTMLSpanElement) => Promise<boolean> | boolean, opts?: { subtle?: boolean; disabled?: boolean }) => {
-        const item = document.createElement('button');
-        item.type = 'button';
-        item.setAttribute('role', 'menuitem');
-        item.style.cssText = `
-          width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;
-          padding:10px 12px;min-height:44px;border-radius:10px;border:0;background:transparent;
-          color:${opts?.subtle ? 'rgba(255,255,255,0.82)' : 'rgba(255,255,255,0.92)'};
-          font-size:12px;font-weight:${opts?.subtle ? '500' : '600'};cursor:pointer;text-align:left;
-        `;
-        item.onmouseenter = () => { if (!opts?.disabled) item.style.background = 'rgba(255,255,255,0.08)'; };
-        item.onmouseleave = () => { item.style.background = 'transparent'; };
-        if (opts?.disabled) {
-          item.disabled = true;
-          item.style.opacity = '0.55';
-          item.style.cursor = 'default';
-        }
-
-        const left = document.createElement('span');
-        left.textContent = title;
-        const right = document.createElement('span');
-        right.textContent = '';
-        right.style.cssText = 'font-weight:600;opacity:0.9';
-
-        item.append(left, right);
-        item.onclick = async () => {
-          if (opts?.disabled) return;
-          const ok = await onSelect(left);
-          right.textContent = ok ? 'Copied' : 'Failed';
-          if (ok) {
-            setTimeout(() => cleanup(), 700);
-          } else {
-            setTimeout(() => { right.textContent = ''; }, 1200);
-          }
-        };
-
-        menu.appendChild(item);
-      };
-
-      const addActionItem = (title: string, onSelect: () => void, opts?: { subtle?: boolean; disabled?: boolean }) => {
-        const item = document.createElement('button');
-        item.type = 'button';
-        item.setAttribute('role', 'menuitem');
-        item.style.cssText = `
-          width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;
-          padding:10px 12px;min-height:44px;border-radius:10px;border:0;background:transparent;
-          color:${opts?.subtle ? 'rgba(255,255,255,0.82)' : 'rgba(255,255,255,0.92)'};
-          font-size:12px;font-weight:${opts?.subtle ? '500' : '600'};cursor:pointer;text-align:left;
-        `;
-        item.onmouseenter = () => { if (!opts?.disabled) item.style.background = 'rgba(255,255,255,0.08)'; };
-        item.onmouseleave = () => { item.style.background = 'transparent'; };
-        if (opts?.disabled) {
-          item.disabled = true;
-          item.style.opacity = '0.55';
-          item.style.cursor = 'default';
-        }
-
-        const left = document.createElement('span');
-        left.textContent = title;
-        const right = document.createElement('span');
-        right.textContent = '›';
-        right.style.cssText = 'font-weight:700;opacity:0.8';
-        item.append(left, right);
-        item.onclick = () => {
-          if (opts?.disabled) return;
-          onSelect();
-          cleanup();
-        };
-        menu.appendChild(item);
-      };
-
-      const addDivider = () => {
-        const hr = document.createElement('div');
-        hr.style.cssText = 'height:1px;background:rgba(255,255,255,0.10);margin:6px 6px';
-        menu.appendChild(hr);
-      };
-
-      addItem('Copy link', async () => this.copyLinkWithFallback(this.getCanonicalShareUrl()));
-      if (this.teamCanManage) {
-        addActionItem('Invite person', () => { this.openInvitePersonDialog(); });
-      }
-      addDivider();
-      addActionItem(`Download as ${documentNoun()} (.md)`, () => { void this.downloadProofDocument(); });
-      addActionItem('View activity', () => this.openShareActivityModal());
-
-      container.appendChild(menu);
-      this.clampMenuToViewport(menu);
-
-      const onDocMouseDown = (ev: MouseEvent) => {
-        if (!(ev.target instanceof Node)) return;
-        if (container.contains(ev.target)) return;
-        cleanup();
-      };
-      const onKeyDown = (ev: KeyboardEvent) => {
-        if (ev.key === 'Escape') cleanup();
-      };
-
-      const cleanup = () => {
-        document.removeEventListener('mousedown', onDocMouseDown, true);
-        document.removeEventListener('keydown', onKeyDown, true);
-        if (menu.isConnected) menu.remove();
-        if (this.shareMenuCleanup === cleanup) {
-          this.shareMenuCleanup = null;
-        }
-      };
-
-      this.shareMenuCleanup = cleanup;
-      document.addEventListener('mousedown', onDocMouseDown, true);
-      document.addEventListener('keydown', onKeyDown, true);
-    };
-
+    btn.append(label);
+    btn.onmouseenter = () => { btn.style.background = '#333'; };
+    btn.onmouseleave = () => { btn.style.background = '#111'; };
     btn.onclick = () => {
       this.triggerHaptic('selection');
-      openMenu();
+      this.openShareDialog('link');
     };
-
     container.appendChild(btn);
     return container;
+  }
+
+  /** The Share dialog: Link (and the guest setting), People (Invite person), AIs (Add agent). */
+  private openShareDialog(tab: ShareTab): boolean {
+    this.closeShareMenu();
+    this.closeAgentMenu();
+    this.closePresenceMenu();
+    this.shareOverflowMenuCleanup?.();
+    const owner = this.teamCanManage === true;
+    showShareDialog({
+      title: this.shareDocTitle || 'Untitled',
+      shareUrl: this.getCanonicalShareUrl(),
+      documentNoun: documentNoun(),
+      copyLink: () => this.copyLinkWithFallback(this.getCanonicalShareUrl()),
+      download: () => { void this.downloadProofDocument(); },
+      activity: () => this.openShareActivityModal(),
+      invite: owner ? {
+        load: () => this.teamRequest<TeamState>('GET', ''),
+        invite: (email, name) => this.teamRequest<InviteResult>('POST', '/invites', { email, name }),
+        resend: id => this.teamRequest<InviteResult>('POST', `/invites/${encodeURIComponent(id)}/resend`, {}),
+        remove: id => this.teamRequest<TeamState>('POST', `/invites/${encodeURIComponent(id)}/remove`, {}),
+        setGuestAccess: mode => this.teamRequest<TeamState>('PUT', '/guest-access', { mode }),
+        copy: text => this.copyTextToClipboard(text),
+        // Cross invitation (2026-09-19): the Owner answers what an AI proposed.
+        confirmNomination: async id => {
+          const body = await this.teamRequest<{ team: TeamState; emailed?: boolean }>('POST', `/nominations/${encodeURIComponent(id)}/confirm`, {});
+          return { team: body.team, emailed: body.emailed };
+        },
+        declineNomination: id => this.teamRequest<TeamState>('POST', `/nominations/${encodeURIComponent(id)}/decline`, {}),
+        revokeAttestation: id => this.teamRequest<TeamState>('POST', `/attestations/${encodeURIComponent(id)}/revoke`, {}),
+        setDirectInvite: (tokenId, allow) => this.teamRequest<TeamState>('PUT', `/agents/${encodeURIComponent(tokenId)}/direct-invite`, { allow }),
+      } : null,
+      agents: {
+        // A2 will add team-only documents; today this notice depends on member sign-in.
+        isSignedInMember: Boolean(window.__PROOF_LIBRARY_MEMBER__),
+        create: (label, runtime) => shareClient.createAgentKey(label, runtime),
+        list: () => shareClient.listAgentKeys(),
+        revoke: id => shareClient.revokeAgentKey(id),
+        invite: token => this.getAgentInviteMessage(token),
+        copy: text => this.copyTextToClipboard(text),
+      },
+    }, tab);
+    return true;
   }
 
   private createAgentMenuButton(
@@ -5781,6 +5925,7 @@ class ProofEditorImpl implements ProofEditor {
       min-width: min(480px, calc(100vw - 24px));
     `;
     this.shareOtherViewerCount = Math.max(0, viewers);
+    this.mountMenuBar();
     this.renderShareBannerContent(banner, this.shareOtherViewerCount);
     document.body.appendChild(banner);
     this.shareBannerResizeObserver = new ResizeObserver(() => this.scheduleBannerLayoutUpdate());
@@ -5820,6 +5965,7 @@ class ProofEditorImpl implements ProofEditor {
       this.shareMarksRefreshTimer = null;
     }
     this.pendingShareMarksRefresh = false;
+    this.unmountMenuBar();
     const existing = document.getElementById('share-banner');
     if (!existing) return;
     existing.remove();
@@ -6061,7 +6207,9 @@ class ProofEditorImpl implements ProofEditor {
     // close to the top edge, and the text starts just below it. On phones the bar is pinned to the
     // top edge by CSS (top: 0), so the space it takes is counted from 0.
     const phone = window.matchMedia?.('(max-width: 700px)').matches ?? window.innerWidth <= 700;
-    let offset = shareBanner ? (phone ? 0 : TOP_BAR_LAYOUT.desktopTopPx) : 0;
+    // Accord layout stage 2: on desktop the toolbar sits right under the 28 px menu bar.
+    const menuBarShown = Boolean(this.menuBar?.el.isConnected) && !phone;
+    let offset = shareBanner ? (phone ? 0 : (menuBarShown ? MENU_BAR_POLICY.heightPx : TOP_BAR_LAYOUT.desktopTopPx)) : 0;
     for (const banner of banners) {
       banner.style.top = `${offset}px`;
       const height = banner.offsetHeight || banner.getBoundingClientRect().height;

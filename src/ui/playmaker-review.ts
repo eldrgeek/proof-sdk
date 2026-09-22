@@ -126,6 +126,8 @@ export class PlayMakerReview {
     this.panel.hidden = false; this.toggle.setAttribute('aria-expanded', 'true');
     this.update(); this.panel.querySelector<HTMLElement>('.pm-review-panel-close')?.focus({ preventScroll: true });
   }
+  /** Accord layout stage 2: View › Marks panel shows whether it is open. */
+  panelOpen(): boolean { return !this.panel.hidden; }
   closePanel(): void {
     this.panel.hidden = true; this.toggle.setAttribute('aria-expanded', 'false');
   }

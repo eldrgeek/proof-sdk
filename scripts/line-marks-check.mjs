@@ -145,7 +145,9 @@ async function desktop(browser, base) {
   await check(`${tag}: top bar shows the issue count and Next issue`, async () => {
     // The first line is the reading walk's focus line: a short dwell marks it Seen.
     await waitFor(page, () => document.querySelector('.plm-dot[data-line="0"]')?.dataset.status === 'seen');
-    await waitFor(page, n => document.querySelector('#share-banner .plm-issues-count')?.textContent === `${n} issues`, LINE_COUNT - 1);
+    // Accord layout stage 2: the pill shows the viewer's own Issues; the team's count is data-team-count.
+    await waitFor(page, n => document.querySelector('#share-banner .plm-issues-count')?.dataset.teamCount === String(n), LINE_COUNT - 1);
+    assert.equal(await page.locator('#share-banner .plm-issues-count').textContent(), '0 Issues', 'unseen lines do not need this viewer');
     assert.ok(await page.locator('#share-banner .plm-next').isVisible());
   });
   await check(`${tag}: Seen on line 1 lowers the count`, async () => {
@@ -200,7 +202,7 @@ async function desktop(browser, base) {
   await check(`${tag}: editing a line resets the others' marks on it and gives the changer Agreed`, async () => {
     // Line 2 ("The second paragraph..."): Ada rejected it; Bob marks it Seen, then edits it directly.
     await mark(b.page, 2, /Seen/);
-    await b.page.getByRole('button', { name: /^Suggesting:/ }).click();
+    await b.page.getByRole('button', { name: /^Suggesting:/ }).locator('[data-mode="edit"]').click();
     await b.page.locator('.ProseMirror p', { hasText: 'The second paragraph' }).click();
     await b.page.keyboard.press('End');
     await b.page.keyboard.insertText(' Edited by Bob.');
@@ -271,7 +273,7 @@ async function phone(browser, base) {
     assert.ok(h <= 60, `bar height ${h}`);
     const btn = page.locator('#share-banner .plm-next');
     assert.ok(await btn.isVisible(), 'issue button hidden');
-    await waitFor(page, n => document.querySelector('#share-banner .plm-next')?.innerText.trim() === `${n} ›`, LINE_COUNT - 1);
+    await waitFor(page, n => (document.querySelector('#share-banner .plm-issues-count')?.dataset.teamCount === String(n) && document.querySelector('#share-banner .plm-next')?.innerText.trim() === `${document.querySelector('#share-banner .plm-issues-count').dataset.viewerCount} ›`), LINE_COUNT - 1);
     const r = await btn.boundingBox();
     assert.ok(r.height >= 44 && r.width >= 44, `issue button ${r.width}x${r.height}`);
   });
@@ -310,7 +312,7 @@ async function phone(browser, base) {
     assert.ok(box.height >= 44, `Agree button ${box.height}px tall`);
     await agree.tap();
     await waitFor(page, () => document.querySelector('.plm-dot[data-line="1"]')?.dataset.status === 'agreed');
-    await waitFor(page, n => document.querySelector('#share-banner .plm-next')?.innerText.trim() === `${n} ›`, LINE_COUNT - 2);
+    await waitFor(page, n => (document.querySelector('#share-banner .plm-issues-count')?.dataset.teamCount === String(n) && document.querySelector('#share-banner .plm-next')?.innerText.trim() === `${document.querySelector('#share-banner .plm-issues-count').dataset.viewerCount} ›`), LINE_COUNT - 2);
   });
   await check(`${tag}: Reject asks for a reason on the phone`, async () => {
     await page.locator('.plm-dot[data-line="4"]').tap();

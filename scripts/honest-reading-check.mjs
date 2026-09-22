@@ -144,8 +144,10 @@ async function desktop(browser, base, style) {
   activePage = page;
   const rail = page.locator('.prw-right');
 
-  await check(`${tag}: a line's reading time scales with its words; the rail's Reading speed changes it`, async () => {
-    const rate = rail.locator('.prw-rate select');
+  await check(`${tag}: a line's reading time scales with its words; View › Reading settings changes it`, async () => {
+    // Accord layout stage 2 (decision 10): Reading speed left the rail for View › Reading settings.
+    const settings = page.locator('#reading-settings');
+    const rate = settings.locator('.prw-rate select');
     assert.equal(await rate.inputValue(), '8', 'default rate is 8 words/s');
     await page.keyboard.press('j'); await page.keyboard.press('j');
     await waitFor(page, i => window.__proofReadingWalk.debugState().focus === i, L.LONG);
@@ -153,12 +155,16 @@ async function desktop(browser, base, style) {
     assert.equal(s.dwellMs, 3000, `24 words at the default 8 words/s take 3 s (got ${s.dwellMs})`);
     await page.waitForTimeout(1200);
     assert.notEqual(await dotStatus(page, L.LONG), 'seen', 'a 24-word line was Seen after 1.2 s');
+    await page.locator('#accord-menubar .amb-top[data-menu="view"]').click();
+    await page.locator('.amb-menu .amb-item', { hasText: 'Reading settings…' }).click();
+    await settings.waitFor({ state: 'visible' });
     await rate.selectOption('12');
     s = await walk(page);
     assert.equal(s.rate, 12);
     assert.equal(s.dwellMs, 2000, `24 words at 12 words/s (got ${s.dwellMs})`);
     assert.equal(await page.evaluate(() => localStorage.getItem('proof:reading-rate')), '12', 'the rate is kept per browser');
-    assert.match(await rail.locator('.prw-rate-need').innerText(), /this line: 2\.0 s/);
+    assert.match(await settings.locator('.prw-rate-need').innerText(), /this line: 2\.0 s/);
+    await settings.getByRole('button', { name: 'Close reading settings' }).click();
     await waitFor(page, i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.status === 'seen', L.LONG, 4000);
     const mine = await myMark(page, L.LONG);
     assert.equal(mine.via, 'dwell');
@@ -279,7 +285,9 @@ async function desktop(browser, base, style) {
   await check(`${tag}: a later rejection starts a new round: "Last aligned <time>"`, async () => {
     await agent(base, small, '/marks/line', { by: 'ai:check', status: 'rejected', reason: 'Friday is too soon', lineIndex: 1 });
     await waitFor(t.page, () => /Last aligned/.test(document.querySelector('#share-banner .plm-aligned-at')?.textContent ?? ''), null, 12000);
-    assert.match(await t.page.locator('#share-banner .plm-issues-count').innerText(), /1 issue/);
+    // The pill counts the viewer's own Issues (the AI's rejection is its thread); the team has 1.
+    await waitFor(t.page, () => document.querySelector('#share-banner .plm-issues-count')?.dataset.teamCount === '1');
+    assert.equal(await t.page.locator('#share-banner .plm-issues-count').innerText(), '0 Issues');
   });
   await t.context.close();
 }
@@ -302,7 +310,7 @@ async function phone(browser, base, style) {
     assert.ok(info.sw <= info.cw + 1, `scrollWidth ${info.sw}`);
     await page.screenshot({ path: path.join(shots, `${tag}-1-skimmed.png`) });
   });
-  await check(`${tag}: the "This line" sheet holds the reading speed and Since you; items are big enough to tap`, async () => {
+  await check(`${tag}: ⋯ › Reading settings holds the reading speed; the "This line" sheet holds Since you; items are big enough to tap`, async () => {
     // Pat marks a line on purpose, then an AI edits and rejects: Since you has items on reload.
     await agent(base, created, '/marks/line', { by: 'guest:Pat', status: 'agreed', lineIndex: L.PRICE });
     await new Promise(r => setTimeout(r, 30));
@@ -311,10 +319,15 @@ async function phone(browser, base, style) {
     await page.reload();
     await page.waitForFunction(() => window.__proofReadingWalk?.debugState().since !== null, null, { timeout: 15_000 });
     await page.locator('#share-banner .share-pill-overflow').tap();
+    await page.getByRole('menuitem', { name: /Reading settings/ }).tap();
+    const settings = page.locator('#reading-settings');
+    await settings.waitFor({ state: 'visible' });
+    assert.ok(await settings.locator('.prw-rate select').isVisible(), 'no reading speed in Reading settings');
+    await settings.getByRole('button', { name: 'Close reading settings' }).tap();
+    await page.locator('#share-banner .share-pill-overflow').tap();
     await page.getByRole('menuitem', { name: /This line/ }).tap();
     const sheet = page.locator('.prw-right.prw-sheet-open');
     await sheet.waitFor({ state: 'visible' });
-    assert.ok(await sheet.locator('.prw-rate select').isVisible(), 'no reading speed in the sheet');
     const since = sheet.locator('.prw-since');
     await since.waitFor({ state: 'visible' });
     assert.match(await since.innerText(), /Too long/);

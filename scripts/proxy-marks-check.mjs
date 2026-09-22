@@ -208,6 +208,12 @@ async function run(browser, style) {
       assert.equal(await brief.locator('.ppx-headline').innerText(), 'Claude read 7 lines for you: agreed 4, flagged 3 for you, 0 need you');
       const first = await mike.evaluate(() => document.querySelector('.prw-right .prw-rail-body')?.firstElementChild?.className);
       assert.match(first, /ppx-brief/, 'the brief is the first thing in the rail');
+      // Accord layout stage 2 (decision 10): the brief is folded to its headline; View › Familiar's brief opens it.
+      assert.equal(await brief.locator('.ppx-body').isHidden(), true, 'the brief starts folded');
+      await mike.locator('#accord-menubar .amb-top[data-menu="view"]').click();
+      await mike.locator('.amb-menu .amb-item', { hasText: 'Familiar’s brief' }).click();
+      await brief.locator('.ppx-ratify').waitFor({ state: 'visible' });
+      assert.equal(await brief.locator('.ppx-fold-toggle').getAttribute('aria-expanded'), 'true');
       assert.equal(await brief.locator('.ppx-ratify').innerText(), 'Ratify all 4');
       assert.equal(await brief.locator('.ppx-review').innerText(), 'Review the 3 flagged');
       // The ringer list: every line the click would cover, with its evidence.

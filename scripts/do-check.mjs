@@ -226,7 +226,14 @@ async function run(browser, style) {
     });
 
     await check(`${tag}: Mike approves; the state says Approved; nothing is queued; no line mark is written`, async () => {
-      const marksBefore = (await mike.evaluate(async s => (await (await fetch(`/api/documents/${s.s}/line-marks`, { credentials: 'same-origin', headers: s.h })).json()).lineMarks, { s: slug, h: clientHeaders })).length;
+      // "Approving is not agreeing": compare the marks a person chose (Agree, Reject, Approve, Seen
+      // by click or key). Passive reads are left out: the reading walk keeps writing Seen by dwell
+      // for the lines at the top of this short page while the check runs (seen on 3474b69: the
+      // {do} line's dwell Seen landed ~1 s after line 0's, between the two fetches, with the focus
+      // line never leaving line 0), which made this check flaky without any approval writing a mark.
+      const deliberate = list => list.filter(m => !['dwell', 'section', 'proxy'].includes(m.via ?? 'api') && m.status !== 'skimmed');
+      const readMarks = () => mike.evaluate(async s => (await (await fetch(`/api/documents/${s.s}/line-marks`, { credentials: 'same-origin', headers: s.h })).json()).lineMarks, { s: slug, h: clientHeaders });
+      const marksBefore = deliberate(await readMarks());
       await mike.evaluate(() => window.scrollTo(0, 0));
       const control = inline(mike);
       await control.scrollIntoViewIfNeeded();
@@ -239,8 +246,8 @@ async function run(browser, style) {
       assert.equal(list.body.dos[0].state, 'approved');
       assert.equal(list.body.dos[0].approval.by, MIKE);
       assert.deepEqual(list.body.dos[0].runs, []);
-      const marksAfter = (await mike.evaluate(async s => (await (await fetch(`/api/documents/${s.s}/line-marks`, { credentials: 'same-origin', headers: s.h })).json()).lineMarks, { s: slug, h: clientHeaders })).length;
-      assert.equal(marksAfter, marksBefore, 'approving is not agreeing');
+      const marksAfter = deliberate(await readMarks());
+      assert.deepEqual(marksAfter.map(m => m.id), marksBefore.map(m => m.id), `approving is not agreeing: ${JSON.stringify(marksAfter.map(m => [m.anchor?.ordinal, m.status, m.via]))}`);
       await mike.screenshot({ path: path.join(shots, `${tag}-2-approved.png`) });
     });
 

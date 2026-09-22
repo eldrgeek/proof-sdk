@@ -22,21 +22,29 @@ export interface AgentKeyList {
   runtimeSuggestions: string[];
 }
 
-export function showAgentKeyDialog(actions: {
+export interface AgentKeyActions {
   isSignedInMember: boolean;
   create: (label: string, runtime: string) => Promise<AgentKey & { token: string }>;
   list: () => Promise<AgentKeyList>;
   revoke: (id: string) => Promise<void>;
   invite: (token: string) => string;
   copy: (text: string) => Promise<boolean>;
-}): void {
-  const existing = document.querySelector<HTMLDialogElement>('#agent-key-dialog');
-  if (existing) { existing.focus(); return; }
-  const opener = document.activeElement as HTMLElement | null;
-  const dialog = document.createElement('dialog');
+}
+
+/** A mounted Add agent panel. */
+export interface AgentKeyPanel {
+  focus(): void;
+  destroy(): void;
+}
+
+/**
+ * Fills `root` with the Add agent panel: the Share dialog's AIs tab (Accord layout stage 2,
+ * decision 12). Closing the dialog destroys the panel, which forgets the one-time key.
+ */
+export function mountAgentKeyPanel(root: HTMLElement, actions: AgentKeyActions): AgentKeyPanel {
+  const dialog = root;
   dialog.id = 'agent-key-dialog';
   dialog.setAttribute('aria-labelledby', 'agent-key-title');
-  dialog.style.cssText = 'margin:auto;width:520px;max-width:calc(100vw - 32px);max-height:85vh;overflow:auto;box-sizing:border-box;padding:24px;border:1px solid #d1d5db;border-radius:16px;background:#fff;color:#111827;box-shadow:0 20px 70px #0004;font:14px/1.5 system-ui;';
   dialog.innerHTML = `
     <style>
       #agent-key-dialog::backdrop { background: #0006; }
@@ -50,10 +58,7 @@ export function showAgentKeyDialog(actions: {
       #agent-key-dialog .key-details { flex:1;min-width:0;overflow-wrap:anywhere; }
       #agent-key-dialog small { display:block;color:#4b5563; }
     </style>
-    <header style="display:flex;align-items:center;justify-content:space-between;gap:12px">
-      <h2 id="agent-key-title" style="margin:0;font-size:20px">Add agent</h2>
-      <button type="button" data-close aria-label="Close agent dialog">Close</button>
-    </header>
+    <h2 id="agent-key-title" style="margin:0;font-size:17px">Add agent</h2>
     <p>The key lets your AI edit this document, and you can revoke it here at any time. The AI is bound to you: everything it marks says “added by you”, and it goes quiet if you leave the document.</p>
     <form>
       <label for="agent-key-label">Agent name</label>
@@ -174,15 +179,31 @@ export function showAgentKeyDialog(actions: {
     const copied = await actions.copy(instructions.value);
     status.textContent = copied ? 'Instructions copied.' : 'Select and copy the instructions above.';
   };
-  dialog.querySelector<HTMLButtonElement>('[data-close]')!.onclick = () => dialog.close();
-  dialog.addEventListener('close', () => {
-    closed = true;
-    clearInvite();
-    dialog.remove();
-    opener?.focus();
-  }, { once: true });
+  void refresh();
+  return {
+    focus: () => label.focus(),
+    destroy: () => { closed = true; clearInvite(); },
+  };
+}
+
+/** Add agent on its own (kept for callers outside the Share dialog). */
+export function showAgentKeyDialog(actions: AgentKeyActions): void {
+  if (document.querySelector('#agent-key-dialog')) return;
+  const opener = document.activeElement as HTMLElement | null;
+  const dialog = document.createElement('dialog');
+  dialog.className = 'ak-standalone';
+  dialog.style.cssText = 'margin:auto;width:520px;max-width:calc(100vw - 32px);max-height:85vh;overflow:auto;box-sizing:border-box;padding:24px;border:1px solid #d1d5db;border-radius:16px;background:#fff;color:#111827;box-shadow:0 20px 70px #0004;font:14px/1.5 system-ui;';
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.textContent = 'Close';
+  close.setAttribute('aria-label', 'Close agent dialog');
+  close.style.cssText = 'float:right';
+  const body = document.createElement('div');
+  dialog.append(close, body);
+  const panel = mountAgentKeyPanel(body, actions);
+  close.onclick = () => dialog.close();
+  dialog.addEventListener('close', () => { panel.destroy(); dialog.remove(); opener?.focus(); }, { once: true });
   document.body.appendChild(dialog);
   dialog.showModal();
-  label.focus();
-  void refresh();
+  panel.focus();
 }

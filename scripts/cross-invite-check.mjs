@@ -146,8 +146,9 @@ async function openInviteDialog(page, phone) {
     await page.locator('#share-banner .share-pill-overflow').click();
     await page.locator('.proof-share-overflow-menu [role="menuitem"]', { hasText: 'Invite person' }).click();
   } else {
-    await page.getByRole('button', { name: 'Share options' }).click();
-    await page.getByRole('menuitem', { name: /Invite person/ }).click();
+    // Accord layout stage 2: People › Invite person… opens the Share dialog's People tab.
+    await page.locator('#accord-menubar .amb-top[data-menu="people"]').click();
+    await page.locator('.amb-menu [role="menuitem"]', { hasText: 'Invite person' }).click();
   }
   const dialog = page.locator('#invite-person-dialog');
   await dialog.waitFor({ state: 'visible' });
@@ -160,13 +161,9 @@ async function openAgentDialog(page, phone) {
     await page.locator('#share-banner .share-pill-overflow').click();
     await page.locator('.proof-share-overflow-menu [role="menuitem"]', { hasText: 'Add agent' }).click();
   } else {
-    const bar = page.locator('#share-banner');
-    const add = bar.getByRole('button', { name: 'Add agent' });
-    if (await add.count()) await add.first().click();
-    else {
-      await bar.getByRole('button', { name: /AI collaborator/ }).click();
-      await page.getByRole('button', { name: /Add agent \/ manage keys/ }).click();
-    }
+    // Accord layout stage 2: People › Add agent… opens the Share dialog's AIs tab.
+    await page.locator('#accord-menubar .amb-top[data-menu="people"]').click();
+    await page.locator('.amb-menu [role="menuitem"]', { hasText: 'Add agent' }).click();
   }
   const dialog = page.locator('#agent-key-dialog');
   await dialog.waitFor({ state: 'visible' });
@@ -211,7 +208,7 @@ async function run(browser, style) {
     // Mike invites Eric, and Eric signs in from the emailed link.
     let dialog = await openInviteDialog(mike, false);
     await invite(dialog, ERIC_EMAIL, 'Eric');
-    await dialog.getByRole('button', { name: 'Close invite dialog' }).click();
+    await dialog.page().locator('#share-dialog').getByRole('button', { name: 'Close share dialog' }).click();
     const ericCtx = await newContext(browser, base, desk);
     const eric = await ericCtx.newPage();
     await eric.goto(mails().at(-1).link);
@@ -236,7 +233,7 @@ async function run(browser, style) {
       assert.match(await row.innerText(), /Added by Eric/);
       assert.match(await row.innerText(), new RegExp(RUNTIME.replace(/[()]/g, '\\$&')));
       await eric.screenshot({ path: path.join(shots, `${tag}-1-agent-added.png`) });
-      await agents.getByRole('button', { name: 'Close agent dialog' }).click();
+      await agents.page().locator('#share-dialog').getByRole('button', { name: 'Close share dialog' }).click();
     });
 
     await check(`${tag}: the AI works, and its marks read "Izzy — added by Eric"`, async () => {
@@ -294,7 +291,7 @@ async function run(browser, style) {
       assert.equal(mail.to, ADA_EMAIL);
       await dialog.locator('.ip-row', { hasText: ADA_EMAIL }).first().waitFor();
       await mike.screenshot({ path: path.join(shots, `${tag}-4-confirmed.png`) });
-      await dialog.getByRole('button', { name: 'Close invite dialog' }).click();
+      await dialog.page().locator('#share-dialog').getByRole('button', { name: 'Close share dialog' }).click();
     });
 
     const adaCtx = await newContext(browser, base, desk);
@@ -370,7 +367,7 @@ async function run(browser, style) {
       await mike.screenshot({ path: path.join(shots, `${tag}-8-suspended.png`) });
       const quiet = await agent(base, slug, izzyKey, 'GET', '/state');
       assert.equal(quiet.status, 401, 'the AI goes quiet with its sponsor');
-      await dialog.getByRole('button', { name: 'Close invite dialog' }).click();
+      await dialog.page().locator('#share-dialog').getByRole('button', { name: 'Close share dialog' }).click();
     });
 
     await samCtx.close();
@@ -399,7 +396,7 @@ async function run(browser, style) {
       assert.ok(info.r.left >= 0 && info.r.right <= info.cw + 1, `the dialog fits: ${JSON.stringify(info)}`);
       assert.match(await agents.locator('.key-row', { hasText: 'Izzy' }).first().innerText(), /Added by Mike Wolf/);
       await pMike.screenshot({ path: path.join(shots, `${ptag}-1-add-agent.png`) });
-      await agents.getByRole('button', { name: 'Close agent dialog' }).click();
+      await agents.page().locator('#share-dialog').getByRole('button', { name: 'Close share dialog' }).click();
     });
 
     await check(`${ptag}: a nomination is answerable on the phone, and the dialog does not scroll sideways`, async () => {
@@ -424,7 +421,7 @@ async function run(browser, style) {
       assert.equal(mails().at(-1).to, ADA_EMAIL);
       assert.match(await d.innerText(), /Ada — nominated by Izzy, confirmed by Mike Wolf/);
       await pMike.screenshot({ path: path.join(shots, `${ptag}-3-confirmed.png`) });
-      await d.getByRole('button', { name: 'Close invite dialog' }).click();
+      await d.page().locator('#share-dialog').getByRole('button', { name: 'Close share dialog' }).click();
     });
     await pCtx.close();
   } finally {

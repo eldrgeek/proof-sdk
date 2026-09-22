@@ -196,16 +196,26 @@ async function run(browser, style) {
       assert.equal(asked[0].actor, `human:${MIKE_EMAIL}`);
     });
 
-    await check(`${tag}: Next issue goes by stakes: the AI's rejection first, then the uncertain line`, async () => {
+    // Accord layout stage 2 (NEXT_ISSUE_POLICY.viewerFirst): Next takes the Issues that need the
+    // viewer (the pill's count, the amber dots) first, each group in stakes order.
+    await check(`${tag}: Next issue goes by stakes: the uncertain line that needs Mike, then the AI's rejection`, async () => {
       await mike.evaluate(() => window.scrollTo(0, 0));
       const s = await lm(mike);
       assert.equal(s.aids.ranked[0].rule, 'rejected-by-others', JSON.stringify(s.aids.ranked.slice(0, 4)));
       await mike.locator('#share-banner .plm-next').click();
+      await waitFor(mike, () => document.querySelector('#share-banner .plm-issues-count')?.dataset.current === 'uncertain 4')
+        .catch(async () => { throw new Error(`first Next: ${await mike.evaluate(() => JSON.stringify({ ...document.querySelector('#share-banner .plm-issues-count').dataset, needs: window.__proofLineMarks.needsYouLines() }))}`); });
+      assert.equal((await walk(mike)).focus, L.BETA);
+      // The other Issues that need Mike come next; then the team's, led by the AI's rejection.
+      const needs = await mike.evaluate(() => [...window.__proofLineMarks.needsYouLines()]);
+      for (let i = 0; i < 12; i += 1) {
+        await mike.locator('#share-banner .plm-next').click();
+        await mike.waitForTimeout(120);
+        if (await mike.evaluate(() => document.querySelector('#share-banner .plm-issues-count')?.dataset.priority === 'rejected-by-others')) break;
+        assert.ok(needs.includes((await walk(mike)).focus), `Next left the lines that need Mike before the team's (${(await walk(mike)).focus} not in ${needs})`);
+      }
       await waitFor(mike, () => document.querySelector('#share-banner .plm-issues-count')?.dataset.priority === 'rejected-by-others');
       assert.equal((await walk(mike)).focus, L.DELTA);
-      await mike.locator('#share-banner .plm-next').click();
-      await waitFor(mike, () => document.querySelector('#share-banner .plm-issues-count')?.dataset.current === 'uncertain 4');
-      assert.equal((await walk(mike)).focus, L.BETA);
     });
 
     await check(`${tag}: R on a line opens the reason with chips: the AI author's hints first, then defaults; a chip fills the reason`, async () => {
@@ -275,24 +285,31 @@ async function run(browser, style) {
     });
 
     await check(`${tag}: a sitting of 5 issues: after five, Next says what is left and lets the reader stop`, async () => {
-      const setting = mike.locator('.prw-right .plm-budget select');
+      // Accord layout stage 2 (decision 10): This sitting lives in View › Reading settings.
+      await mike.locator('#accord-menubar .amb-top[data-menu="view"]').click();
+      await mike.locator('.amb-menu .amb-item', { hasText: 'Reading settings…' }).click();
+      const setting = mike.locator('#reading-settings .plm-budget select');
       await setting.selectOption('5');
+      await mike.getByRole('button', { name: 'Close reading settings' }).click();
       for (let i = 0; i < 5; i += 1) {
         await mike.locator('#share-banner .plm-next').click();
         await mike.waitForTimeout(120);
       }
       assert.equal((await lm(mike)).aids.sitting.visited, 5);
       await mike.locator('#share-banner .plm-next').click();
-      const status = mike.locator('.prw-right .plm-budget .plm-budget-status');
-      await waitFor(mike, () => document.querySelector('.prw-right .plm-budget')?.dataset.state === 'reached');
+      // Reaching the budget opens Reading settings, which says what is left.
+      const status = mike.locator('#reading-settings .plm-budget .plm-budget-status');
+      await waitFor(mike, () => document.querySelector('#reading-settings .plm-budget')?.dataset.state === 'reached');
+      assert.ok(await mike.locator('#reading-settings').isVisible(), 'Reading settings did not open at the budget');
       const s = await lm(mike);
       assert.match(await status.innerText(), new RegExp(`Sitting done: 5 of 5\\. ${s.aids.sitting.remaining} more, (none urgent|\\d+ urgent)\\.`));
       await mike.waitForTimeout(200);
       await mike.screenshot({ path: path.join(shots, `${tag}-7-budget.png`) });
-      await mike.locator('.prw-right .plm-budget-stop').click();
-      await waitFor(mike, () => document.querySelector('.prw-right .plm-budget')?.dataset.state === 'stopped');
+      await mike.locator('#reading-settings .plm-budget-stop').click();
+      await waitFor(mike, () => document.querySelector('#reading-settings .plm-budget')?.dataset.state === 'stopped');
       assert.match(await status.innerText(), /Stopped with \d+ more, .*They wait for next time\./);
       await setting.selectOption('0');
+      await mike.getByRole('button', { name: 'Close reading settings' }).click();
     });
 
     await check(`${tag}: a person flags a line from the rail; the flag is theirs to clear`, async () => {
@@ -335,9 +352,10 @@ async function run(browser, style) {
       await sheet.locator('.plm-reason button[type="submit"]').tap();
       await waitFor(phone, i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.status === 'rejected', L.BETA);
     });
-    await check(`${ptag}: the rail sheet carries "This sitting"`, async () => {
-      await phone.evaluate(() => window.__proofReadingWalk.openSheet('right'));
-      const budget = phone.locator('.prw-right.prw-sheet-open .plm-budget select');
+    await check(`${ptag}: ⋯ › Reading settings carries "This sitting" as a sheet`, async () => {
+      await phone.locator('#share-banner .share-pill-overflow').tap();
+      await phone.getByRole('menuitem', { name: /Reading settings/ }).tap();
+      const budget = phone.locator('#reading-settings .plm-budget select');
       await budget.waitFor({ state: 'visible' });
       const h = await budget.evaluate(el => el.getBoundingClientRect().height);
       assert.ok(h >= 44, `select ${h}px`);

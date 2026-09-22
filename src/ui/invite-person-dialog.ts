@@ -73,7 +73,7 @@ export interface InviteResult {
   email: { sent: boolean; transport: string; error?: string };
 }
 
-export function showInvitePersonDialog(actions: {
+export interface InvitePersonActions {
   load: () => Promise<TeamState>;
   invite: (email: string, name: string) => Promise<InviteResult>;
   resend: (id: string) => Promise<InviteResult>;
@@ -85,14 +85,23 @@ export function showInvitePersonDialog(actions: {
   declineNomination?: (id: string) => Promise<TeamState>;
   revokeAttestation?: (id: string) => Promise<TeamState>;
   setDirectInvite?: (tokenId: string, allow: boolean) => Promise<TeamState>;
-}): void {
-  const existing = document.querySelector<HTMLDialogElement>('#invite-person-dialog');
-  if (existing) { existing.focus(); return; }
-  const opener = document.activeElement as HTMLElement | null;
-  const dialog = document.createElement('dialog');
+}
+
+/** A mounted Invite person panel. */
+export interface InvitePersonPanel {
+  focus(): void;
+  refresh(): Promise<void>;
+  destroy(): void;
+}
+
+/**
+ * Fills `root` with the Invite person panel: the Share dialog's People tab (Accord layout stage 2,
+ * decision 12). The guest setting goes to `options.guestHost` (the Link tab) when given.
+ */
+export function mountInvitePersonPanel(root: HTMLElement, actions: InvitePersonActions, options: { guestHost?: HTMLElement } = {}): InvitePersonPanel {
+  const dialog = root;
   dialog.id = 'invite-person-dialog';
   dialog.setAttribute('aria-labelledby', 'invite-person-title');
-  dialog.style.cssText = 'margin:auto;width:540px;max-width:calc(100vw - 32px);max-height:88vh;overflow:auto;box-sizing:border-box;padding:24px;border:1px solid #d1d5db;border-radius:16px;background:#fff;color:#111827;box-shadow:0 20px 70px #0004;font:14px/1.5 system-ui;';
   dialog.innerHTML = `
     <style>
       #invite-person-dialog::backdrop { background: #0006; }
@@ -119,10 +128,7 @@ export function showInvitePersonDialog(actions: {
       #invite-person-dialog .ip-row[data-suspended="1"] .ip-provenance { color:#9a3412; }
       #invite-person-dialog .ip-confirm { background:#111827;color:white; }
     </style>
-    <header style="display:flex;align-items:center;justify-content:space-between;gap:12px">
-      <h2 id="invite-person-title" style="margin:0;font-size:20px">Invite person</h2>
-      <button type="button" data-close aria-label="Close invite dialog">Close</button>
-    </header>
+    <h2 id="invite-person-title" style="margin:0;font-size:17px">Invite person</h2>
     <p>The person joins this document only. They sign in with their email and see only the documents they were invited to.</p>
     <form data-invite-form>
       <div class="ip-field"><label for="invite-person-email">Email</label>
@@ -154,9 +160,12 @@ export function showInvitePersonDialog(actions: {
       <p class="ip-note">Every AI is bound to the person who added it, and goes quiet if that person leaves.</p>
       <div data-agent-rows></div>
     </section>
-    <h3>People who are not signed in</h3>
-    <div class="ip-guest" data-guest role="radiogroup" aria-label="People who are not signed in"></div>
   `;
+  // Share dialog: the guest setting ("people who are not signed in") sits under Link.
+  const guestSection = document.createElement('section');
+  guestSection.className = 'ip-guest-section';
+  guestSection.innerHTML = '<h3>People who are not signed in</h3><div class="ip-guest" data-guest role="radiogroup" aria-label="People who are not signed in"></div><p class="ip-guest-status" data-status role="status" aria-live="polite"></p>';
+  (options.guestHost ?? dialog).append(guestSection);
   const form = dialog.querySelector<HTMLFormElement>('[data-invite-form]')!;
   const email = dialog.querySelector<HTMLInputElement>('#invite-person-email')!;
   const name = dialog.querySelector<HTMLInputElement>('#invite-person-name')!;
@@ -166,7 +175,8 @@ export function showInvitePersonDialog(actions: {
   const resultLink = dialog.querySelector<HTMLInputElement>('#invite-person-link')!;
   const resultNote = dialog.querySelector<HTMLElement>('[data-result-note]')!;
   const people = dialog.querySelector<HTMLElement>('[data-people]')!;
-  const guest = dialog.querySelector<HTMLElement>('[data-guest]')!;
+  const guest = guestSection.querySelector<HTMLElement>('[data-guest]')!;
+  const guestStatus = guestSection.querySelector<HTMLElement>('.ip-guest-status')!;
   const nominationsBox = dialog.querySelector<HTMLElement>('[data-nominations]')!;
   const nominationRows = dialog.querySelector<HTMLElement>('[data-nomination-rows]')!;
   const attestationsBox = dialog.querySelector<HTMLElement>('[data-attestations]')!;
@@ -396,9 +406,9 @@ export function showInvitePersonDialog(actions: {
         guest.querySelectorAll('input').forEach(input => { input.disabled = true; });
         try {
           render(await actions.setGuestAccess(option.mode));
-          status.textContent = `Saved: ${option.label.charAt(0).toLowerCase()}${option.label.slice(1)}.`;
+          guestStatus.textContent = `Saved: ${option.label.charAt(0).toLowerCase()}${option.label.slice(1)}.`;
         } catch (error) {
-          status.textContent = error instanceof Error ? error.message : 'Could not change the setting.';
+          guestStatus.textContent = error instanceof Error ? error.message : 'Could not change the setting.';
           render(await actions.load().catch(() => state));
         }
       };
@@ -437,14 +447,32 @@ export function showInvitePersonDialog(actions: {
     }
   };
   dialog.querySelector<HTMLButtonElement>('[data-copy-result]')!.onclick = () => { if (resultLink.value) void copyLink(resultLink.value); };
-  dialog.querySelector<HTMLButtonElement>('[data-close]')!.onclick = () => dialog.close();
-  dialog.addEventListener('close', () => {
-    closed = true;
-    dialog.remove();
-    opener?.focus();
-  }, { once: true });
+  void refresh();
+  return {
+    focus: () => email.focus(),
+    refresh,
+    destroy: () => { closed = true; guestSection.remove(); },
+  };
+}
+
+/** Invite person on its own (kept for callers outside the Share dialog). */
+export function showInvitePersonDialog(actions: InvitePersonActions): void {
+  if (document.querySelector('#invite-person-dialog')) return;
+  const opener = document.activeElement as HTMLElement | null;
+  const dialog = document.createElement('dialog');
+  dialog.className = 'ip-standalone';
+  dialog.style.cssText = 'margin:auto;width:540px;max-width:calc(100vw - 32px);max-height:88vh;overflow:auto;box-sizing:border-box;padding:24px;border:1px solid #d1d5db;border-radius:16px;background:#fff;color:#111827;box-shadow:0 20px 70px #0004;font:14px/1.5 system-ui;';
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.textContent = 'Close';
+  close.setAttribute('aria-label', 'Close invite dialog');
+  close.style.cssText = 'float:right';
+  const body = document.createElement('div');
+  dialog.append(close, body);
+  const panel = mountInvitePersonPanel(body, actions);
+  close.onclick = () => dialog.close();
+  dialog.addEventListener('close', () => { panel.destroy(); dialog.remove(); opener?.focus(); }, { once: true });
   document.body.appendChild(dialog);
   dialog.showModal();
-  email.focus();
-  void refresh();
+  panel.focus();
 }
