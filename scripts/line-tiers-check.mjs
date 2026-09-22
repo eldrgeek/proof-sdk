@@ -184,9 +184,10 @@ async function run(browser, style) {
       assert.match(intro.cls, /ptier-proposed/);
       const budget = await lineClass(mike, L.BUDGET);
       assert.doesNotMatch(budget.cls, /ptier-context/);
-      assert.notEqual(intro.color, budget.color, 'context text is dimmed');
+      // Accord layout stage 1: context text is no longer dimmed (the tier lives in the line's box and the dot's label).
+      assert.equal(intro.color, budget.color, 'context text is dimmed');
       await waitFor(mike, i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.tier === 'decision', L.BUDGET);
-      assert.deepEqual(await dot(mike, L.BUDGET), { tier: 'decision', diamond: '◆', proposed: null });
+      assert.deepEqual(await dot(mike, L.BUDGET), { tier: 'decision', diamond: null, proposed: null });
       assert.deepEqual(await dot(mike, L.INTRO), { tier: 'context', diamond: null, proposed: 'true' });
       // The unread History line stays an Issue for Mike; the read ones do not.
       assert.ok(t.myIssueLines.includes(L.HISTORY));
@@ -279,7 +280,7 @@ async function run(browser, style) {
     await openDoc(phone, base, slug);
     await check(`${ptag}: context lines are quieter and decision dots carry ◆; no sideways scroll`, async () => {
       await waitFor(phone, i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.tier === 'decision', L.BUDGET);
-      assert.equal((await dot(phone, L.BUDGET)).diamond, '◆');
+      assert.equal((await dot(phone, L.BUDGET)).tier, 'decision'); // no ◆ in the margin since the Accord layout
       await waitFor(phone, i => /ptier-context/.test(window.__proofLineMarks.editorView().nodeDOM(window.__proofLineMarks.lineList()[i].pos)?.className ?? ''), L.BACKGROUND);
       const sw = await phone.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
       assert.ok(sw[0] <= sw[1] + 1, `no sideways scroll ${sw}`);

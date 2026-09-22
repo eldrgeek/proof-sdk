@@ -257,3 +257,12 @@ body.plm-on #editor { padding-left:calc(var(--provenance-bar-width, 6px) + 48px)
 }
 .plm-chat-bubble:hover, .plm-chat-bubble:focus-visible { background:#6366f1; color:#fff; outline:none; }
 @media (max-width:700px) { .plm-chat-bubble { min-width:20px; height:18px; font-size:11px; } }
+
+/* Accord layout stage 1 (Claude Opus 5, 2026-09-21, Ren's proposal): two highlight states only.
+   Amber is kept for one meaning, "needs you": the dot of a line that needs the viewer is a filled
+   amber marker, and the status bar's "N Issues left" counts these dots. The viewer's own mark stays
+   in the dot's label; a writer's uncertain flag is violet now, so amber means only "needs you". */
+.plm-dot[data-needs-you="true"] .plm-glyph { width:12px; height:12px; background:#d98c00; border-color:#d98c00; color:transparent; box-shadow:0 0 0 3px rgba(217,140,0,.18); }
+.plm-dot[data-needs-you="true"]:hover .plm-glyph { border-color:#b37300; }
+.plm-dot[data-uncertain="true"]::before { background:#7c3aed; }
+.plm-dot[data-uncertain="true"][data-objection="true"]::before { background:linear-gradient(#7c3aed 50%, #dc2626 50%); }

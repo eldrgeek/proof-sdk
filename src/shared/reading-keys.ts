@@ -4,7 +4,8 @@
  *
  * The rule, as the person sees it:
  *   - Writing: you clicked (or tapped) the text, or pressed Enter on the focus line. The caret
- *     blinks and every key types. The rail head says "Writing · Esc to read".
+ *     blinks and every key types. The status bar under the page says "Writing" (Accord layout
+ *     stage 1, 2026-09-21; it was a chip in the rail head).
  *   - Reading: everything else. The reading keys (A R Y N T D E J K 1-9, ↑ ↓) are commands and
  *     never type; other letters do nothing to the text. No caret blinks in the text.
  *   - You leave writing with Esc, by clicking anywhere outside the text (the rail, a margin dot, a
@@ -39,7 +40,7 @@ export const READING_MODE_POLICY = {
   pressFocusWindowMs: 800,
   /** No caret blinks in the text while reading. */
   hideCaretWhileReading: true,
-  /** The rail head shows "Reading" / "Writing · Esc to read". */
+  /** The status bar under the page shows "Reading" / "Writing" (state, not a switch: src/shared/layout-status.ts). */
   showModeChip: true,
 } as const;
 

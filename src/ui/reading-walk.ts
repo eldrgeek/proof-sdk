@@ -35,6 +35,7 @@ import { Selection } from '@milkdown/kit/prose/state';
 import { ProxyMarksUI } from './proxy-marks';
 import { ScrollFollower, containRailWheel } from './rail-follow';
 import { TIER_POLICY } from '../shared/line-tiers';
+import { HIGHLIGHT_POLICY, MARKED_UP_TO_POLICY, STATUS_BAR_POLICY, formatAgo, issuesLeftText } from '../shared/layout-status';
 import './reading-walk.css';
 
 /**
@@ -165,7 +166,6 @@ export class ReadingWalkUI {
   private readonly right = el('aside', 'prw-rail prw-right');
   private readonly leftBody = el('div', 'prw-rail-body');
   private readonly rightBody = el('div', 'prw-rail-body');
-  private readonly statusEl = el('p', 'prw-status');
   /** Step B6: who you are (signed-in name, an agent key's AI, or "guest — sign in"). */
   private readonly meEl = el('div', 'prw-me');
   private readonly provisionalEl = el('div', 'prw-provisional');
@@ -187,8 +187,24 @@ export class ReadingWalkUI {
   /** Step B7: unread @mentions of the viewer in the chat (a badge on the rail toggle). */
   private chatUnread = 0;
   private readonly focusEl = el('div', 'prw-focus');
-  /** Writing mode: "Reading" / "Writing · Esc to read" in the rail head (click switches). */
-  private readonly modeEl = el('button', 'prw-mode');
+  /**
+   * Writing mode, shown as state in the status bar (Accord layout stage 1): "Reading" or
+   * "Writing". The caret in the text is writing; it is not a switch (STATUS_BAR_POLICY.modeIsSwitch).
+   */
+  private readonly modeEl = el('span', 'prw-mode pst-mode');
+  /**
+   * Accord layout stage 1: the status bar fixed under the page (Line N of M · You marked up to
+   * line K · Issues left · scroll-accepts to save · Reading / Writing), and the "You marked up to
+   * here" rule inside the page after the viewer's last explicit mark.
+   */
+  private readonly statusBar = el('div', 'pst-bar');
+  private readonly sbLine = el('span', 'pst-line');
+  private readonly sbMarked = el('span', 'pst-marked');
+  private readonly sbIssues = el('span', 'pst-issues');
+  private readonly sbProvisional = el('span', 'pst-provisional');
+  private readonly ruleEl = el('div', 'pst-rule');
+  private statusSig = '';
+  private agoTimer: ReturnType<typeof setInterval> | null = null;
   private unsubscribeWriting: (() => void) | null = null;
   /** Rail scrolling (2026-09-21): the right rail's body keeps the focus line's box and changes in view. */
   private railFollow: ScrollFollower | null = null;
@@ -283,7 +299,12 @@ export class ReadingWalkUI {
     document.addEventListener('focusin', this.onFocusChange);
     document.addEventListener('focusout', this.onFocusChange);
     window.addEventListener('proof:follow-in-page-link', this.onInPageLink as EventListener);
-    document.body.append(this.strip);
+    document.body.append(this.strip, this.statusBar);
+    document.body.classList.add('pst-on');
+    // Accord layout stage 1: highlights the proposal removed come back only by policy.
+    document.body.classList.toggle('phl-context-dim', HIGHLIGHT_POLICY.contextDimming);
+    document.body.classList.toggle('phl-hover-band', HIGHLIGHT_POLICY.hoverBand);
+    this.agoTimer = setInterval(() => { this.statusSig = ''; this.renderStatusBar(); }, MARKED_UP_TO_POLICY.refreshMs);
     try { window.matchMedia(PHONE_QUERY).addEventListener('change', this.onResize); } catch { /* old browsers */ }
     try { window.matchMedia(TOUCH_FOCUS_POLICY.query).addEventListener('change', this.onResize); } catch { /* old browsers */ }
     // Step B4c: "This sitting" (the budget setting and its status) sits under the reading speed.
@@ -332,7 +353,11 @@ export class ReadingWalkUI {
     window.removeEventListener('proof:follow-in-page-link', this.onInPageLink as EventListener);
     if (this.hoverTimer) clearTimeout(this.hoverTimer);
     this.strip.remove();
-    document.body.classList.remove('prw-touch', 'prw-strip-on');
+    this.statusBar.remove();
+    this.ruleEl.remove();
+    if (this.agoTimer) clearInterval(this.agoTimer);
+    this.agoTimer = null;
+    document.body.classList.remove('prw-touch', 'prw-strip-on', 'pst-on', 'phl-context-dim', 'phl-hover-band');
     this.unsubscribe?.();
     this.proxy.stop();
     this.unsubscribeEditing?.();
@@ -479,6 +504,7 @@ export class ReadingWalkUI {
     if (!view) return;
     const container = (view.dom.closest('#editor-container') as HTMLElement | null) ?? view.dom.parentElement;
     if (container && this.focusEl.parentElement !== container) container.append(this.focusEl);
+    if (container && this.ruleEl.parentElement !== container) container.append(this.ruleEl);
     if (!this.resizeObserver) {
       this.resizeObserver = new ResizeObserver(() => { this.measure(); this.queueRender(); });
       this.resizeObserver.observe(view.dom);
@@ -905,11 +931,11 @@ export class ReadingWalkUI {
     const mode = writing ? 'writing' : 'reading';
     if (this.modeEl.dataset.mode === mode) return;
     this.modeEl.dataset.mode = mode;
-    this.modeEl.textContent = writing ? 'Writing · Esc to read' : 'Reading';
+    this.modeEl.textContent = writing ? 'Writing' : 'Reading';
     this.modeEl.title = writing
-      ? 'Keys type into the text. Esc, or a click outside the text, returns to reading.'
-      : 'Keys are commands: A agree, R reject, J/K next/previous. Click the text, or press Enter, to write.';
-    this.modeEl.setAttribute('aria-label', writing ? 'Writing: keys type into the text. Press to return to reading.' : 'Reading: keys are commands. Press to write on the focus line.');
+      ? 'Writing: the caret is in the text and keys type. Esc, or a click outside the text, returns to reading.'
+      : 'Reading: keys are commands (A agree, R reject, J/K next/previous). Click the text, or press Enter, to write.';
+    this.modeEl.setAttribute('aria-label', writing ? 'Writing: keys type into the text. Esc returns to reading.' : 'Reading: keys are commands. Click the text or press Enter to write.');
   }
 
   /** The touch strip: the focus line's own mark and Agree / Reject / More…. */
@@ -1386,6 +1412,8 @@ export class ReadingWalkUI {
     this.renderDocuments();
     this.renderRate();
     this.renderStrip();
+    this.renderStatusBar();
+    this.renderRule();
     this.host.focusChanged?.(this.targetLine());
   }
 
@@ -1419,7 +1447,9 @@ export class ReadingWalkUI {
   private renderDynamicStyle(): void {
     const walk = this.walk!;
     const rules: string[] = [];
-    for (const id of walk.provisionalIds()) {
+    // Accord layout stage 1: scroll-accepted changes render as ordinary insert / delete (the status
+    // bar and the rail list them with Save); HIGHLIGHT_POLICY.provisionalDashed brings the old look back.
+    for (const id of HIGHLIGHT_POLICY.provisionalDashed ? walk.provisionalIds() : []) {
       const sel = `html body .ProseMirror [data-mark-id="${CSS.escape(id)}"]`;
       rules.push(`${sel}.mark-delete{display:none!important}`);
       rules.push(`${sel}.mark-insert{background:rgba(22,163,74,.08)!important;color:inherit!important;text-decoration:none!important;border-bottom:2px dashed #16a34a!important}`);
@@ -1487,7 +1517,6 @@ export class ReadingWalkUI {
 
   private renderStatus(): void {
     const walk = this.walk!;
-    this.statusEl.textContent = `Line ${this.targetLine() + 1} of ${walk.lineCount}`;
     const n = walk.provisionalCount;
     this.provisionalEl.hidden = n === 0 && !this.lastError;
     const sig = `${n}|${this.lastError}`;
@@ -1832,13 +1861,9 @@ export class ReadingWalkUI {
     const rightToggle = el('button', 'prw-collapse');
     rightToggle.type = 'button';
     rightToggle.onclick = () => this.toggleRail('right');
-    this.modeEl.type = 'button';
-    this.modeEl.dataset.keepsWriting = '';
-    this.modeEl.hidden = !READING_MODE_POLICY.showModeChip;
-    // A press on the chip must not first move the keyboard out of the text (that alone ends writing).
-    this.modeEl.addEventListener('mousedown', event => event.preventDefault());
-    this.modeEl.onclick = () => { if (isWriting()) endWriting(); else this.writeAtFocus(); this.renderMode(); };
-    rightHead.append(rightTitle, this.statusEl, this.modeEl, rightToggle, this.meEl, this.proxy.familiarEl, this.rateEl);
+    // Accord layout stage 1: "Line N of M" and Reading / Writing moved to the status bar.
+    this.buildStatusBar();
+    rightHead.append(rightTitle, rightToggle, this.meEl, this.proxy.familiarEl, this.rateEl);
     this.meEl.setAttribute('aria-live', 'polite');
     this.provisionalEl.hidden = true;
     this.provisionalEl.setAttribute('aria-live', 'polite');
@@ -1855,6 +1880,119 @@ export class ReadingWalkUI {
     this.rightBody.append(this.railFollow.pillElement);
     this.right.setAttribute('role', 'complementary');
     this.left.setAttribute('role', 'navigation');
+  }
+
+  // --------------------------------------------------------------------------
+  // Accord layout stage 1: the status bar and the "You marked up to here" rule
+  // --------------------------------------------------------------------------
+
+  private buildStatusBar(): void {
+    const bar = this.statusBar;
+    bar.setAttribute('role', 'region');
+    bar.setAttribute('aria-label', 'Status');
+    this.modeEl.setAttribute('role', 'status');
+    this.modeEl.hidden = !READING_MODE_POLICY.showModeChip;
+    if (STATUS_BAR_POLICY.modeIsSwitch) {
+      // Ruled off (2026-09-21, proposal decision 9); kept as one switch should a later ruling want it.
+      this.modeEl.tabIndex = 0;
+      this.modeEl.addEventListener('mousedown', event => event.preventDefault());
+      this.modeEl.onclick = () => { if (isWriting()) endWriting(); else this.writeAtFocus(); this.renderMode(); };
+    }
+    this.sbLine.setAttribute('aria-live', 'polite');
+    this.sbProvisional.hidden = true;
+    const sep = () => { const s = el('span', 'pst-sep'); s.setAttribute('aria-hidden', 'true'); return s; };
+    bar.append(this.sbLine, sep(), this.sbMarked, sep(), this.sbIssues, this.sbProvisional, this.modeEl);
+    this.ruleEl.setAttribute('aria-hidden', 'true');
+    this.ruleEl.hidden = true;
+  }
+
+  private renderStatusBar(): void {
+    const walk = this.walk;
+    if (!walk) return;
+    const lm = this.host.lineMarks();
+    const target = this.targetLine();
+    const marked = lm.isLoaded() ? lm.markedUpTo() : null;
+    const needs = lm.isLoaded() ? lm.needsYouLines().length : null;
+    const provisional = STATUS_BAR_POLICY.listProvisional ? walk.provisionalCount : 0;
+    const ago = marked ? formatAgo(marked.at, Date.now()) : '';
+    const sig = JSON.stringify([target, walk.lineCount, marked?.line ?? null, ago, needs, provisional]);
+    if (sig === this.statusSig) return;
+    this.statusSig = sig;
+    this.statusBar.dataset.line = String(target);
+    const strong = el('b', undefined, `Line ${target + 1}`);
+    this.sbLine.replaceChildren(strong, ` of ${walk.lineCount}`);
+    this.sbLine.dataset.line = String(target);
+    if (marked) {
+      const link = el('button', 'pst-marked-link', `line ${marked.line + 1}`);
+      link.type = 'button';
+      link.title = `Go to line ${marked.line + 1}, the last line you marked`;
+      // The press must not end writing or move the keyboard before the click is the act.
+      link.addEventListener('mousedown', event => event.preventDefault());
+      link.onclick = () => this.gotoMarkedUpTo();
+      this.sbMarked.replaceChildren(el('span', 'pst-marked-label', 'You marked up to '), link, el('span', 'pst-ago', ` · ${ago}`));
+      this.sbMarked.dataset.line = String(marked.line);
+      delete this.sbMarked.dataset.empty;
+    } else {
+      this.sbMarked.dataset.empty = 'true';
+      this.sbMarked.replaceChildren(el('span', 'pst-marked-label', lm.isLoaded() ? 'No marks from you yet' : '…'));
+      delete this.sbMarked.dataset.line;
+    }
+    this.sbIssues.textContent = needs === null ? '…' : issuesLeftText(needs);
+    this.sbIssues.dataset.count = needs === null ? '' : String(needs);
+    this.sbIssues.title = 'Lines that need you: an ask to answer or a change to decide. Each has an amber dot in the margin.';
+    this.sbProvisional.hidden = provisional === 0;
+    this.sbProvisional.replaceChildren();
+    if (provisional > 0) {
+      const one = provisional === 1;
+      const save = el('button', 'pst-save', 'Save');
+      save.type = 'button';
+      save.setAttribute('aria-label', `Save ${provisional} accepted ${one ? 'change' : 'changes'}`);
+      save.addEventListener('mousedown', event => event.preventDefault());
+      save.onclick = () => this.commit(this.walk?.commitAll() ?? []);
+      this.sbProvisional.append(el('span', 'pst-sep'), el('span', undefined, `${provisional} accepted by scrolling, not saved `), save);
+    }
+  }
+
+  /** "line K" in the status bar: the last line the viewer marked becomes the focus line (a jump). */
+  gotoMarkedUpTo(): boolean {
+    const marked = this.host.lineMarks().markedUpTo();
+    if (!marked) return false;
+    this.host.lineMarks().revealLine(marked.line);
+    return this.focusLine(marked.line);
+  }
+
+  /** The Slack-style rule after the viewer's last explicit mark (an overlay: nothing moves). */
+  private renderRule(): void {
+    const view = this.view();
+    const container = this.ruleEl.parentElement;
+    const lm = this.host.lineMarks();
+    const marked = lm.isLoaded() ? lm.markedUpTo() : null;
+    const line = marked ? this.lines[marked.line] : null;
+    const dom = line && view ? view.nodeDOM(line.pos) as HTMLElement | null : null;
+    if (!marked || !container || !view || !dom || typeof dom.getBoundingClientRect !== 'function' || dom.getBoundingClientRect().height === 0) {
+      this.ruleEl.hidden = true;
+      return;
+    }
+    const c = container.getBoundingClientRect();
+    const r = dom.getBoundingClientRect();
+    // The next visible line's top: the rule sits in the gap between the two.
+    let nextTop: number | null = null;
+    for (let i = marked.line + 1; i < this.lines.length; i += 1) {
+      const next = view.nodeDOM(this.lines[i].pos) as HTMLElement | null;
+      const nr = next && typeof next.getBoundingClientRect === 'function' ? next.getBoundingClientRect() : null;
+      if (nr && nr.height > 0) { nextTop = nr.top; break; }
+    }
+    const gapMid = nextTop !== null && nextTop > r.bottom ? (r.bottom + nextTop) / 2 : r.bottom + 8;
+    const text = view.dom.getBoundingClientRect();
+    this.ruleEl.hidden = false;
+    this.ruleEl.dataset.line = String(marked.line);
+    const label = `You marked up to here · ${formatAgo(marked.at, Date.now())}`;
+    if (this.ruleEl.textContent !== label) {
+      this.ruleEl.replaceChildren(el('span', 'pst-rule-label', label));
+    }
+    this.ruleEl.style.top = `${Math.round(gapMid - c.top)}px`;
+    this.ruleEl.style.left = `${Math.round(text.left - c.left)}px`;
+    this.ruleEl.style.width = `${Math.round(text.width)}px`;
   }
 
   /** Step B3b: "Reading speed" select (per browser). A line counts as read after its words at this rate. */
@@ -2045,6 +2183,8 @@ export class ReadingWalkUI {
       commits: this.commits.map(c => ({ ...c, ids: [...c.ids] })),
       writing: isWriting(),
       mode: this.modeEl.dataset.mode ?? null,
+      statusBar: { line: this.sbLine.textContent, marked: this.sbMarked.textContent, issues: this.sbIssues.dataset.count === '' ? null : Number(this.sbIssues.dataset.count), provisional: this.sbProvisional.hidden ? 0 : (this.walk?.provisionalCount ?? 0) },
+      rule: this.ruleEl.hidden ? null : Number(this.ruleEl.dataset.line),
       rail: this.railFollow?.debugState() ?? null,
     };
   }

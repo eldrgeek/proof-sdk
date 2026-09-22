@@ -247,7 +247,8 @@ async function desktop(browser, base, style) {
     await page.mouse.click(box.x + 60, box.y + 10);
     await page.waitForTimeout(150);
     assert.equal(await writing(page), true, 'a click on the text did not start writing');
-    assert.match(await page.locator('.prw-right .prw-mode').innerText(), /Writing/);
+    // Accord layout stage 1: Reading / Writing is shown in the status bar under the page.
+    assert.match(await page.locator('.pst-bar .pst-mode').innerText(), /Writing/);
     const before = await docText(page);
     await page.keyboard.type('a');
     assert.equal((await docText(page)).length, before.length + 1, 'typing while writing did not type');
@@ -255,7 +256,7 @@ async function desktop(browser, base, style) {
     await page.keyboard.press('Backspace');
     await page.keyboard.press('Escape');
     assert.equal(await writing(page), false, `Esc did not return to reading ${JSON.stringify(await page.evaluate(() => ({ g: window.__proofEditingGuard(), a: document.activeElement?.className })))}`);
-    assert.match(await page.locator('.prw-right .prw-mode').innerText(), /Reading/);
+    assert.match(await page.locator('.pst-bar .pst-mode').innerText(), /Reading/);
     const text = await docText(page);
     await page.keyboard.press('a');
     await waitFor(page, i => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i && m.status === 'agreed'), 5);
@@ -308,7 +309,7 @@ async function desktop(browser, base, style) {
     await page.mouse.click(box.x + 60, box.y + 10);
     await page.waitForTimeout(120);
     assert.equal(await writing(page), true);
-    await page.locator('.prw-right .prw-status').click();
+    await page.locator('.prw-right .prw-rail-head strong').first().click();
     await page.waitForTimeout(100);
     assert.equal(await writing(page), false, 'a click in the rail did not return to reading');
     const text = await docText(page);
@@ -339,7 +340,7 @@ async function desktop(browser, base, style) {
     assert.notEqual((await walk(page)).focus, focus, 'J did not move the focus');
     assert.equal(await docText(page), text, 'J typed into the text');
   });
-  await check(`${tag}: item 2 — Enter while reading puts the caret at the end of the focus line (writing); the chip switches`, async () => {
+  await check(`${tag}: item 2 — Enter while reading puts the caret at the end of the focus line (writing); the status bar shows it`, async () => {
     await page.evaluate(() => document.activeElement?.blur());
     const focus = (await walk(page)).target;
     await page.keyboard.press('Enter');
@@ -350,9 +351,12 @@ async function desktop(browser, base, style) {
     const after = await page.evaluate(i => window.__proofLineMarks.lineList()[i].text, focus);
     assert.equal(after, `${before}!`, 'Enter did not write at the end of the focus line');
     await page.keyboard.press('Backspace');
-    await page.locator('.prw-right .prw-mode').click();
-    assert.equal(await writing(page), false, 'the chip did not return to reading');
-    await page.screenshot({ path: path.join(shots, `${tag}-mode-chip.png`), clip: { x: 1080, y: 0, width: 360, height: 260 } });
+    // Accord layout stage 1: the state is shown, not switched (the chip is no longer a button); Esc reads.
+    assert.match(await page.locator('.pst-bar .pst-mode').innerText(), /Writing/);
+    await page.screenshot({ path: path.join(shots, `${tag}-mode-chip.png`), clip: { x: 240, y: 840, width: 880, height: 60 } });
+    await page.keyboard.press('Escape');
+    assert.equal(await writing(page), false, 'Esc did not return to reading');
+    assert.match(await page.locator('.pst-bar .pst-mode').innerText(), /Reading/);
   });
 
   // ---- item 3: Save N accepted ---------------------------------------------------------------

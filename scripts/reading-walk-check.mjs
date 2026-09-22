@@ -257,8 +257,11 @@ async function desktop(browser, base, style, width) {
     assert.ok(Math.abs(after - before) <= 2, `page moved while stepping (${before} -> ${after})`);
     const rail = await page.locator('.prw-right .prw-provisional').innerText();
     assert.ok(/scrolled past 3 changes, so they count as accepted by scrolling/.test(rail), rail);
+    // Accord layout stage 1: a scroll-accept renders as an ordinary insert / delete (Docs style);
+    // the status bar under the page lists it with Save (the old look hid the old words).
     const hidden = await page.evaluate(() => [...document.querySelectorAll('.ProseMirror .mark-delete')].filter(e => getComputedStyle(e).display === 'none').length);
-    assert.ok(hidden >= 3, `provisionally accepted old words still shown (${hidden})`);
+    assert.equal(hidden, 0, `provisionally accepted old words were hidden (${hidden})`);
+    assert.match(await page.locator('.pst-bar .pst-provisional').innerText(), /3 accepted by scrolling, not saved/);
     await page.screenshot({ path: path.join(shots, `${tag}-3-provisional.png`) });
   });
   await check(`${tag}: a provisional accept is not written: the other reader still sees the changes pending`, async () => {

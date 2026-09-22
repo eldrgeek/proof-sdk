@@ -40,6 +40,7 @@ body.prw-on.prw-right-collapsed { --prw-right: var(--prw-collapsed); }
 .prw-me-guest { margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: #fef3c7; color: #92400e; font-size: 11px; }
 .prw-me-signin { color: #2563eb; font-weight: 600; text-decoration: none; }
 .prw-me-signin:hover { text-decoration: underline; }
+.prw-right .prw-collapse { margin-left: auto; }
 .prw-status { margin: 0; flex: 1; color: #646b73; font-size: 12px; font-variant-numeric: tabular-nums; }
 .prw-all { margin-left: auto; font-size: 12px; color: #2563eb; text-decoration: none; }
 .prw-collapse { width: 32px; height: 32px; flex-shrink: 0; border: 1px solid #e3e2dc; border-radius: 8px; background: #fff; color: #4b5563; cursor: pointer; font: 600 14px/1 system-ui, sans-serif; }
@@ -71,7 +72,8 @@ body.prw-right-collapsed .prw-right .prw-rail-head { padding: 6px 2px; justify-c
 /* The focus line */
 .prw-focus {
   position: absolute; pointer-events: none; z-index: 20; border-radius: 6px;
-  background: rgba(37, 99, 235, 0.07); box-shadow: inset 3px 0 0 #2563eb; mix-blend-mode: multiply;
+  /* Accord layout stage 1: one "you are here" look, strong enough to see (Mike 2026-09-19: a 5% wash was invisible). */
+  background: rgba(37, 99, 235, 0.10); box-shadow: inset 5px 0 0 #2563eb; mix-blend-mode: multiply;
   transition: top .12s ease, height .12s ease;
 }
 .prw-focus[hidden] { display: none; }
@@ -216,7 +218,10 @@ body.prw-right-collapsed .prw-right .prw-chat { display: none; }
  * told apart: a solid bar means "this is where I am reading", a hatched-lighter bar means "this is
  * what the mouse is on".
  */
-.prw-focus[data-source="hover"] {
+/* Accord layout stage 1: the separate hover look is off (HIGHLIGHT_POLICY.hoverBand puts
+   phl-hover-band on the body to bring it back). Every source (reading, hover, caret) draws the one
+   "you are here" bar and tint set on .prw-focus above. */
+body.phl-hover-band .prw-focus[data-source="hover"] {
   background: rgba(37, 99, 235, 0.11);
   box-shadow: inset 6px 0 0 #60a5fa, 0 0 0 1px rgba(37, 99, 235, .28);
 }
@@ -268,3 +273,60 @@ body.prw-on.pw-reading .ProseMirror { caret-color: transparent; }
 .pch > .prw-follow-pill { position: relative; bottom: auto; align-self: center; margin: -36px auto 6px; }
 .prw-provisional[data-state="error"] { background: #fef2f2; border: 1px solid #fecaca; }
 .prw-provisional[data-state="error"] .prw-error { margin: 0; }
+
+/* Accord layout stage 1 (Claude Opus 5, 2026-09-21, Ren's proposal "Status bar under the page"):
+   a fixed 28 px bar at the bottom of the page column, between the rails. It never scrolls away. */
+.pst-bar {
+  position: fixed; z-index: 58; bottom: 0; left: var(--prw-left, 0px); right: var(--prw-right, 0px);
+  box-sizing: border-box; height: 28px; display: flex; align-items: center; gap: 0; padding: 0 14px;
+  background: #fff; border-top: 1px solid #e3e6ea; color: #333; white-space: nowrap; overflow: hidden;
+  font: 12.5px/1.2 system-ui, -apple-system, sans-serif; font-variant-numeric: tabular-nums;
+}
+.pst-sep { flex-shrink: 0; width: 1px; height: 14px; margin: 0 12px; background: #e3e6ea; }
+.pst-line b { font-weight: 600; }
+.pst-marked { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.pst-marked-link { border: none; background: none; padding: 0; margin: 0; color: #2456b8; font: inherit; cursor: pointer; }
+.pst-marked-link:hover { text-decoration: underline; }
+.pst-ago { color: #6b7280; }
+.pst-issues { flex-shrink: 0; padding-right: 10px; }
+.pst-issues[data-count="0"] { color: #166534; }
+.pst-provisional { display: inline-flex; align-items: center; color: #166534; }
+.pst-provisional[hidden] { display: none; }
+.pst-save { margin-left: 6px; min-height: 22px; padding: 0 10px; border: none; border-radius: 6px; background: #16a34a; color: #fff; font: 600 12px system-ui, sans-serif; cursor: pointer; }
+.pst-bar .pst-mode {
+  margin-left: auto; flex-shrink: 0; min-height: 0; padding: 2px 8px; border: none; border-radius: 6px;
+  background: #eef3ff; color: #2f6fed; font: 600 12.5px/1.3 system-ui, sans-serif; cursor: default;
+}
+.pst-bar .pst-mode[data-mode="writing"] { background: #fef3c7; color: #92400e; }
+.pst-bar .pst-mode:hover { background: #eef3ff; }
+.pst-bar .pst-mode[data-mode="writing"]:hover { background: #fef3c7; }
+/* A touch strip (tablets, phones) docks at the very bottom: the bar sits right above it. */
+body.prw-strip-on .pst-bar { bottom: calc(var(--proof-keyboard-offset, 0px) + var(--prw-strip-h, 64px) + env(safe-area-inset-bottom, 0px)); }
+/* Toasts and the feedback chip sit above the bar. */
+body.pst-on .plm-toast { bottom: 40px; }
+@media (min-width: 701px) {
+  body.pst-on.prw-left-collapsed .soma-feedback-root { bottom: calc(28px + 12px + env(safe-area-inset-bottom, 0px)); }
+}
+
+/* The "You marked up to here" rule (Slack's new-messages line), an overlay in the gap after the
+   viewer's last explicit mark: it never moves the text. */
+.pst-rule { position: absolute; z-index: 21; pointer-events: none; height: 0; display: flex; align-items: center; gap: 10px; color: #2f6fed; }
+.pst-rule[hidden] { display: none; }
+.pst-rule::before, .pst-rule::after { content: ""; flex: 1; border-top: 1.5px solid #2f6fed; }
+.pst-rule-label { flex-shrink: 0; padding: 0 2px; background: transparent; font: 600 11.5px/1 system-ui, -apple-system, sans-serif; white-space: nowrap; }
+
+/* Phones: one compact line above the bottom strip (stage 3 folds it into the strip). */
+@media (max-width: 700px) {
+  .pst-bar { left: 0; right: 0; height: 24px; padding: 0 10px; font-size: 12px; bottom: var(--proof-keyboard-offset, 0px); z-index: 8999; }
+  .pst-sep { margin: 0 7px; }
+  .pst-marked-label { display: none; }
+  .pst-marked[data-empty], .pst-marked[data-empty] + .pst-sep { display: none; }
+  .pst-ago { display: none; }
+  .pst-bar .pst-mode { margin-left: auto; padding-left: 8px; }
+  .pst-marked-link::before { content: "Marked to "; color: #333; }
+  .pst-provisional > span:not(.pst-sep) { display: none; }
+  body.pst-on .soma-feedback-root { bottom: calc(24px + 8px + env(safe-area-inset-bottom, 0px)); }
+  body.pst-on.prw-strip-on .soma-feedback-root { bottom: calc(var(--prw-strip-h, 64px) + 24px + 12px + env(safe-area-inset-bottom, 0px)); }
+  body.pst-on.prw-strip-on .plm-toast { bottom: calc(var(--prw-strip-h, 64px) + 40px); }
+  .pst-rule-label { font-size: 11px; }
+}

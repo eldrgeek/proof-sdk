@@ -115,6 +115,7 @@ import {
 } from '../shared/line-tiers';
 import { tierViewKey, setTierDecorations, tierDecorationCount, type TierLineSpec } from '../editor/plugins/tier-view';
 import { buildTierRow, loadOnlyDecisions, renderTierControl, saveOnlyDecisions } from './line-tiers';
+import { HIGHLIGHT_POLICY, markedUpTo, needsYouLines, type MarkedUpTo } from '../shared/layout-status';
 import './line-marks.css';
 
 export interface LineMarksHost {
@@ -326,6 +327,9 @@ export class LineMarksUI {
   private canMark = true;
   private loaded = false;
   private summary: IssueSummary | null = null;
+  /** Accord layout stage 1: the lines that need the viewer (one amber dot each), in document order. */
+  private needsYou: number[] = [];
+  private needsYouSet = new Set<number>();
   private states: LineState[] = [];
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private renderQueued = false;
@@ -642,6 +646,8 @@ export class LineMarksUI {
         tiers: tierIssueInput(this.tierEval),
       });
       this.computeTierFold();
+      this.needsYou = needsYouLines(this.summary.issues, this.me(), pos => this.lineAtPos(pos));
+      this.needsYouSet = new Set(this.needsYou);
       this.ranked = rankIssues(this.summary.issues, { viewer: this.me(), explicitFor: explicitPriorityLookup(this.serverNotes, this.lines) });
       this.computeBrief(reviewMarks);
       this.selection = this.selection.filter(index => index < this.lines.length);
@@ -706,6 +712,10 @@ export class LineMarksUI {
   lineList(): DocLine[] { return this.lines; }
   lineState(index: number): LineState | undefined { return this.states[index]; }
   issueSummary(): IssueSummary | null { return this.summary; }
+  /** Accord layout: the lines with an amber "needs you" dot (the status bar's Issues left). */
+  needsYouLines(): readonly number[] { return this.needsYou; }
+  /** Accord layout: the viewer's last explicit mark ("You marked up to line K"). */
+  markedUpTo(): MarkedUpTo | null { return markedUpTo(this.states, this.me()); }
   editorView(): EditorView | null { return this.view; }
 
   /** The viewer's own status on a line ('changed' when their mark is out of date). */
@@ -1367,6 +1377,9 @@ export class LineMarksUI {
       const ttlView = this.ttlByLine.get(line.index);
       if (ttlView) dot.dataset.ttl = ttlView.expired || ttlView.notTrue ? 'expired' : 'set'; else delete dot.dataset.ttl;
       dot.dataset.issue = issueLines.has(line.index) ? 'true' : 'false';
+      // Accord layout: amber = needs you (the status bar counts these dots).
+      const needsYou = this.needsYouSet.has(line.index);
+      if (needsYou) dot.dataset.needsYou = 'true'; else delete dot.dataset.needsYou;
       // Step B3b: your mark survived a small edit (the rail shows what changed).
       if (mine?.carried) dot.dataset.carried = 'true'; else delete dot.dataset.carried;
       // Step B4c: an amber tick for a line its writer flagged uncertain; B4d: a red tick for an
@@ -1394,7 +1407,8 @@ export class LineMarksUI {
       // Rebuild the dot's children only when they change: a click whose target was replaced
       // between pointerdown and pointerup would be lost.
       const proxyInitial = proxyItem ? familiarInitial(this.aiName(proxyItem.proxy.familiar)) : '';
-      const tierGlyph = showTier && tierView!.tier === 'decision' ? '◆' : '';
+      // Accord layout: no ◆ in the margin (HIGHLIGHT_POLICY.decisionDiamond); the tier is in the line's box and this label.
+      const tierGlyph = HIGHLIGHT_POLICY.decisionDiamond && showTier && tierView!.tier === 'decision' ? '◆' : '';
       const sig = `${myStatus}|${pipStatuses.join(',')}|${proxyInitial}|${tierGlyph}`;
       if (dot.dataset.sig !== sig) {
         dot.dataset.sig = sig;
@@ -1433,7 +1447,7 @@ export class LineMarksUI {
         + (this.altsByLine.has(line.index) ? '. Has competing wordings' : '')
         + (ttlView ? `. ${describeTtl(ttlView, Date.now() + this.clockSkewMs)}` : '')
         + (showTier ? (tierView!.tier === 'context' ? `. Context line${tierView!.proposed ? ' (AI proposed)' : ''}${tierView!.readBy.length ? `, read for you by ${tierView!.readBy.map(a => this.aiName(a)).join(', ')}` : ''}` : '. Decision line') : '');
-      dot.setAttribute('aria-label', `Line ${line.index + 1}: your mark ${myStatus === 'changed' ? 'is out of date (the line changed)' : shownLabel(myStatus)}${carriedText}${extraText}${othersText ? `. ${othersText}` : ''}. Mark this line`);
+      dot.setAttribute('aria-label', `Line ${line.index + 1}${needsYou ? ' (needs you)' : ''}: your mark ${myStatus === 'changed' ? 'is out of date (the line changed)' : shownLabel(myStatus)}${carriedText}${extraText}${othersText ? `. ${othersText}` : ''}. Mark this line`);
       dot.title = othersText ? `You: ${myStatus === 'changed' ? 'changed since you marked it' : shownLabel(myStatus)}\n${othersText.replace(/; /g, '\n')}` : 'Mark this line';
     }
     for (const [key, el] of existing) if (!used.has(key)) el.remove();
