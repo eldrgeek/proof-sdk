@@ -48,6 +48,8 @@ export const UNDO_KINDS = {
   'ask-answer': 'answer',
   suggestion: 'change',
   comment: 'comment',
+  /** Accord stage D: starting, resolving or reopening a thread (one Undo for all three). */
+  thread: 'thread',
   alternative: 'wording',
   tier: 'tier',
   fold: 'fold',

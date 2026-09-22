@@ -117,6 +117,7 @@ import { clearFlag, clearObjection, createObjection, keepObjection, writeFlag } 
 import { listFlags, listObjections, listReviewNotes } from './review-aids-store.js';
 import { clearTtl, decideAlternative, offerAlternative, pickAlternative, recordBundleDecision, recordExplain, setBlindSetting, setTtl, withdrawAlternative } from './proof-extras.js';
 import { getProofSettings, listAlternatives, listBundles, listExplains, listPicks, listTtls } from './proof-extras-store.js';
+import { closeThread, reopenThread, startThreadRow, threadRows, undoStartThread } from './threads.js';
 import { blindViewFor } from './proof-extras-eval.js';
 import { lineEditor } from './agent-routes.js';
 import { ASK_POLICY, evaluateAsks } from '../src/shared/asks.js';
@@ -2212,6 +2213,9 @@ async function pageExtras(req: Request, slug: string, doc: NonNullable<ReturnTyp
     alternatives: allAlternatives.filter(alt => alt.status === 'open'),
     alternativeHistory: allAlternatives.filter(alt => alt.status !== 'open').slice(-100),
     explains: listExplains(slug),
+    // Accord round 2, stage D: thread rows (what would close each thread and what it is anchored
+    // to). Comments and suggestions with no row still read as threads on the page.
+    threads: threadRows(slug),
     ttls: listTtls(slug).map(({ expiredNotedAt: _noted, ...ttl }) => ttl),
     serverNow: new Date().toISOString(),
   };
@@ -2241,7 +2245,7 @@ async function pageExtras(req: Request, slug: string, doc: NonNullable<ReturnTyp
 
 // Proof Documents Steps B4c + B4d: flags and objections from the page. Writes need comment
 // access; the actor is decided as for line marks (a signed-in session wins over a typed name).
-const PAGE_TALK_ROUTES = ['/explain', '/why-asked'];
+const PAGE_TALK_ROUTES = ['/explain', '/why-asked', '/threads'];
 function pageAidRoute(path: string, run: (ctx: { req: Request; slug: string; by: string; access: ReturnType<typeof resolveLineMarkAccess>; body: Record<string, unknown> }) => Promise<{ status: number; body: Record<string, unknown> }> | { status: number; body: Record<string, unknown> }): void {
   apiRoutes.post(path, opsRateLimiter, async (req: Request, res: Response) => {
     const slug = getSlugParam(req);
@@ -2393,6 +2397,25 @@ pageAidRoute('/documents/:slug/explain', async ({ slug, by, body }) => {
   }
   return result;
 });
+// Accord round 2, stage D: threads. A thread is the comment or suggestion that is already in the
+// document PLUS what would close it; these routes store and close only that extra part.
+// POST { markId?, asks, anchor: [LineAnchor], selection?, waitingOn?, chatMessageId? }
+pageAidRoute('/documents/:slug/threads', async ({ slug, by, body }) => {
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  return startThreadRow(slug, { by, body, markdown: state.markdown, isGuest: isGuestActor(by), source: 'page' });
+});
+// POST { status: 'resolved' | 'accepted' | 'rejected' | 'withdrawn' }
+pageAidRoute('/documents/:slug/threads/:threadId/close', async ({ req, slug, by, body, access }) => {
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  return closeThread(slug, { id: String(req.params.threadId ?? ''), by, status: body.status, isOwner: access.canApprove, markdown: state.markdown, source: 'page' });
+});
+pageAidRoute('/documents/:slug/threads/:threadId/reopen', ({ req, slug, by }) =>
+  reopenThread(slug, { id: String(req.params.threadId ?? ''), by, source: 'page' }));
+// The Undo of starting a thread (only whoever started it).
+pageAidRoute('/documents/:slug/threads/:threadId/undo', ({ req, slug, by }) =>
+  undoStartThread(slug, { id: String(req.params.threadId ?? ''), by }));
 // Step B4f: a line's time-to-live: { anchor, ttl: "7d" }; the setter or an Owner clears it.
 pageAidRoute('/documents/:slug/ttl', async ({ slug, by, body }) => {
   const state = await currentDocumentState(slug);

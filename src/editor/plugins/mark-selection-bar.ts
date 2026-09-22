@@ -401,6 +401,18 @@ class MarkSelectionBarController {
       this.dismissAfterAction();
     });
 
+    // Accord round 2, stage D: discussion happens in the document. "Thread" is the visible way in
+    // for a selection (T is the key; with the keyboard in the text a letter types, so a selected
+    // range needs a control, not a letter).
+    const threadButton = makeButton('Thread', () => {
+      if (!canCommentInRuntime()) return;
+      const range = this.getActionRange();
+      if (!range) return;
+      const walk = (window as unknown as { __proofReadingWalk?: { startThreadHere?: (fromSelection?: boolean) => boolean } }).__proofReadingWalk;
+      walk?.startThreadHere?.(true);
+      this.dismissAfterAction();
+    });
+
     const flagButton = makeButton('Flag', () => {
       if (!canCommentInRuntime()) return;
       const range = this.getActionRange();
@@ -423,6 +435,7 @@ class MarkSelectionBarController {
     });
 
     this.bar.appendChild(commentButton);
+    this.bar.appendChild(threadButton);
     this.bar.appendChild(flagButton);
     this.bar.appendChild(suggestButton);
   }

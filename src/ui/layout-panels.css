@@ -207,3 +207,48 @@ body.prw-on.prw-right-collapsed { --prw-right: var(--prw-collapsed); }
   .prw-sheet-open .amg-pane[data-tab="room"] .prw-chat { display: flex; }
   .prw-sheet-open .amg-pane { overflow: auto; }
 }
+
+/* ----------------------------------------------------------------------------
+ * Accord round 2, stage D: the Discussion in the Margin's Line tab. Threads live
+ * in the document, so this is where the talk about a line is — not the Room.
+ * -------------------------------------------------------------------------- */
+.amg-threads { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--proof-rule, #e5e7eb); }
+.amg-threads[hidden] { display: none; }
+.amg-threads-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.amg-threads-head strong { font-size: 13px; }
+.amg-thread-start { font-size: 12px; padding: 3px 8px; border: 1px solid var(--proof-rule, #d1d5db); border-radius: 6px; background: transparent; cursor: pointer; }
+.amg-thread-start:disabled { opacity: .5; cursor: default; }
+.amg-threads-list { display: flex; flex-direction: column; gap: 8px; }
+
+.amg-thread { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--proof-rule, #e5e7eb); border-radius: 8px; font-size: 13px; }
+.amg-thread[data-detached='true'] { border-color: #f59e0b; }
+.amg-thread-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.amg-thread-closes { font-size: 11px; font-weight: 600; text-transform: none; color: #2563eb; }
+.amg-thread-by { font-size: 11px; opacity: .7; }
+.amg-thread-detached { margin: 0; font-size: 12px; color: #92400e; background: #fffbeb; border-radius: 6px; padding: 5px 7px; }
+.amg-thread-changed { margin: 0; font-size: 12px; opacity: .75; }
+.amg-thread-text { margin: 0; }
+.amg-thread-diff { margin: 0; font-size: 12px; font-family: var(--proof-mono, ui-monospace, monospace); background: #f3f4f6; border-radius: 6px; padding: 5px 7px; }
+.amg-thread-replies { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+.amg-thread-reply-by { font-weight: 600; margin-right: 6px; }
+.amg-thread-why { margin: 0; font-size: 12px; opacity: .8; }
+.amg-thread-why[data-open='true'] { opacity: 1; font-weight: 600; }
+.amg-thread-reply-form { display: flex; gap: 6px; }
+.amg-thread-reply-input { flex: 1 1 auto; min-width: 0; font-size: 12px; padding: 4px 6px; border: 1px solid var(--proof-rule, #d1d5db); border-radius: 6px; }
+.amg-thread-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.amg-thread-actions button { font-size: 12px; padding: 3px 8px; border: 1px solid var(--proof-rule, #d1d5db); border-radius: 6px; background: transparent; cursor: pointer; }
+.amg-thread-mark { text-align: left; font-size: 12px; padding: 4px 8px; border: 1px dashed var(--proof-rule, #d1d5db); border-radius: 6px; background: transparent; cursor: pointer; opacity: .75; }
+.amg-thread-mark:hover { opacity: 1; }
+
+.amg-thread-new { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid #2563eb; border-radius: 8px; }
+.amg-thread-new[hidden] { display: none; }
+.amg-thread-subject { margin: 0; font-size: 12px; opacity: .8; }
+.amg-thread-text-input { font: inherit; font-size: 13px; padding: 5px 7px; border: 1px solid var(--proof-rule, #d1d5db); border-radius: 6px; resize: vertical; }
+.amg-thread-asks { display: flex; flex-direction: column; gap: 3px; border: 0; margin: 0; padding: 0; }
+.amg-thread-asks legend { font-size: 11px; font-weight: 600; padding: 0 0 3px; }
+.amg-thread-ask { display: grid; grid-template-columns: auto 1fr; gap: 2px 6px; align-items: baseline; font-size: 12px; cursor: pointer; }
+.amg-thread-ask-label { font-weight: 600; }
+.amg-thread-ask-help { grid-column: 2; font-size: 11px; opacity: .7; }
+.amg-thread-new-actions { display: flex; gap: 6px; }
+.amg-thread-new-actions button { font-size: 12px; padding: 3px 10px; border: 1px solid var(--proof-rule, #d1d5db); border-radius: 6px; background: transparent; cursor: pointer; }
+.amg-thread-send { background: #2563eb !important; color: #fff; border-color: #2563eb !important; }

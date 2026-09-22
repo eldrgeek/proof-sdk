@@ -108,6 +108,13 @@ const agentCall = (base, slug, KEY, method, route, body) => fetch(`${base}/api/a
   method, headers: KEY, body: body === undefined ? undefined : JSON.stringify(body),
 }).then(async r => ({ status: r.status, body: await r.json() }));
 const chatState = page => page.evaluate(() => window.__proofChat.debugState());
+// Accord round 2, stage D: talk about a line belongs to the document, so the Room folds it behind
+// one control. Everything below still tests what it always tested — it just opens that control
+// first, the way a person would.
+const showLineTalk = async (page) => {
+  const bar = page.locator('.pch-line-talk-summary').first();
+  if (await bar.count() && await page.evaluate(() => window.__proofChat.debugState().lineTalkOpen) === false) await bar.click();
+};
 const docText = page => page.evaluate(() => window.proof.getMarkdownSnapshot()?.content);
 
 async function run(browser, style) {
@@ -194,6 +201,7 @@ async function run(browser, style) {
       assert.equal(s.messages.length, 1);
       assert.deepEqual(s.messages[0].mentions, ['ai:claude-cos']);
       assert.equal(s.messages[0].by, 'human:mw@mike-wolf.com');
+      await showLineTalk(mike);
       const msg = mike.locator('.prw-right .pch-msg').first();
       assert.equal(await msg.locator('.pch-text strong').innerText(), 'check');
       assert.equal(await msg.locator('.pch-text code').innerText(), 'budget');
@@ -205,12 +213,14 @@ async function run(browser, style) {
     await check(`${tag}: Eric's page receives it; the pointer chip moves Eric's focus line to the line`, async () => {
       await waitFor(eric, () => window.__proofChat.debugState().messages.length === 1, null, 15000);
       await eric.evaluate(() => window.__proofReadingWalk.focusLine(0));
+      await showLineTalk(eric);
       await eric.locator('.prw-right .pch-msg .pch-pointer').first().click();
       await waitFor(eric, l => window.__proofReadingWalk.debugState().focus === l, L.BUDGET);
       assert.match(await eric.locator('.prw-right .pch-msg .pch-who').first().innerText(), /Mike Wolf/);
     });
 
     await check(`${tag}: Eric replies (Shift+Enter is a new line); the reply quotes Mike's message`, async () => {
+      await showLineTalk(eric);
       await eric.locator('.prw-right .pch-msg .pch-reply').first().click();
       await eric.keyboard.type('Looks right to me.');
       await eric.keyboard.press('Shift+Enter');
@@ -362,6 +372,7 @@ async function run(browser, style) {
       await phone.keyboard.type('Sent from my phone');
       await phone.locator('.prw-sheet-open .pch-send').tap();
       await waitFor(phone, () => window.__proofChat.debugState().sent.length === 1);
+      await showLineTalk(phone);
       const pointer = phone.locator(`.prw-sheet-open .pch-pointer[data-line="${L.MIDDLE}"]`).first();
       await pointer.scrollIntoViewIfNeeded();
       await pointer.tap();

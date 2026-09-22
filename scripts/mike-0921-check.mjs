@@ -275,6 +275,9 @@ async function desktop(browser, base, style) {
       await page.keyboard.press(key);
       await page.waitForTimeout(30);
       assert.equal(await docText(page), text, `"${key}" changed the text while reading`);
+      // Accord round 2, stage D: T is a command that opens the thread composer in the Margin. It
+      // still types nothing (which is what this loop tests); close it again before the next key.
+      if (key === 't') { await page.keyboard.press('Escape'); await page.waitForTimeout(60); }
     }
     await hoverLine(page, 7);
     await page.waitForFunction(() => window.__proofReadingWalk.debugState().target === 7, null, { timeout: 2000 });
@@ -489,8 +492,13 @@ async function desktop(browser, base, style) {
     await page.waitForFunction(i => window.__proofReadingWalk.debugState().target === i, L.TRIPLE, { timeout: 2000 });
     await page.waitForTimeout(200);
     const s = (await walk(page)).rail;
-    if (s.scrollHeight > s.clientHeight + 30) {
-      assert.equal(await railBody.evaluate(n => n.scrollTop), top, 'the rail moved under the person');
+    // The rail must never move under the person, whatever it holds.
+    assert.equal(await railBody.evaluate(n => n.scrollTop), top, 'the rail moved under the person');
+    // The pill is offered only when the person is actually ABOVE what the rail follows. (Accord
+    // round 2, stage D added the Discussion section to the rail body, so the body can be taller
+    // than its viewport while the focus line's box is still fully above the person's scroll
+    // position; height alone was never the precondition — distance from the target is.)
+    if (s.scrollHeight > s.clientHeight + 30 && s.target - s.scrollTop > 24) {
       const pill = page.locator('.prw-right .prw-follow-pill[data-follow="rail"]');
       await pill.waitFor({ state: 'visible', timeout: 2000 });
       await page.screenshot({ path: path.join(shots, `${tag}-rail-pill.png`), clip: { x: 1080, y: 0, width: 360, height: 900 } });
@@ -500,10 +508,18 @@ async function desktop(browser, base, style) {
       assert.equal(after.following, true);
       assert.ok(Math.abs(after.scrollTop - after.target) <= 2, JSON.stringify(after));
       assert.equal(await pill.isVisible(), false);
+    } else {
+      // At or above what it follows: the rail is following and there is nothing new below.
+      assert.equal(s.following, true, `the rail is not following at its target ${JSON.stringify(s)}`);
+      assert.equal(await page.locator('.prw-right .prw-follow-pill[data-follow="rail"]').isVisible(), false);
     }
   });
   await check(`${tag}: item 4 — the chat keeps its newest message in view; scrolled up, it shows "New below ↓"`, async () => {
-    for (let i = 1; i <= 14; i += 1) await created.post('/chat', { by: 'ai:check', text: `Message ${i}: a line of chat long enough to take some room in the rail.`, lines: [{ lineIndex: 1 }] });
+    // Filler to make the Room scroll. These are about no line: Accord round 2, stage D moves talk
+    // about a line into the document, so line-pointed messages are folded away in the Room and
+    // would not fill it. What this check tests — following the end, and the "New below" pill — is
+    // about the Room's own messages either way.
+    for (let i = 1; i <= 14; i += 1) await created.post('/chat', { by: 'ai:check', text: `Message ${i}: a line of chat long enough to take some room in the rail.` });
     await page.evaluate(() => window.__proofChat?.notifyRemoteChange());
     await waitFor(page, () => (window.__proofChat?.debugState().messages.length ?? 0) >= 14, null, 12_000);
     await page.waitForTimeout(300);

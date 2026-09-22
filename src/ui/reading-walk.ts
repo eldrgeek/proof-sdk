@@ -38,6 +38,9 @@ import type { LineMarksUI, MarkBox } from './line-marks';
 import { isOpenReviewMark, type PlayMakerReview, type ReviewAction } from './playmaker-review';
 import { editingGuardDebug, editingRemainingMs, endWriting, installEditingGuard, isEditing, isReadingOwned, isWriting, onEditingActivity, onWritingChange, startWriting } from '../editor/editing-guard';
 import { READING_MODE_POLICY } from '../shared/reading-keys';
+// Accord round 2, stage D: the discussion on a line lives in the document, in the Line tab.
+import { ThreadsPanel } from './threads';
+import { THREAD_POLICY, type ThreadAsks, type ThreadStatus } from '../shared/threads';
 import { Selection } from '@milkdown/kit/prose/state';
 import { ProxyMarksUI } from './proxy-marks';
 import { ReadingSettingsUI } from './reading-settings';
@@ -198,6 +201,8 @@ export class ReadingWalkUI {
   private readonly skimmedLines: number[] = [];
   private readonly boxHost = el('section', 'prw-linebox');
   private readonly changesHost = el('section', 'prw-changes');
+  /** Accord stage D: the threads anchored to the line the Margin shows. */
+  private threads: ThreadsPanel | null = null;
   private readonly dockHost = el('div', 'prw-dock');
   /** Step B7: the chat pane's place in the right rail (below the line's box and changes). */
   readonly chatSlot = el('div', 'prw-chat');
@@ -827,8 +832,76 @@ export class ReadingWalkUI {
       event.preventDefault();
       this.commitPreview('key');
       this.answerFocus(choice);
+      return;
+    }
+    // Accord stage D: T starts a thread on the selection, or on the cursor line when nothing is
+    // selected. T's older meaning — "Not yet" to an ask — is kept above and wins on a line that
+    // carries an ask (THREAD_POLICY.askAnswerWins); on every other line T was doing nothing.
+    if (key.toLowerCase() === THREAD_POLICY.key) {
+      event.preventDefault();
+      this.commitPreview('key');
+      this.startThreadHere();
+      return;
     }
   };
+
+  /** T: open the thread composer in the Margin's Line tab, on the selection or the cursor line. */
+  startThreadHere(fromSelection = false): boolean {
+    if (!this.threads) return false;
+    this.selectMarginTab('line');
+    if (isPhone()) this.openSheet('right');
+    else if (document.body.classList.contains('prw-right-collapsed')) this.setCollapsed('right', false);
+    const opened = this.threads.openComposer(fromSelection);
+    if (opened) this.threads.element.scrollIntoView({ block: 'nearest' });
+    return opened;
+  }
+
+  /** Accord stage D: the discussion panel in the Line tab. */
+  private buildThreads(): ThreadsPanel {
+    const lm = () => this.host.lineMarks();
+    return new ThreadsPanel({
+      focusLine: () => this.targetLine(),
+      lineText: (index) => this.lines[index]?.text ?? '',
+      threadsOnLine: (index) => lm().threadsOnLine(index),
+      // The subject of a thread: a selected range of the document (line-selected or text-selected),
+      // else the line in focus.
+      selectedLines: (force) => {
+        const selected = lm().selectionLines();
+        if (selected.length) return selected;
+        const view = this.view();
+        const selection = view?.state.selection;
+        if (!view || !selection || selection.empty) return [];
+        const from = lm().lineAtPos(selection.from);
+        const to = lm().lineAtPos(Math.max(selection.from, selection.to - 1));
+        if (from < 0 || to < 0) return [];
+        // A selection the cursor has left is not what T is about: an old highlight the person is no
+        // longer standing in must never quietly become the subject of their thread. The selection
+        // bar's Thread button passes `force`, because there the selection IS what they just made.
+        const focus = this.targetLine();
+        if (!force && (focus < from || focus > to)) return [];
+        return Array.from({ length: Math.max(0, to - from) + 1 }, (_, i) => from + i);
+      },
+      selectionText: () => {
+        const view = this.view();
+        const selection = view?.state.selection;
+        if (!view || !selection || selection.empty) return null;
+        const text = view.state.doc.textBetween(selection.from, selection.to, ' ', ' ').trim();
+        return text || null;
+      },
+      me: () => lm().me(),
+      isOwner: () => lm().canApproveHere?.() === true,
+      canComment: () => lm().canCommentHere(),
+      team: () => lm().issueSummary()?.team ?? [],
+      start: (input) => lm().startThread(input as { lines: number[]; text: string; asks: ThreadAsks; selection: string | null }),
+      close: (id, status) => lm().closeThread(id, status as ThreadStatus),
+      reopen: (id) => lm().reopenThread(id),
+      reply: (id, text) => lm().replyOnThread(id, text),
+      refresh: () => this.renderNow(),
+    });
+  }
+
+  /** Test hook: the Line tab's discussion panel. */
+  threadsPanel(): ThreadsPanel | null { return this.threads; }
 
   /**
    * One cursor: the previewed line becomes the cursor (a jump: no scroll, nothing read on the way).
@@ -1659,6 +1732,7 @@ export class ReadingWalkUI {
     const railSig = `${this.boxSig}\n${this.changesSig}`;
     this.renderBox();
     this.renderChanges();
+    this.threads?.render();
     // The focus line changed, or its box or changes did: keep them in view at the rail's bottom.
     if (`${this.boxSig}\n${this.changesSig}` !== railSig && !this.typingInRail()) this.railFollow?.follow();
     this.renderRate();
@@ -1837,7 +1911,7 @@ export class ReadingWalkUI {
     });
     const hasAsk = Boolean(lm.askForLine(focus));
     const alts = lm.altSetFor(focus);
-    const keys = el('p', 'prw-keys', hasAsk ? 'Y yes · N no · T not yet' : alts ? `1–${alts.options.length} pick · A agree · E explain` : 'A agree · R reject · E explain · D tier · J/K move');
+    const keys = el('p', 'prw-keys', hasAsk ? 'Y yes · N no · T not yet' : alts ? `1–${alts.options.length} pick · A agree · E explain` : 'A agree · R reject · T thread · E explain · D tier · J/K move');
     // Editing first (2026-09-19): who changed this line, and whether the meaning changed.
     const note = lm.editNoteFor(focus);
     if (note) {
@@ -2170,7 +2244,8 @@ export class ReadingWalkUI {
     this.buildReply();
     // The Line tab: the line's quote and marks, its changes, the Familiar's note and everyone's
     // marks, a reply box, then who the viewer's marks name.
-    this.rightBody.append(this.lineTools, this.boxHost, this.changesHost, this.tailHost, this.replyHost, this.meRow);
+    this.threads = this.buildThreads();
+    this.rightBody.append(this.lineTools, this.boxHost, this.changesHost, this.threads.element, this.tailHost, this.replyHost, this.meRow);
     // The scroll-accepts notice sits under the tabs, outside the scrolling body: it stays in view and
     // does not move when the pane scrolls or the line's box changes size (2026-09-21).
     this.linePane.append(this.provisionalEl, this.rightBody);

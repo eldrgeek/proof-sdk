@@ -1514,6 +1514,30 @@ function initDatabase(): void {
     )
   `);
   d.exec(`CREATE INDEX IF NOT EXISTS idx_document_explains_slug ON document_explains(document_slug, created_at)`);
+  // Accord round 2, stage D: threads. A thread is a comment or a suggestion PLUS what would close
+  // it and what it is anchored to. This table holds only that extra part, keyed by the mark, so a
+  // comment or suggestion already on a document reads as a thread with no row and nothing has to
+  // be migrated (src/shared/threads.ts threadsFrom).
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_threads (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      mark_id TEXT,
+      by_actor TEXT NOT NULL,
+      asks TEXT NOT NULL,
+      text TEXT NOT NULL DEFAULT '',
+      anchor_json TEXT NOT NULL DEFAULT '[]',
+      selection TEXT,
+      waiting_on_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'open',
+      chat_message_id INTEGER,
+      created_at TEXT NOT NULL,
+      closed_at TEXT,
+      closed_by TEXT
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_threads_slug ON document_threads(document_slug, created_at)`);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_threads_mark ON document_threads(document_slug, mark_id)`);
   d.exec(`
     CREATE TABLE IF NOT EXISTS document_line_ttls (
       id TEXT PRIMARY KEY,

@@ -85,6 +85,12 @@ import { disagreementCounts, disagreementLines } from '../shared/blind';
 import { EXPLAIN_POLICY, explainCommentText, termLinksFor, type TermUse } from '../shared/explain';
 import { TTL_POLICY, applyDecay, describeTtl, evaluateTtls, ttlIssueInputs, type ProofTtl, type TtlView } from '../shared/ttl';
 import { proofExtrasViewKey, setProofExtrasDecorations, termRange, type AltStackSpec, type TermLinkSpec } from '../editor/plugins/proof-extras-view';
+// Accord round 2, stage D: threads. A thread, a comment, a suggestion and the `?` clarify request
+// are ONE object; src/shared/threads.ts reads the ones already on a document without a migration.
+import {
+  THREAD_ASK_LABEL, anchorsForThread, evaluateThreads, openThreadsFor, threadsByLine,
+  type ThreadAsks, type ThreadMeta, type ThreadSourceMark, type ThreadStatus, type ThreadView,
+} from '../shared/threads';
 import {
   PROXY_POLICY,
   evaluateProxies,
@@ -294,6 +300,12 @@ export class LineMarksUI {
   private serverAltHistory: ProofAlternative[] = [];
   private serverPicks: AltPick[] = [];
   private serverExplains: Array<{ id: string; by: string; commentMarkId: string | null; question: string; createdAt: string }> = [];
+  /** Accord stage D: thread rows stored beside the document (what would close each, and its anchor). */
+  private serverThreads: ThreadMeta[] = [];
+  private threadViews: ThreadView[] = [];
+  private threadsAtLine = new Map<number, ThreadView[]>();
+  /** Test hook: threads this page started, newest last. */
+  readonly startedThreads: Array<{ id: string; lines: number[]; asks: ThreadAsks }> = [];
   private serverTtls: ProofTtl[] = [];
   private blind = false;
   private blindInfo: { revealedLines?: number[]; hiddenPositions?: number } | null = null;
@@ -443,6 +455,7 @@ export class LineMarksUI {
         flags?: UncertainFlag[]; reviewNotes?: ReviewNote[]; objections?: ProofObjection[];
         bundles?: ProofBundle[]; alternatives?: ProofAlternative[]; alternativeHistory?: ProofAlternative[]; picks?: AltPick[];
         settings?: { blind?: boolean }; explains?: LineMarksUI['serverExplains']; ttls?: ProofTtl[]; serverNow?: string; dos?: ProofDo[];
+        threads?: ThreadMeta[];
         blind?: { revealedLines?: number[]; hiddenPositions?: number };
         viewer?: { canApprove?: boolean; canMark?: boolean };
         identity?: { me?: ViewerIdentity; directory?: IdentityDirectory };
@@ -464,6 +477,7 @@ export class LineMarksUI {
       this.serverAltHistory = Array.isArray(body.alternativeHistory) ? body.alternativeHistory : [];
       this.serverPicks = Array.isArray(body.picks) ? body.picks : [];
       this.serverExplains = Array.isArray(body.explains) ? body.explains : [];
+      this.serverThreads = Array.isArray(body.threads) ? body.threads : [];
       this.serverTtls = Array.isArray(body.ttls) ? body.ttls : [];
       this.serverDos = Array.isArray(body.dos) ? body.dos : [];
       this.blind = body.settings?.blind === true;
@@ -636,6 +650,31 @@ export class LineMarksUI {
       applyDecay(this.states, this.ttlViews);
       this.disagreement = disagreementCounts(this.blind) ? disagreementLines(this.states) : new Set();
       this.bundleViews = this.serverBundles.map(bundle => evaluateBundle(bundle, this.lines, markId => this.locateSuggestion(markId)));
+      // Accord stage D: every thread on the document — the rows stored as threads PLUS every
+      // comment and suggestion read as one, so nothing already here is orphaned.
+      this.threadViews = evaluateThreads({
+        marks: reviewMarks as unknown as ThreadSourceMark[],
+        meta: this.serverThreads,
+        explains: this.serverExplains,
+        lines: this.lines,
+        lineOf: mark => (typeof mark.pos === 'number' ? this.lineAtPos(mark.pos) : null),
+      });
+      this.threadsAtLine = threadsByLine(this.threadViews);
+      // A thread whose mark went with the deleted text is still open, and still an Issue: it joins
+      // the review marks so the counts, the rail and the Navigator all keep seeing it.
+      const markIds = new Set(reviewMarks.map(mark => mark.id));
+      const orphanThreads: ReviewMarkLike[] = this.threadViews
+        .filter(view => view.open && view.thread.asks !== 'comment' && (!view.thread.markId || !markIds.has(view.thread.markId)))
+        .map(view => ({
+          id: view.thread.id,
+          kind: 'comment',
+          by: view.thread.by,
+          quote: view.originalQuote,
+          pos: view.pos,
+          open: true,
+          replies: view.thread.replies,
+        }));
+      if (orphanThreads.length) reviewMarks.push(...orphanThreads);
       this.termLinks = termLinksFor(this.lines, this.states, this.me());
       this.askViews = evaluateAsks(this.serverAsks, this.lines);
       this.doViews = evaluateDos(this.serverDos, this.lines, this.host.slug() ?? '', Date.now() + this.clockSkewMs);
@@ -741,6 +780,8 @@ export class LineMarksUI {
   displayName(actor: string): string { return isAiActor(actor) ? this.aiName(actor) : actorLabel(actor); }
   /** Readers who can comment (guests read and comment). */
   canCommentHere(): boolean { return this.host.canComment?.() !== false; }
+  /** Accord stage D: an Owner may close anyone's thread. */
+  canApproveHere(): boolean { return this.canApprove; }
   /**
    * Accord layout stage 3, "Reply on this line…": a new comment thread on the whole line. Returns the
    * new comment's id, or null when it could not be placed.
@@ -2923,11 +2964,121 @@ export class LineMarksUI {
     if (!markId) { this.toast('Could not place the question on this line'); return false; }
     const result = await this.postAid('/explain', { anchor: anchorForLine(line), question: question.trim() || EXPLAIN_POLICY.defaultQuestion, commentMarkId: markId });
     if (result.ok) {
+      // Accord stage D: the `?` gesture and E produce the SAME object as T — a thread that asks
+      // `clarify`. It is still never an Issue for the asker and still never marks the line; making
+      // it a thread only means there is one resolve rule, one fold rule and one Undo.
+      await this.postAid('/threads', { markId, asks: 'clarify', anchor: anchorsForThread(this.lines, [index]), selection: null, waitingOn: [] });
       this.extrasWrites += 1;
       this.toast(ais.length ? `Asked ${ais.join(', ')} to explain line ${index + 1}. The answer comes back on the line’s thread.` : `Asked for an explanation of line ${index + 1} (no AI has joined this document yet).`);
     }
     return result.ok;
   }
+
+  // --------------------------------------------------------------------------
+  // Accord round 2, stage D: threads
+  //
+  // A thread IS the comment or the suggestion. Starting one writes the comment mark the document
+  // already understands, then stores what would close it and what it is anchored to beside the
+  // document. Nothing already on a document needs either half to read as a thread.
+  // --------------------------------------------------------------------------
+
+  /** Every thread on the document now (rows, comments, suggestions and clarify requests alike). */
+  allThreads(): ThreadView[] { return this.threadViews; }
+
+  /**
+   * The threads that are open FOR A VIEWER, each with the reason, in document order. This is the
+   * one answer the Open list is built on (src/shared/threads.ts threadOpenFor).
+   */
+  openThreadsFor(viewer: string = this.me()): Array<{ id: string; line: number | null; why: string | null; because: string; detached: boolean }> {
+    return openThreadsFor(this.threadViews, viewer, { team: this.summary?.team ?? [] })
+      .map(({ view, openness }) => ({ id: view.thread.id, line: view.lineIndex, why: openness.why, because: openness.because, detached: openness.detached }));
+  }
+
+  /** The threads that sit on a line now. A detached thread sits on the line it detached to. */
+  threadsOnLine(index: number): ThreadView[] { return this.threadsAtLine.get(index) ?? []; }
+
+  threadById(id: string): ThreadView | null {
+    return this.threadViews.find(view => view.thread.id === id || view.thread.markId === id) ?? null;
+  }
+
+  /**
+   * T: starts a thread on a range of the document (or on one line). The closing condition is
+   * required — the caller has already chosen one of THREAD_ASK_CHOICES.
+   */
+  async startThread(input: { lines: number[]; text: string; asks: ThreadAsks; selection?: string | null; waitingOn?: string[] }): Promise<string | null> {
+    const indices = [...new Set(input.lines)].filter(index => this.lines[index]).sort((a, b) => a - b);
+    if (indices.length === 0 || !this.canCommentHere()) return null;
+    const text = input.text.trim();
+    if (!text) return null;
+    // The thread's words are a comment on its first line: the document already carries, syncs and
+    // replies to those, so a thread is readable by every client and every AI from the moment it is
+    // made — including ones that know nothing about threads.
+    const markId = this.host.commentOnLine?.(this.lines[indices[0]], text) ?? null;
+    if (!markId) { this.toast('Could not place the thread on that line'); return null; }
+    const result = await this.postAid('/threads', {
+      markId,
+      asks: input.asks,
+      text,
+      anchor: anchorsForThread(this.lines, indices),
+      selection: input.selection ?? null,
+      waitingOn: input.waitingOn ?? [],
+    });
+    if (!result.ok) return null;
+    const thread = result.body.thread as ThreadMeta | undefined;
+    const id = thread?.id ?? markId;
+    this.extrasWrites += 1;
+    this.startedThreads.push({ id, lines: indices, asks: input.asks });
+    this.toast(`Thread started on line ${indices[0] + 1}. It closes when: ${THREAD_ASK_LABEL[input.asks]}.`);
+    this.pushUndo('thread', `started a thread on line ${indices[0] + 1}`, async () => {
+      const undone = await this.postAid(`/threads/${encodeURIComponent(id)}/undo`, {});
+      if (!undone.ok) return { ok: false, reason: 'That thread can no longer be taken back.' };
+      this.decideOnMark?.([markId], 'resolve');
+      return { ok: true };
+    });
+    return id;
+  }
+
+  /** Closes a thread by its own rule: a proposal is accepted or rejected, a discussion is resolved. */
+  async closeThread(id: string, status: ThreadStatus): Promise<boolean> {
+    const view = this.threadById(id);
+    if (!view) return false;
+    const threadId = view.thread.id;
+    const result = await this.postAid(`/threads/${encodeURIComponent(threadId)}/close`, { status });
+    const storedRow = result.ok;
+    // A thread with no stored row is a plain comment or suggestion: it closes the way it always
+    // did, on its mark. With a row, the mark is closed too, so both halves agree.
+    if (view.thread.markId && status !== 'withdrawn') {
+      this.decideOnMark?.([view.thread.markId], status === 'accepted' ? 'accept' : status === 'rejected' ? 'reject' : 'resolve');
+    }
+    if (storedRow) this.extrasWrites += 1;
+    const line = view.lineIndex === null ? '' : ` on line ${view.lineIndex + 1}`;
+    this.pushUndo('thread', `closed the thread${line}`, async () => {
+      if (!storedRow) return { ok: false, reason: 'Reopen that comment from its thread.' };
+      const back = await this.postAid(`/threads/${encodeURIComponent(threadId)}/reopen`, {});
+      return back.ok ? { ok: true } : { ok: false, reason: 'That thread could not be reopened.' };
+    });
+    return storedRow || Boolean(view.thread.markId);
+  }
+
+  /** Reopens a closed thread (also the inverse the Undo runs). */
+  async reopenThread(id: string): Promise<boolean> {
+    const view = this.threadById(id);
+    if (!view) return false;
+    const result = await this.postAid(`/threads/${encodeURIComponent(view.thread.id)}/reopen`, {});
+    if (result.ok) this.extrasWrites += 1;
+    return result.ok;
+  }
+
+  /** A reply on a thread is a reply on its mark (one place, one history). */
+  replyOnThread(id: string, text: string): boolean {
+    const view = this.threadById(id);
+    if (!view?.thread.markId || !text.trim()) return false;
+    this.decideOnMark?.([view.thread.markId], 'reply', text.trim());
+    return true;
+  }
+
+  /** How the page acts on a review mark (set by the editor; the Margin's Changes use the same one). */
+  decideOnMark: ((ids: string[], action: 'accept' | 'reject' | 'resolve' | 'reply', text?: string) => void) | null = null;
 
   /** Step B4f: an Owner turns blind marking on or off. */
   async setBlind(on: boolean): Promise<boolean> {

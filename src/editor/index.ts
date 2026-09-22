@@ -4072,9 +4072,11 @@ class ProofEditorImpl implements ProofEditor {
         reviewMarks: (view) => getMarks(view.state)
           .filter(mark => mark.kind === 'comment' || mark.kind === 'insert' || mark.kind === 'delete' || mark.kind === 'replace')
           .map(mark => {
-            const data = (mark.data ?? {}) as { resolved?: boolean; status?: string; replies?: Array<{ by?: string }> };
+            const data = (mark.data ?? {}) as { resolved?: boolean; status?: string; text?: string; content?: string; replies?: Array<{ by?: string; text?: string; at?: string }> };
             const open = mark.kind === 'comment' ? data.resolved !== true : (data.status ?? 'pending') === 'pending';
-            return { id: mark.id, kind: mark.kind, by: mark.by, quote: mark.quote, pos: mark.range?.from ?? null, open, replies: data.replies, status: mark.kind === 'comment' ? null : (data.status ?? 'pending') };
+            // Accord stage D: a comment and a suggestion are both threads, so the thread's own
+            // fields (its opening text, the proposed wording, when it was made) come along too.
+            return { id: mark.id, kind: mark.kind, by: mark.by, at: mark.at, quote: mark.quote, pos: mark.range?.from ?? null, range: mark.range ?? null, open, text: data.text ?? null, content: data.content ?? null, resolved: data.resolved === true, replies: data.replies, status: mark.kind === 'comment' ? null : (data.status ?? 'pending') };
           }),
         isSuggesting: () => this.isSuggestionsEnabled(),
         authorsOfRange: (from, to) => {
@@ -4123,6 +4125,12 @@ class ProofEditorImpl implements ProofEditor {
           return id;
         },
       });
+      // Accord stage D: a thread's replies and its resolution act on the mark the thread is, so
+      // the Margin's Changes and the Discussion use exactly one path into the document.
+      this.lineMarks.decideOnMark = (ids, action, text) => {
+        this.performReviewDecision(ids, action, text);
+        this.playmakerReview?.update();
+      };
       (window as unknown as { __proofLineMarks?: LineMarksUI }).__proofLineMarks = this.lineMarks;
       // Proof Documents Step 1b: the three-column reading layout and the reading walk.
       const lineMarks = this.lineMarks;

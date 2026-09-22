@@ -111,3 +111,11 @@
   .pch-in-sheet .pch-chip-x { width: 32px; height: 32px; }
   .pch-in-sheet .pch-suggest-item { padding: 10px; }
 }
+
+/* Accord round 2, stage D: the Room keeps only what is about no line. Talk about the text is a
+   thread on its line; it is still here, folded, so nothing said is ever unreadable. */
+.pch-line-talk { margin: 4px 8px 0; }
+.pch-line-talk[hidden] { display: none; }
+.pch-line-talk-summary { width: 100%; text-align: left; font-size: 12px; opacity: .75; cursor: pointer; background: transparent; border: 1px dashed var(--proof-rule, #e5e7eb); border-radius: 6px; padding: 4px 8px; }
+.pch-line-talk-summary:hover { opacity: 1; }
+.pch-msg.pch-line-talk-msg { border-left: 2px dashed var(--proof-rule, #d1d5db); padding-left: 6px; }

@@ -30,6 +30,10 @@ import {
   type MentionCandidate,
   type ProofChatMessage,
 } from '../shared/chat';
+// Accord round 2, stage D: the Room keeps only what is about no line. Talk about the text is a
+// thread on its line (src/shared/threads.ts). Nothing is deleted — the line talk is still here,
+// folded, and still opens its line.
+import { splitRoom } from '../shared/threads';
 import type { LineMarksUI } from './line-marks';
 import { ScrollFollower } from './rail-follow';
 import './chat.css';
@@ -104,6 +108,14 @@ export class ChatUI {
   private readonly countEl = el('span', 'pch-count');
   private readonly list = el('ol', 'pch-list');
   private readonly empty = el('p', 'pch-empty', 'No messages yet. 📍 points a message at a line.');
+  /**
+   * Accord stage D: talk about a line belongs to the document, so the Room folds it away behind one
+   * row. It is folded, never dropped: the messages keep their place in the conversation and one
+   * click shows them again, with their pointer chips and their replies.
+   */
+  private readonly lineTalkBar = el('div', 'pch-line-talk');
+  private readonly lineTalkToggle = el('button', 'pch-line-talk-summary');
+  private lineTalkOpen = false;
   private readonly composer = el('form', 'pch-composer');
   private readonly replyBar = el('div', 'pch-replybar');
   private readonly chips = el('div', 'pch-attached');
@@ -156,7 +168,15 @@ export class ChatUI {
     this.list.setAttribute('aria-live', 'polite');
     this.list.setAttribute('aria-label', 'Messages');
     this.buildComposer();
-    this.root.append(this.head, this.empty, this.list, this.composer);
+    this.lineTalkToggle.type = 'button';
+    this.lineTalkToggle.onclick = () => {
+      this.lineTalkOpen = !this.lineTalkOpen;
+      this.listSig = '';
+      this.render();
+    };
+    this.lineTalkBar.append(this.lineTalkToggle);
+    this.lineTalkBar.hidden = true;
+    this.root.append(this.head, this.empty, this.lineTalkBar, this.list, this.composer);
     // Rail scrolling (2026-09-21): the messages keep the newest in view unless the person scrolled up.
     this.follower = new ScrollFollower({ scroller: this.list, name: 'chat' });
     this.list.after(this.follower.pillElement);
@@ -494,15 +514,34 @@ export class ChatUI {
     const marks = this.safeMarks();
     const markSig = marks.filter(m => this.messages.some(msg => msg.suggestion?.markId === m.id || msg.commentMarkId === m.id))
       .map(m => `${m.id}:${(m.data as { status?: string })?.status ?? ''}:${((m.data as CommentData)?.replies ?? []).length}`).join(',');
-    const sig = `${this.messages.map(m => m.id).join(',')}|${lines.length}:${lines.map(l => l.hash).join('').length}|${markSig}|${this.host.lineMarks().me()}|${this.canPost}`;
+    const sig = `${this.messages.map(m => m.id).join(',')}|${lines.length}:${lines.map(l => l.hash).join('').length}|${markSig}|${this.host.lineMarks().me()}|${this.canPost}|${this.lineTalkOpen}`;
     this.applyCollapsed();
+    // Accord stage D: the Room keeps people, invitations, joins, document-level events and any
+    // message about no line. A message that points at a line, mirrors a comment thread or carries a
+    // suggestion is talk about the text: it shows on its line as a thread, and here only under the
+    // folded "about the text" row, so nothing anyone ever said becomes unreadable.
+    const split = splitRoom(this.messages);
     this.empty.hidden = this.messages.length > 0;
     this.composer.hidden = !this.canPost;
     if (sig !== this.listSig) {
       this.listSig = sig;
       const byId = new Map(this.messages.map(m => [m.id, m]));
       const names = this.mentionNames();
-      this.list.replaceChildren(...this.messages.map(m => this.renderMessage(m, byId, names, marks)));
+      const isLineTalk = new Set(split.lineTalk.map(m => m.id));
+      this.list.replaceChildren(...this.messages.map(m => {
+        const li = this.renderMessage(m, byId, names, marks);
+        if (isLineTalk.has(m.id)) {
+          li.classList.add('pch-line-talk-msg');
+          li.hidden = !this.lineTalkOpen;
+        }
+        return li;
+      }));
+      this.lineTalkBar.hidden = split.lineTalk.length === 0;
+      const n = split.lineTalk.length;
+      this.lineTalkToggle.textContent = this.lineTalkOpen
+        ? `Hide the ${n === 1 ? '1 message' : `${n} messages`} about the text`
+        : `${n === 1 ? '1 message' : `${n} messages`} about the text \u2014 ${n === 1 ? 'it is a thread on its line' : 'they are threads on their lines'}`;
+      this.lineTalkToggle.setAttribute('aria-expanded', String(this.lineTalkOpen));
       // New messages: follow the end, or show "New below ↓" when the person scrolled up.
       requestAnimationFrame(() => this.follower.follow());
     }
@@ -929,6 +968,10 @@ export class ChatUI {
       sent: [...this.sent],
       pointerClicks: [...this.pointerClicks],
       lineCounts: [...this.lineCounts().entries()],
+      // Accord stage D: what the Room itself carries, and what moved to the document.
+      room: splitRoom(this.messages).room.map(m => m.id),
+      lineTalk: splitRoom(this.messages).lineTalk.map(m => m.id),
+      lineTalkOpen: this.lineTalkOpen,
       follow: this.follower.debugState(),
     };
   }

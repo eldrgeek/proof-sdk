@@ -387,7 +387,13 @@ export interface ReviewMarkLike {
   quote?: string | null;
   pos?: number | null;
   open: boolean;
-  replies?: Array<{ by?: string | null }>;
+  /** Accord stage D: a comment and a suggestion are threads (src/shared/threads.ts). */
+  at?: string | null;
+  range?: { from: number; to: number } | null;
+  text?: string | null;
+  content?: string | null;
+  resolved?: boolean;
+  replies?: Array<{ by?: string | null; text?: string | null; at?: string | null }>;
   /**
    * Step B4f: an Explain question (src/shared/explain.ts). The caller sets it only when
    * EXPLAIN_POLICY.commentIsIssue is false; such a comment is never an Issue.

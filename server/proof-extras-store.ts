@@ -12,6 +12,7 @@ import { actorKey, type LineAnchor } from '../src/shared/line-marks.js';
 import type { BundleMember, BundleStatus, ProofBundle } from '../src/shared/bundles.js';
 import type { AltPick, ProofAlternative } from '../src/shared/alternatives.js';
 import type { ProofTtl, TtlCheck } from '../src/shared/ttl.js';
+import { isThreadAsks, type ThreadAnchorLine, type ThreadMeta } from '../src/shared/threads.js';
 
 function parseJson<T>(raw: string | null | undefined, fallback: T): T {
   if (!raw) return fallback;
@@ -313,4 +314,101 @@ export function noteTtlExpired(slug: string, id: string, at: string): boolean {
 export function reopenAlternativeRow(slug: string, id: string): void {
   assertWritesAllowed('reopenAlternativeRow');
   getDb().prepare(`UPDATE document_alternatives SET status = 'open', closed_at = NULL, closed_by = NULL, resolution_json = NULL WHERE document_slug = ? AND id = ?`).run(slug, id);
+}
+
+// ============================================================================
+// Threads (Accord round 2, stage D)
+//
+// A thread IS a comment or a suggestion; this table holds only what a mark cannot carry: what
+// would close the thread, what it is anchored to, who it waits on, and whether it is closed.
+// A comment or suggestion with no row here still reads as a thread (src/shared/threads.ts
+// threadsFrom) — an adapter, not a migration. Nothing already stored is rewritten.
+// ============================================================================
+
+interface ThreadRow {
+  id: string;
+  document_slug: string;
+  mark_id: string | null;
+  by_actor: string;
+  asks: string;
+  text: string | null;
+  anchor_json: string;
+  selection: string | null;
+  waiting_on_json: string;
+  status: string;
+  chat_message_id: number | null;
+  created_at: string;
+  closed_at: string | null;
+  closed_by: string | null;
+}
+
+const THREAD_STATUSES = new Set(['open', 'resolved', 'accepted', 'rejected', 'withdrawn']);
+
+function rowToThread(row: ThreadRow): ThreadMeta {
+  return {
+    id: row.id,
+    markId: row.mark_id,
+    by: row.by_actor,
+    asks: (isThreadAsks(row.asks) ? row.asks : 'comment'),
+    text: row.text ?? '',
+    anchor: parseJson<ThreadAnchorLine[]>(row.anchor_json, []).filter(line => line && line.original && line.current),
+    selection: row.selection,
+    waitingOn: parseJson<string[]>(row.waiting_on_json, []).filter(actor => typeof actor === 'string'),
+    status: (THREAD_STATUSES.has(row.status) ? row.status : 'open') as ThreadMeta['status'],
+    createdAt: row.created_at,
+    closedAt: row.closed_at,
+    closedBy: row.closed_by,
+    chatMessageId: row.chat_message_id,
+  };
+}
+
+export function listThreadRows(slug: string): ThreadMeta[] {
+  const rows = getDb().prepare(`SELECT * FROM document_threads WHERE document_slug = ? ORDER BY created_at ASC, id ASC`).all(slug) as ThreadRow[];
+  return rows.map(rowToThread);
+}
+
+export function getThreadRow(slug: string, id: string): ThreadMeta | null {
+  const row = getDb().prepare(`SELECT * FROM document_threads WHERE document_slug = ? AND id = ?`).get(slug, id) as ThreadRow | undefined;
+  return row ? rowToThread(row) : null;
+}
+
+export function insertThreadRow(slug: string, thread: ThreadMeta): void {
+  assertWritesAllowed('insertThreadRow');
+  getDb().prepare(`
+    INSERT INTO document_threads (id, document_slug, mark_id, by_actor, asks, text, anchor_json, selection, waiting_on_json, status, chat_message_id, created_at, closed_at, closed_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+    ON CONFLICT(id) DO NOTHING
+  `).run(
+    thread.id, slug, thread.markId, thread.by, thread.asks, String(thread.text ?? '').slice(0, 4000),
+    JSON.stringify(thread.anchor ?? []), thread.selection,
+    JSON.stringify(thread.waitingOn ?? []), thread.status ?? 'open',
+    thread.chatMessageId ?? null, thread.createdAt,
+  );
+}
+
+/** Re-anchors a thread after an edit (the thread follows its text; the original never changes). */
+export function updateThreadAnchor(slug: string, id: string, anchor: ThreadAnchorLine[]): void {
+  assertWritesAllowed('updateThreadAnchor');
+  getDb().prepare(`UPDATE document_threads SET anchor_json = ? WHERE document_slug = ? AND id = ?`).run(JSON.stringify(anchor), slug, id);
+}
+
+/** Closes an open thread. False when it was already closed (so one Undo cannot close it twice). */
+export function closeThreadRow(slug: string, id: string, status: ThreadMeta['status'], by: string, at: string): boolean {
+  assertWritesAllowed('closeThreadRow');
+  if (status === 'open') return false;
+  return getDb().prepare(`UPDATE document_threads SET status = ?, closed_at = ?, closed_by = ? WHERE document_slug = ? AND id = ? AND status = 'open'`)
+    .run(status, at, by, slug, id).changes > 0;
+}
+
+/** The Undo of closing one. False when it is already open. */
+export function reopenThreadRow(slug: string, id: string): boolean {
+  assertWritesAllowed('reopenThreadRow');
+  return getDb().prepare(`UPDATE document_threads SET status = 'open', closed_at = NULL, closed_by = NULL WHERE document_slug = ? AND id = ? AND status != 'open'`)
+    .run(slug, id).changes > 0;
+}
+
+/** The Undo of starting one: only whoever started it, and only while nobody has replied. */
+export function deleteThreadRow(slug: string, id: string, by: string): boolean {
+  assertWritesAllowed('deleteThreadRow');
+  return getDb().prepare(`DELETE FROM document_threads WHERE document_slug = ? AND id = ? AND by_actor = ?`).run(slug, id, by).changes > 0;
 }
