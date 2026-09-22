@@ -274,13 +274,19 @@ async function desktop(browser, base, style) {
     await page.keyboard.press('j');
     await page.waitForTimeout(200);
     const reading = await style();
-    await hoverLine(page, L.LAST - 3);
+    // The hovered line has to be one the page can actually show: the unstepped ask at L.ASK2 is a
+    // barrier, and since the scroll camera (stage B, 2026-09-22) stops the page with the barrier
+    // line on the reading line — the middle band, not the top of the window — the lines a screen
+    // below it cannot be scrolled to until the reader steps through the ask. The check is about
+    // hovering ANOTHER line, so it hovers one this side of the barrier.
+    const HOVERED = L.COMMENT;
+    await hoverLine(page, HOVERED);
     await page.waitForTimeout(250);
     const hover = await style();
     // (hoverLine may scroll the line into view first; scrolling reads, so the cursor can move then.)
     const w = await walk(page);
-    assert.equal(w.preview, L.LAST - 3, 'the hovered line is not previewed');
-    assert.notEqual(w.cursor, L.LAST - 3, 'the hover moved the cursor');
+    assert.equal(w.preview, HOVERED, 'the hovered line is not previewed');
+    assert.notEqual(w.cursor, HOVERED, 'the hover moved the cursor');
     assert.equal(reading.source, 'reading');
     assert.equal(hover.source, 'reading', 'the hover drew its own band');
     assert.equal(hover.line, w.cursor, 'the bar left the cursor on hover');

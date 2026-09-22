@@ -20,6 +20,7 @@ import { UndoUI } from '../ui/undo';
 import { MenuBar, buildMenuItems, type MenuItemSpec, type MenuSpec } from '../ui/menu-bar';
 import { showShareDialog } from '../ui/share-dialog';
 import { FindBar, showAboutDialog, showKeysDialog, showMarksLegend, showOpenDialog, showWhoDialog } from '../ui/chrome-dialogs';
+import { SCROLL_CAMERA_POLICY, cameraScroll, deadZone } from '../shared/scroll-camera';
 import { MENU_BAR_POLICY, TOOLBAR_POLICY, type ShareTab } from '../shared/layout-chrome';
 import { ClarifyUI } from '../ui/clarify';
 import { lineMarksViewPlugin } from './plugins/line-marks-view';
@@ -4170,6 +4171,9 @@ class ProofEditorImpl implements ProofEditor {
         },
       });
       (window as unknown as { __proofReadingWalk?: ReadingWalkUI }).__proofReadingWalk = this.readingWalk;
+      // Accord round 2 stage B: the scroll camera is pure, so the check unit-tests the offset rule
+      // in the page without a DOM (scripts/scroll-camera-check.mjs).
+      (window as unknown as { __proofScrollCamera?: unknown }).__proofScrollCamera = { cameraScroll, deadZone, policy: SCROLL_CAMERA_POLICY };
       const walkUi = this.readingWalk;
       this.folding.subscribe(() => walkUi.onFoldChange());
       walkUi.mountTool(this.folding.controlsEl);

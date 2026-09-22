@@ -43,6 +43,7 @@ import { ProxyMarksUI } from './proxy-marks';
 import { ReadingSettingsUI } from './reading-settings';
 import { SETTINGS_POLICY } from '../shared/layout-chrome';
 import { ScrollFollower, containRailWheel } from './rail-follow';
+import { SCROLL_CAMERA_POLICY, bandFractionFor, cameraScroll, deadZone, type CameraView } from '../shared/scroll-camera';
 import { TIER_POLICY } from '../shared/line-tiers';
 import { HIGHLIGHT_POLICY, MARKED_UP_TO_POLICY, STATUS_BAR_POLICY, formatAgo, issuesLeftText } from '../shared/layout-status';
 import { CURSOR_POLICY, MARGIN_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY, parseRailState, type MarginTab, type RailState } from '../shared/layout-panels';
@@ -248,6 +249,15 @@ export class ReadingWalkUI {
   private unsubscribeEditing: (() => void) | null = null;
   /** Set while the person edits: the next scroll after editing re-bases the focus (no snap). */
   private rebaseAfterEdit = false;
+  /**
+   * Accord round 2 stage B: the reading line — the viewport y the cursor line sits at. null means
+   * the default (the first line's place, with the page at the top). The camera
+   * (src/shared/scroll-camera.ts) sets it on a cursor move the person caused; scrolling by hand
+   * then walks the cursor line by line from there, so the camera and the reader never fight.
+   */
+  private readingOffset: number | null = null;
+  /** The offset the camera last scrolled to: its own scroll event must not move the cursor. */
+  private cameraAt: number | null = null;
   private followQueued = false;
   private docs: LibraryDoc[] | null = null;
   private docsMessage = 'Loading…';
@@ -597,9 +607,49 @@ export class ReadingWalkUI {
     document.body.style.setProperty('--prw-chrome', `${Math.max(0, bannerBottom)}px`);
   }
 
-  /** Where (viewport y) the focus line sits: the first line's place with the page at the top. */
+  /**
+   * Where (viewport y) the cursor line sits. Without the camera that is the first line's place with
+   * the page at the top (Step 1b's reading line); after a cursor move the camera has put the cursor
+   * in the middle band and left its y here, and scrolling walks the cursor from there.
+   */
   private readingY(): number {
-    return Math.max(0, (this.tops[0] ?? 0));
+    const base = Math.max(0, this.tops[0] ?? 0);
+    return this.readingOffset === null ? base : Math.max(0, this.readingOffset);
+  }
+
+  /** The viewport as the camera sees it: the reading area under the chrome, and what is left to scroll. */
+  private cameraView(): CameraView {
+    const chrome = Number.parseFloat(document.body.style.getPropertyValue('--prw-chrome')) || 0;
+    const height = window.innerHeight;
+    const doc = Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0);
+    return {
+      viewportHeight: height,
+      topInset: Math.min(Math.max(0, chrome), Math.max(0, height - 1)),
+      scrollY: window.scrollY,
+      maxScroll: Math.max(0, doc - height),
+      bandFraction: bandFractionFor(isPhone()),
+    };
+  }
+
+  /**
+   * The camera: put the cursor line in the middle band, immediately (never an animated scroll), and
+   * remember where the cursor now sits so a later hand-scroll starts from there. Only ever called
+   * for a cursor move the person caused.
+   */
+  private cameraTo(index: number): void {
+    // Measure first: the camera places a real box, so a stale cache would put the cursor a few px
+    // out of the band — and a cursor that is only partly visible is the bug this stage fixes.
+    this.measure();
+    const top = this.tops[index];
+    if (top === undefined) return;
+    const view = this.cameraView();
+    const line = { top, height: this.heights[index] ?? 0 };
+    const offset = cameraScroll(line, view);
+    this.readingOffset = Math.max(0, top - offset);
+    if (Math.abs(offset - view.scrollY) > 0.5) {
+      this.cameraAt = offset;
+      window.scrollTo({ top: offset, behavior: SCROLL_CAMERA_POLICY.behavior as ScrollBehavior });
+    }
   }
 
   private lineAtReadingLine(): number {
@@ -616,7 +666,12 @@ export class ReadingWalkUI {
     return found;
   }
 
-  private scrollToLine(index: number): void {
+  /**
+   * Holds the page so `index` sits on the reading line — the barrier snap. It does NOT move the
+   * reading line: the camera owns that, and a barrier is the page refusing to go further, not a
+   * cursor move.
+   */
+  private pinLine(index: number): void {
     const top = this.tops[index];
     if (top === undefined) return;
     window.scrollTo({ top: Math.max(0, top - this.readingY()), behavior: 'instant' as ScrollBehavior });
@@ -633,6 +688,16 @@ export class ReadingWalkUI {
     if (READING_MODE_POLICY.caretOutOfViewEndsWriting && isWriting() && !isEditing() && this.caretOutOfView()) endWriting();
     // Editing first: while the person edits, scrolling moves nothing and snaps nothing.
     if (isEditing()) { this.rebaseAfterEdit = true; this.queueRender(); return; }
+    // Stage B: the camera's own scroll is not the person scrolling. It has already put the cursor
+    // where it belongs, so this event reads nothing and moves nothing.
+    if (this.cameraAt !== null) {
+      const mine = Math.abs(window.scrollY - this.cameraAt) <= 1;
+      this.cameraAt = null;
+      if (mine) { this.queueRender(); return; }
+    }
+    // At the very top of the document the reading line returns to the first line's place: the page
+    // has nothing left to give, so the line under the top of the page is the cursor again.
+    if (window.scrollY <= 0) this.readingOffset = null;
     let target = this.lineAtReadingLine();
     if (this.rebaseAfterEdit) {
       // The first scroll after editing starts reading from here: no barrier snap back.
@@ -645,7 +710,7 @@ export class ReadingWalkUI {
       const barrier = walk.barrier(walk.focus);
       if (barrier !== null && barrier < target) {
         target = barrier;
-        this.scrollToLine(barrier);
+        this.pinLine(barrier);
       }
     }
     if (target !== walk.focus) {
@@ -695,7 +760,7 @@ export class ReadingWalkUI {
       if (window.scrollY + dy > max + 1) {
         prevent();
         this.gate.block();
-        if (window.scrollY < max) this.scrollToLine(barrier);
+        if (window.scrollY < max) this.pinLine(barrier);
         if (barrier !== walk.focus) {
           walk.moveTo(barrier, performance.now(), 'scroll', this.heights);
           this.afterChange();
@@ -1181,7 +1246,7 @@ export class ReadingWalkUI {
     const to = walk.nextStop(1) ?? walk.nextVisible(1);
     if (to === null) return;
     walk.moveTo(to, performance.now(), 'scroll', this.heights);
-    this.scrollToLine(walk.focus);
+    this.cameraTo(walk.focus);
     this.afterChange();
   }
 
@@ -1193,7 +1258,7 @@ export class ReadingWalkUI {
     const to = walk.nextStop(-1) ?? walk.nextVisible(-1);
     if (to === null) return;
     walk.moveTo(to, performance.now(), 'scroll', this.heights);
-    this.scrollToLine(walk.focus);
+    this.cameraTo(walk.focus);
     this.afterChange();
   }
 
@@ -1204,7 +1269,7 @@ export class ReadingWalkUI {
     if (walk.isHidden(index)) index = this.host.visibleLineFor?.(index) ?? index;
     this.measure();
     walk.moveTo(index, performance.now(), 'jump', this.heights);
-    this.scrollToLine(index);
+    this.cameraTo(index);
     this.afterChange();
     return true;
   }
@@ -1567,7 +1632,7 @@ export class ReadingWalkUI {
     if (this.walk.isHidden(this.walk.focus)) {
       this.walk.moveTo(this.host.visibleLineFor?.(this.walk.focus) ?? 0, performance.now(), 'jump');
     }
-    if (this.walk.focus > 0) this.scrollToLine(this.walk.focus);
+    if (this.walk.focus > 0) this.cameraTo(this.walk.focus);
   }
 
   // --------------------------------------------------------------------------
@@ -2548,7 +2613,11 @@ export class ReadingWalkUI {
       bundleDecisions: [...this.bundleDecisions],
       since: this.sinceReport ? { hasHistory: this.sinceReport.hasHistory, counts: this.sinceReport.counts, baseline: this.sinceReport.baseline } : null,
       readingY: this.readingY(),
+      // Stage B: the scroll camera. `band` is the dead zone in viewport y; `offset` is null while
+      // the reading line is still the default (the first line's place).
+      camera: { view: this.cameraView(), band: deadZone(this.cameraView()), offset: this.readingOffset },
       tops: [...this.tops],
+      heights: [...this.heights],
       constants: READING_WALK,
       error: this.lastError,
       commits: this.commits.map(c => ({ ...c, ids: [...c.ids] })),
