@@ -208,10 +208,12 @@ async function desktop(browser, base, style) {
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.waitForTimeout(300);
   });
-  await check(`${tag}: the caret in the text shows Writing in the bar; Esc shows Reading`, async () => {
+  // Accord round 2 stage A (2026-09-22): the bar says "Editing line N" where it used to say
+  // "Writing" — the same state, named for what the person is doing and on which line.
+  await check(`${tag}: the caret in the text shows Editing line N in the bar; Esc shows Reading`, async () => {
     const box = await block(page, L.S1).boundingBox();
     await page.mouse.click(box.x + 80, box.y + 10);
-    await waitFor(page, () => document.querySelector('.pst-bar .pst-mode')?.textContent === 'Writing');
+    await waitFor(page, () => /^Editing line \d+$/.test(document.querySelector('.pst-bar .pst-mode')?.textContent ?? ''));
     await page.screenshot({ path: path.join(shots, `${tag}-writing.png`), clip: { x: 240, y: 840, width: 880, height: 60 } });
     await page.keyboard.press('Escape');
     await waitFor(page, () => document.querySelector('.pst-bar .pst-mode')?.textContent === 'Reading');
@@ -367,11 +369,11 @@ async function phone(browser, base, style) {
     assert.ok(fits, 'the strip overflows');
     await page.screenshot({ path: path.join(shots, `${tag}-marked.png`) });
   });
-  await check(`${tag}: a tap on the text shows Writing; the bar stays on screen when the strip steps aside`, async () => {
+  await check(`${tag}: a tap on the text shows Editing line N; the bar stays on screen when the strip steps aside`, async () => {
     await block(page, L.S1).scrollIntoViewIfNeeded();
     const box = await block(page, L.S1).boundingBox();
     await page.touchscreen.tap(box.x + 60, box.y + 10);
-    await waitFor(page, () => document.querySelector('.pst-bar .pst-mode')?.textContent === 'Writing');
+    await waitFor(page, () => /^Editing line \d+$/.test(document.querySelector('.pst-bar .pst-mode')?.textContent ?? ''));
     await page.locator('.pst-bar').waitFor({ state: 'visible' });
     const b = await bar(page);
     assert.ok(b.bottom <= b.innerHeight + 1 && b.top >= 0, 'the bar left the screen');

@@ -251,7 +251,8 @@ async function desktop(browser, base, style) {
     await page.waitForTimeout(150);
     assert.equal(await writing(page), true, 'a click on the text did not start writing');
     // Accord layout stage 1: Reading / Writing is shown in the status bar under the page.
-    assert.match(await page.locator('.pst-bar .pst-mode').innerText(), /Writing/);
+    // Accord round 2 stage A: the bar names the state and the line ("Editing line 6"); it said "Writing".
+    assert.match(await page.locator('.pst-bar .pst-mode').innerText(), /^Editing line \d+$/);
     const before = await docText(page);
     await page.keyboard.type('a');
     assert.equal((await docText(page)).length, before.length + 1, 'typing while writing did not type');
@@ -359,7 +360,8 @@ async function desktop(browser, base, style) {
     assert.equal(after, `${before}!`, 'Enter did not write at the end of the focus line');
     await page.keyboard.press('Backspace');
     // Accord layout stage 1: the state is shown, not switched (the chip is no longer a button); Esc reads.
-    assert.match(await page.locator('.pst-bar .pst-mode').innerText(), /Writing/);
+    // Accord round 2 stage A: the bar names the state and the line ("Editing line 6"); it said "Writing".
+    assert.match(await page.locator('.pst-bar .pst-mode').innerText(), /^Editing line \d+$/);
     await page.screenshot({ path: path.join(shots, `${tag}-mode-chip.png`), clip: { x: 240, y: 840, width: 880, height: 60 } });
     await page.keyboard.press('Escape');
     assert.equal(await writing(page), false, 'Esc did not return to reading');

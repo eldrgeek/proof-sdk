@@ -12,6 +12,7 @@ import { markApiView, isOwnHumanMarkChange, withHumanReviewWrite } from './revie
 
 import { PlayMakerReview, type ReviewAction } from '../ui/playmaker-review';
 import { LineMarksUI } from '../ui/line-marks';
+import { actorKey } from '../shared/line-marks';
 import { ReadingWalkUI } from '../ui/reading-walk';
 import { ChatUI } from '../ui/chat';
 import { FoldingUI } from '../ui/folding';
@@ -24,6 +25,7 @@ import { FindBar, showAboutDialog, showKeysDialog, showMarksLegend, showOpenDial
 import { SCROLL_CAMERA_POLICY, cameraScroll, deadZone } from '../shared/scroll-camera';
 import { MENU_BAR_POLICY, TOOLBAR_POLICY, type ShareTab } from '../shared/layout-chrome';
 import { ClarifyUI } from '../ui/clarify';
+import { EditGestureUI } from '../ui/edit-gesture';
 import { lineMarksViewPlugin } from './plugins/line-marks-view';
 import { foldViewPlugin } from './plugins/fold-view';
 import { askViewPlugin } from './plugins/ask-view';
@@ -1181,6 +1183,8 @@ class ProofEditorImpl implements ProofEditor {
   private undoPlacementQuery: MediaQueryList | null = null;
   /** Item 3 (Mike, 2026-09-19): typing "?" after a sentence asks the AIs to clarify it. */
   private clarifyUI: ClarifyUI | null = null;
+  /** Accord round 2 stage A: leaving an edit posts what was typed (src/ui/edit-gesture.ts). */
+  private editGesture: EditGestureUI | null = null;
   /** When the person last typed in the document (so Cmd+Z reverses whichever came last). */
   private lastLocalTextEditAt = 0;
   private reviewDecisionHistory: ReviewDecisionHistory | null = null;
@@ -4116,6 +4120,9 @@ class ProofEditorImpl implements ProofEditor {
           return authors;
         },
         onDotActivate: (lineIndex) => this.readingWalk?.activateDot(lineIndex) ?? false,
+        // Accord round 2 stage A: a visible way into editing (the margin's pencil).
+        startEditingLine: (lineIndex) => this.readingWalk?.editLine(lineIndex) ?? false,
+        cursorLine: () => this.readingWalk?.focusIndex() ?? -1,
         focusLine: (lineIndex) => this.readingWalk?.focusLine(lineIndex) ?? false,
         viewUpdated: () => { this.readingWalk?.notifyViewUpdate(); this.folding?.queueRender(); },
         markScope: (lineIndex) => this.folding?.markScope(lineIndex) ?? null,
@@ -4238,6 +4245,37 @@ class ProofEditorImpl implements ProofEditor {
           this.undoPlacementQuery.addEventListener('change', () => this.placeUndo());
         } catch { /* old browsers: it stays where it was placed */ }
       }
+      // Accord round 2 stage A (Mike, 2026-09-22): leaving an edit ALWAYS posts what was typed as
+      // a proposal others can see, through any of its three doors. Nothing is ever discarded.
+      this.editGesture = new EditGestureUI({
+        view: () => { let v: EditorView | null = null; this.editor?.action(ctx => { v = ctx.get(editorViewCtx); }); return v; },
+        isSuggesting: () => this.isSuggestionsEnabled(),
+        actor: () => lineMarks.me(),
+        directEditMeta: () => proofMarkActionMeta,
+        suggestReplace: (view, quote, by, content, range) => {
+          let parser: Parameters<typeof suggestReplace>[6];
+          this.editor?.action(ctx => { parser = ctx.get(parserCtx); });
+          return suggestReplace(markApiView(view), quote, by, content, range, undefined, parser)?.id ?? null;
+        },
+        myPendingOnLine: (lineIndex) => {
+          let ids: string[] = [];
+          const me = actorKey(lineMarks.me());
+          this.editor?.action(ctx => {
+            ids = getMarks(ctx.get(editorViewCtx).state)
+              .filter(mark => (mark.kind === 'insert' || mark.kind === 'delete' || mark.kind === 'replace')
+                && ((mark.data as { status?: string } | undefined)?.status ?? 'pending') === 'pending'
+                && actorKey(String(mark.by ?? '')) === me
+                && typeof mark.range?.from === 'number' && lineMarks.lineAtPos(mark.range.from) === lineIndex)
+              .map(mark => mark.id);
+          });
+          return ids;
+        },
+        decide: (ids, action) => this.performReviewDecision(ids, action),
+        undoStack: () => lineMarks.undoStack(),
+        proposed: (lineIndex) => this.readingWalk?.showEditProposed(lineIndex),
+        notice: (text) => this.readingWalk?.showEditNotice(text),
+      });
+      (window as unknown as { __proofEditGesture?: EditGestureUI }).__proofEditGesture = this.editGesture;
       // Item 3: a lone "?" typed at the end of a line becomes a clarify request to the AIs.
       this.clarifyUI = new ClarifyUI({
         view: () => { let v: EditorView | null = null; this.editor?.action(ctx => { v = ctx.get(editorViewCtx); }); return v; },
@@ -4283,6 +4321,7 @@ class ProofEditorImpl implements ProofEditor {
     this.closedFold?.start();
     this.undoUI?.start();
     this.clarifyUI?.start();
+    this.editGesture?.start();
     this.readingWalk?.start();
     this.chat?.start();
     return this.lineMarks;

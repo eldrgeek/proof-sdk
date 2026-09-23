@@ -14,8 +14,20 @@
  * be writing — the caret is in the text because they pressed the text (or Enter), not because a
  * dialog handed focus back. While the editor holds the keyboard without writing, the reading keys
  * are commands and every other text-changing key is swallowed: a key never both types and acts.
+ *
+ * The edit session (2026-09-22, Accord round 2 stage A, src/shared/edit-session.ts): while the
+ * person writes, this module holds ONE session — the line they are in and the text it had when
+ * they arrived. Every way out of that line is a door, and every door does the same thing: it ends
+ * the session by POSTING what was typed as a proposal. Nothing is discarded by leaving; Undo is
+ * the only way to remove a posted proposal. The doors are Cmd+Enter (advertised), a press outside
+ * the edited line, Esc, a hover onto another line, the caret scrolling out of view, and focus
+ * leaving the text. The posting itself is not here: an EditSessionHost (src/ui/edit-gesture.ts)
+ * reads the line and writes the suggestion.
  */
 import { READING_MODE_POLICY, routeKey, type KeyTarget } from '../shared/reading-keys';
+import {
+  beginEditSession, endEditSession, type EditDoor, type EditLeave, type EditSession,
+} from '../shared/edit-session';
 
 export const EDITING_GUARD_POLICY = {
   /** How long after the last keystroke, input or click in the text the view stays put. */
@@ -33,6 +45,15 @@ let writing = false;
  */
 let pressUntil = Number.NEGATIVE_INFINITY;
 const modeListeners = new Set<(writing: boolean) => void>();
+/** The open edit session (the line being edited and the text it had), or null. */
+let session: EditSession | null = null;
+/** Reads the document and posts the proposal; set by src/ui/edit-gesture.ts. */
+let editHost: EditSessionHost | null = null;
+const sessionListeners = new Set<(session: EditSession | null) => void>();
+/** Guards against a door re-entering while its post is running. */
+let leaving = false;
+/** Test hook: every leave this page decided, newest last. */
+const postLog: Array<{ door: EditDoor; line: number; posted: boolean; original: string; proposed: string }> = [];
 /** Key events the guard routed as reading commands (the reading walk runs them even though default is prevented). */
 const readingOwned = new WeakSet<Event>();
 /** Open things that Esc closes first: while one is open, Esc is theirs, not the end of writing. */
@@ -100,15 +121,111 @@ function applyModeClass(): void {
   document.body.classList.toggle('pw-reading', !on);
 }
 
+/**
+ * What the guard needs from the document to run an edit session. src/ui/edit-gesture.ts provides
+ * it; without a host the session never opens and the old behaviour stands.
+ */
+export interface EditSessionHost {
+  /**
+   * Is the caret still inside the open session's line? Asked on every selection change, so it
+   * must be cheap (it reads the caret's block, it does not walk the document).
+   */
+  caretStillInSession(session: EditSession): boolean;
+  /** The line the caret is in now: its index and its exact text. Null when the caret is elsewhere. */
+  caretLine(): { index: number; text: string } | null;
+  /** The text now standing where the session's line began (it may have been split or merged). */
+  currentText(session: EditSession): string | null;
+  /** Suggesting mode: the typing already became suggestion marks. */
+  isSuggesting(): boolean;
+  /** Posts the proposal, records one Undo entry, and tells the person. Never throws. */
+  post(leave: EditLeave): void;
+}
+
+/** Registers the document side of the edit session (idempotent; the last host wins). */
+export function setEditSessionHost(host: EditSessionHost | null): void {
+  editHost = host;
+}
+
+/** The open edit session, or null. */
+export function editSession(): EditSession | null {
+  return session;
+}
+
+/** Called whenever a session opens, moves to another line, or closes. */
+export function onEditSessionChange(listener: (session: EditSession | null) => void): () => void {
+  sessionListeners.add(listener);
+  return () => { sessionListeners.delete(listener); };
+}
+
+function notifySession(): void {
+  for (const listener of sessionListeners) {
+    try { listener(session); } catch { /* a listener failing must not stop typing */ }
+  }
+}
+
+/**
+ * Opens a session on the line the caret is in. A caret that moved to ANOTHER line first leaves the
+ * old one through the click-outside door, so moving the caret can never drop typed text.
+ */
+export function syncEditSession(): void {
+  if (!editHost || !isWriting()) return;
+  // The cheap question first: a selection change inside the line being edited is every keystroke,
+  // and reading the whole document there would cost a walk per character.
+  if (session && editHost.caretStillInSession(session)) return;
+  const line = editHost.caretLine();
+  if (!line) return;
+  if (session) {
+    if (session.lineIndex === line.index) return;
+    leaveEdit('click-outside');
+  }
+  session = beginEditSession({ lineIndex: line.index, original: line.text, suggesting: editHost.isSuggesting(), now: now() });
+  notifySession();
+}
+
+/**
+ * The one rule: ends the session through `door` and posts what was typed. Returns what it decided
+ * (null when no session was open). Never discards text; a line the person did not change is
+ * silent (src/shared/edit-session.ts).
+ */
+export function leaveEdit(door: EditDoor): EditLeave | null {
+  const open = session;
+  if (!open || leaving || !READING_MODE_POLICY.leavingPostsTheEdit) {
+    session = null;
+    if (open) notifySession();
+    return null;
+  }
+  leaving = true;
+  session = null;
+  try {
+    const text = editHost?.currentText(open) ?? null;
+    const leave = endEditSession(open, text ?? open.original, door);
+    postLog.push({
+      door, line: open.lineIndex, posted: leave.posted,
+      original: open.original, proposed: leave.posted ? leave.proposal.proposed : open.original,
+    });
+    if (postLog.length > 40) postLog.shift();
+    notifySession();
+    try { editHost?.post(leave); } catch (error) { console.warn('[edit] posting the proposal failed', error); }
+    return leave;
+  } finally {
+    leaving = false;
+  }
+}
+
 /** The person chose to write (Enter from reading, the mode chip): call after placing the caret. */
 export function startWriting(): void {
   setWriting(true);
   applyModeClass();
 }
 
-/** Back to reading: the caret leaves the text (Esc, hover on another line, scrolled away). */
-export function endWriting(): void {
+/**
+ * Back to reading: the caret leaves the text (Esc, hover on another line, scrolled away). Every
+ * caller names the door it came through, so the session posts what was typed before the caret
+ * goes. A caller that names no door is not a person leaving (teardown, tests) and posts nothing.
+ */
+export function endWriting(door?: EditDoor): void {
   const wasWriting = writing;
+  if (door) leaveEdit(door); else { session = null; notifySession(); }
   writing = false;
   if (typeof document !== 'undefined' && editorHasFocus()) (document.activeElement as HTMLElement | null)?.blur?.();
   applyModeClass();
@@ -155,11 +272,11 @@ export function pressStartsWriting(target: EventTarget | null, altKey = false): 
 }
 
 /** Test hook. */
-export function editingGuardDebug(): { writing: boolean; editorFocused: boolean; routes: typeof routeLog; escapeOwners: string[] } {
+export function editingGuardDebug(): { writing: boolean; editorFocused: boolean; routes: typeof routeLog; escapeOwners: string[]; session: EditSession | null; posts: typeof postLog } {
   const escapeOwners = typeof document === 'undefined' ? [] : Array.from(document.querySelectorAll<HTMLElement>(ESCAPE_OWNERS))
     .filter(el => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden')
     .map(el => `${el.tagName.toLowerCase()}.${String(el.className).split(' ').join('.')}`);
-  return { writing: isWriting(), editorFocused: editorHasFocus(), routes: routeLog.slice(-20), escapeOwners };
+  return { writing: isWriting(), editorFocused: editorHasFocus(), routes: routeLog.slice(-20), escapeOwners, session, posts: postLog.slice(-20) };
 }
 
 /** Milliseconds until the grace period ends (0 when not editing). */
@@ -206,14 +323,29 @@ export function installEditingGuard(): void {
       writing = true; // becomes visible once the caret is in the text (focusin / next frame)
       requestAnimationFrame(() => applyModeClass());
     } else if (!inEditor(event.target) && !(event.target as Element | null)?.closest?.('[data-keeps-writing]')) {
-      // A press outside the text (rail, margin, bar): reading.
-      if (writing) { writing = false; applyModeClass(); for (const l of modeListeners) { try { l(false); } catch { /* ignore */ } } }
+      // A press outside the text (rail, margin, bar): reading. It is the click-outside door, so
+      // whatever was typed is posted, never dropped (Accord round 2 stage A).
+      if (writing) {
+        leaveEdit('click-outside');
+        writing = false; applyModeClass(); for (const l of modeListeners) { try { l(false); } catch { /* ignore */ } }
+      }
     }
+    // A press inside the text: once the caret has landed, open the session on its line (a press on
+    // ANOTHER line leaves the old one through the same door first). The caret lands with the
+    // click, not with the press, so the sync waits a turn past it.
+    if (inEditor(event.target)) syncSoon();
   }, true);
+  // The caret moved (a click landing, an arrow key, a selection): the session follows it, and
+  // moving to ANOTHER line leaves the old one through the click-outside door, posting what was
+  // typed there. This is what makes "the caret never carries an edit away" true.
+  // The editor updates its own selection a turn after the DOM's, so the sync waits for it.
+  const syncSoon = (): void => { setTimeout(() => { if (isWriting()) syncEditSession(); }, 0); };
+  document.addEventListener('selectionchange', () => { if (isWriting()) syncSoon(); }, true);
   document.addEventListener('focusin', (event) => {
     if (!inEditor(event.target)) { applyModeClass(); return; }
     if (now() < pressUntil) setWriting(true);
     applyModeClass();
+    requestAnimationFrame(() => syncEditSession());
   }, true);
   // Leaving the window (another app, another tab) keeps writing: the window's blur follows the
   // editor's focusout, so the check waits a turn.
@@ -221,13 +353,19 @@ export function installEditingGuard(): void {
   window.addEventListener('blur', () => { windowBlurred = true; });
   window.addEventListener('focus', () => { windowBlurred = false; });
   // The press ends with its click: after that, focus arriving in the text is code, not the person.
-  document.addEventListener('click', () => { setTimeout(() => { pressUntil = Number.NEGATIVE_INFINITY; }, 0); }, true);
+  document.addEventListener('click', (event) => {
+    setTimeout(() => { pressUntil = Number.NEGATIVE_INFINITY; }, 0);
+    // The caret has landed by now: open the session on the line it landed in.
+    if (inEditor(event.target)) syncSoon();
+  }, true);
   document.addEventListener('focusout', (event) => {
     if (!inEditor(event.target)) return;
     // Wait for the focus to land; moving to anything else on the page is reading.
     setTimeout(() => {
       if (editorHasFocus()) return;
       if (windowBlurred) { applyModeClass(); return; }
+      // Focus went to something else on the page: the same door as a click outside.
+      leaveEdit('blur');
       setWriting(false);
       applyModeClass();
     }, 0);
@@ -236,7 +374,18 @@ export function installEditingGuard(): void {
   document.addEventListener('keydown', (event: KeyboardEvent) => {
     if (event.key !== 'Escape' || !READING_MODE_POLICY.escapeEndsWriting || !isWriting()) return;
     if (escapeOwnerOpen()) return;
-    endWriting();
+    // Esc is the third door, not a trapdoor: it posts what was typed and then leaves.
+    endWriting('escape');
+  }, true);
+  // Cmd+Enter (Ctrl+Enter off a Mac): the advertised door. It ends the edit and posts; it never
+  // types a newline (the editor would otherwise split the paragraph).
+  document.addEventListener('keydown', (event: KeyboardEvent) => {
+    if (event.key !== 'Enter' || !(event.metaKey || event.ctrlKey) || event.altKey) return;
+    if (!READING_MODE_POLICY.cmdEnterEndsWriting || !isWriting()) return;
+    if (keyTargetOf(event.target) !== 'editor') return;
+    event.preventDefault();
+    event.stopPropagation();
+    endWriting('cmd-enter');
   }, true);
   // 3. Editing activity (the view freeze and the caret anchor) counts only while writing.
   const onEvent = (event: Event): void => {
@@ -265,5 +414,8 @@ export function resetEditingGuardForTests(): void {
   lastActivity = Number.NEGATIVE_INFINITY;
   writing = false;
   pressUntil = Number.NEGATIVE_INFINITY;
+  session = null;
+  leaving = false;
+  postLog.length = 0;
 }
 

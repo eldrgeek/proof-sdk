@@ -124,6 +124,7 @@ import { buildTierRow, loadOnlyDecisions, renderTierControl, saveOnlyDecisions }
 import { HIGHLIGHT_POLICY, issueNeedsViewer, markedUpTo, type MarkedUpTo } from '../shared/layout-status';
 import { openView, type OpenView } from '../shared/open-view';
 import { MARGIN_POLICY, MARKED_BY_POLICY, markedByFold, type NeedsYouItem } from '../shared/layout-panels';
+import { READING_MODE_POLICY } from '../shared/reading-keys';
 import { ISSUES_PILL_POLICY, NEXT_ISSUE_POLICY, issuesPillText, issuesPillTitle } from '../shared/layout-chrome';
 import './line-marks.css';
 
@@ -163,6 +164,13 @@ export interface LineMarksHost {
   authorsOfRange?(from: number, to: number): string[];
   /** Editing first: true while the editor is in Suggesting mode (edits become suggestions). */
   isSuggesting?(): boolean;
+  /**
+   * Accord round 2 stage A: the margin's pencil. Puts the caret in the line and starts editing.
+   * Option+click still works as the shortcut; this is the affordance it never had.
+   */
+  startEditingLine?(lineIndex: number): boolean;
+  /** The line the cursor is on (the pencil shows there only). */
+  cursorLine?(): number;
 }
 
 export interface MarkBoxOptions {
@@ -1593,6 +1601,34 @@ export class LineMarksUI {
       dot.setAttribute('aria-label', `Line ${line.index + 1}${needsYou ? ' (needs you)' : ''}: your mark ${myStatus === 'changed' ? 'is out of date (the line changed)' : shownLabel(myStatus)}${carriedText}${extraText}${othersText ? `. ${othersText}` : ''}. Mark this line`);
       dot.title = othersText ? `You: ${myStatus === 'changed' ? 'changed since you marked it' : shownLabel(myStatus)}\n${othersText.replace(/; /g, '\n')}` : 'Mark this line';
     }
+    // Accord round 2 stage A: a visible way into editing on the cursor line only (Option+click has
+    // no affordance at all). One small pencil in this same dot column, beside its dot.
+    const cursor = this.host.cursorLine?.() ?? -1;
+    const pencilKey = 'edit-pencil';
+    const cursorLine = cursor >= 0 ? this.lines[cursor] : null;
+    const canEdit = READING_MODE_POLICY.marginPencilStartsWriting && Boolean(this.host.startEditingLine) && this.canMark;
+    const cursorDom = cursorLine ? view.nodeDOM(cursorLine.pos) as HTMLElement | null : null;
+    if (canEdit && cursorLine && cursorDom && typeof cursorDom.getBoundingClientRect === 'function' && cursorDom.getBoundingClientRect().height > 0) {
+      used.add(pencilKey);
+      let pencil = existing.get(pencilKey);
+      if (!pencil) {
+        pencil = document.createElement('button');
+        pencil.type = 'button';
+        pencil.className = 'plm-edit-pencil';
+        pencil.dataset.key = pencilKey;
+        pencil.textContent = '✎';
+        this.gutter.append(pencil);
+      }
+      const rect = cursorDom.getBoundingClientRect();
+      const lh = parseFloat(getComputedStyle(cursorDom).lineHeight) || 24;
+      pencil.dataset.line = String(cursor);
+      pencil.setAttribute('aria-label', `Edit line ${cursor + 1}`);
+      pencil.title = 'Edit this line (Option+click the words does the same). Cmd+Enter, a click outside, or Esc posts it as a proposal.';
+      pencil.style.top = `${Math.round(rect.top - containerRect.top + Math.max(0, (Math.min(lh, rect.height) - dotSize) / 2))}px`;
+      pencil.style.left = `${Math.round(Math.max(0, leftEdge) - (phone ? 22 : 20))}px`;
+      pencil.style.width = `${dotSize}px`;
+      pencil.style.height = `${dotSize}px`;
+    }
     for (const [key, el] of existing) if (!used.has(key)) el.remove();
   }
 
@@ -1601,6 +1637,13 @@ export class LineMarksUI {
   // --------------------------------------------------------------------------
 
   private onGutterClick = (event: MouseEvent): void => {
+    const pencil = (event.target as HTMLElement).closest('.plm-edit-pencil') as HTMLButtonElement | null;
+    if (pencil) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.host.startEditingLine?.(Number(pencil.dataset.line));
+      return;
+    }
     const bubble = (event.target as HTMLElement).closest('.plm-chat-bubble') as HTMLButtonElement | null;
     if (bubble) {
       event.preventDefault();

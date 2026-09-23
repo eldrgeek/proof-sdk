@@ -286,3 +286,13 @@ body.plm-on #editor { padding-left:calc(var(--provenance-bar-width, 6px) + 48px)
 .plm-lapsed-was del { color:#9a3412; text-decoration-color:#fdba74; }
 .plm-lapsed-now ins { text-decoration:none; background:#ffedd5; border-radius:3px; padding:0 2px; }
 .plm-dot[data-lapsed="true"]::after { content:"≠"; }
+/* Accord round 2 stage A (Mike, 2026-09-22: Option+click "has no affordance"): a pencil in the
+   margin's dot column on the cursor line. Clicking it puts the caret in the line and opens the edit. */
+.plm-edit-pencil {
+  position: absolute; display: inline-flex; align-items: center; justify-content: center;
+  padding: 0; border: none; border-radius: 999px; background: transparent; color: #6b7280;
+  font: 14px/1 system-ui, -apple-system, sans-serif; cursor: pointer; opacity: .55; transition: opacity .12s, color .12s, background .12s;
+}
+.plm-edit-pencil:hover, .plm-edit-pencil:focus-visible { opacity: 1; color: #2563eb; background: #eef3ff; }
+.plm-edit-pencil:focus-visible { outline: 2px solid #2563eb; outline-offset: 1px; }
+body.prw-editing .plm-edit-pencil { opacity: 1; color: #2563eb; }

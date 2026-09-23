@@ -288,3 +288,13 @@
   .proof-share-overflow-menu .apm-mode .amb-item[aria-checked="true"] .amb-label { color: #fff; }
   .proof-share-overflow-menu .apm-mode .amb-item .amb-label::after { content: none; }
 }
+
+/* Accord round 2 stage A: the toolbar's mode indicator while an edit is open. It says "Editing
+   line N" — the same words as the status bar — so it is never read as the Suggesting | Editing
+   switch's standing setting, which keeps its own meaning. */
+.share-pill-editing-state {
+  display: inline-flex; align-items: center; flex-shrink: 0; margin-left: 8px; min-height: 28px; padding: 0 10px;
+  border-radius: 8px; background: #2563eb; color: #fff; font: 600 12px/1 system-ui, -apple-system, sans-serif; white-space: nowrap;
+}
+.share-pill-suggest-toggle[data-editing-line] { border-color: #2563eb !important; box-shadow: 0 0 0 2px rgba(37, 99, 235, .25); }
+@media (max-width: 700px) { .share-pill-editing-state { display: none; } }

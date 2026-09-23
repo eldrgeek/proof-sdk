@@ -77,6 +77,9 @@ body.prw-right-collapsed .prw-right .prw-rail-head { padding: 6px 2px; justify-c
   transition: top .12s ease, height .12s ease;
 }
 .prw-focus[hidden] { display: none; }
+/* Accord round 2 stage A: the line an edit is open on. Same hue, turned up: a solid left bar and a
+   stronger tint, so the edit has a visible edge (HIGHLIGHT_POLICY: no third colour). */
+.prw-focus[data-editing="true"] { background: rgba(37, 99, 235, 0.18); box-shadow: inset 5px 0 0 #2563eb, 0 0 0 1px rgba(37, 99, 235, 0.45); }
 
 /* Right rail content */
 .prw-provisional { flex-shrink: 0; margin: 8px 12px 0; padding: 8px 10px; border-radius: 10px; background: #f0fdf4; border: 1px dashed #16a34a; }
@@ -300,6 +303,20 @@ body.prw-on.pw-reading .ProseMirror { caret-color: transparent; }
 .pst-bar .pst-mode[data-mode="writing"] { background: #fef3c7; color: #92400e; }
 .pst-bar .pst-mode:hover { background: #eef3ff; }
 .pst-bar .pst-mode[data-mode="writing"]:hover { background: #fef3c7; }
+/* Accord round 2 stage A (Mike, 2026-09-22: "there should be some better indication that we are in
+   editing mode"): "Editing line N" in the same blue as the "you are here" bar — the one hue
+   intensified, not a third colour (HIGHLIGHT_POLICY). */
+.pst-bar .pst-mode[data-mode="editing"],
+.pst-bar .pst-mode[data-mode="editing"]:hover { background: #2563eb; color: #fff; }
+/* "Proposed — …" after a leave posted. It fades in place; it is never a modal and never takes focus. */
+.pst-notice { flex-shrink: 1; min-width: 0; margin-left: 12px; overflow: hidden; text-overflow: ellipsis; color: #166534; font-weight: 600; }
+.pst-notice[hidden] { display: none; }
+/* The phone's door: there is no Cmd+Enter on a phone, so Done is visible while editing. */
+.prw-edit-done {
+  flex-shrink: 0; margin-left: 10px; min-height: 22px; padding: 0 12px; border: none; border-radius: 6px;
+  background: #2563eb; color: #fff; font: 600 12px system-ui, sans-serif; cursor: pointer;
+}
+.prw-edit-done[hidden] { display: none; }
 /* A touch strip (tablets, phones) docks at the very bottom: the bar sits right above it. */
 body.prw-strip-on .pst-bar { bottom: calc(var(--proof-keyboard-offset, 0px) + var(--prw-strip-h, 64px) + env(safe-area-inset-bottom, 0px)); }
 /* Toasts and the feedback chip sit above the bar. */
