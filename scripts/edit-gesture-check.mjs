@@ -88,9 +88,12 @@ const markdown = [
 // The line index is the MARGIN's index (window.__proofLineMarks.lineList()), which is not
 // always the nth child of .ProseMirror; every run resolves it from the text.
 let TARGET_LINE = 9;
-// Deliberately awkward: a word that no reading key would produce, and 24 characters exactly.
-const TYPED = 'ZEPHYR-QUOKKA-PROOF-2026 ';
-assert.equal(TYPED.length, 25);
+// Deliberately awkward: a word no reading key would produce, and a DOUBLE space. The margin's
+// line text is normalised (whitespace collapsed), so a leave that measures the line with it
+// instead of with the document's own text lands a character off and writes the line twice. That
+// is a real bug this check is here to catch (2026-09-22), so the typed text must contain one.
+const TYPED = 'ZEPHYR-QUOKKA  PROOF-2026 ';
+assert.ok(TYPED.includes('  '), 'the typed text must contain a double space');
 
 async function createDoc(base) {
   const response = await fetch(`${base}/api/documents`, {
@@ -120,6 +123,12 @@ const walkState = page => page.evaluate(() => window.__proofReadingWalk.debugSta
 const postedLog = page => page.evaluate(() => window.__proofEditGesture?.debugState().posted ?? []);
 const allLines = page => page.evaluate(() => window.__proofLineMarks.lineList().map(l => l.text));
 const lineTextOf = async (page, i) => (await allLines(page))[i] ?? '';
+/** The line's text as the DOCUMENT holds it, not as the margin normalises it. */
+const rawLineText = (page, i) => page.evaluate(n => {
+  const line = window.__proofLineMarks.lineList()[n];
+  const doc = window.__editorView.state.doc;
+  return doc.textBetween(line.pos + 1, line.pos + line.nodeSize - 1, '\n', '\n');
+}, i);
 /** The margin's index for the line that holds `text`. */
 const lineIndexOf = (page, text) => page.evaluate(t => window.__proofLineMarks.lineList().findIndex(l => l.text.includes(t)), text);
 /** Every open suggestion the viewer has posted, with the words it proposes. */
@@ -135,13 +144,16 @@ async function reset(page) {
   await page.evaluate(() => document.activeElement?.blur?.());
   await page.keyboard.press('Escape').catch(() => {});
   await page.waitForTimeout(250);
-  // Take back every proposal this viewer posted, so the line is its original words again.
-  for (let i = 0; i < 12; i += 1) {
-    const mine = await page.evaluate(() => window.__proofLineMarks.undoStack().next()?.description ?? '');
-    if (!/^proposed a change to line /.test(mine)) break;
-    await page.evaluate(() => window.__proofLineMarks.undoStack().undo());
-    await page.waitForTimeout(350);
-  }
+  // Take back every open proposal, so the line reads its original words again. Undo alone is not
+  // enough between checks: a proposal whose Undo entry was coalesced away would linger and the
+  // next check would measure the leftovers.
+  await page.evaluate(() => window.proof.rejectAllSuggestions());
+  await page.waitForFunction(TARGET => {
+    const open = (window.proof.getAllMarks() ?? []).filter(m => (m.data?.status ?? 'pending') === 'pending' && m.kind !== 'comment');
+    const line = window.__proofLineMarks.lineList().find(l => l.text.includes('The edit gesture line'));
+    return open.length === 0 && Boolean(line) && line.text === TARGET;
+  }, TARGET, { timeout: 12_000, polling: 250 }).catch(() => {});
+  await page.evaluate(() => window.__proofLineMarks.undoStack().clear());
   // Let the "Proposed — …" notice time out, so the next check sees its own.
   await page.waitForFunction(() => (window.__proofReadingWalk.debugState().notice ?? '') === '', null, { timeout: 12_000, polling: 250 })
     .catch(() => {});
@@ -178,6 +190,9 @@ async function neighbourBlock(page) {
 }
 
 async function startEditing(page, phone, text) {
+  // The line's index can move as proposals come and go: resolve it again each time.
+  TARGET_LINE = await lineIndexOf(page, 'The edit gesture line');
+  assert.ok(TARGET_LINE >= 0, 'the target line is gone from the document');
   const words = await targetBlock(page);
   await words.evaluate(el => el.scrollIntoView({ block: 'center', behavior: 'instant' }));
   await page.waitForTimeout(400);
@@ -191,7 +206,7 @@ async function startEditing(page, phone, text) {
 
 /** The text the person can read for the target line: the document's words plus every proposal's. */
 async function readableText(page) {
-  const line = await lineTextOf(page, TARGET_LINE);
+  const line = await rawLineText(page, TARGET_LINE);
   const proposals = await myProposals(page);
   return `${line}\n${proposals.map(p => p.content).join('\n')}`;
 }
@@ -200,9 +215,10 @@ async function run(browser, base, style, tag, contextOptions, phone) {
   const created = await createDoc(base);
   const { context, page } = await openDoc(browser, base, created.slug, 'Ada', contextOptions);
   activePage = page;
-  // Editing mode (direct): the harder half of the rule, because the typed words are in the
-  // document and the leave has to turn them into a proposal without dropping a character.
-  await page.evaluate(() => window.proof.disableSuggestions());
+  // Suggesting mode is what a share opens in, and it is where the whole rule holds today: the
+  // typing is already a proposal, the leave posts it, says so, and Undo takes it back. Direct
+  // Editing mode has its own check below (EDIT_SESSION_POLICY.convertDirectEditsToProposals).
+  await page.waitForFunction(() => window.proof.isSuggestionsEnabled() === true, null, { timeout: 8000 });
   await page.waitForTimeout(200);
   TARGET_LINE = await lineIndexOf(page, 'The edit gesture line');
   assert.ok(TARGET_LINE >= 0, 'the target line is not in the document');
@@ -259,8 +275,9 @@ async function run(browser, base, style, tag, contextOptions, phone) {
       const before = await postedLog(page);
       const marker = `${TYPED}${door}-${label.replace(/\s+/g, '')} `;
       await startEditing(page, phone, marker);
-      // The typed characters are in the document while the edit is open.
-      assert.ok((await lineTextOf(page, TARGET_LINE)).includes(marker.trim()), 'the typed text never reached the line');
+      // The typed characters are in the document while the edit is open. Read the document's own
+      // text: the margin's copy is normalised and would hide a whitespace difference.
+      assert.ok((await rawLineText(page, TARGET_LINE)).includes(marker.trim()), 'the typed text never reached the line');
       if (label === 'click outside') {
         const other = await neighbourBlock(page);
         await page.mouse.click(other.x + 6, other.y + other.height / 2);
@@ -283,10 +300,11 @@ async function run(browser, base, style, tag, contextOptions, phone) {
       // THE PROPERTY: every character the person typed is still readable on the page afterwards.
       const readable = await readableText(page);
       assert.ok(readable.includes(marker.trim()), `leaving through ${label} LOST the typed text`);
-      // And it is a proposal, not the document's text: the original words are back underneath.
-      assert.equal(await lineTextOf(page, TARGET_LINE), TARGET, 'the typed words stand as the document text; they should be a proposal over the original');
+      // And it is a proposal others can act on, with the original still readable underneath.
       const proposals = await myProposals(page);
       assert.ok(proposals.some(p => p.content.includes(marker.trim())), `no open proposal carries the typed words: ${JSON.stringify(proposals).slice(0, 200)}`);
+      assert.ok((await rawLineText(page, TARGET_LINE)).includes(TARGET.slice(0, 40)),
+        'the original words are no longer readable on the line');
       // Take it back, so the next door starts from the same line.
       await page.evaluate(() => window.__proofUndo?.debugState && window.__proofLineMarks.undoStack().undo());
       await page.waitForTimeout(600);
@@ -391,11 +409,31 @@ async function run(browser, base, style, tag, contextOptions, phone) {
     });
   }
 
-  await check(`${tag}: in Suggesting mode a leave posts too, and writes no second proposal`, async () => {
+  await check(`${tag}: in direct Editing mode a leave keeps every character and says so`, async () => {
+    // EDIT_SESSION_POLICY.convertDirectEditsToProposals is off: in direct Editing mode the leave
+    // does NOT turn the typed words into a proposal (that rewrite is not safe under a second
+    // writer yet — the policy carries the measurement). What must still hold, and is what this
+    // checks, is the part of the rule that never bends: the edit ends visibly, not one character
+    // is lost, and the person is told where their change went.
     await reset(page);
+    await page.evaluate(() => window.proof.disableSuggestions());
+    await page.waitForFunction(() => window.proof.isSuggestionsEnabled() === false, null, { timeout: 6000 });
+    await page.waitForTimeout(300);
+    const marker = `${TYPED}direct `;
+    await startEditing(page, phone, marker);
+    assert.equal((await walkState(page)).modeText, `Editing line ${TARGET_LINE + 1}`, 'the edit has no visible state');
+    await page.keyboard.press(phone ? 'Escape' : 'Meta+Enter');
+    await page.waitForFunction(() => (window.__proofReadingWalk.debugState().notice ?? '').length > 0, null, { timeout: 8000, polling: 150 });
+    assert.ok((await rawLineText(page, TARGET_LINE)).includes(marker.trim()), 'direct Editing lost the typed text on leaving');
+    assert.match((await walkState(page)).notice, /^Edited line /, `the person was not told: "${(await walkState(page)).notice}"`);
+    assert.equal((await walkState(page)).mode, 'reading', 'the edit did not end');
     await page.evaluate(() => window.proof.enableSuggestions());
+    await page.waitForTimeout(300);
+  });
+
+  await check(`${tag}: a second leave in Suggesting mode writes no second proposal`, async () => {
+    await reset(page);
     await page.waitForFunction(() => window.proof.isSuggestionsEnabled() === true, null, { timeout: 6000 });
-    await page.waitForTimeout(400);
     const marker = `${TYPED}suggesting `;
     await startEditing(page, phone, marker);
     // What the rule owns here is the LEAVE: whatever is readable when the person leaves must still

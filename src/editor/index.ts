@@ -4259,12 +4259,16 @@ class ProofEditorImpl implements ProofEditor {
         },
         myPendingOnLine: (lineIndex) => {
           let ids: string[] = [];
-          const me = actorKey(lineMarks.me());
+          // The viewer has two names: line marks call a guest `guest:<name>` while the editor
+          // writes their suggestions as `human:<name>`. Matching only one of them left a
+          // Suggesting-mode proposal with no Undo entry, which broke the rule that Undo is the
+          // only way to remove a posted proposal (2026-09-22).
+          const mine = new Set([lineMarks.me(), getCurrentActor()].filter(Boolean).map(actorKey));
           this.editor?.action(ctx => {
             ids = getMarks(ctx.get(editorViewCtx).state)
               .filter(mark => (mark.kind === 'insert' || mark.kind === 'delete' || mark.kind === 'replace')
                 && ((mark.data as { status?: string } | undefined)?.status ?? 'pending') === 'pending'
-                && actorKey(String(mark.by ?? '')) === me
+                && mine.has(actorKey(String(mark.by ?? '')))
                 && typeof mark.range?.from === 'number' && lineMarks.lineAtPos(mark.range.from) === lineIndex)
               .map(mark => mark.id);
           });
@@ -4273,6 +4277,7 @@ class ProofEditorImpl implements ProofEditor {
         decide: (ids, action) => this.performReviewDecision(ids, action),
         undoStack: () => lineMarks.undoStack(),
         proposed: (lineIndex) => this.readingWalk?.showEditProposed(lineIndex),
+        kept: (lineIndex) => this.readingWalk?.showEditKept(lineIndex),
         notice: (text) => this.readingWalk?.showEditNotice(text),
       });
       (window as unknown as { __proofEditGesture?: EditGestureUI }).__proofEditGesture = this.editGesture;

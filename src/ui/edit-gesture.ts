@@ -19,7 +19,7 @@
  */
 import type { EditorView } from '@milkdown/kit/prose/view';
 import { setEditSessionHost, type EditSessionHost } from '../editor/editing-guard';
-import { describeEditProposal, type EditLeave, type EditSession } from '../shared/edit-session';
+import { EDIT_SESSION_POLICY, describeEditProposal, type EditLeave, type EditSession } from '../shared/edit-session';
 import { extractLines, type DocLine, type LineSourceNode } from '../shared/line-marks';
 import type { UndoOutcome, UndoStack } from '../shared/undo';
 
@@ -41,8 +41,16 @@ export interface EditGestureHost {
   undoStack(): UndoStack | null;
   /** Tells the person a proposal posted on this line. Not a modal; it never takes focus. */
   proposed(lineIndex: number): void;
+  /** Tells the person a direct edit ended and stands in the text as itself. */
+  kept(lineIndex: number): void;
   /** Tells the person something else, in the same place. */
   notice(text: string): void;
+}
+
+/** The text the document holds between two positions, exactly as it holds it. */
+function rawText(view: EditorView, from: number, to: number): string {
+  if (to <= from) return '';
+  return view.state.doc.textBetween(from, to, '\n', '\n');
 }
 
 /**
@@ -70,7 +78,10 @@ export class EditGestureUI {
   /** The top-level block the open session's line sits in, for the cheap "still here?" question. */
   private blockAtStart = -1;
   /** Test hook: every proposal this page posted, newest last. */
-  readonly posted: Array<{ line: number; door: string; original: string; proposed: string; markId: string | null; tracked: boolean }> = [];
+  readonly posted: Array<{
+    line: number; door: string; original: string; proposed: string; markId: string | null;
+    tracked: boolean; from?: number; to?: number; spanText?: string; refused?: string;
+  }> = [];
 
   constructor(private readonly host: EditGestureHost) {}
 
@@ -135,7 +146,11 @@ export class EditGestureUI {
     if (!found) return null;
     this.lineCountAtStart = lines.length;
     this.blockAtStart = this.caretBlock();
-    return { index: found.index, text: found.text };
+    // The line's text AS THE DOCUMENT HOLDS IT. DocLine.text is normalised (whitespace collapsed
+    // and trimmed, src/shared/line-marks.ts normalizeLineText), so its offsets do not line up with
+    // ProseMirror positions: a collapsed double space shifted the revert by a character and the
+    // line came out written twice (scripts/caret-stability-check.mjs, 2026-09-22).
+    return { index: found.index, text: rawText(view, found.pos + 1, found.pos + found.nodeSize - 1) };
   }
 
   /**
@@ -154,7 +169,7 @@ export class EditGestureUI {
    * from the live document. Pressing Enter splits one line into two, so the span grows; everything
    * typed in it is the proposal, which is why a split can never lose the half below the caret.
    */
-  private span(view: EditorView, lineIndex: number): { text: string; from: number; to: number } | null {
+  private span(view: EditorView, lineIndex: number): { text: string; from: number; to: number; blocks: number } | null {
     const lines = this.liveLines(view);
     if (lineIndex >= lines.length) return null;
     const grew = Math.max(0, lines.length - this.lineCountAtStart);
@@ -164,8 +179,7 @@ export class EditGestureUI {
     const from = first.pos + 1;
     const to = last.pos + last.nodeSize - 1;
     if (to <= from || to > view.state.doc.content.size) return null;
-    const text = lines.slice(lineIndex, lastIndex + 1).map(line => line.text).join('\n');
-    return { text, from, to };
+    return { text: rawText(view, from, to), from, to, blocks: lastIndex - lineIndex + 1 };
   }
 
   /** The one rule, applied. */
@@ -181,28 +195,72 @@ export class EditGestureUI {
       this.host.proposed(lineIndex);
       return;
     }
+    if (!EDIT_SESSION_POLICY.convertDirectEditsToProposals) {
+      // Direct Editing mode, conversion gated off (see the policy for the measurement and the
+      // gate). The edit ends visibly and the person is told; the typed words stay in the text,
+      // which is the part of the rule that must never bend — nothing is discarded by leaving.
+      this.record({ line: lineIndex, door: leave.door, original, proposed, markId: null, tracked: false, refused: 'conversion-off' });
+      this.host.kept(lineIndex);
+      return;
+    }
+    // Out of the dispatch chain first. A door fires inside a keydown, a pointerdown or a focusout,
+    // and those run while ProseMirror — and y-prosemirror under it — are still applying their own
+    // transaction. Dispatching the conversion there is a dispatch inside a dispatch, and
+    // y-prosemirror recovers from it by resyncing the WHOLE document: under a second person
+    // writing, that resync duplicated the paragraph (scripts/caret-stability-check.mjs, about two
+    // runs in five, 2026-09-22). The same next-task rule the suggestions plugin already follows.
+    // Nothing is at risk in the wait: the typed words are in the text until the conversion runs,
+    // and the conversion re-reads the line and refuses if it moved.
+    setTimeout(() => this.convert(leave), 0);
+  }
+
+  /** The direct-Editing conversion: the original back in, the typed words posted over it. */
+  private convert(leave: EditLeave): void {
+    if (!leave.posted) return;
+    const { lineIndex, original, proposed } = leave.proposal;
     const view = this.host.view();
     const range = view ? this.span(view, lineIndex) : null;
     if (!view || !range) {
       // The line is gone from under us. Say so rather than pretending the change posted; the
       // typed words are still in the document, because nothing was reverted.
-      this.record({ line: lineIndex, door: leave.door, original, proposed, markId: null, tracked: false });
+      this.record({ line: lineIndex, door: leave.door, original, proposed, markId: null, tracked: false, refused: 'no-span' });
       this.host.notice('Your change stayed in the text: the line moved before it could be posted as a proposal.');
       return;
     }
-    // 1. Put the line back to the words it had, changing only the characters that differ.
-    //    Replacing a whole block comes back through Yjs as a whole-document replace, which is the
-    //    caret-jump scripts/caret-stability-check.mjs guards against; the smallest edit avoids it.
-    //    A direct edit, so it never becomes a suggestion of its own (the plugin reads this meta).
+    // Exact or not at all. The conversion rewrites the document twice — the original back in, then
+    // the proposal over it — and both writes are positional. If the span does not hold EXACTLY what
+    // the person left (someone else's change landed in this line while they typed, the line moved,
+    // a remote replace arrived), the offsets are no longer theirs and a rewrite could double the
+    // line or eat a neighbour's words. Then the honest thing is to change nothing: the typed words
+    // stay in the text, which loses nobody's work, and the person is told it is not yet a proposal.
+    if (range.text !== proposed) {
+      this.record({
+        line: lineIndex, door: leave.door, original, proposed, markId: null, tracked: false,
+        from: range.from, to: range.to, spanText: range.text, refused: 'span-moved',
+      });
+      this.host.notice('Your change stayed in the text: the line moved while you typed, so it was not posted as a proposal.');
+      return;
+    }
+    // 1. Put the line back to the words it had, changing only the characters that differ: the
+    //    smaller the step, the less Yjs has to reconcile. A direct edit, so it never becomes a
+    //    suggestion of its own (the suggestions plugin reads this meta). Inside ONE block a text
+    //    offset is a ProseMirror offset, so the smallest edit is exact; across blocks the
+    //    boundaries are two positions each while textBetween writes one newline, so the offsets
+    //    would drift and the whole span is replaced instead — larger, but correct.
     const back = smallestEdit(range.text, original);
     if (back) {
-      const tr = view.state.tr.insertText(back.text, range.from + back.from, range.from + back.to);
+      const tr = range.blocks === 1
+        ? view.state.tr.insertText(back.text, range.from + back.from, range.from + back.to)
+        : view.state.tr.insertText(original, range.from, range.to);
       tr.setMeta(this.host.directEditMeta(), { editLeave: true });
       view.dispatch(tr);
     }
     // 2. Post what the person typed as an ordinary open suggestion over those words.
     const markId = this.host.suggestReplace(view, original, this.host.actor(), proposed, { from: range.from, to: range.from + original.length });
-    this.record({ line: lineIndex, door: leave.door, original, proposed, markId, tracked: false });
+    this.record({
+      line: lineIndex, door: leave.door, original, proposed, markId, tracked: false,
+      from: range.from, to: range.to, spanText: range.text,
+    });
     if (!markId) {
       // The document refused the replace (a table cell boundary, an unresolvable quote). Put the
       // typed words back rather than dropping them: never lose text.

@@ -54,6 +54,29 @@ export const EDIT_SESSION_POLICY = {
   silentWhenUnchanged: true,
   /** A posted proposal is removed by Undo and by nothing else. */
   undoIsTheOnlyRemoval: true,
+  /**
+   * OFF, and this is the one part of Mike's 2026-09-22 ruling that is not yet built (Claude Opus 5,
+   * worker accord-edit, same day). In Suggesting mode — the mode a share opens in — the whole rule
+   * holds: the typing is already a proposal, the leave posts it, says so, and Undo takes it back.
+   * In direct Editing mode the typed words are the document's text, so converting them to a
+   * proposal means writing the document twice on the way out: the original back in, then the
+   * proposal over it.
+   *
+   * Those two writes are what this flag turns on, and they are not safe yet. Measured on
+   * scripts/caret-stability-check.mjs, which types into a line while a second person writes to the
+   * same document: the base commit passes 4 runs out of 4; with these writes on, 2 runs in 5 fail
+   * with the paragraph written twice and one of the typist's own edits coming back as a
+   * whole-document Yjs replace. It is not the size of the write (the smallest possible replacement
+   * fails the same way), not stale line data (reading the live document fails the same way), not
+   * the suggestion mark (skipping it fails the same way), and not dispatching inside the closing
+   * event (deferring to the next task fails the same way). ANY local write to a line a remote
+   * writer is touching makes y-prosemirror resync the whole document, and that resync concatenates.
+   *
+   * Turn this on when a local programmatic edit to a contended line no longer triggers a
+   * whole-document resync — that fix belongs in the Yjs/marks layer, not here. The gate is
+   * scripts/caret-stability-check.mjs green over five consecutive runs with this true.
+   */
+  convertDirectEditsToProposals: false,
   /** Exactly one Undo entry per posted proposal (src/shared/undo.ts). */
   undoEntriesPerPost: 1,
   /** How long "Proposed — Undo" stays in the status bar. Not a modal; it never takes focus. */
@@ -141,6 +164,20 @@ export function editingStatusText(lineIndex: number): string {
 
 /** The word the status bar leads with when a proposal posts. */
 export const POSTED_NOTICE_TEXT = 'Proposed';
+
+/** The word it leads with when a direct edit ends and stays in the text as itself. */
+export const KEPT_NOTICE_TEXT = 'Edited';
+
+/**
+ * What the status bar says when a direct edit ends while
+ * EDIT_SESSION_POLICY.convertDirectEditsToProposals is off: the change is in the text, and it is
+ * the text, not a proposal. Still true to the rule that matters most — nothing was discarded.
+ */
+export function keptNoticeText(lineIndex: number, phone: boolean): string {
+  return phone
+    ? `${KEPT_NOTICE_TEXT} line ${lineIndex + 1}`
+    : `${KEPT_NOTICE_TEXT} line ${lineIndex + 1} — your change is in the text.`;
+}
 
 /**
  * What the status bar says when a proposal posts. The bar is one 28 px line and a phone's is

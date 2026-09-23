@@ -8,8 +8,9 @@
  */
 import assert from 'node:assert/strict';
 import {
-  EDIT_SESSION_POLICY, POSTED_NOTICE_TEXT, beginEditSession, describeEditProposal, editingHelpText,
-  editingStatusText, endEditSession, type EditDoor,
+  EDIT_SESSION_POLICY, KEPT_NOTICE_TEXT, POSTED_NOTICE_TEXT, beginEditSession, describeEditProposal,
+  editingHelpText, editingStatusText, endEditSession, keptNoticeText, postedNoticeText,
+  type EditDoor,
 } from '../shared/edit-session';
 import { smallestEdit } from '../ui/edit-gesture';
 import { READING_MODE_POLICY } from '../shared/reading-keys';
@@ -137,6 +138,24 @@ test('a session carries the mode it began in, so the poster never writes a secon
   assert.equal(tracked.posted && tracked.alreadyTracked, true, 'Suggesting mode already made the proposal');
   const direct = endEditSession(session('a', false), 'ab', 'cmd-enter');
   assert.equal(direct.posted && direct.alreadyTracked, false, 'Editing mode: the poster converts it');
+});
+
+test('the direct-Editing conversion is gated OFF, and the gate says why and when to open it', () => {
+  // The one part of Mike's 2026-09-22 ruling not yet built. In Suggesting mode (what a share opens
+  // in) the whole rule holds. In direct Editing mode the leave keeps the typed words in the text
+  // instead of converting them to a proposal, because that conversion writes the document twice
+  // and those writes are not safe under a second writer yet (the policy carries the measurement).
+  assert.equal(EDIT_SESSION_POLICY.convertDirectEditsToProposals, false,
+    'turning this on needs scripts/caret-stability-check.mjs green over five consecutive runs');
+  // Whatever the gate says, the decision itself never changes: a leave with text always posts.
+  const leave = endEditSession(session('before', false), 'before and after', 'cmd-enter');
+  assert.equal(leave.posted, true, 'the rule is the same; only what the poster may write is gated');
+  // And the person is told where their change went, either way.
+  assert.equal(keptNoticeText(9, false), 'Edited line 10 — your change is in the text.');
+  assert.equal(keptNoticeText(9, true), 'Edited line 10');
+  assert.equal(postedNoticeText(9, false), 'Proposed line 10 — Undo takes it back.');
+  assert.equal(postedNoticeText(9, true), 'Proposed line 10');
+  assert.notEqual(KEPT_NOTICE_TEXT, POSTED_NOTICE_TEXT, 'the two outcomes read differently');
 });
 
 test('smallestEdit: the revert touches only the characters that differ, and is exact', () => {

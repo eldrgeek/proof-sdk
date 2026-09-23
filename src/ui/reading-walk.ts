@@ -37,7 +37,7 @@ import type { SinceItem, SinceYouReport, RingerItem } from '../shared/alignment'
 import type { LineMarksUI, MarkBox } from './line-marks';
 import { isOpenReviewMark, type PlayMakerReview, type ReviewAction } from './playmaker-review';
 import { editSession, editingGuardDebug, editingRemainingMs, endWriting, installEditingGuard, isEditing, isReadingOwned, isWriting, onEditSessionChange, onEditingActivity, onWritingChange, startWriting, syncEditSession } from '../editor/editing-guard';
-import { EDIT_SESSION_POLICY, editingHelpText, editingStatusText, postedNoticeText } from '../shared/edit-session';
+import { EDIT_SESSION_POLICY, editingHelpText, editingStatusText, keptNoticeText, postedNoticeText } from '../shared/edit-session';
 import { READING_MODE_POLICY } from '../shared/reading-keys';
 // Accord round 2, stage D: the discussion on a line lives in the document, in the Line tab.
 import { ThreadsPanel } from './threads';
@@ -1314,6 +1314,11 @@ export class ReadingWalkUI {
   /** Accord round 2 stage A: a proposal posted on this line. The bar says so, briefly. */
   showEditProposed(lineIndex: number): void {
     this.showEditNotice(postedNoticeText(lineIndex, this.touchMode()));
+  }
+
+  /** Accord round 2 stage A: a direct edit ended and stands in the text as itself. */
+  showEditKept(lineIndex: number): void {
+    this.showEditNotice(keptNoticeText(lineIndex, this.touchMode()));
   }
 
   /** Accord round 2 stage A: a line in the status bar after a leave. No modal, no focus steal. */
