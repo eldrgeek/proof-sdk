@@ -8,6 +8,9 @@
  * accord-layout1), 2026-09-21.
  */
 import { actorKey, type LineMark, type LineState, type MarkVia, type ProofIssue } from './line-marks';
+// Cycle by design (see open-view.ts): open-view calls issueNeedsViewer, declared below as a
+// hoisted function, and this calls openView at runtime only. Never read an open-view `const` here.
+import { openView } from './open-view';
 
 /**
  * Two highlight states, plain meanings (proposal, "Two highlight states"): a blue bar and tint for
@@ -117,19 +120,13 @@ export function issueNeedsViewer(issue: ProofIssue, viewer: string, aliases: rea
 /**
  * The lines that need the viewer, in document order (one amber dot each). An Issue with no line
  * (a nomination, a review mark whose text is gone) has no dot and is not counted here.
+ *
+ * Accord round 2 stage C: this no longer decides anything. There is ONE definition of Open
+ * (src/shared/open-view.ts) and this returns its `lines`, so the amber dots, the Issues pill and
+ * the Open list cannot disagree — they are three readings of one answer, not three answers.
  */
 export function needsYouLines(issues: readonly ProofIssue[], viewer: string, lineAtPos: (pos: number) => number, aliases: readonly string[] = []): number[] {
-  const lines = new Set<number>();
-  for (const issue of issues) {
-    if (!issueNeedsViewer(issue, viewer, aliases)) continue;
-    let index: number | null = 'lineIndex' in issue && typeof issue.lineIndex === 'number' ? issue.lineIndex : null;
-    if (index === null && typeof issue.pos === 'number') {
-      const at = lineAtPos(issue.pos);
-      index = at >= 0 ? at : null;
-    }
-    if (index !== null) lines.add(index);
-  }
-  return [...lines].sort((a, b) => a - b);
+  return openView({ issues, viewer, lineAtPos, aliases }).lines;
 }
 
 export interface MarkedUpTo {

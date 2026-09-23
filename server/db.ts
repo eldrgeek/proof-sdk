@@ -1533,9 +1533,20 @@ function initDatabase(): void {
       chat_message_id INTEGER,
       created_at TEXT NOT NULL,
       closed_at TEXT,
-      closed_by TEXT
+      closed_by TEXT,
+      -- Accord round 2 stage C (a loose end from stage D): replies live HERE as well as on the
+      -- mark. Deleting the text a thread sits on takes the mark with it, and the reply history
+      -- went too. Deleting text must never silently delete an unresolved disagreement OR the
+      -- discussion of it, so the thread's own row carries its replies.
+      replies_json TEXT NOT NULL DEFAULT '[]'
     )
   `);
+  {
+    const threadColumns = new Set((d.prepare('PRAGMA table_info(document_threads)').all() as Array<{ name: string }>).map(c => c.name));
+    if (!threadColumns.has('replies_json')) {
+      d.exec(`ALTER TABLE document_threads ADD COLUMN replies_json TEXT NOT NULL DEFAULT '[]'`);
+    }
+  }
   d.exec(`CREATE INDEX IF NOT EXISTS idx_document_threads_slug ON document_threads(document_slug, created_at)`);
   d.exec(`CREATE INDEX IF NOT EXISTS idx_document_threads_mark ON document_threads(document_slug, mark_id)`);
   d.exec(`

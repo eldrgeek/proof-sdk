@@ -1929,8 +1929,13 @@ export class ReadingWalkUI {
     const focus = this.targetLine();
     // Hover focus: another line's changes show without the walk's stepping (that is the reading line's).
     const onFocus = focus === walk.focus;
-    const onLine = walk.marksOn(focus);
     const all = new Map(this.pendingMarks().map(mark => [mark.id, mark]));
+    // Accord round 2 stage C (a loose end from stage D): "Changes on this line" carries only
+    // PROPOSALS. A comment is a thread and it shows once, in Discussion; before this it showed
+    // twice on any line that had one, which made the same unsettled thing look like two.
+    // The walk itself still steps every review mark (scroll-accept is unchanged): this is what the
+    // Margin draws, not what the reader passes.
+    const onLine = walk.marksOn(focus).filter(item => (all.get(item.id)?.kind ?? 'comment') !== 'comment');
     const current = onFocus ? walk.currentMark() : null;
     const lm = this.host.lineMarks();
     const sig = JSON.stringify([focus, onFocus, onLine.map(m => [m.id, walk.isPassed(m.id), walk.isProvisional(m.id)]), current?.id,
@@ -1943,7 +1948,9 @@ export class ReadingWalkUI {
     this.changesHost.replaceChildren();
     this.changesHost.hidden = onLine.length === 0;
     if (onLine.length === 0) return;
-    const index = onFocus ? walk.stepIndex() : -1;
+    // The step counter counts the proposals shown, not every review mark the walk steps.
+    const passedHere = onLine.filter(item => walk.isPassed(item.id)).length;
+    const index = onFocus ? Math.min(passedHere, onLine.length) : -1;
     const head = el('div', 'prw-changes-head');
     head.append(el('strong', undefined, `Changes on this line`),
       el('span', 'prw-step', !onFocus ? `${onLine.length}` : index < onLine.length ? `${index + 1} of ${onLine.length}` : `all ${onLine.length} passed`));

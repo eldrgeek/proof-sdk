@@ -121,8 +121,9 @@ import {
 } from '../shared/line-tiers';
 import { tierViewKey, setTierDecorations, tierDecorationCount, type TierLineSpec } from '../editor/plugins/tier-view';
 import { buildTierRow, loadOnlyDecisions, renderTierControl, saveOnlyDecisions } from './line-tiers';
-import { HIGHLIGHT_POLICY, issueNeedsViewer, markedUpTo, needsYouLines, type MarkedUpTo } from '../shared/layout-status';
-import { MARGIN_POLICY, MARKED_BY_POLICY, markedByFold, needsYouItems, type NeedsYouItem } from '../shared/layout-panels';
+import { HIGHLIGHT_POLICY, issueNeedsViewer, markedUpTo, type MarkedUpTo } from '../shared/layout-status';
+import { openView, type OpenView } from '../shared/open-view';
+import { MARGIN_POLICY, MARKED_BY_POLICY, markedByFold, type NeedsYouItem } from '../shared/layout-panels';
 import { ISSUES_PILL_POLICY, NEXT_ISSUE_POLICY, issuesPillText, issuesPillTitle } from '../shared/layout-chrome';
 import './line-marks.css';
 
@@ -358,7 +359,9 @@ export class LineMarksUI {
   private loaded = false;
   private summary: IssueSummary | null = null;
   /** Accord layout stage 1: the lines that need the viewer (one amber dot each), in document order. */
-  private needsYou: number[] = [];
+  private needsYou: readonly number[] = [];
+  /** Accord round 2 stage C: the one definition of Open, computed once per recompute. */
+  private open: OpenView = { items: [], lines: [], count: 0 };
   private needsYouSet = new Set<number>();
   private states: LineState[] = [];
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -703,7 +706,21 @@ export class LineMarksUI {
         tiers: tierIssueInput(this.tierEval),
       });
       this.computeTierFold();
-      this.needsYou = needsYouLines(this.summary.issues, this.me(), pos => this.lineAtPos(pos), [this.host.actor()]);
+      // Accord round 2 stage C: ONE call, three surfaces. The amber dots, the Issues pill and the
+      // Navigator's Issues tab all read this one answer (src/shared/open-view.ts), so they cannot
+      // disagree on the page any more than they can in the pure code. The threads are passed here
+      // and nowhere else, which is why a thread with no review mark is counted in all three.
+      this.open = openView({
+        issues: this.summary.issues,
+        viewer: this.me(),
+        aliases: this.viewerAliases(),
+        lineAtPos: pos => this.lineAtPos(pos),
+        threads: this.threadViews,
+        team: this.summary.team,
+        states: this.states,
+        lineCount: this.lines.length,
+      });
+      this.needsYou = this.open.lines;
       this.needsYouSet = new Set(this.needsYou);
       this.ranked = rankIssues(this.summary.issues, { viewer: this.me(), explicitFor: explicitPriorityLookup(this.serverNotes, this.lines) });
       this.computeBrief(reviewMarks);
@@ -771,11 +788,19 @@ export class LineMarksUI {
   issueSummary(): IssueSummary | null { return this.summary; }
   /** Accord layout: the lines with an amber "needs you" dot (the status bar's Issues left). */
   needsYouLines(): readonly number[] { return this.needsYou; }
-  /** Accord layout stage 3: the Navigator's Issues list (the same lines as the amber dots, with their kinds). */
+  /**
+   * Accord layout stage 3: the Navigator's Issues list. Accord round 2 stage C: it is the SAME
+   * object the amber dots and the Issues pill read — `openView` decided once, in `recompute`.
+   */
   needsYouItems(): NeedsYouItem[] {
-    if (!this.summary) return [];
-    return needsYouItems(this.summary.issues, this.me(), pos => this.lineAtPos(pos), [this.host.actor()]);
+    return this.open.items.map(({ line, kinds, by, count }) => ({ line, kinds, by, count }));
   }
+  /** Accord round 2 stage C: the one definition of Open, for this viewer, as last computed. */
+  openView(): OpenView { return this.open; }
+  /** Every line's marks as last built (the honest header and the lapse rule read these). */
+  lineStates(): readonly LineState[] { return this.states; }
+  /** The viewer's other actor strings (the editor writes a guest's comments under another name). */
+  viewerAliases(): string[] { return [this.host.actor()]; }
   /** A display name for an actor (an AI by its name, a person by their label). */
   displayName(actor: string): string { return isAiActor(actor) ? this.aiName(actor) : actorLabel(actor); }
   /** Readers who can comment (guests read and comment). */
@@ -1499,6 +1524,7 @@ export class LineMarksUI {
       if (needsYou) dot.dataset.needsYou = 'true'; else delete dot.dataset.needsYou;
       // Step B3b: your mark survived a small edit (the rail shows what changed).
       if (mine?.carried) dot.dataset.carried = 'true'; else delete dot.dataset.carried;
+      if (mine?.lapsed) dot.dataset.lapsed = 'true'; else delete dot.dataset.lapsed;
       // Step B4c: an amber tick for a line its writer flagged uncertain; B4d: a red tick for an
       // open objection; a selected line (shift-click) for a Reject that covers several lines.
       if (this.flagsByLine.has(line.index)) dot.dataset.uncertain = 'true'; else delete dot.dataset.uncertain;
@@ -1707,11 +1733,43 @@ export class LineMarksUI {
       } else if (margin) tail.push(note);
       else root.append(note);
     }
-    if (mine && !mine.current) {
+    // Accord round 2 stage C (brief 5): an agreement that LAPSED says so in those words, and shows
+    // the wording that was agreed to beside the one that is there now. A line that merely changed
+    // since a Seen mark keeps the older sentence: nothing was agreed, so nothing lapsed.
+    const lapsed = Boolean(mine && !mine.current && mine.lapsed && (mine.mark.status === 'agreed' || mine.mark.status === 'approved'));
+    if (mine && !mine.current && !lapsed) {
       const changed = document.createElement('p');
       changed.className = 'plm-changed';
       changed.textContent = `Changed since you marked it ${STATUS_LABEL[mine.mark.status]}. Mark it again.`;
       place(changed);
+    }
+    if (mine && lapsed) {
+      const box = document.createElement('div');
+      box.className = 'plm-lapsed';
+      box.dataset.line = String(line.index);
+      const text = document.createElement('p');
+      text.className = 'plm-lapsed-text';
+      text.textContent = `You agreed to an earlier version of this line. The meaning changed, so your ${STATUS_LABEL[mine.mark.status]} does not carry.`;
+      box.append(text);
+      if (mine.lapsedFrom) {
+        const was = document.createElement('p');
+        was.className = 'plm-lapsed-was';
+        const label = document.createElement('span');
+        label.textContent = 'You agreed to: ';
+        const old = document.createElement('del');
+        old.textContent = mine.lapsedFrom.length > 240 ? `${mine.lapsedFrom.slice(0, 240)}…` : mine.lapsedFrom;
+        was.append(label, old);
+        box.append(was);
+        const now = document.createElement('p');
+        now.className = 'plm-lapsed-now';
+        const nowLabel = document.createElement('span');
+        nowLabel.textContent = 'It now reads: ';
+        const ins = document.createElement('ins');
+        ins.textContent = line.text.length > 240 ? `${line.text.slice(0, 240)}…` : line.text;
+        now.append(nowLabel, ins);
+        box.append(now);
+      }
+      place(box);
     }
     // Step B3b: a mark carried over a small edit: say what changed, and let the reader undo it.
     if (mine?.carried) {
@@ -3069,12 +3127,25 @@ export class LineMarksUI {
     return result.ok;
   }
 
-  /** A reply on a thread is a reply on its mark (one place, one history). */
+  /**
+   * A reply on a thread goes to its mark (where it has always gone) AND to the thread's own row.
+   *
+   * Accord round 2 stage C, a loose end from stage D: replies lived only on the mark, and the mark
+   * goes with the text. The thread survived a deletion because its words are on its own row; its
+   * discussion did not. Both copies are written now, and src/shared/threads.ts mergeReplies shows
+   * each reply once. A thread with no row of its own (a comment already on a live document that
+   * nobody has given a closing condition) still keeps its replies only on its mark.
+   */
   replyOnThread(id: string, text: string): boolean {
     const view = this.threadById(id);
-    if (!view?.thread.markId || !text.trim()) return false;
-    this.decideOnMark?.([view.thread.markId], 'reply', text.trim());
-    return true;
+    const body = text.trim();
+    if (!view || !body) return false;
+    if (view.thread.markId) this.decideOnMark?.([view.thread.markId], 'reply', body);
+    if (view.thread.source === 'thread') {
+      void this.postAid(`/threads/${encodeURIComponent(view.thread.id)}/reply`, { text: body })
+        .then(result => { if (result.ok) this.extrasWrites += 1; });
+    }
+    return Boolean(view.thread.markId) || view.thread.source === 'thread';
   }
 
   /** How the page acts on a review mark (set by the editor; the Margin's Changes use the same one). */

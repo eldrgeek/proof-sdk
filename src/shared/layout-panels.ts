@@ -8,7 +8,7 @@
  * accord-layout3), 2026-09-21.
  */
 import { actorKey, type ProofIssue } from './line-marks';
-import { issueNeedsViewer } from './layout-status';
+import { openView, type OpenKind } from './open-view';
 
 /**
  * One cursor (decision 4): the reading focus and the focus line are one line. Scrolling moves it
@@ -149,13 +149,16 @@ export const PHONE_STRIP_POLICY = {
   sheetHeightShare: 0.6,
 } as const;
 
-/** The kinds of Issue a line can need the viewer for, in the order the Navigator names them. */
-export type NeedsYouKind = 'ask' | 'suggestion' | 'comment' | 'objection' | 'uncertain' | 'alternative' | 'ttl' | 'do' | 'changed';
-const KIND_ORDER: readonly NeedsYouKind[] = ['ask', 'do', 'objection', 'suggestion', 'comment', 'alternative', 'uncertain', 'ttl', 'changed'];
+/**
+ * The kinds of Issue a line can need the viewer for, in the order the Navigator names them.
+ * Accord round 2 stage C: this is OpenKind (src/shared/open-view.ts) under its older name, so the
+ * Navigator's rows and the Open list name the same things.
+ */
+export type NeedsYouKind = OpenKind;
 
 export interface NeedsYouItem {
   line: number;
-  /** Every kind on the line, in KIND_ORDER. */
+  /** Every kind on the line, in OPEN_KIND_ORDER. */
   kinds: NeedsYouKind[];
   /** Who raised the first kind (null: nobody in particular, e.g. the viewer's own changed mark). */
   by: string | null;
@@ -163,43 +166,17 @@ export interface NeedsYouItem {
   count: number;
 }
 
-function kindOf(issue: ProofIssue): NeedsYouKind | null {
-  switch (issue.type) {
-    case 'ask': case 'suggestion': case 'comment': case 'objection': case 'uncertain': case 'alternative': case 'ttl': case 'do':
-      return issue.type;
-    case 'line':
-      return 'changed';
-    default:
-      return null;
-  }
-}
-
 /**
- * The Issues tab's list: one row per line that needs the viewer, in document order. It uses the
- * same test as the amber dots (issueNeedsViewer), so the list, the dots and the pill always agree.
+ * The Issues tab's list: one row per line that needs the viewer, in document order.
+ *
+ * Accord round 2 stage C: this no longer decides anything either. It returns the items of the ONE
+ * definition of Open (src/shared/open-view.ts openView), which is also where the amber dots and the
+ * Issues pill come from. A caller that has the document's threads should call `openView` directly
+ * and pass them, so a thread with no review mark is counted too.
  */
 export function needsYouItems(issues: readonly ProofIssue[], viewer: string, lineAtPos: (pos: number) => number, aliases: readonly string[] = []): NeedsYouItem[] {
-  const byLine = new Map<number, Array<{ kind: NeedsYouKind; by: string | null }>>();
-  for (const issue of issues) {
-    if (!issueNeedsViewer(issue, viewer, aliases)) continue;
-    const kind = kindOf(issue);
-    if (!kind) continue;
-    let index: number | null = 'lineIndex' in issue && typeof issue.lineIndex === 'number' ? issue.lineIndex : null;
-    if (index === null && typeof issue.pos === 'number') {
-      const at = lineAtPos(issue.pos);
-      index = at >= 0 ? at : null;
-    }
-    if (index === null) continue;
-    const by = 'by' in issue && typeof issue.by === 'string' ? issue.by : null;
-    const list = byLine.get(index) ?? [];
-    list.push({ kind, by });
-    byLine.set(index, list);
-  }
-  return [...byLine.entries()].sort((a, b) => a[0] - b[0]).map(([line, list]) => {
-    const sorted = [...list].sort((a, b) => KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind));
-    const kinds = [...new Set(sorted.map(entry => entry.kind))];
-    return { line, kinds, by: sorted[0]?.by ?? null, count: list.length };
-  });
+  return openView({ issues, viewer, lineAtPos, aliases }).items
+    .map(({ line, kinds, by, count }) => ({ line, kinds, by, count }));
 }
 
 /** "Ask · line 41", "Change from Dee · line 80", "Comment from Dee and 1 more · line 12". */
@@ -214,6 +191,11 @@ export function needsYouLabel(item: NeedsYouItem, name: (actor: string) => strin
     : first === 'alternative' ? 'Competing wordings'
     : first === 'uncertain' ? `Flagged uncertain${from}`
     : first === 'ttl' ? 'Needs a re-check'
+    // Accord round 2 stage C: a lapsed agreement says so in the words of the rule, and an open
+    // thread with no review mark gets its own row rather than borrowing "changed".
+    : first === 'lapsed' ? 'You agreed to an earlier version'
+    : first === 'thread' ? `Discussion${from}`
+    : first === 'unread' ? 'Nobody has marked this'
     : 'Changed since you marked it';
   const more = item.count > 1 ? ` and ${item.count - 1} more` : '';
   return `${head}${more} · line ${item.line + 1}`;

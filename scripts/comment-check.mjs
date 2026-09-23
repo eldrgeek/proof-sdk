@@ -257,27 +257,33 @@ async function run(browser, base, style, viewport) {
       const sel = getSelection();
       return !!sel && sel.isCollapsed && !!sel.anchorNode && !!document.querySelector('.ProseMirror')?.contains(sel.anchorNode);
     }), 'the click did not place the caret in the text');
-    const card = page.locator(`.prw-right .prw-card[data-mark-id="${mark.id}"]`);
+    // Accord round 2 stage C: a comment is a THREAD, and it shows once, in Discussion. It used to
+    // show twice — also in "Changes on this line", which now carries only proposals. Same
+    // behaviour, same rail, one card instead of two.
+    const card = page.locator(`.prw-right .amg-thread[data-thread="${mark.id}"]`);
     await card.first().waitFor({ state: 'visible', timeout: 3000 });
     assert.ok((await card.first().innerText()).includes(commentText), 'the rail does not show the comment');
+    assert.equal(await page.locator(`.prw-changes .prw-card[data-mark-id="${mark.id}"]`).count(), 0,
+      'the comment is in "Changes on this line" as well as in Discussion: it shows twice');
     await page.evaluate(() => document.activeElement?.blur());
     return card.first();
   };
 
   await check(`${tag}: clicking the comment places the caret; the rail shows it and a reply can be posted`, async () => {
     const thread = await openThread();
-    await thread.getByRole('button', { name: /^Reply/ }).click();
-    await thread.locator('textarea').fill(replyText);
+    await thread.locator('.amg-thread-reply-input').fill(replyText);
     await page.screenshot({ path: path.join(shots, `${tag}-4-reply.png`) });
-    await thread.getByRole('button', { name: 'Send reply' }).click();
+    await thread.locator('.amg-thread-reply-send').click();
     await waitForServer(base, created, s => s.includes(replyText), 'the reply');
   });
 
   await check(`${tag}: the comment can be resolved from the rail`, async () => {
     const thread = await openThread();
-    await page.waitForFunction(({ id, r }) => document.querySelector(`.prw-right .prw-card[data-mark-id="${id}"]`)?.textContent?.includes(r),
+    await page.waitForFunction(({ id, r }) => document.querySelector(`.prw-right .amg-thread[data-thread="${id}"]`)?.textContent?.includes(r),
       { id: (await localComment(page, commentText)).id, r: replyText }, { timeout: 5000 });
-    await thread.getByRole('button', { name: /^Resolve/ }).click();
+    // A comment thread closes with "Done" (src/shared/threads.ts resolutionsFor): the same act,
+    // and the same result on the mark (data.resolved === true), asserted below exactly as before.
+    await thread.locator('.amg-thread-resolve').first().click();
     await page.waitForFunction(t => (window.proof?.getAllMarks?.() ?? window.proof?.getMarks?.() ?? [])
       .some(m => m.kind === 'comment' && m.data?.text === t && m.data?.resolved === true), commentText, { timeout: 5000 });
     await waitForServer(base, created, s => /"resolved":\s*true/.test(s), 'the comment resolved');

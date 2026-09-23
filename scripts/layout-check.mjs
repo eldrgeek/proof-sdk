@@ -442,8 +442,19 @@ async function desktop2(browser, base, style) {
     assert.ok(c.share.right >= 1440 - 24, 'Share is not at the right end');
     assert.ok(c.pill.right <= c.share.left && c.pill.left > 1000, 'the Issues pill is not just left of Share');
     assert.match(c.pillNext, /Next ›/);
-    // Nothing else in the toolbar: no Add agent, no Marks, no people, no ⋯.
-    for (const label of c.controls) assert.match(label, /^(Suggesting|Editing|Undo|Nothing to undo|Next issue|No issues|Share|Waiting on Mike)/, `unexpected toolbar control: ${label}`);
+    // Nothing else in the toolbar: no Add agent, no Marks, no people, no ⋯. Accord round 2 stage C
+    // added ONE more thing by Mike's ruling — the Open | Accord toggle, immediately left of the
+    // Issues pill, because the pill counts what Open holds. The list stays exact, so nothing else
+    // can creep in behind it.
+    for (const label of c.controls) assert.match(label, /^(Suggesting|Editing|Undo|Nothing to undo|Next issue|No issues|Share|Waiting on Mike|Open|Accord)$|^(Suggesting|Editing|Undo|Nothing to undo|Next issue|No issues|Share|Waiting on Mike)/, `unexpected toolbar control: ${label}`);
+    // ...and the toggle really is where this stage says it is.
+    const toggle = await page.evaluate(() => {
+      const t = document.querySelector('#share-banner .share-pill-right .aov-toggle');
+      const pill = document.querySelector('#share-banner .plm-issues');
+      return { present: Boolean(t), beforePill: t?.nextElementSibling === pill, segs: [...(t?.querySelectorAll('.aov-seg-label') ?? [])].map(n => n.textContent) };
+    });
+    assert.deepEqual(toggle.segs, ['Open', 'Accord'], 'the Open | Accord toggle is not in the toolbar');
+    assert.ok(toggle.beforePill, 'the toggle must sit immediately left of the Issues pill');
     const rails = await page.evaluate(() => ({ left: document.querySelector('.prw-left').getBoundingClientRect().top, right: document.querySelector('.prw-right').getBoundingClientRect().top }));
     assert.ok(rails.left >= c.toolbar.bottom && rails.right >= c.toolbar.bottom, 'a rail sits under the toolbar');
     await page.screenshot({ path: path.join(shots, `${tag}-chrome.png`), clip: { x: 0, y: 0, width: 1440, height: 120 } });
@@ -622,10 +633,36 @@ async function phone2(browser, base, style) {
     const c = await chrome(page);
     assert.equal(c.menubar, null, 'the menu bar shows on a phone');
     assert.equal(c.toolbar.top, 0);
-    assert.equal(c.controls.length, 3, `phone toolbar controls: ${c.controls.join(' | ')}`);
+    // Accord round 2 stage C: the mockup's three PLUS ONE — the Open / Accord toggle. This stage
+    // rules that "the phone gets the toggle too", and the toggle is the product's whole claim in
+    // one control, so it does not belong behind ⋯. On a 375 px bar it shows as a single button
+    // naming the view it takes you to, so it cannot reach the middle of the bar and swallow taps
+    // meant for the title. Everything the 09-21 polish removed stays removed, and the list is
+    // still exact, so nothing can creep back in behind this one addition.
+    assert.equal(c.controls.length, 4, `phone toolbar controls: ${c.controls.join(' | ')}`);
     assert.match(c.controls[0], /Waiting on Mike/);
-    assert.match(c.controls[1], /^Next issue/);
-    assert.match(c.controls[2], /^More options/);
+    assert.match(c.controls[1], /^(Open|Accord)$/);
+    assert.match(c.controls[2], /^Next issue/);
+    assert.match(c.controls[3], /^More options/);
+    // The toggle sits at the LEFT, right after the title and well clear of the Issues pill: the
+    // space beside the pill is where a thumb lands, and this control changes what the whole page
+    // shows. It is one 44 px button there, not a two-segment control that would fill the bar.
+    const toggle = await page.evaluate(() => {
+      const t = document.querySelector('#share-banner .aov-toggle');
+      const title = document.querySelector('#share-banner .share-pill-title');
+      const pill = document.querySelector('#share-banner .plm-issues');
+      const box = t?.getBoundingClientRect();
+      return {
+        afterTitle: title?.nextElementSibling === t,
+        leftOfPill: Boolean(box && pill && box.right <= pill.getBoundingClientRect().left + 1),
+        segs: [...(t?.querySelectorAll('.aov-seg') ?? [])].filter(n => n.getBoundingClientRect().width > 0).map(n => n.textContent),
+        height: box?.height ?? 0,
+      };
+    });
+    assert.ok(toggle.afterTitle, 'the phone toggle is not right after the title');
+    assert.ok(toggle.leftOfPill, 'the phone toggle is not clear of the Issues pill');
+    assert.equal(toggle.segs.length, 1, `the phone shows one button, not ${toggle.segs.length}: ${toggle.segs.join(' | ')}`);
+    assert.ok(toggle.height >= 44, `the phone toggle is ${toggle.height} px tall`);
     assert.equal(c.seg && c.seg.width > 0 ? 'shown' : 'gone', 'gone', 'Suggesting | Editing is still in the phone toolbar');
     assert.ok(!c.share || c.share.width === 0, 'Share is still in the phone toolbar');
     assert.equal(c.undo, null, 'Undo is in the phone toolbar');

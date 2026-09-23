@@ -229,6 +229,12 @@ export interface ThreadMeta {
   closedBy: string | null;
   /** The chat message this thread was made from, when it was moved out of the Room. */
   chatMessageId?: number | null;
+  /**
+   * Accord round 2 stage C: the thread's replies, kept HERE as well as on its mark. Deleting the
+   * text a thread sits on takes the mark with it; the thread survives because its words are on
+   * this row, and now so does its discussion. Older rows have none and read as an empty list.
+   */
+  replies?: ThreadReply[];
 }
 
 /** An Explain row (src/shared/explain.ts and the `?` gesture): its comment is a clarify thread. */
@@ -256,6 +262,20 @@ function replyList(mark: ThreadSourceMark): ThreadReply[] {
   return (mark.replies ?? [])
     .filter(reply => reply && typeof reply.text === 'string' && reply.text.length > 0)
     .map(reply => ({ by: String(reply.by ?? ''), text: String(reply.text), at: String(reply.at ?? '') }));
+}
+
+/** One reply twice (once on the mark, once on the row) is one reply. Ordered by time, then text. */
+export function mergeReplies(a: readonly ThreadReply[], b: readonly ThreadReply[]): ThreadReply[] {
+  const seen = new Set<string>();
+  const out: ThreadReply[] = [];
+  for (const reply of [...a, ...b]) {
+    if (!reply || typeof reply.text !== 'string' || !reply.text) continue;
+    const key = `${actorKey(String(reply.by ?? ''))}|${String(reply.text)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ by: String(reply.by ?? ''), text: String(reply.text), at: String(reply.at ?? '') });
+  }
+  return out.sort((x, y) => (x.at < y.at ? -1 : x.at > y.at ? 1 : 0));
 }
 
 function diffOf(mark: ThreadSourceMark): ThreadDiff | null {
@@ -326,7 +346,11 @@ export function threadsFrom(input: ThreadInput): Thread[] {
       anchor: meta?.anchor?.length ? meta.anchor : anchorFromMark(mark, input),
       selection: meta?.selection ?? (diff ? diff.quote : null),
       diff,
-      replies: replyList(mark),
+      // The mark is the live history while it exists; the row's copy is a SHADOW that only
+      // surfaces once the mark is gone (see ThreadMeta.replies). Merging the two would double every
+      // reply, because the page writes the mark copy under the editor's actor and the row copy
+      // under the actor the server resolves for the page-aid route.
+      replies: replyList(mark).length ? replyList(mark) : mergeReplies([], meta?.replies ?? []),
       status,
       waitingOn: meta?.waitingOn ?? [],
       createdAt: String(meta?.createdAt ?? mark.at ?? ''),
@@ -351,7 +375,8 @@ export function threadsFrom(input: ThreadInput): Thread[] {
       anchor: row.anchor ?? [],
       selection: row.selection,
       diff: null,
-      replies: [],
+      // The mark is gone (or never existed); the row's own replies are the whole history.
+      replies: mergeReplies([], row.replies ?? []),
       status: row.status,
       waitingOn: row.waitingOn ?? [],
       createdAt: row.createdAt,
@@ -820,6 +845,7 @@ export function threadMetaOf(thread: Thread): ThreadMeta {
     closedAt: thread.closedAt,
     closedBy: thread.closedBy,
     chatMessageId: thread.chatMessageId ?? null,
+    replies: thread.replies ?? [],
   };
 }
 

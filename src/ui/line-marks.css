@@ -278,3 +278,11 @@ body.plm-on #editor { padding-left:calc(var(--provenance-bar-width, 6px) + 48px)
 @media (max-width: 700px) {
   .plm-team-sum { min-height:44px; font-size:14px; }
 }
+
+/* Accord round 2 stage C: an agreement whose line changed meaning under it (the lapse rule). */
+.plm-lapsed { margin:6px 0; padding:7px 9px; border-radius:8px; background:#fff7ed; color:#7c2d12; font-size:12px; }
+.plm-lapsed p { margin:0 0 4px; }
+.plm-lapsed p:last-child { margin-bottom:0; }
+.plm-lapsed-was del { color:#9a3412; text-decoration-color:#fdba74; }
+.plm-lapsed-now ins { text-decoration:none; background:#ffedd5; border-radius:3px; padding:0 2px; }
+.plm-dot[data-lapsed="true"]::after { content:"≠"; }

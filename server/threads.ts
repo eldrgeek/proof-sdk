@@ -17,6 +17,7 @@ import { addDocumentEvent } from './db.js';
 import { broadcastToRoom } from './ws.js';
 import { computeServerLines } from './line-marks.js';
 import {
+  appendThreadReply,
   closeThreadRow,
   deleteThreadRow,
   getThreadRow,
@@ -157,6 +158,27 @@ export function reopenThread(slug: string, input: { id: string; by: string; sour
   if (!row) return fail(404, 'THREAD_NOT_FOUND', 'No thread with that id');
   if (!reopenThreadRow(slug, input.id)) return fail(409, 'ALREADY_OPEN', 'That thread is already open');
   event(slug, 'thread.reopened', { threadId: input.id, markId: row.markId, source: input.source }, input.by);
+  return { status: 200, body: { success: true, threadId: input.id } };
+}
+
+/**
+ * Accord round 2 stage C: a reply, stored on the thread's own row.
+ *
+ * The page also posts the reply to the thread's mark, as it always has, so nothing about how a
+ * reply reads changes. What changes is that the thread now keeps its own copy: deleting the text a
+ * thread sits on takes the mark and the mark's replies with it, and an unresolved disagreement must
+ * never lose its discussion that way. src/shared/threads.ts mergeReplies shows each reply once.
+ */
+export function replyOnThread(slug: string, input: { id: string; by: string; text: string; at?: string; source: 'page' | 'agent' }): ThreadResult {
+  const row = getThreadRow(slug, input.id);
+  if (!row) return fail(404, 'THREAD_NOT_FOUND', 'No thread with that id');
+  const text = cleanThreadText(input.text);
+  if (!text) return fail(400, 'TEXT_REQUIRED', 'A reply needs some words');
+  const at = input.at ?? new Date().toISOString();
+  if (!appendThreadReply(slug, input.id, { by: input.by, text, at })) {
+    return fail(409, 'NOT_STORED', 'That reply could not be stored');
+  }
+  event(slug, 'thread.replied', { threadId: input.id, markId: row.markId, source: input.source }, input.by);
   return { status: 200, body: { success: true, threadId: input.id } };
 }
 

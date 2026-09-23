@@ -117,7 +117,7 @@ import { clearFlag, clearObjection, createObjection, keepObjection, writeFlag } 
 import { listFlags, listObjections, listReviewNotes } from './review-aids-store.js';
 import { clearTtl, decideAlternative, offerAlternative, pickAlternative, recordBundleDecision, recordExplain, setBlindSetting, setTtl, withdrawAlternative } from './proof-extras.js';
 import { getProofSettings, listAlternatives, listBundles, listExplains, listPicks, listTtls } from './proof-extras-store.js';
-import { closeThread, reopenThread, startThreadRow, threadRows, undoStartThread } from './threads.js';
+import { closeThread, reopenThread, replyOnThread, startThreadRow, threadRows, undoStartThread } from './threads.js';
 import { blindViewFor } from './proof-extras-eval.js';
 import { lineEditor } from './agent-routes.js';
 import { ASK_POLICY, evaluateAsks } from '../src/shared/asks.js';
@@ -2413,6 +2413,10 @@ pageAidRoute('/documents/:slug/threads/:threadId/close', async ({ req, slug, by,
 });
 pageAidRoute('/documents/:slug/threads/:threadId/reopen', ({ req, slug, by }) =>
   reopenThread(slug, { id: String(req.params.threadId ?? ''), by, source: 'page' }));
+// Accord round 2 stage C: POST { text } — a reply stored on the thread's own row, so deleting the
+// anchored text cannot take an unresolved disagreement's discussion with it.
+pageAidRoute('/documents/:slug/threads/:threadId/reply', ({ req, slug, by, body }) =>
+  replyOnThread(slug, { id: String(req.params.threadId ?? ''), by, text: String(body?.text ?? ''), source: 'page' }));
 // The Undo of starting a thread (only whoever started it).
 pageAidRoute('/documents/:slug/threads/:threadId/undo', ({ req, slug, by }) =>
   undoStartThread(slug, { id: String(req.params.threadId ?? ''), by }));

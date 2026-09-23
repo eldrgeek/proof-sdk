@@ -18,6 +18,7 @@ import { FoldingUI } from '../ui/folding';
 import { ClosedFoldUI } from '../ui/closed-fold';
 import { UndoUI } from '../ui/undo';
 import { MenuBar, buildMenuItems, type MenuItemSpec, type MenuSpec } from '../ui/menu-bar';
+import { OpenViewUI } from '../ui/open-view';
 import { showShareDialog } from '../ui/share-dialog';
 import { FindBar, showAboutDialog, showKeysDialog, showMarksLegend, showOpenDialog, showWhoDialog } from '../ui/chrome-dialogs';
 import { SCROLL_CAMERA_POLICY, cameraScroll, deadZone } from '../shared/scroll-camera';
@@ -1168,6 +1169,8 @@ class ProofEditorImpl implements ProofEditor {
   private chat: ChatUI | null = null;
   private chatUnread = 0;
   private folding: FoldingUI | null = null;
+  /** Accord round 2 stage C: the Open / Accord toggle, the honest header and the zero moment. */
+  private openViewUI: OpenViewUI | null = null;
   private closedFold: ClosedFoldUI | null = null;
   /** The one Undo (Mike, 2026-09-19): the rail button and Cmd/Ctrl+Z. */
   private undoUI: UndoUI | null = null;
@@ -3795,13 +3798,16 @@ class ProofEditorImpl implements ProofEditor {
     banner.replaceChildren(
       group('left', suggestToggle, this.toolbarUndoSlot),
       group('center', title, syncStatusInline),
-      group('right', this.ensureLineMarks().bannerEl, shareBtn),
+      // Accord round 2 stage C: the Open | Accord toggle sits immediately LEFT of the Issues pill,
+      // because the pill is the count of what Open holds — the two read as one control.
+      group('right', ...(this.openViewUI ? [this.openViewUI.toggleEl] : []), this.ensureLineMarks().bannerEl, shareBtn),
       hidden,
       this.createShareOverflowButton(),
     );
     this.placeMenuBarPresence(avatars, agentSlot);
     this.updateSuggestToggleDisplay();
     this.updateShareSuggestionReviewDisplay();
+    this.mountOpenView();
     this.scheduleBannerLayoutUpdate();
   }
 
@@ -3836,6 +3842,26 @@ class ProofEditorImpl implements ProofEditor {
     document.body.classList.add('amb-on');
     this.menuBar.install();
     (window as unknown as { __proofMenuBar?: MenuBar }).__proofMenuBar = this.menuBar;
+  }
+
+  /**
+   * Accord round 2 stage C: the honest header sits at the top of the page column, above the text,
+   * so it reads as part of the document and not as another piece of chrome. The toggle is mounted
+   * by the toolbar (mountShareBanner); this only has to place the header and keep it there.
+   */
+  private mountOpenView(): void {
+    const ui = this.openViewUI;
+    if (!ui) return;
+    // Inside #editor, not #editor-container: #editor carries the top padding that clears the fixed
+    // menu bar and toolbar, so a header prepended to the container would sit underneath them.
+    const host = document.getElementById('editor') ?? document.getElementById('editor-container');
+    if (host && (ui.headerEl.parentElement !== host || host.firstElementChild !== ui.headerEl)) {
+      host.prepend(ui.headerEl);
+    }
+    // The toolbar is built before this UI exists on a first load, so place the toggle here too.
+    // Later rebuilds put it in through mountShareBanner's `group('right', ...)`.
+    const pill = document.querySelector('#share-banner .share-pill-right .plm-issues');
+    if (pill && ui.toggleEl.nextElementSibling !== pill) pill.parentElement?.insertBefore(ui.toggleEl, pill);
   }
 
   private unmountMenuBar(): void {
@@ -4184,6 +4210,19 @@ class ProofEditorImpl implements ProofEditor {
       (window as unknown as { __proofScrollCamera?: unknown }).__proofScrollCamera = { cameraScroll, deadZone, policy: SCROLL_CAMERA_POLICY };
       const walkUi = this.readingWalk;
       this.folding.subscribe(() => walkUi.onFoldChange());
+      // Accord round 2 stage C: Open and Accord, two views of one document. It drives the folding
+      // filter, so the Open view uses the SAME folding machinery the outline does — and the reading
+      // walk already steps over hidden lines, which is why J / K run the Open list for free.
+      this.openViewUI = new OpenViewUI({
+        lineMarks: () => lineMarks,
+        folding: () => this.folding,
+        slug: () => shareClient.getSlug(),
+        go: (index) => { lineMarks.revealLine(index); walkUi.focusLine(index); },
+        changed: () => { walkUi.onFoldChange(); this.scheduleBannerLayoutUpdate(); },
+      });
+      (window as unknown as { __proofOpenView?: OpenViewUI }).__proofOpenView = this.openViewUI;
+      this.openViewUI.start();
+      this.mountOpenView();
       walkUi.mountTool(this.folding.controlsEl);
       // Closed Issues fold for the viewer who closed them ("Unfold closed" in the rail).
       this.closedFold = new ClosedFoldUI({ slug: () => shareClient.getSlug(), lineMarks: () => lineMarks, onApplied: () => walkUi.onFoldChange() });

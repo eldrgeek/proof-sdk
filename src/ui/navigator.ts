@@ -44,6 +44,16 @@ export class NavigatorUI {
   readonly toolsEl = el('div', 'anv-tools');
   private readonly outlineList = el('ul', 'anv-outline');
   private readonly issuesList = el('ul', 'anv-issues');
+  /**
+   * Accord round 2 stage C (brief 4): nothing vanishes under the cursor. A row the viewer settles
+   * greys out with a strikethrough and STAYS IN PLACE; it leaves on "Clear settled", or when they
+   * leave the tab. A list that collapses as you work it makes you lose your place.
+   */
+  private readonly settled = new Map<number, { kinds: string[]; label: string }>();
+  private tracked = new Set<number>();
+  private readonly settledTools = el('div', 'anv-settled-tools');
+  private readonly settledLabel = el('span', 'anv-settled-count');
+  private readonly clearSettledBtn = el('button', 'anv-clear-settled', 'Clear settled');
   private readonly issuesEmpty = el('p', 'prw-empty anv-empty', 'Nothing needs you.');
   private readonly sinceEmpty = el('p', 'prw-empty anv-empty', 'Nothing yet: this list fills in once you have marked lines and others change them.');
   private readonly buttons = new Map<NavigatorTab, HTMLButtonElement>();
@@ -51,6 +61,8 @@ export class NavigatorUI {
   private tab: NavigatorTab;
   private outlineSig = '';
   private issuesSig = '';
+  /** The last row drawn for each line, so a settled row keeps the words it had. */
+  private lastRows = new Map<number, { kinds: string[]; label: string }>();
 
   constructor(private readonly host: NavigatorHost, initial: NavigatorTab | undefined, sinceHost: HTMLElement) {
     this.tab = initial ?? NAVIGATOR_POLICY.defaultTab;
@@ -77,7 +89,13 @@ export class NavigatorUI {
     this.outlineList.setAttribute('aria-label', 'Headings');
     this.issuesList.setAttribute('aria-label', 'Lines that need you');
     this.panes.outline.append(this.toolsEl, this.outlineList);
-    this.panes.issues.append(this.issuesEmpty, this.issuesList);
+    this.clearSettledBtn.type = 'button';
+    this.clearSettledBtn.title = 'Take the settled rows out of this list. Nothing about the document changes.';
+    this.clearSettledBtn.addEventListener('mousedown', event => event.preventDefault());
+    this.clearSettledBtn.onclick = () => { this.settled.clear(); this.issuesSig = ''; this.render(); };
+    this.settledTools.append(this.settledLabel, this.clearSettledBtn);
+    this.settledTools.hidden = true;
+    this.panes.issues.append(this.issuesEmpty, this.settledTools, this.issuesList);
     this.panes.since.append(this.sinceEmpty, sinceHost);
     this.applyTab();
   }
@@ -86,6 +104,8 @@ export class NavigatorUI {
 
   select(tab: NavigatorTab, remember = true): void {
     if (tab === this.tab) return;
+    // Leaving the Issues tab is the other way a settled row goes (OPEN_VIEW_POLICY.keepSettled).
+    if (this.tab === 'issues') { this.settled.clear(); this.tracked.clear(); }
     this.tab = tab;
     this.applyTab();
     if (remember) this.host.tabChanged(tab);
@@ -128,26 +148,50 @@ export class NavigatorUI {
     const lm = this.host.lineMarks();
     const lines = lm.lineList();
     const cursor = this.host.cursor();
-    const sig = JSON.stringify([items.map(i => [i.line, i.kinds, i.by, i.count, lines[i.line]?.hash]), cursor]);
+    // A line that was on this list and is not any more has SETTLED: remember it, in place.
+    if (lm.isLoaded()) {
+      const now = new Set(items.map(item => item.line));
+      for (const line of this.tracked) {
+        if (now.has(line) || this.settled.has(line)) continue;
+        const was = this.lastRows.get(line);
+        this.settled.set(line, was ?? { kinds: ['changed'], label: 'Settled' });
+      }
+      for (const line of now) this.settled.delete(line);
+      this.tracked = now;
+      this.lastRows = new Map(items.map(item => [item.line, { kinds: item.kinds as string[], label: needsYouLabel(item, actor => lm.displayName(actor), lm.me()) }]));
+    }
+    const settledLines = [...this.settled.keys()];
+    const rows = [
+      ...items.map(item => ({ line: item.line, settled: false, kinds: item.kinds as string[], label: needsYouLabel(item, actor => lm.displayName(actor), lm.me()) })),
+      ...settledLines.map(line => ({ line, settled: true, kinds: this.settled.get(line)!.kinds, label: this.settled.get(line)!.label })),
+    ].sort((a, b) => a.line - b.line);
+    const sig = JSON.stringify([rows.map(r => [r.line, r.settled, r.kinds, r.label, lines[r.line]?.hash]), cursor]);
     if (sig === this.issuesSig) return;
     this.issuesSig = sig;
-    this.issuesEmpty.hidden = items.length > 0 || !lm.isLoaded();
+    this.issuesEmpty.hidden = rows.length > 0 || !lm.isLoaded();
+    const n = this.settled.size;
+    this.settledTools.hidden = n === 0;
+    this.settledLabel.textContent = n ? `${n} settled ${n === 1 ? 'row' : 'rows'}` : '';
     this.issuesList.replaceChildren();
-    for (const item of items) {
+    for (const row of rows) {
       const li = el('li');
       const b = el('button', 'anv-issue');
       b.type = 'button';
-      b.dataset.line = String(item.line);
-      b.dataset.kind = item.kinds[0];
-      if (item.line === cursor) b.setAttribute('aria-current', 'true');
+      b.dataset.line = String(row.line);
+      b.dataset.kind = row.kinds[0] ?? 'changed';
+      if (row.settled) b.dataset.settled = 'true';
+      if (row.line === cursor) b.setAttribute('aria-current', 'true');
       const dot = el('span', 'anv-dot');
       dot.setAttribute('aria-hidden', 'true');
-      const text = lines[item.line]?.text ?? '';
+      const text = lines[row.line]?.text ?? '';
       const title = text.length > NAVIGATOR_POLICY.titleChars ? `${text.slice(0, NAVIGATOR_POLICY.titleChars - 1)}…` : text;
       const body = el('span', 'anv-issue-body');
-      body.append(el('span', 'anv-issue-title', title || `Line ${item.line + 1}`), el('small', 'anv-issue-kind', needsYouLabel(item, actor => lm.displayName(actor), lm.me())));
+      body.append(
+        el('span', 'anv-issue-title', title || `Line ${row.line + 1}`),
+        el('small', 'anv-issue-kind', row.settled ? `Settled · line ${row.line + 1}` : row.label),
+      );
       b.append(dot, body);
-      b.onclick = () => this.host.go(item.line);
+      b.onclick = () => this.host.go(row.line);
       li.append(b);
       this.issuesList.append(li);
     }
@@ -198,7 +242,8 @@ export class NavigatorUI {
   debugState(): Record<string, unknown> {
     return {
       tab: this.tab,
-      issues: [...this.issuesList.querySelectorAll<HTMLElement>('.anv-issue')].map(b => ({ line: Number(b.dataset.line), kind: b.dataset.kind, label: b.querySelector('.anv-issue-kind')?.textContent ?? '' })),
+      issues: [...this.issuesList.querySelectorAll<HTMLElement>('.anv-issue')].map(b => ({ line: Number(b.dataset.line), kind: b.dataset.kind, settled: b.dataset.settled === 'true', label: b.querySelector('.anv-issue-kind')?.textContent ?? '' })),
+      settled: [...this.settled.keys()].sort((a, b) => a - b),
       outline: [...this.outlineList.querySelectorAll<HTMLElement>('.anv-row')].map(r => ({ heading: Number(r.dataset.heading), folded: r.querySelector<HTMLElement>('.anv-fold')?.dataset.folded === 'true' })),
     };
   }

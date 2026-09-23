@@ -12,7 +12,7 @@ import { actorKey, type LineAnchor } from '../src/shared/line-marks.js';
 import type { BundleMember, BundleStatus, ProofBundle } from '../src/shared/bundles.js';
 import type { AltPick, ProofAlternative } from '../src/shared/alternatives.js';
 import type { ProofTtl, TtlCheck } from '../src/shared/ttl.js';
-import { isThreadAsks, type ThreadAnchorLine, type ThreadMeta } from '../src/shared/threads.js';
+import { isThreadAsks, mergeReplies, type ThreadAnchorLine, type ThreadMeta, type ThreadReply } from '../src/shared/threads.js';
 
 function parseJson<T>(raw: string | null | undefined, fallback: T): T {
   if (!raw) return fallback;
@@ -340,6 +340,8 @@ interface ThreadRow {
   created_at: string;
   closed_at: string | null;
   closed_by: string | null;
+  /** Accord round 2 stage C: the thread's own copy of its replies (it outlives its mark). */
+  replies_json: string | null;
 }
 
 const THREAD_STATUSES = new Set(['open', 'resolved', 'accepted', 'rejected', 'withdrawn']);
@@ -359,7 +361,25 @@ function rowToThread(row: ThreadRow): ThreadMeta {
     closedAt: row.closed_at,
     closedBy: row.closed_by,
     chatMessageId: row.chat_message_id,
+    replies: mergeReplies([], parseJson<ThreadReply[]>(row.replies_json ?? '[]', [])
+      .filter(reply => reply && typeof reply.text === 'string')),
   };
+}
+
+/**
+ * Accord round 2 stage C: appends a reply to the thread's OWN row, so deleting the anchored text
+ * (which takes the mark, and the mark's replies, with it) never takes the discussion of an
+ * unresolved disagreement with it. The mark keeps its copy too; src/shared/threads.ts mergeReplies
+ * shows each reply once.
+ */
+export function appendThreadReply(slug: string, id: string, reply: ThreadReply): boolean {
+  assertWritesAllowed('appendThreadReply');
+  const row = getDb().prepare(`SELECT replies_json FROM document_threads WHERE document_slug = ? AND id = ?`)
+    .get(slug, id) as { replies_json: string | null } | undefined;
+  if (!row) return false;
+  const replies = mergeReplies(parseJson<ThreadReply[]>(row.replies_json ?? '[]', []), [reply]).slice(-200);
+  return getDb().prepare(`UPDATE document_threads SET replies_json = ? WHERE document_slug = ? AND id = ?`)
+    .run(JSON.stringify(replies), slug, id).changes > 0;
 }
 
 export function listThreadRows(slug: string): ThreadMeta[] {
@@ -375,8 +395,8 @@ export function getThreadRow(slug: string, id: string): ThreadMeta | null {
 export function insertThreadRow(slug: string, thread: ThreadMeta): void {
   assertWritesAllowed('insertThreadRow');
   getDb().prepare(`
-    INSERT INTO document_threads (id, document_slug, mark_id, by_actor, asks, text, anchor_json, selection, waiting_on_json, status, chat_message_id, created_at, closed_at, closed_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+    INSERT INTO document_threads (id, document_slug, mark_id, by_actor, asks, text, anchor_json, selection, waiting_on_json, status, chat_message_id, created_at, closed_at, closed_by, replies_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '[]')
     ON CONFLICT(id) DO NOTHING
   `).run(
     thread.id, slug, thread.markId, thread.by, thread.asks, String(thread.text ?? '').slice(0, 4000),

@@ -214,7 +214,10 @@ async function phone(browser, base, name, viewport) {
   // Editing first (Mike 2026-09-19): a tap on the comment places the caret and opens nothing;
   // the thread is in "This line" (the reading walk's right sheet), which follows the caret.
   await check(`${tag}: tapping the comment places the caret; This line shows a replyable thread`, async () => {
-    await page.mouse.click(viewport.width / 2, 5);
+    // Dismiss whatever is open by tapping an inert part of the bar. This used to tap the bar's
+    // centre; since Accord round 2 stage C the phone bar carries the Open | Accord toggle and its
+    // centre is no longer dead space, so tap the title, which does nothing, on purpose.
+    await page.locator('#share-banner .share-pill-title').click({ position: { x: 4, y: 8 } });
     await page.waitForTimeout(300);
     const highlight = page.locator('.ProseMirror [data-mark-id]').first();
     const id = await highlight.getAttribute('data-mark-id');
@@ -227,14 +230,28 @@ async function phone(browser, base, name, viewport) {
     }), 'the tap did not place the caret in the text');
     await page.getByRole('button', { name: 'More options', exact: true }).click();
     await page.getByRole('menuitem', { name: /This line/ }).click();
-    const card = page.locator(`.prw-right .prw-card[data-mark-id="${id}"]`);
-    await card.waitFor({ state: 'visible', timeout: 3000 });
+    // Accord round 2 stage C: a comment is a THREAD, and it shows once — in Discussion. It used to
+    // show there AND in "Changes on this line", which now carries only proposals. Same sheet, same
+    // reply, one card.
+    const card = page.locator(`.prw-right .amg-thread[data-thread="${id}"]`);
+    await card.waitFor({ state: 'visible', timeout: 3000 }).catch(async () => {
+      const why = await page.evaluate(() => ({
+        rightHidden: !document.querySelector('.prw-right') || getComputedStyle(document.querySelector('.prw-right')).display === 'none',
+        sheetOpen: document.querySelector('.prw-right')?.className,
+        threads: [...document.querySelectorAll('.amg-thread')].map(n => n.dataset.thread),
+        focus: window.__proofReadingWalk?.debugState().cursor,
+        ov: window.__proofOpenView?.debugState(),
+        toggleBox: document.querySelector('.aov-toggle')?.getBoundingClientRect(),
+      }));
+      throw new Error(`no Discussion card: ${JSON.stringify({ rightHidden: why.rightHidden, toggleBox: why.toggleBox, view: why.ov?.view, clean: why.ov?.clean, chosen: why.ov?.chosen, count: why.ov?.open?.count })}`);
+    });
     assert.ok((await card.innerText()).includes(commentText), 'This line does not show the comment');
-    await card.getByRole('button', { name: /^Reply/ }).click();
-    const reply = card.locator('textarea').first();
+    assert.equal(await page.locator(`.prw-changes .prw-card[data-mark-id="${id}"]`).count(), 0,
+      'the comment shows twice: in Discussion and in "Changes on this line"');
+    const reply = card.locator('.amg-thread-reply-input').first();
     await reply.fill('Reply from the phone');
     await page.screenshot({ path: path.join(shots, `${tag}-6-thread.png`) });
-    assert.equal(await chipOnTop(page, `.prw-right .prw-card[data-mark-id="${id}"] textarea`), false, 'feedback chip covers the reply box');
+    assert.equal(await chipOnTop(page, `.prw-right .amg-thread[data-thread="${id}"] .amg-thread-reply-input`), false, 'feedback chip covers the reply box');
   });
   await context.close();
 }

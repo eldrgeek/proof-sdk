@@ -12,7 +12,7 @@
  * without edit hooks.
  */
 
-import { classifyLineChange } from './line-change.js';
+import { classifyLineChange, editDistance } from './line-change.js';
 
 /**
  * Step B3b: `skimmed` = the reader's focus passed the line faster than its reading time. It is
@@ -145,6 +145,29 @@ export const LINE_MARK_POLICY = {
    * "carried". Off = every edit resets every mark (Step 1 behaviour).
    */
   carryCosmeticEdits: true,
+  /**
+   * Accord round 2 stage C (brief 5): agreement LAPSES when meaning changes. A substantive edit
+   * never carried a mark forward, but finding which line the marked text BECAME was left to
+   * `resolveLineAnchor`'s ordinal fallback, and that was wrong in two ways a reader could not see:
+   *
+   *   - insert or delete a line above, and the stale mark landed on whatever line now sits at the
+   *     old ordinal — an untouched line, reported as "changed since you marked it", while the line
+   *     that really changed showed no lapse at all;
+   *   - change the line's KIND at the same time (a sentence promoted to a heading) and the ordinal
+   *     fallback refused it, so the mark was dropped with no trace. An unseen line is not amber
+   *     (NEEDS_YOU_POLICY.lineReasons), so the line left the viewer's Open list silently — the
+   *     document could reach zero Open while nobody had agreed to what it said.
+   *
+   * On: the marked text is looked for by similarity first, the same way a cosmetic edit is, and the
+   * mark lands on the line it actually became, tagged `lapsed` with the wording that was agreed to.
+   */
+  lapseSubstantiveEdits: true,
+  /**
+   * How alike the new line must still be to count as the same line edited rather than a different
+   * line (1 - editDistance / length). Below this the text is treated as gone, which is the older
+   * behaviour. 0.5 keeps "ship on Monday" -> "ship on Friday" and refuses an unrelated sentence.
+   */
+  lapseSimilarity: 0.5,
 } as const;
 
 /**
@@ -462,6 +485,14 @@ export interface LineMarkEntry {
   /** Step B3b: for a carried mark, the text it was made on. */
   carriedFrom?: string;
   /**
+   * Accord round 2 stage C: the marked line was edited substantively and this mark did NOT carry.
+   * The mark now points at the line the text became; for an Agreed or Approved mark that is a
+   * lapsed agreement ("you agreed to an earlier version"). `current` is false, as it always was.
+   */
+  lapsed?: boolean;
+  /** For a lapsed mark, the wording that was agreed to (what the margin shows beside the new one). */
+  lapsedFrom?: string;
+  /**
    * Step B4f (perishable claims): the line's time-to-live expired after this Agreed/Approved mark
    * was made. The mark shows as "stale"; it still counts as Seen (src/shared/ttl.ts).
    */
@@ -501,16 +532,58 @@ export function findCarryTarget(lines: DocLine[], anchor: LineAnchor, cache?: Ma
   return best;
 }
 
+/**
+ * Accord round 2 stage C: the line a stale mark's text BECAME, when the change was substantive.
+ * The same search as findCarryTarget with the opposite verdict: nearest line (to where it was)
+ * whose text is still recognisably the marked text, but changed in a way that matters.
+ *
+ * Unlike the carry search this ignores the line's kind, because promoting a sentence to a heading
+ * is exactly the kind of edit that must lapse an agreement rather than lose it.
+ */
+export function findLapseTarget(lines: DocLine[], anchor: LineAnchor, taken?: ReadonlySet<number>): DocLine | null {
+  if (!LINE_MARK_POLICY.lapseSubstantiveEdits) return null;
+  const before = anchorText(anchor);
+  if (!before) return null;
+  const threshold = LINE_MARK_POLICY.lapseSimilarity;
+  let best: DocLine | null = null;
+  let bestScore = 0;
+  for (const line of lines) {
+    if (line.hash === anchor.hash) continue; // unchanged text: not what this mark became
+    if (taken?.has(line.index)) continue;
+    const longest = Math.max(before.length, line.text.length);
+    if (longest === 0) continue;
+    // A line far longer or shorter is a different line, not an edit of this one.
+    if (Math.min(before.length, line.text.length) / longest < threshold) continue;
+    const cap = Math.floor(longest * (1 - threshold));
+    const distance = editDistance(before, line.text, cap);
+    if (distance > cap) continue;
+    const score = 1 - distance / longest;
+    // Nearest to where it was wins ties, so a duplicated line does not steal its neighbour's mark.
+    const nearer = best === null
+      || score > bestScore + 0.001
+      || (Math.abs(score - bestScore) <= 0.001 && Math.abs(line.index - anchor.ordinal) < Math.abs(best.index - anchor.ordinal));
+    if (nearer) { best = line; bestScore = score; }
+  }
+  return best;
+}
+
 export function buildLineStates(lines: DocLine[], lineMarks: LineMark[]): LineState[] {
   const states: LineState[] = lines.map(line => ({ line, marks: new Map() }));
   const cache = new Map<string, boolean>();
   for (const mark of lineMarks) {
     if (!mark?.anchor) continue;
-    let resolved: (ResolvedAnchor & { carried?: boolean }) | null = resolveLineAnchor(lines, mark.anchor);
+    let resolved: (ResolvedAnchor & { carried?: boolean; lapsed?: boolean }) | null = resolveLineAnchor(lines, mark.anchor);
     if (!resolved || !resolved.current) {
       // Step B3b: a cosmetic edit carries the mark to the new text.
       const target = findCarryTarget(lines, mark.anchor, cache);
       if (target) resolved = { lineIndex: target.index, current: true, carried: true };
+      else {
+        // Accord round 2 stage C: a substantive edit does NOT carry, but the mark must still land
+        // on the line the text became, so the lapse is reported on the right line (and reported at
+        // all when the line's kind changed too). This beats resolveLineAnchor's ordinal guess.
+        const lapse = findLapseTarget(lines, mark.anchor);
+        if (lapse) resolved = { lineIndex: lapse.index, current: false, lapsed: true };
+      }
     }
     if (!resolved) continue;
     const state = states[resolved.lineIndex];
@@ -518,7 +591,9 @@ export function buildLineStates(lines: DocLine[], lineMarks: LineMark[]): LineSt
     const existing = state.marks.get(key);
     const candidate: LineMarkEntry = resolved.carried
       ? { mark, current: true, carried: true, carriedFrom: anchorText(mark.anchor) ?? undefined }
-      : { mark, current: resolved.current };
+      : resolved.lapsed
+        ? { mark, current: false, lapsed: true, lapsedFrom: anchorText(mark.anchor) ?? undefined }
+        : { mark, current: resolved.current };
     // An exact mark beats a carried one; a carried one beats a stale one.
     const rank = (entry: LineMarkEntry) => (entry.current ? (entry.carried ? 1 : 2) : 0);
     if (
@@ -545,6 +620,12 @@ export type ProofIssue =
     reasons: LineIssueReason[];
     unseenBy: string[];
     changedFor: string[];
+    /**
+     * Accord round 2 stage C: the members of `changedFor` who had AGREED (or approved) the older
+     * wording — their agreement lapsed, it was not merely out of date. The Open list says so in
+     * those words and the margin shows the wording they agreed to.
+     */
+    lapsedFor?: string[];
     rejectedBy: Array<{ by: string; reason: string | null }>;
     /** Step B3b: members whose focus passed the line too fast (they are in unseenBy too). */
     skimmedBy: string[];
@@ -856,11 +937,14 @@ export function computeIssues(input: {
   for (const state of states) {
     let unseenBy: string[] = [];
     let changedFor: string[] = [];
+    let lapsedFor: string[] = [];
     let skimmedBy: string[] = [];
     for (const member of input.team) {
       const entry = state.marks.get(actorKey(member));
       if (!entry || !entry.current || !countsAsSeen(entry.mark.status)) unseenBy.push(member);
       if (entry && !entry.current) changedFor.push(member);
+      // The lapse (brief 5): they had agreed, and the meaning changed under the agreement.
+      if (entry && entry.lapsed && (entry.mark.status === 'agreed' || entry.mark.status === 'approved')) lapsedFor.push(member);
       if (entry && entry.current && entry.mark.status === 'skimmed') skimmedBy.push(member);
     }
     const rejectedBy: Array<{ by: string; reason: string | null }> = [];
@@ -883,6 +967,7 @@ export function computeIssues(input: {
         coveredFor = unseenBy.filter(excused);
         unseenBy = unseenBy.filter(member => !excused(member));
         changedFor = changedFor.filter(member => !excused(member));
+        lapsedFor = lapsedFor.filter(member => !excused(member));
         skimmedBy = skimmedBy.filter(member => !excused(member));
         tierCounts.context.readForPeople += 1;
       }
@@ -909,6 +994,7 @@ export function computeIssues(input: {
       reasons,
       unseenBy,
       changedFor,
+      ...(lapsedFor.length ? { lapsedFor } : {}),
       rejectedBy,
       skimmedBy,
       ...(input.disagreementLines?.has(state.line.index) ? { disagreement: true } : {}),

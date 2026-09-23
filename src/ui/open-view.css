@@ -1,0 +1,255 @@
+/*
+ * Accord round 2, stage C — Open and Accord.
+ * Authorship: Mike Wolf (rulings), built by Claude Opus 5 (worker accord-open), 2026-09-22.
+ */
+
+/* ---------------------------------------------------------------- the toggle */
+
+.aov-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  border: 1px solid #d4d4d8;
+  border-radius: 999px;
+  background: #fff;
+  padding: 2px;
+  flex-shrink: 0;
+}
+.aov-toggle[hidden] { display: none; }
+
+.aov-seg {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: #52525b;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 11px;
+  /* Mike, 2026-09-21 (item 7): every top-bar button is at least 28 px on desktop and 44 px on a
+     phone. A segmented control is still buttons, so it obeys the same floor. */
+  min-height: 28px;
+  border-radius: 999px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.aov-seg:hover { color: #18181b; }
+.aov-seg[aria-pressed="true"] {
+  background: #18181b;
+  color: #fff;
+  font-weight: 600;
+}
+.aov-seg:focus-visible { outline: 2px solid #2563eb; outline-offset: 1px; }
+
+.aov-seg-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 11px;
+  font-weight: 600;
+}
+.aov-seg-count[hidden] { display: none; }
+.aov-seg[aria-pressed="true"] .aov-seg-count { background: #f59e0b; color: #1c1917; }
+
+/* ------------------------------------------- the honest header and zero band */
+
+.aov-header {
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border-left: 3px solid #d4d4d8;
+  background: #fafafa;
+  border-radius: 0 8px 8px 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.aov-header[hidden] { display: none; }
+.aov-header[data-view="accord"] { border-left-color: #a1a1aa; }
+
+.aov-header-text { margin: 0; color: #3f3f46; }
+.aov-header-text[hidden] { display: none; }
+
+/* The zero moment: quiet and dignified. A state change, not confetti. */
+.aov-zero {
+  margin: 0;
+  color: #166534;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  animation: aov-zero-in 420ms ease-out;
+}
+.aov-zero[hidden] { display: none; }
+.aov-zero[data-scope="everyone"] { color: #14532d; }
+.aov-zero + .aov-header-text:not([hidden]) { margin-top: 4px; }
+
+@keyframes aov-zero-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) { .aov-zero { animation: none; } }
+
+.aov-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+.aov-tools[hidden] { display: none; }
+.aov-settled-count { color: #71717a; font-size: 12px; }
+.aov-clear {
+  appearance: none;
+  border: 1px solid #d4d4d8;
+  background: #fff;
+  color: #3f3f46;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+.aov-clear:hover { background: #f4f4f5; }
+.aov-clear:focus-visible { outline: 2px solid #2563eb; outline-offset: 1px; }
+
+/* ------------------------------------------------ the thin rule in Open view */
+
+.aov-rule {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 0;
+  margin: 2px 0;
+  cursor: pointer;
+  font: inherit;
+  color: #a1a1aa;
+}
+.aov-rule-line {
+  flex: 1;
+  height: 1px;
+  background: #e4e4e7;
+}
+.aov-rule-label {
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  color: #a1a1aa;
+}
+.aov-rule:hover .aov-rule-line { background: #d4d4d8; }
+.aov-rule:hover .aov-rule-label { color: #52525b; }
+.aov-rule:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; border-radius: 4px; }
+
+/* A settled row stays in place: greyed, struck through, not removed. */
+.ProseMirror .aov-settled {
+  opacity: 0.45;
+  text-decoration: line-through;
+  text-decoration-color: #a1a1aa;
+  text-decoration-thickness: 1px;
+}
+
+/* ------------------------------------------ the Accord view reads clean */
+
+/*
+ * "no marks, no threads, no margin chrome". Everything hidden here is chrome ABOUT the text, never
+ * the text itself: the margin and its dots, the Margin rail, the strip, the fold chips, the ask
+ * cards, the thread marks and the review-mark colouring. The words stay exactly as they are.
+ */
+body.aov-in-accord .plm-gutter,
+body.aov-in-accord .plm-dot,
+body.aov-in-accord .prw-right,
+body.aov-in-accord .pst-rule,
+body.aov-in-accord .prw-strip,
+body.aov-in-accord .plm-thread-mark,
+body.aov-in-accord .amg-tabs,
+body.aov-in-accord .prw-focus,
+body.aov-in-accord .pfold-chip,
+body.aov-in-accord .pfold-layer,
+body.aov-in-accord .ProseMirror .pask,
+body.aov-in-accord .ProseMirror .pask-inline-tag,
+body.aov-in-accord .plm-alts,
+body.aov-in-accord .plm-objection,
+body.aov-in-accord .pdo-box {
+  display: none !important;
+}
+/* A comment or a suggestion in the text reads as ordinary words in the Accord. */
+body.aov-in-accord .ProseMirror [data-mark-id] {
+  background: transparent !important;
+  color: inherit !important;
+  border: 0 !important;
+  text-decoration: none !important;
+  box-shadow: none !important;
+}
+body.aov-in-accord.prw-on #editor-container { max-width: var(--prw-text); }
+/* The reading walk's two highlights are chrome too: the Accord reads as a document. */
+body.aov-in-accord .prw-line-focus,
+body.aov-in-accord [data-prw-focus="true"] { background: transparent !important; box-shadow: none !important; }
+
+/* The Navigator's Issues tab keeps a settled row in place too. */
+.anv-issue[data-settled="true"] .anv-issue-title {
+  text-decoration: line-through;
+  color: #a1a1aa;
+}
+.anv-issue[data-settled="true"] { opacity: 0.55; }
+
+@media (max-width: 700px) {
+  /*
+   * The phone bar is title · toggle · Issues · ⋯ in about 375 px. The toggle must stay hard against
+   * the pill on the right: when it spread into the middle it pushed the title to three letters, and
+   * a tap aimed at the title landed on Accord and switched the whole view. A phone target is still
+   * at least 44 px tall (Mike, 2026-09-21, item 7) — the saving is width, never the target.
+   */
+  /*
+   * ONE button on the phone, not two. A 375 px bar holds the title, the Issues pill and ⋯ with
+   * about 185 px to spare; a two-segment control needs ~100 of that and lands in the middle of the
+   * screen, where it swallowed taps aimed at the title and switched the whole document into the
+   * Accord. So the phone shows only the segment that is not the current view: the button names
+   * where it takes you, which is what a toggle means anyway. Both are still in the DOM, still
+   * reachable, and the target is still 44 px.
+   */
+  .aov-toggle { padding: 0; border-radius: 12px; flex: 0 0 auto; border: 0; background: transparent; }
+  .aov-toggle[data-view="accord"] .aov-seg[data-view="accord"],
+  .aov-toggle[data-view="open"] .aov-seg[data-view="open"] { display: none; }
+  .aov-seg[aria-pressed="false"] { border: 1px solid #d4d4d8; background: #fff; }
+  .aov-seg { padding: 0 7px; min-height: 44px; font-size: 11px; border-radius: 12px; gap: 0; }
+  /* The count is already in the Issues pill, right beside it: it does not need saying twice. */
+  .aov-seg-count { display: none; }
+  .aov-header { margin: 0 0 10px; padding: 8px 10px; font-size: 12px; }
+}
+
+/* The Open view with nothing in it says why, rather than reading as an empty document. */
+.aov-empty { margin: 0; color: #71717a; }
+.aov-empty[hidden] { display: none; }
+.aov-empty + .aov-tools:not([hidden]) { margin-top: 6px; }
+
+/* The Navigator's Issues tab keeps its settled rows in place too, with the same control. */
+.anv-settled-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid #f4f4f5;
+}
+.anv-settled-tools[hidden] { display: none; }
+.anv-settled-count { color: #a1a1aa; font-size: 11px; }
+.anv-clear-settled {
+  appearance: none;
+  border: 1px solid #e4e4e7;
+  background: #fff;
+  color: #52525b;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 7px;
+  cursor: pointer;
+}
+.anv-clear-settled:hover { background: #f4f4f5; }
