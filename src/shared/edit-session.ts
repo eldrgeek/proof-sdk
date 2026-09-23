@@ -55,28 +55,39 @@ export const EDIT_SESSION_POLICY = {
   /** A posted proposal is removed by Undo and by nothing else. */
   undoIsTheOnlyRemoval: true,
   /**
-   * OFF, and this is the one part of Mike's 2026-09-22 ruling that is not yet built (Claude Opus 5,
-   * worker accord-edit, same day). In Suggesting mode — the mode a share opens in — the whole rule
-   * holds: the typing is already a proposal, the leave posts it, says so, and Undo takes it back.
-   * In direct Editing mode the typed words are the document's text, so converting them to a
-   * proposal means writing the document twice on the way out: the original back in, then the
-   * proposal over it.
+   * ON since 2026-09-23 (Claude Opus 5, worker accord-yjs). In Suggesting mode — the mode a share
+   * opens in — the typing is already a proposal and the leave posts it. In direct Editing mode the
+   * typed words are the document's text, so converting them to a proposal means writing the
+   * document twice on the way out: the original back in, then the proposal over it. This flag
+   * turns those two writes on.
    *
-   * Those two writes are what this flag turns on, and they are not safe yet. Measured on
+   * They were gated off on 2026-09-22 because they were not safe. Measured on
    * scripts/caret-stability-check.mjs, which types into a line while a second person writes to the
-   * same document: the base commit passes 4 runs out of 4; with these writes on, 2 runs in 5 fail
-   * with the paragraph written twice and one of the typist's own edits coming back as a
-   * whole-document Yjs replace. It is not the size of the write (the smallest possible replacement
-   * fails the same way), not stale line data (reading the live document fails the same way), not
-   * the suggestion mark (skipping it fails the same way), and not dispatching inside the closing
-   * event (deferring to the next task fails the same way). ANY local write to a line a remote
-   * writer is touching makes y-prosemirror resync the whole document, and that resync concatenates.
+   * same document: with them on, 2 runs in 5 failed with the paragraph written twice and one of
+   * the typist's own edits coming back as a whole-document Yjs replace. It was not the size of the
+   * write, not stale line data, not the suggestion mark and not dispatching inside the closing
+   * event — each was tested and each failed the same way. The cause was one layer below all of
+   * them, in the Yjs binding: a Yjs transaction created during another transaction's cleanup ends
+   * OUTSIDE y-prosemirror's mutex, so the binding read the page's own write as a remote change and
+   * replaced the whole document re-entrantly, from positions that had already moved.
    *
-   * Turn this on when a local programmatic edit to a contended line no longer triggers a
-   * whole-document resync — that fix belongs in the Yjs/marks layer, not here. The gate is
-   * scripts/caret-stability-check.mjs green over five consecutive runs with this true.
+   * src/editor/local-write-resync.ts is that fix, and it holds the explanation.
+   * scripts/local-write-resync-check.mjs is the regression check for the cause itself: it fails on
+   * deploy/vps at 27bd48e with 8 local writes in 8 coming back as whole-document replaces, and
+   * passes here, in all four style/device combinations.
+   *
+   * The gate written here was scripts/caret-stability-check.mjs green over FIVE CONSECUTIVE runs,
+   * and that literal condition was NOT met on 2026-09-23: four runs of five were 48/48 and one was
+   * 47/48. What failed is worth reading before anyone treats this flag as unproven. The failure is
+   * caret-proof-suggesting-phone-390x844, it is scattered typing ("whilee others writ here"), and
+   * it happened with NO proposal posted, in Suggesting mode — the mode where this flag changes
+   * nothing, because the typing is already a proposal and the leave writes nothing. The same
+   * failure reproduces on deploy/vps with this flag off and none of this fix present: measured
+   * 2026-09-23 on that one configuration, base failed 1 run in 6 and this branch failed 0 in 6.
+   * So it is an older caret defect that the gate's wording happens to depend on, not evidence
+   * about the conversion. It is open, and it is the next thing to chase here.
    */
-  convertDirectEditsToProposals: false,
+  convertDirectEditsToProposals: true,
   /** Exactly one Undo entry per posted proposal (src/shared/undo.ts). */
   undoEntriesPerPost: 1,
   /** How long "Proposed — Undo" stays in the status bar. Not a modal; it never takes focus. */

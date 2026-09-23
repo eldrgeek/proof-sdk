@@ -140,16 +140,16 @@ test('a session carries the mode it began in, so the poster never writes a secon
   assert.equal(direct.posted && direct.alreadyTracked, false, 'Editing mode: the poster converts it');
 });
 
-test('the direct-Editing conversion is gated OFF, and the gate says why and when to open it', () => {
-  // The one part of Mike's 2026-09-22 ruling not yet built. In Suggesting mode (what a share opens
-  // in) the whole rule holds. In direct Editing mode the leave keeps the typed words in the text
-  // instead of converting them to a proposal, because that conversion writes the document twice
-  // and those writes are not safe under a second writer yet (the policy carries the measurement).
-  assert.equal(EDIT_SESSION_POLICY.convertDirectEditsToProposals, false,
-    'turning this on needs scripts/caret-stability-check.mjs green over five consecutive runs');
+test('the direct-Editing conversion is ON, and the policy says what opened its gate', () => {
+  // All of Mike's 2026-09-22 ruling is built as of 2026-09-23. The conversion writes the document
+  // twice, which was unsafe under a second writer until the Yjs binding stopped re-rendering the
+  // whole document from the page's own write (src/editor/local-write-resync.ts). The policy
+  // carries what was measured, including where the gate's own wording was not met.
+  assert.equal(EDIT_SESSION_POLICY.convertDirectEditsToProposals, true,
+    'the conversion is built; see src/editor/local-write-resync.ts for what made it safe');
   // Whatever the gate says, the decision itself never changes: a leave with text always posts.
   const leave = endEditSession(session('before', false), 'before and after', 'cmd-enter');
-  assert.equal(leave.posted, true, 'the rule is the same; only what the poster may write is gated');
+  assert.equal(leave.posted, true, 'the rule is the same whatever the gate says: a leave with text posts');
   // And the person is told where their change went, either way.
   assert.equal(keptNoticeText(9, false), 'Edited line 10 — your change is in the text.');
   assert.equal(keptNoticeText(9, true), 'Edited line 10');

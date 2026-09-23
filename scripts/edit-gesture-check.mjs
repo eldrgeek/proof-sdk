@@ -410,11 +410,13 @@ async function run(browser, base, style, tag, contextOptions, phone) {
   }
 
   await check(`${tag}: in direct Editing mode a leave keeps every character and says so`, async () => {
-    // EDIT_SESSION_POLICY.convertDirectEditsToProposals is off: in direct Editing mode the leave
-    // does NOT turn the typed words into a proposal (that rewrite is not safe under a second
-    // writer yet — the policy carries the measurement). What must still hold, and is what this
-    // checks, is the part of the rule that never bends: the edit ends visibly, not one character
-    // is lost, and the person is told where their change went.
+    // EDIT_SESSION_POLICY.convertDirectEditsToProposals is ON since 2026-09-23, so in direct
+    // Editing mode the leave now turns the typed words into a proposal, like every other door.
+    // What this check owns has not changed, and is the part of the rule that never bends: the
+    // edit ends visibly, not one character is lost, and the person is told where their change
+    // went. Only the destination moved — from the text to a proposal over it — so the text is
+    // read where the words now are (the line AND the person's proposals), and the notice names
+    // the proposal instead of the edit.
     await reset(page);
     await page.evaluate(() => window.proof.disableSuggestions());
     await page.waitForFunction(() => window.proof.isSuggestionsEnabled() === false, null, { timeout: 6000 });
@@ -424,8 +426,13 @@ async function run(browser, base, style, tag, contextOptions, phone) {
     assert.equal((await walkState(page)).modeText, `Editing line ${TARGET_LINE + 1}`, 'the edit has no visible state');
     await page.keyboard.press(phone ? 'Escape' : 'Meta+Enter');
     await page.waitForFunction(() => (window.__proofReadingWalk.debugState().notice ?? '').length > 0, null, { timeout: 8000, polling: 150 });
-    assert.ok((await rawLineText(page, TARGET_LINE)).includes(marker.trim()), 'direct Editing lost the typed text on leaving');
-    assert.match((await walkState(page)).notice, /^Edited line /, `the person was not told: "${(await walkState(page)).notice}"`);
+    assert.ok((await readableText(page)).includes(marker.trim()), 'direct Editing lost the typed text on leaving');
+    assert.match((await walkState(page)).notice, /^Proposed line /, `the person was not told: "${(await walkState(page)).notice}"`);
+    // The conversion is two writes; neither may double the line (scripts/local-write-resync-check.mjs
+    // owns the cause, this asserts the symptom is gone where the person meets it).
+    const whole = await rawLineText(page, TARGET_LINE);
+    const head = whole.slice(0, 24);
+    assert.equal(whole.indexOf(head), whole.lastIndexOf(head), `the conversion wrote the line twice: ${whole.slice(0, 200)}`);
     assert.equal((await walkState(page)).mode, 'reading', 'the edit did not end');
     await page.evaluate(() => window.proof.enableSuggestions());
     await page.waitForTimeout(300);

@@ -8,6 +8,10 @@
  *     person's own keystrokes as a whole-document remote replace;
  *  3. client: y-prosemirror scrolled the caret into view on every remote change.
  *
+ * And for its client-side cousin (2026-09-23, worker accord-yjs): a Yjs transaction that ends
+ * outside the mutex — because it was created during another transaction's cleanup — made the
+ * binding re-render the whole document from its OWN write. See src/editor/local-write-resync.ts.
+ *
  * Authorship: Claude Opus 5 (worker proof-caret), 2026-09-19.
  */
 import { randomUUID } from 'node:crypto';
@@ -157,10 +161,91 @@ async function remoteChangesDoNotScroll(): Promise<void> {
   console.log('✓ remote changes do not scroll the caret into view');
 }
 
+/**
+ * 4. The binding never re-renders the document from a Yjs transaction carrying its own write.
+ *
+ * The bug it guards (src/editor/local-write-resync.ts): a local write dispatches a ProseMirror
+ * transaction; a plugin view writes the marks map in its own Yjs transaction; Yjs hands that
+ * transaction's cleanup to the loop already running, so the binding's fragment transaction is
+ * cleaned up after y-prosemirror's mutex has been released; the binding reads its own write as a
+ * remote change and replaces the whole document, re-entrantly, from positions that have moved.
+ */
+async function ownWriteIsNotResynced(): Promise<void> {
+  const { installLocalWriteResyncPolicy, LOCAL_WRITE_POLICY, localWriteResyncStats } =
+    await import('../editor/local-write-resync');
+  assert(LOCAL_WRITE_POLICY.resyncOnOwnWrite === false, 'the binding may not re-render its own write');
+  assert(LOCAL_WRITE_POLICY.requireAgreement === true, 'the refusal must also prove the render would change nothing');
+  installLocalWriteResyncPolicy();
+  installLocalWriteResyncPolicy(); // idempotent
+
+  const { pair } = await import('./review-history-fixture');
+  const peers = await pair();
+  try {
+    const { alice, bob } = peers;
+    const view = alice.view;
+    const before = { refused: localWriteResyncStats.refused, rendered: localWriteResyncStats.rendered };
+
+    // A local write whose Yjs transaction is cleaned up OUTSIDE y-prosemirror's mutex, which is
+    // what a plugin view writing the marks map inside the same dispatch produces. Writing the
+    // marks map from a marks observer reproduces that nesting: the fragment transaction is
+    // created while this one is being cleaned up.
+    const marks = alice.doc.getMap<any>('marks');
+    let nested = 0;
+    const nest = () => {
+      if (nested > 0) return;
+      nested += 1;
+      // The dispatch happens inside the marks transaction's cleanup, so the fragment write it
+      // causes joins a cleanup loop already running.
+      view.dispatch(view.state.tr.insertText('!', 3));
+    };
+    marks.observe(nest);
+    alice.doc.transact(() => marks.set('probe', { kind: 'comment', text: 'other client' }), 'local-marks-sync');
+    marks.unobserve(nest);
+
+    const text = view.state.doc.child(0).textContent;
+    assert(text === 'Or!iginal', `the local write landed as "${text}", not "Or!iginal"`);
+    // Yjs and ProseMirror say the same thing, and Bob sees it too.
+    const yText = alice.doc.getXmlFragment('prosemirror').get(0).toString().replace(/<[^>]+>/g, '');
+    assert(yText === text, `Yjs holds "${yText}" and the document holds "${text}"`);
+    assert(bob.view.state.doc.child(0).textContent === text,
+      `the other client holds "${bob.view.state.doc.child(0).textContent}"`);
+    assert(view.state.doc.childCount === 2, `the document grew to ${view.state.doc.childCount} blocks`);
+    assert(localWriteResyncStats.refused > before.refused,
+      'the binding was never asked to re-render its own write, so this test proved nothing');
+    void before.rendered;
+
+    // The invariant the undo stacks rest on: a local write reaches Yjs in a transaction whose
+    // origin is ySyncPluginKey, because that is the only origin y-prosemirror's yUndoPlugin and
+    // ReviewDecisionHistory track. The guard opens a transaction around the binding's write, and
+    // Yjs keeps the origin of whichever call OPENED one, so the guard passes ySyncPluginKey too.
+    // On the path below, the sync plugin's own view hook has already opened it with that origin,
+    // so this asserts the invariant rather than the guard's own argument; the guard's argument is
+    // what carries it on y-prosemirror's snapshot-restore path, where nothing else opens one.
+    const origins: unknown[] = [];
+    const record = (_events: unknown, tr: { origin: unknown }) => origins.push(tr.origin);
+    alice.doc.getXmlFragment('prosemirror').observeDeep(record as any);
+    view.dispatch(view.state.tr.insertText('?', 3));
+    alice.doc.getXmlFragment('prosemirror').unobserveDeep(record as any);
+    assert(origins.length > 0, 'the local write reached no Yjs transaction');
+    assert(origins.every(origin => origin === ySyncPluginKey),
+      `a local write opened a Yjs transaction with the wrong origin: ${origins.map(o => String(o)).join(', ')}`);
+    // And it is still undoable, which is what the origin buys: an untracked origin would leave
+    // the undo stack empty. (Yjs groups writes made inside its capture window into one entry, so
+    // what is asserted is that undo took the typing back, not how many entries it used.)
+    assert(alice.history.undo() === true, 'the local write could not be undone: its origin is not tracked');
+    assert(!view.state.doc.child(0).textContent.includes('?'),
+      `undo left the typing in place: "${view.state.doc.child(0).textContent}"`);
+    console.log(`\u2713 a local write is not re-rendered as a remote change (${localWriteResyncStats.refused - before.refused} refused)`);
+  } finally {
+    peers.close();
+  }
+}
+
 async function main(): Promise<void> {
   await serverKeepsRelativePositions();
   await historyEditHasNoEcho();
   await remoteChangesDoNotScroll();
+  await ownWriteIsNotResynced();
   const { isForeignTransaction } = await import('../editor/caret-anchor');
   const tr = (meta: Record<string, unknown>, docChanged: boolean, selectionSet: boolean) => ({
     getMeta: (key: unknown) => meta[key === ySyncPluginKey ? 'ysync' : String(key)], docChanged, selectionSet,

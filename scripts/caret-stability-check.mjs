@@ -372,8 +372,53 @@ async function run(browser, base, style, mode, device) {
     assert.equal(clickSel.head, want, `caret at ${clickSel.head}, expected ${want}`);
   });
   await check(`${tag}: every character lands contiguously at the click position`, async () => {
-    const text = await blockText(page, TARGET_LINE);
-    assert.equal(text, expected, `line reads: ${text}`);
+    // What this owns is that the typing is not scattered: the 40 characters land together, at the
+    // click, in the order they were typed. WHERE the finished line lives depends on whether a door
+    // fired while the person typed (the mouse drifting to another line is one —
+    // EDIT_SESSION_POLICY, hover). A door posts the edit as a proposal, which is
+    // src/editor/plugins/suggestions.ts and is the rule Mike ruled on 2026-09-22; the line then
+    // holds the words it had and the proposal holds the typed line. Both are read here, and the
+    // document is read from ProseMirror, not from the DOM: a whole-line replace proposal RENDERS
+    // as the line followed by the proposed text, which reads like the paragraph written twice and
+    // is not (verified 2026-09-23: ProseMirror and the Yjs fragment both hold the line once).
+    const state = await page.evaluate(i => {
+      const view = window.__editorView;
+      let yjs = null;
+      for (const plugin of view.state.plugins) {
+        const pluginState = plugin.getState(view.state);
+        if (pluginState && pluginState.binding) {
+          yjs = pluginState.binding.type.toArray()[i]?.toString().replace(/<[^>]+>/g, '') ?? null;
+          break;
+        }
+      }
+      const posted = (window.__proofEditGesture?.posted ?? [])
+        .filter(p => p.line === i && p.markId && !p.refused)
+        .map(p => ({ proposed: p.proposed, tracked: !!p.tracked }));
+      return { line: view.state.doc.child(i).textContent, yjs, posted, blocks: view.state.doc.childCount };
+    }, TARGET_LINE);
+    // Wherever it ended up, the typed line must be readable exactly as it was typed.
+    const proposals = state.posted.map(p => p.proposed);
+    const surfaces = [state.line, ...proposals];
+    assert.ok(surfaces.includes(expected),
+      `the typed line is not readable anywhere.\n    line:      ${state.line}\n    proposals: ${proposals.join('\n               ') || '(none)'}`);
+    // Where it ended up depends on the mode the typing happened in, and both are the same rule.
+    const converted = state.posted.some(p => !p.tracked);
+    if (converted) {
+      // Direct Editing, and a door fired: the conversion put the line back to the words it had,
+      // and the typed line is the proposal over them.
+      assert.equal(state.line, original, `the leave left the line as: ${state.line}`);
+      assert.ok(proposals.includes(expected), `no proposal carries the typed line: ${proposals.join(' | ')}`);
+    } else {
+      // Suggesting mode (the typing is already tracked), or no door fired at all: either way the
+      // typed line is the line, and the DOM shows exactly that.
+      assert.equal(state.line, expected, `line reads: ${state.line}`);
+      if (!state.posted.length) {
+        assert.equal(await blockText(page, TARGET_LINE), expected, `the DOM reads: ${await blockText(page, TARGET_LINE)}`);
+      }
+    }
+    // Either way the document is one paragraph here, and Yjs says the same thing.
+    assert.equal(state.blocks, blocks.length, `the document went to ${state.blocks} blocks`);
+    assert.equal(state.yjs, state.line, `Yjs holds "${state.yjs}" and the document holds "${state.line}"`);
   });
   await check(`${tag}: the selection never jumps while typing`, async () => {
     const jumps = samples.filter(s => s.anchor !== s.head || s.head !== clickSel.head + s.i + 1);

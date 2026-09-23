@@ -66,6 +66,7 @@ import {
 } from 'y-prosemirror';
 import { applyAwarenessUpdate, removeAwarenessStates } from 'y-protocols/awareness';
 import { installRemoteChangeScrollPolicy } from './remote-change-scroll';
+import { installLocalWriteResyncPolicy } from './local-write-resync';
 import { anchorCaretAround } from './caret-anchor';
 import * as encoding from 'lib0/encoding';
 
@@ -281,6 +282,7 @@ import '../agent/external-agent-bridge';
 
 // Remote Yjs changes never scroll the view (caret stability, 2026-09-19).
 installRemoteChangeScrollPolicy();
+installLocalWriteResyncPolicy();
 
 const LEGACY_REST_FALLBACK = false;
 
