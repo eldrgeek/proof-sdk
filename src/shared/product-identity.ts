@@ -56,7 +56,7 @@ export const DEFAULT_PRODUCT_IDENTITY: ProductIdentity = {
   teamNoun: 'Accord Team',
   tagline: 'A collaborative editor for humans and AI',
   emailFromName: 'Accord',
-  emailFromAddress: 'proof@mike-wolf.com',
+  emailFromAddress: 'accord@mike-wolf.com',
   engineName: 'Proof SDK',
   homeUrl: 'https://vps.mike-wolf.com/',
 };
