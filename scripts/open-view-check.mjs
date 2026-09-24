@@ -321,7 +321,9 @@ async function main() {
         // Mike agrees to everything; Eric agrees to the first few lines only.
         await markAll(mike.page, 'agreed');
         await markAll(eric.page, 'agreed', 3);
-        await waitFor(mike.page, () => (window.__proofOpenView.debugState().header.text || '').includes('Eric'), null, 15_000);
+        // The header names Eric as soon as his first mark syncs ("from line 2"). Wait for the
+        // three marks, which is the state the assertion below describes.
+        await waitFor(mike.page, () => /Eric[^.]* has not read from line 4 on\./.test(window.__proofOpenView.debugState().header.text || ''), null, 20_000);
         await chooseCopy(mike.page, true);
         await mike.page.waitForTimeout(500);
         const s = await state(mike.page);

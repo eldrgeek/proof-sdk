@@ -3789,6 +3789,10 @@ class ProofEditorImpl implements ProofEditor {
     const suggestToggle = this.createSuggestToggleButton();
     const suggestionReview = this.createShareSuggestionReviewButton();
     // Title, Review, People, Share. Mike, 2026-09-23 (usability brief).
+    // ensureLineMarks creates the reading walk. Read its Review button after that call.
+    // ?? does not re-read its left side, so a call inside ?? left the old Issues pill in the toolbar.
+    const lineMarksUi = this.ensureLineMarks();
+    const reviewControl = this.readingWalk?.navigator.reviewButton ?? lineMarksUi.bannerEl;
     const group = (name: string, ...children: HTMLElement[]) => {
       const node = document.createElement('span');
       node.className = `share-pill-group share-pill-${name}`;
@@ -3799,7 +3803,7 @@ class ProofEditorImpl implements ProofEditor {
     hidden.setAttribute('aria-hidden', 'true');
     banner.replaceChildren(
       group('center', title, syncStatusInline),
-      group('right', this.readingWalk?.navigator.reviewButton ?? this.ensureLineMarks().bannerEl, peopleBtn, shareBtn),
+      group('right', reviewControl, peopleBtn, shareBtn),
       hidden,
       this.createShareOverflowButton(),
     );
