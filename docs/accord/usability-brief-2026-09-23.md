@@ -135,6 +135,8 @@ Mike, later on 2026-09-23: "We also have Grok, Cursor, agy, others." So the plan
 
 Before a stage merges, agy (Gemini 3.1 Pro) reviews its diff against this document, and the reviewer runs the suites and the browser checks. Grok works as seat `grok-builder`, registered for this job.
 
+**Outcome (2026-09-24):** every stage merged into `accord/usability` at 540d684. Later beads were added along the way: S2 was split into S2a (ac-q3j, the panel) and S2b (ac-b8r, the margin); S4b-logic is ac-bq6; the blind-mode leak fixes are ac-0f4. The validation report, with the before and after, the ringer list, the verification numbers and the risks, is `docs/accord/usability-report-2026-09-23.md`.
+
 The bead ids are in the store (`~/Projects/_estate/bin/bead --repo proof-sdk list`).
 
 ---
