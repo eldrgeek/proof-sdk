@@ -15,8 +15,8 @@ function run(): void {
       status: 'pending',
       quote: 'old',
       content: 'new',
-    }) === false,
-    'Expected pending replace suggestions not to be preserved when missing from server metadata',
+    }) === true,
+    'Expected pending replace suggestions to be preserved when missing from passive snapshots',
   );
 
   assert(
@@ -26,8 +26,8 @@ function run(): void {
       status: 'pending',
       quote: 'old',
       content: 'new',
-    }) === false,
-    'Expected pending insert suggestions not to be preserved when missing from server metadata',
+    }) === true,
+    'Expected pending insert suggestions to be preserved when missing from passive snapshots',
   );
 
   assert(
@@ -36,8 +36,8 @@ function run(): void {
       by: 'ai:test',
       status: 'pending',
       quote: 'old',
-    }) === false,
-    'Expected pending delete suggestions not to be preserved when missing from server metadata',
+    }) === true,
+    'Expected pending delete suggestions to be preserved when missing from passive snapshots',
   );
 
   assert(

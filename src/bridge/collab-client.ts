@@ -2,7 +2,7 @@ import * as Y from 'yjs';
 import { HocuspocusProvider } from '@hocuspocus/provider';
 import type { Awareness } from 'y-protocols/awareness';
 import { shareClient, type CollabSessionInfo, type ShareRole } from './share-client';
-import { shouldPreserveMissingLocalMark } from './marks-preservation';
+import { isPendingSuggestionMark, shouldPreserveMissingLocalMark } from './marks-preservation';
 import { recordClientIncidentEvent } from '../agent/client-incident-buffer';
 
 type PresenceHandler = (count: number) => void;
@@ -843,7 +843,10 @@ export class CollabClient {
     }
   }
 
-  setMarksMetadata(marks: Record<string, unknown>): void {
+  setMarksMetadata(
+    marks: Record<string, unknown>,
+    options?: { allowSuggestionRemoval?: boolean },
+  ): void {
     if (!this.ydoc || !this.marksMap) {
       this.pendingMarksSnapshot = { ...marks };
       return;
@@ -852,10 +855,12 @@ export class CollabClient {
       this.debugLog('skip-marks-write-readonly', { markCount: Object.keys(marks).length });
       return;
     }
+    const allowSuggestionRemoval = options?.allowSuggestionRemoval === true;
     const currentMarksSnapshot = this.readMarks();
     const mergedMarks: Record<string, unknown> = { ...marks };
     this.marksMap.forEach((value, key) => {
       if (mergedMarks[key] !== undefined) return;
+      if (allowSuggestionRemoval && isPendingSuggestionMark(value)) return;
       if (!shouldPreserveMissingLocalMark(value)) return;
       mergedMarks[key] = value as unknown;
     });

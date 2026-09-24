@@ -189,6 +189,7 @@ import {
   type ShareSuggestionResolutionTransport,
 } from '../bridge/share-client';
 import { collabClient, type CollabSyncStatus } from '../bridge/collab-client';
+import { shouldIgnoreIncomingEmptyServerMarks } from '../bridge/marks-preservation';
 import { shouldDeferShareMarksRefresh } from './share-marks-refresh';
 import {
   reconcileShareMarkMutationBatch,
@@ -1613,14 +1614,16 @@ class ProofEditorImpl implements ProofEditor {
           const incomingMarks = (marks && typeof marks === 'object' && !Array.isArray(marks))
             ? (marks as Record<string, StoredMark>)
             : {};
-          // Hocuspocus can emit a transient empty marks payload before initial sync
-          // or during reconnect. Once synced, an empty map is authoritative even
-          // while content updates are still in flight: it can be a remote resolution.
-          if (
-            Object.keys(incomingMarks).length === 0
-            && Object.keys(this.lastReceivedServerMarks).length > 0
-            && !this.collabIsSynced
-          ) {
+          const localMetadata = this.editor
+            ? this.getMarkMetadataWithQuotes() as Record<string, StoredMark>
+            : {};
+          if (shouldIgnoreIncomingEmptyServerMarks({
+            incomingMarks,
+            cachedServerMarks: this.lastReceivedServerMarks,
+            localMetadata,
+            isSynced: this.collabIsSynced,
+            unsyncedChanges: this.collabUnsyncedChanges,
+          })) {
             return;
           }
 
@@ -4524,7 +4527,7 @@ class ProofEditorImpl implements ProofEditor {
           const metadata = getMarkMetadataWithQuotes(view.state);
           this.lastReceivedServerMarks = { ...metadata };
           this.initialMarksSynced = true;
-          collabClient.setMarksMetadata(metadata);
+          collabClient.setMarksMetadata(metadata, { allowSuggestionRemoval: true });
         });
         if (failed) throw new Error(`${failed} mark${failed === 1 ? ' has' : 's have'} changed. Please review the remaining marks again.`);
       } finally {
@@ -6078,6 +6081,12 @@ class ProofEditorImpl implements ProofEditor {
     });
   }
 
+  private getCollabMarksSnapshotForEditor(): Record<string, StoredMark> {
+    const ydoc = collabClient.getYDoc();
+    const fromYjs = (ydoc?.getMap('marks')?.toJSON?.() ?? {}) as Record<string, StoredMark>;
+    return mergePendingServerMarks(this.lastReceivedServerMarks, fromYjs);
+  }
+
   private applyLatestCollabMarksToEditor(): void {
     if (!this.isShareMode || !this.collabEnabled || !this.editor) return;
     if (this.isEditorDocStructurallyEmpty()) return;
@@ -6085,7 +6094,7 @@ class ProofEditorImpl implements ProofEditor {
     this.applyingCollabRemote = true;
     this.suppressMarksSync = true;
     try {
-      this.applyExternalMarks(this.lastReceivedServerMarks, { authoritativeSnapshot: true });
+      this.applyExternalMarks(this.getCollabMarksSnapshotForEditor(), { authoritativeSnapshot: true });
     } finally {
       this.suppressMarksSync = false;
       this.applyingCollabRemote = false;
@@ -6599,7 +6608,10 @@ class ProofEditorImpl implements ProofEditor {
             Object.keys(getMarkMetadataWithQuotes(view.state)).forEach(id => this.reviewDecisionIds.add(id));
             history.decide(() => {
               originalDispatch(transaction);
-              const metadata = getMarkMetadataWithQuotes(view.state);
+              const metadata = mergePendingServerMarks(
+                getMarkMetadataWithQuotes(view.state),
+                this.lastReceivedServerMarks,
+              );
               this.lastReceivedServerMarks = { ...metadata };
               this.initialMarksSynced = true;
               collabClient.setMarksMetadata(metadata);
@@ -6723,7 +6735,10 @@ class ProofEditorImpl implements ProofEditor {
           this.sendDocumentSnapshot(view, markdown);
           if (this.collabEnabled && this.collabCanEdit && this.shouldPublishProjectionMarkdown('content-sync')) {
             this.publishProjectionMarkdown(view, markdown, 'content-sync');
-            const metadata = getMarkMetadataWithQuotes(view.state);
+            const metadata = mergePendingServerMarks(
+              getMarkMetadataWithQuotes(view.state),
+              this.lastReceivedServerMarks,
+            );
             collabClient.setMarksMetadata(metadata);
           }
           getTriggerService().updateDocumentContent(
@@ -6834,7 +6849,10 @@ class ProofEditorImpl implements ProofEditor {
       this.sendDocumentSnapshot(view, canonicalMarkdown);
       if (this.shouldPublishProjectionMarkdown('direct-content')) {
         this.publishProjectionMarkdown(view, canonicalMarkdown, 'direct-content');
-        const metadata = getMarkMetadataWithQuotes(view.state);
+        const metadata = mergePendingServerMarks(
+          getMarkMetadataWithQuotes(view.state),
+          this.lastReceivedServerMarks,
+        );
         collabClient.setMarksMetadata(metadata);
       }
       getTriggerService().updateDocumentContent(
@@ -6872,7 +6890,9 @@ class ProofEditorImpl implements ProofEditor {
     this.initialMarksSynced = true;
 
     if (this.collabEnabled && this.collabCanEdit) {
-      collabClient.setMarksMetadata(metadata);
+      collabClient.setMarksMetadata(metadata, {
+        allowSuggestionRemoval: this.liveCollabSuggestionResolutionDepth > 0,
+      });
     }
 
     // In share mode, push marks-only updates immediately for reliability.
