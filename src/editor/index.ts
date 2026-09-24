@@ -6744,9 +6744,14 @@ class ProofEditorImpl implements ProofEditor {
           } else {
             // Wrap the transaction to convert edits to suggestions
             const wrappedTr = wrapTransactionForSuggestions(tr, view.state, true);
-            const beforeIds = new Set(Object.keys(getMarkMetadata(view.state)));
+            // Follow only a replacement this keystroke created: compare the document's marks
+            // before and after (one source), and require the typist as its author. A replacement
+            // restored by someone else's Undo is in the text before its record reaches this page,
+            // and it must not take the caret.
+            const beforeIds = new Set(getMarks(view.state).map(m => m.id));
             dispatchWithRevision(wrappedTr);
-            const replacement = getMarks(view.state).find(m => m.kind === 'replace' && !beforeIds.has(m.id));
+            const me = getCurrentActor();
+            const replacement = getMarks(view.state).find(m => m.kind === 'replace' && !beforeIds.has(m.id) && m.by === me);
             if (replacement) focusLiveSuggestion(view, replacement.id);
 
           }

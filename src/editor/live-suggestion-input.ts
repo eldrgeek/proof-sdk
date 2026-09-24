@@ -22,7 +22,7 @@ function offsetIn(span: HTMLElement): number | null {
 }
 export function focusLiveSuggestion(view: EditorView, id: string, offset?: number): void {
   const span = [...view.dom.querySelectorAll<HTMLElement>('[data-live-suggestion]')].find(el => el.dataset.markId === id);
-  if (!span || !view.editable) return;
+  if (!span || !view.editable) { view.focus(); return; }
   span.focus({ preventScroll: true });
   const range = document.createRange(); range.selectNodeContents(span);
   if (span.firstChild?.nodeType === Node.TEXT_NODE) range.setStart(span.firstChild, Math.min(offset ?? span.textContent!.length, span.firstChild.textContent!.length));
@@ -54,10 +54,9 @@ export function makeLiveSuggestionInput(span: HTMLElement, view: EditorView, id:
       focusLiveSuggestion(view, detail.nextId, offset);
     } else {
       span.dataset.liveContent = content;
-      if (span.isConnected) {
-        if (!(event as InputEvent).isComposing) focusLiveSuggestion(view, id, offset);
-      }
-      else view.focus();
+      // Publishing can redraw the widget (the proposal's record is stamped on the text), which
+      // replaces this span. Keep typing in the proposal: focus the span now drawn for this id.
+      if (!span.isConnected || !(event as InputEvent).isComposing) focusLiveSuggestion(view, id, offset);
     }
   });
   const insertPlainText = (text: string) => {
@@ -72,6 +71,14 @@ export function makeLiveSuggestionInput(span: HTMLElement, view: EditorView, id:
     span.dispatchEvent(new Event('input', { bubbles: true }));
   };
   span.addEventListener('keydown', event => {
+    // Select All inside the proposal's words selects those words. Chromium otherwise selects
+    // the whole outer document, because this box sits in a non-editable island inside it.
+    if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'a') {
+      event.preventDefault(); event.stopPropagation();
+      const range = document.createRange(); range.selectNodeContents(span);
+      const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
+      return;
+    }
     // Keep history and Escape available to the document's capture listeners.
     if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); insertPlainText('\n'); }
     event.stopPropagation();
@@ -81,6 +88,14 @@ export function makeLiveSuggestionInput(span: HTMLElement, view: EditorView, id:
     insertPlainText(event.clipboardData?.getData('text/plain') ?? '');
   });
   span.addEventListener('drop', event => event.preventDefault());
+  // Focus that arrives without a caret inside (Tab, or focus() from code) would leave the
+  // browser's selection in the outer document, where ProseMirror keeps it. Put the caret in
+  // the proposal's words, as typing does.
+  span.addEventListener('focus', () => {
+    const selection = window.getSelection();
+    if (selection?.focusNode && span.contains(selection.focusNode)) return;
+    focusLiveSuggestion(view, id);
+  });
 }
 export function syncLiveSuggestionInputs(view: EditorView, metadata: Record<string, StoredMark>): void {
   if (!EDIT_SESSION_POLICY.liveProposals || !view.dom?.querySelectorAll) return;

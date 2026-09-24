@@ -71,10 +71,26 @@ async function clickAt(page, quote, after = true) {
     view.state.doc.descendants((node, start) => { if (pos === undefined && node.isText && node.text.includes(quote)) pos = start + node.text.indexOf(quote) + (after ? quote.length : 0); });
     if (pos === undefined) throw Error(`Missing click target ${quote}`);
     const node = view.domAtPos(pos).node; (node.nodeType === 1 ? node : node.parentElement).scrollIntoView({ block: 'center' });
-    const r = view.coordsAtPos(pos); return { x: r.left, y: (r.top + r.bottom) / 2, pos };
+    return { pos };
   }, { quote, after });
-  await page.mouse.click(point.x, point.y);
-  assert.equal(await page.evaluate(() => window.__editorView.state.selection.head), point.pos, 'Click did not place the caret');
+  // Wait until the scroll has settled (the page may scroll smoothly), then read the position.
+  const at = await page.evaluate(async pos => {
+    const view = window.__editorView; let last = null;
+    for (let i = 0; i < 60; i++) {
+      await new Promise(r => requestAnimationFrame(r));
+      const r = view.coordsAtPos(pos); const now = `${Math.round(r.left)},${Math.round(r.top)}`;
+      if (now === last) return { x: r.left, y: (r.top + r.bottom) / 2 };
+      last = now;
+    }
+    const r = view.coordsAtPos(pos); return { x: r.left, y: (r.top + r.bottom) / 2 };
+  }, point.pos);
+  // Rapid clicks at one spot count as a double or triple click, which selects a word or the
+  // paragraph. A person placing the caret clicks once; space the check's clicks the same way.
+  const since = Date.now() - (clickAt.last ?? 0);
+  if (since < 700) await page.waitForTimeout(700 - since);
+  await page.mouse.click(at.x, at.y);
+  clickAt.last = Date.now();
+  await poll(async () => { const s = await page.evaluate(() => { const sel = window.__editorView.state.selection; return [sel.anchor, sel.head]; }); return s[0] === point.pos && s[1] === point.pos; }, 'Click did not place a caret', 2000);
 }
 async function poll(fn, message, timeout = 5000) {
   const end = Date.now() + timeout;
@@ -128,11 +144,18 @@ async function run(browser, server, style, width) {
     await clickAt(a.page, 'Last paragraph stays once.');
     const beforeLetter = await text(a.page), beforeIds = (await pending(a.page)).map(m => m.id).sort();
     await a.page.keyboard.press('A'); assert.equal(await text(a.page), beforeLetter.replace('Last paragraph stays once.', 'Last paragraph stays once.A'));
-    await a.page.keyboard.press('ArrowLeft'); await a.page.keyboard.press('Delete');
+    const selNow = () => a.page.evaluate(() => { const s = window.__editorView.state.selection; return [s.anchor, s.head, String(document.activeElement?.className).slice(0, 30)]; });
+    const headBeforeArrow = (await selNow())[1];
+    await a.page.keyboard.press('ArrowLeft');
+    // ProseMirror reads the browser's moved caret on its selectionchange event; wait for it.
+    await poll(async () => (await selNow())[1] === headBeforeArrow - 1, 'ArrowLeft did not move the caret', 2000);
+    await a.page.keyboard.press('Delete');
     assert.equal(await text(a.page), beforeLetter);
     assert.deepEqual((await pending(a.page)).map(m => m.id).sort(), beforeIds, 'Letter/Delete decided another proposal');
     await a.page.keyboard.press('Escape'); assert.equal(await a.page.locator('.pst-mode').textContent(), 'Reading');
     assert.equal(await a.page.locator('.pst-bar').textContent().then(t => /No marks from you|You marked up to/.test(t)), false);
+    // Leaving the text brings the phone strip back on its own schedule; measure hover after that.
+    await a.page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 250)))));
     await hoverChangesNothing(a.page, 1); await scrollAcceptsNothing(a.page);
     // Both people type for ten seconds on the same line. Unique characters expose lost or
     // duplicated keystrokes even when the two runs interleave in CRDT order.
