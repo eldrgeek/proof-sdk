@@ -302,7 +302,7 @@ async function run(browser, style) {
       await waitFor(phone, () => window.__proofLineMarks.debugState().doWrites >= 1);
       const list = await agentCall(base, slug, KEY, 'GET', '/dos');
       assert.equal(list.body.dos[0].state, 'approved');
-  });
+    });
     await phoneCtx.close();
   } finally {
     await stop();

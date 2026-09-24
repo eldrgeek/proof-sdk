@@ -116,6 +116,8 @@ export function syncLiveSuggestionInputs(view: EditorView, metadata: Record<stri
 
 /** Publish ordinary native text input before MutationObserver delivery can race a remote redraw.
  * IME composition and replacement islands keep their own input paths.
+ * The text goes through the editor's handleTextInput props first, exactly as ProseMirror's own
+ * DOM path does, so input rules and the plugins that watch typing still see every character.
  */
 export function commitLiveTextInput(view: EditorView, input: InputEvent, enabled: boolean): boolean {
   if (!EDIT_SESSION_POLICY.synchronousTextInput || !enabled || !view.editable
@@ -123,6 +125,10 @@ export function commitLiveTextInput(view: EditorView, input: InputEvent, enabled
     || input.inputType !== 'insertText' || input.data === null
     || (input.target as HTMLElement | null)?.closest?.('[data-live-suggestion]')) return false;
   input.preventDefault();
-  view.dispatch(view.state.tr.insertText(input.data).scrollIntoView());
+  const text = input.data;
+  const { from, to } = view.state.selection;
+  const deflt = () => view.state.tr.insertText(text, from, to);
+  const handled = view.someProp('handleTextInput', f => f(view, from, to, text, deflt));
+  if (!handled) view.dispatch(deflt().scrollIntoView());
   return true;
 }

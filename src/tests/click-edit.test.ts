@@ -67,6 +67,25 @@ await test('beforeinput keeps every letter ordered across interleaved remote wri
   }
   assert.equal(peers.alice.map.get(pending(peers.alice).find(m => m.by === 'human:Alice')!.id).content, phrase);
 });
+await test('beforeinput text still reaches handleTextInput props (input rules, typing watchers)', peers => {
+  const view = peers.alice.view;
+  view.editable = true;
+  view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, 9)));
+  const seen: Array<[number, number, string]> = [];
+  const someProp = view.someProp;
+  // A handler that watches every character and takes over one of them, as an input rule does.
+  view.someProp = (name: string, f: (prop: any) => unknown) => name === 'handleTextInput'
+    ? f((_v: unknown, from: number, to: number, text: string) => { seen.push([from, to, text]); return text === '>'; })
+    : someProp(name, f);
+  const input = (data: string) => ({ inputType: 'insertText', data, cancelable: true, isComposing: false,
+    preventDefault() {}, target: null }) as unknown as InputEvent;
+  setCurrentActor('human:Alice');
+  assert.equal(commitLiveTextInput(view, input('a'), true), true);
+  assert.equal(commitLiveTextInput(view, input('>'), true), true);
+  assert.deepEqual(seen, [[9, 9, 'a'], [10, 10, '>']]);
+  assert.equal(view.state.doc.firstChild.textContent, 'Originala', 'a handler that takes a character keeps the default insert from running');
+  view.someProp = someProp;
+});
 await test('native input keeps IME, replacement islands and readonly views on their own paths', peers => {
   const view = peers.alice.view;
   const input = { inputType: 'insertText', data: 'x', cancelable: true, isComposing: false,

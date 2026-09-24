@@ -7,6 +7,8 @@ export const REVIEW_SURFACE_POLICY = {
   proposalDetails: 'review' as const,
   sectionBadge: 'pending-changes' as const,
   guestEditNotice: 'You can comment as a guest. Sign in to edit.',
+  /** How long the guest's one-line notice stays up after an attempt to edit. */
+  guestEditNoticeMs: 8000,
   lineMarkControls: false,
   lineTierControls: false,
   alternativeStacks: false,

@@ -39,7 +39,8 @@ export const BUNDLE_POLICY = {
   rejectedMemberSplits: true,
   /** Accepting a bundle is an edit acceptance, not agreement with the resulting lines (brief). */
   acceptIsAgreement: false,
-  acceptNote: 'Accepting applies these edits. It is not agreement with the resulting lines: mark them as usual.',
+  // The Accord rules (2026-09-24) retire accept-is-not-agreement: accepting a change agrees to it.
+  acceptNote: 'Accepting agrees to these changes.',
   /** The reading walk steps a bundle's passages as one unit when the focus reaches the first. */
   walkStepsAsUnit: true,
   /** Accept and reject need edit access (like accepting one suggestion); grouping needs comment access. */

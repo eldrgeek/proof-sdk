@@ -191,6 +191,7 @@ export class ReadingWalkUI {
   private readonly modeEl = el('span', 'prw-mode pst-mode');
   /** Accord round 2 stage A: "Proposed — Undo" after a leave posts, then it goes quiet. */
   private readonly guestNotice = el('div', 'prw-guest-notice');
+  private guestNoticeTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly sbNotice = el('span', 'pst-notice');
   private noticeTimer: ReturnType<typeof setTimeout> | null = null;
   /**
@@ -379,6 +380,7 @@ export class ReadingWalkUI {
     document.removeEventListener('focusout', this.onFocusChange);
     window.removeEventListener('proof:follow-in-page-link', this.onInPageLink as EventListener);
     this.strip.remove();
+    if (this.guestNoticeTimer) { clearTimeout(this.guestNoticeTimer); this.guestNoticeTimer = null; }
     this.guestNotice.remove();
     this.statusBar.remove();
     this.ruleEl.remove();
@@ -877,6 +879,9 @@ export class ReadingWalkUI {
       link.href = me.signInUrl;
       this.guestNotice.replaceChildren('You can comment as a guest. ', link, ' to edit.');
     }
+    // The notice answers the attempt; it goes away on its own so it never covers the text for good.
+    if (this.guestNoticeTimer) clearTimeout(this.guestNoticeTimer);
+    this.guestNoticeTimer = setTimeout(() => { this.guestNoticeTimer = null; this.guestNotice.remove(); }, REVIEW_SURFACE_POLICY.guestEditNoticeMs);
   };
 
   /** A click places the caret for editors and names the passage for guests. */
@@ -1696,7 +1701,7 @@ export class ReadingWalkUI {
       list.append(li);
     }
     card.append(list);
-    card.append(el('p', 'prw-bundle-note', 'Accepting agrees to these changes.'));
+    card.append(el('p', 'prw-bundle-note', BUNDLE_POLICY.acceptNote));
     const status = el('p', 'prw-bundle-status', describeBundle(view));
     status.setAttribute('role', 'status');
     card.append(status);

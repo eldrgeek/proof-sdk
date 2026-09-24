@@ -40,6 +40,16 @@ export async function pair(nativeOnly = false, connected = true) {
     const view: any = { hasFocus: () => false, state: EditorState.create({ schema, doc: initial, plugins }), dispatch(tr: any) {
       if (!production && tr.getMeta(ySyncPluginKey)?.isChangeOrigin) tr.setMeta(marksPluginKey, { type: 'SET_METADATA', metadata: map.toJSON() });
       view.state = view.state.apply(tr); for (const pv of updates) pv.update?.(view);
+    },
+    // EditorView.someProp over the state's plugins, first truthy result wins (as ProseMirror does).
+    someProp(name: string, f: (prop: any) => unknown) {
+      for (const plugin of view.state.plugins) {
+        const prop = plugin.props?.[name];
+        if (prop == null) continue;
+        const result = f(prop.bind ? prop.bind(plugin) : prop);
+        if (result) return result;
+      }
+      return undefined;
     } };
     for (const plugin of plugins) if (plugin.spec.view) updates.push(plugin.spec.view(view));
     map.observe(() => view.dispatch(view.state.tr.setMeta(marksPluginKey, { type: 'SET_METADATA', metadata: map.toJSON() }).setMeta('addToHistory', false)));
