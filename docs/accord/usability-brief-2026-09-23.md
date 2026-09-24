@@ -55,7 +55,7 @@ No stored value, field name or API value is renamed.
 ### 4. The draft model (settles the brief's section 5)
 
 - In the ordinary review flow, nobody types straight into the document text. A click or a tap selects one passage. A passage is the unit the marks already anchor to: a paragraph, a list item or a heading. The blue highlight shows exactly that unit. Selecting a phrase inside a passage still works, so a reader can discuss a phrase.
-- **Suggest change** opens an inline draft below the passage, prefilled with its text. The shared document is not written while the reader drafts. The keys E and Enter open the draft for the selected passage.
+- **Suggest change** opens an inline draft below the passage, prefilled with its text. The shared document is not written while the reader drafts. The key S opens the draft for the selected passage. (E is already taken: it starts an Explain thread.)
 - **Propose change**, or Cmd/Ctrl+Enter, writes one proposal in one transaction. The proposal is attributed to its author, and one Undo removes it.
 - Esc, a click elsewhere, scrolling, hovering, leaving the page and reloading all keep the draft. The passage then shows "Draft · Resume · Discard". Drafts are stored in the browser, per document, per passage text and per reader.
 - **Cancel** discards the draft.
