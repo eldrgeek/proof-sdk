@@ -1176,7 +1176,6 @@ class ProofEditorImpl implements ProofEditor {
   private undoUI: UndoUI | null = null;
   /** Accord layout stage 2: the menu bar, the toolbar's Undo slot, Edit › Find. */
   private menuBar: MenuBar | null = null;
-  private readonly toolbarUndoSlot = document.createElement('span');
   private findBar: FindBar | null = null;
   private undoPlacementQuery: MediaQueryList | null = null;
   /** Item 3 (Mike, 2026-09-19): typing "?" after a sentence asks the AIs to clarify it. */
@@ -3783,28 +3782,32 @@ class ProofEditorImpl implements ProofEditor {
     this.updateShareBannerSyncDisplay();
 
     const shareBtn = this.createShareMenuButton();
+    const peopleBtn = document.createElement('button');
+    peopleBtn.type = 'button';
+    peopleBtn.className = 'anv-people';
+    peopleBtn.textContent = 'People';
+    peopleBtn.setAttribute('aria-haspopup', 'menu');
+    peopleBtn.setAttribute('aria-expanded', 'false');
+    peopleBtn.onclick = () => this.menuBar?.open('people', true, peopleBtn);
 
     const suggestToggle = this.createSuggestToggleButton();
     const suggestionReview = this.createShareSuggestionReviewButton();
-    // Accord layout stage 2 (proposal, "Toolbar (44 px), one row, three groups"): left, the
-    // Suggesting | Editing switch and Undo; centre, the title and "Saved"; right, the Issues pill
-    // with Next, and Share. Nothing else: the wordmark, the people here and the AI faces moved to
-    // the menu bar; Marks, the suggestion count and Add agent moved into the menus and Share.
+    // Title, Review, People, Share. Mike, 2026-09-23 (usability brief).
+    // ensureLineMarks creates the reading walk. Read its Review button after that call.
+    // ?? does not re-read its left side, so a call inside ?? left the old Issues pill in the toolbar.
+    const lineMarksUi = this.ensureLineMarks();
+    const reviewControl = this.readingWalk?.navigator.reviewButton ?? lineMarksUi.bannerEl;
     const group = (name: string, ...children: HTMLElement[]) => {
       const node = document.createElement('span');
       node.className = `share-pill-group share-pill-${name}`;
       node.append(...children);
       return node;
     };
-    this.toolbarUndoSlot.className = 'share-pill-undo';
-    const hidden = group('hidden', syncStatusSep, this.createReviewStyleControl(), suggestionReview);
+    const hidden = group('hidden', suggestToggle, syncStatusSep, this.createReviewStyleControl(), suggestionReview);
     hidden.setAttribute('aria-hidden', 'true');
     banner.replaceChildren(
-      group('left', suggestToggle, this.toolbarUndoSlot),
       group('center', title, syncStatusInline),
-      // Accord round 2 stage C: the Open | Accord toggle sits immediately LEFT of the Issues pill,
-      // because the pill is the count of what Open holds — the two read as one control.
-      group('right', ...(this.openViewUI ? [this.openViewUI.toggleEl] : []), this.ensureLineMarks().bannerEl, shareBtn),
+      group('right', reviewControl, lineMarksUi.alignedEl, peopleBtn, shareBtn),
       hidden,
       this.createShareOverflowButton(),
     );
@@ -3862,10 +3865,10 @@ class ProofEditorImpl implements ProofEditor {
     if (host && (ui.headerEl.parentElement !== host || host.firstElementChild !== ui.headerEl)) {
       host.prepend(ui.headerEl);
     }
-    // The toolbar is built before this UI exists on a first load, so place the toggle here too.
-    // Later rebuilds put it in through mountShareBanner's `group('right', ...)`.
-    const pill = document.querySelector('#share-banner .share-pill-right .plm-issues');
-    if (pill && ui.toggleEl.nextElementSibling !== pill) pill.parentElement?.insertBefore(ui.toggleEl, pill);
+    const pill = document.querySelector('#share-banner .plm-issues');
+    const review = this.readingWalk?.navigator.reviewButton;
+    if (pill && review && pill !== review) pill.replaceWith(review);
+
   }
 
   private unmountMenuBar(): void {
@@ -3883,17 +3886,11 @@ class ProofEditorImpl implements ProofEditor {
     for (const node of nodes) if (node.parentElement !== slot) slot.append(node);
   }
 
-  /** The one Undo: in the toolbar on desktop, at the top of the rail (and its sheet) on phones. */
+  /** Undo stays in the existing tool host and Edit menu, including its result notice. */
   private placeUndo(): void {
-    const undo = this.undoUI;
-    const walk = this.readingWalk;
-    if (!undo || !walk) return;
-    const phone = window.matchMedia?.('(max-width: 700px)').matches ?? window.innerWidth <= 700;
-    // Accord layout stage 3 (COS): the toolbar's Undo says just "Undo"; what it reverses is its
-    // tooltip and the Edit menu's item. On a phone (the Line tab) it keeps the full description.
-    undo.setCompact(!phone);
-    if (phone) walk.mountTool(undo.controlsEl, { first: true });
-    else if (undo.controlsEl.parentElement !== this.toolbarUndoSlot) this.toolbarUndoSlot.append(undo.controlsEl);
+    if (!this.undoUI || !this.readingWalk) return;
+    this.undoUI.setCompact(false);
+    this.readingWalk.mountTool(this.undoUI.controlsEl, { first: true });
   }
 
   /** Edit › Undo / Redo: the one Undo. A typed edit that came last goes to the text's own history. */
@@ -4030,9 +4027,10 @@ class ProofEditorImpl implements ProofEditor {
       }),
       menu('view', () => {
         const items: MenuItemSpec[] = [];
+        if (this.openViewUI) items.push({ id: 'view-agreed-copy', label: this.openViewUI.current() === 'accord' ? 'Return to document' : 'View agreed copy', run: () => this.openViewUI?.setView(this.openViewUI.current() === 'accord' ? 'open' : 'accord') });
         if (walk) {
           items.push(
-            { id: 'view-navigator', label: 'Navigator', kind: 'checkbox', checked: walk.railShown('left'), keywords: 'left rail documents', run: () => walk.toggleRailFromMenu('left') },
+            { id: 'view-navigator', label: 'Review panel', kind: 'checkbox', checked: walk.railShown('left'), keywords: 'left rail documents', run: () => walk.toggleRailFromMenu('left') },
             { id: 'view-margin', label: 'Margin', kind: 'checkbox', checked: walk.railShown('right'), keywords: 'right rail this line', run: () => walk.toggleRailFromMenu('right') },
           );
         }
@@ -4119,6 +4117,7 @@ class ProofEditorImpl implements ProofEditor {
         // Accord round 2 stage A: a visible way into editing (the margin's pencil).
         startEditingLine: (lineIndex) => this.editGesture?.open(lineIndex) ?? false,
         cursorLine: () => this.readingWalk?.focusIndex() ?? -1,
+        nextReview: () => { this.readingWalk?.navigator.next(); },
         focusLine: (lineIndex) => this.readingWalk?.focusLine(lineIndex) ?? false,
         viewUpdated: () => { this.readingWalk?.notifyViewUpdate(); this.folding?.queueRender(); },
         sectionScope: (lineIndex) => this.folding?.sectionScope(lineIndex) ?? null,
@@ -4384,7 +4383,7 @@ class ProofEditorImpl implements ProofEditor {
         phoneItems.push({ id: 'phone-chat', label: 'Room', detail: this.chatUnread > 0 ? `chat · ${this.chatUnread} @you` : 'chat', run: () => this.chat?.open(true) });
       }
       if (this.readingWalk) {
-        phoneItems.push({ id: 'phone-docs', label: 'Navigator', detail: 'Outline · Issues · Since you', run: () => this.readingWalk?.openSheet('left') });
+        phoneItems.push({ id: 'phone-docs', label: 'Review panel', detail: 'Review · Outline · Since you', run: () => this.readingWalk?.openSheet('left') });
       }
       if (phoneItems.length && moved.size > 0) {
         const sep = document.createElement('div');

@@ -155,9 +155,8 @@ async function runDesktop(browser, base, tag) {
     await page.waitForFunction(i => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i && m.status === 'agreed'), 5, { timeout: 4000 });
     const button = page.locator('.pundo-btn').first();
     await button.waitFor({ state: 'visible', timeout: 3000 });
-    // Accord layout stage 3 (COS): the toolbar button says just "Undo"; its name, tooltip and
-    // Edit › Undo say what it reverses.
-    assert.equal((await button.innerText()).trim(), 'Undo');
+    // The tool host and Edit menu both name the action; the primary toolbar is for Review.
+    assert.equal((await button.innerText()).trim(), 'Undo agreed line 6');
     assert.equal(await button.getAttribute('aria-label'), 'Undo agreed line 6');
     assert.match(await button.getAttribute('title'), /Undo: agreed line 6/);
     await page.screenshot({ path: path.join(shots, `${tag}-undo-button.png`) });

@@ -1,19 +1,6 @@
 #!/usr/bin/env node
-// Accord round 2, stage C — Open and Accord, two views of one document.
-//
-// Behaviour this check drives, in a real browser, against a real server:
-//   the Issues pill, the amber dots and the Open list always name the same lines; the toggle
-//   switches both ways and filters the document down to the unsettled material with context, with
-//   everything else behind a thin rule that expands on a click; the Accord reads clean and its
-//   header is accurate for several viewers; a substantive edit re-opens an agreement and a cosmetic
-//   one does not; a row that settles stays in place until it is cleared, in the Open view and in
-//   the Navigator's Issues tab; J / K / A / R / T / E run the list without typing a character; and
-//   the zero moment takes the toggle away for the viewer and the header away for everyone.
-//
-// Starts an isolated local server on the current dist/ build (run `npm run build` first) with a
-// temp SQLite database and drives Chromium at 1440 (desktop) and 390 (phone).
-// Authorship: Mike Wolf (rulings), built by Claude Opus 5 (worker accord-open), 2026-09-22.
-// Usage: node scripts/open-view-check.mjs [--shots dir]
+// Review beside the full document; counts, scopes, completion and the explicit agreed copy.
+// Mike, 2026-09-23 (usability brief). Local fixtures only.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -153,6 +140,13 @@ const markAll = (page, status = 'agreed', upTo = 9999) => page.evaluate(
     }
   }, { status, upTo });
 
+async function chooseCopy(page, clean) {
+  const current = (await state(page)).clean;
+  if (current === clean) return;
+  await page.locator('#accord-menubar .amb-top[data-menu="view"]').click();
+  await page.locator('.amb-menu').getByRole('menuitem', { name: clean ? 'View agreed copy' : 'Return to document', exact: true }).click();
+}
+
 async function main() {
   const { base, stop } = await startServer();
   const browser = await chromium.launch();
@@ -162,25 +156,15 @@ async function main() {
     activePage = mike.page;
 
     // ------------------------------------------------------------------ 1
-    await check('the toggle sits in the toolbar, left of the Issues pill, on desktop', async () => {
-      // Something must be open for the toggle to be there at all, so put an ask on a line.
+    await check('Review is in the toolbar, followed by People and Share', async () => {
       await agent(base, created, '/asks', { by: 'ai:izzy', quote: CLAIM, to: ['guest:Mike'], recommend: 'Yes: the figure is audited' });
       await waitFor(mike.page, () => window.__proofOpenView.debugState().open.count > 0);
-      const place = await mike.page.evaluate(() => {
-        const toggle = document.querySelector('.aov-toggle');
-        const pill = document.querySelector('.plm-issues');
-        return {
-          inToolbar: Boolean(toggle?.closest('#share-banner')),
-          inRightGroup: Boolean(toggle?.closest('.share-pill-right')),
-          beforePill: toggle?.nextElementSibling === pill,
-          visible: toggle ? !toggle.hidden && toggle.getBoundingClientRect().width > 0 : false,
-          labels: [...document.querySelectorAll('.aov-toggle .aov-seg-label')].map(n => n.textContent),
-        };
-      });
-      assert.deepEqual(place.labels, ['Open', 'Accord']);
-      assert.ok(place.inToolbar && place.inRightGroup, `not in the toolbar's right group: ${JSON.stringify(place)}`);
-      assert.ok(place.beforePill, 'the toggle must sit immediately left of the Issues pill');
-      assert.ok(place.visible, 'the toggle is not visible');
+      const button = mike.page.locator('[data-accord-review-toggle]');
+      await button.waitFor({ state: 'visible' });
+      assert.match(await button.innerText(), /Review.*\d+ need you/s);
+      assert.equal(await mike.page.locator('.aov-toggle').count(), 0);
+      if (await button.getAttribute('aria-expanded') !== 'true') await button.click();
+      assert.equal(await button.getAttribute('aria-expanded'), 'true');
     });
 
     // ------------------------------------------------------------------ 2
@@ -198,34 +182,39 @@ async function main() {
     });
 
     // ------------------------------------------------------------------ 3
-    await check('the toggle switches to Open: only the unsettled material, with context, the rest behind a rule', async () => {
-      await mike.page.click('.aov-toggle .aov-seg[data-view="open"]');
-      await waitFor(mike.page, () => window.__proofOpenView.debugState().view === 'open');
-      const s = await state(mike.page);
-      const open = s.open.lines;
-      assert.ok(open.length >= 2, `nothing open: ${JSON.stringify(open)}`);
-      // Every open line, and one line either side, is visible; nothing else is.
-      for (const line of open) {
-        assert.ok(!s.hiddenLines.includes(line), `line ${line} is open but hidden`);
-        for (const near of [line - 1, line + 1]) {
-          if (near < 0 || near >= 12) continue;
-          assert.ok(!s.hiddenLines.includes(near), `line ${near} is the context of ${line} and was hidden`);
-        }
-      }
-      assert.ok(s.hiddenLines.length > 0, 'the Open view collapsed nothing');
-      assert.ok(s.rules.length > 0, `no thin rule was drawn: ${JSON.stringify(s.rules)}`);
-      for (const rule of s.rules) assert.ok(/\d+ lines? settled/.test(rule.label), `rule says "${rule.label}"`);
+    await check('Review opens beside the full document, without collapsed runs', async () => {
+      const before = await state(mike.page);
+      await mike.page.locator('[data-accord-review-toggle]').click();
+      await mike.page.locator('[data-accord-review-toggle]').click();
+      const after = await state(mike.page);
+      assert.deepEqual(after.hiddenLines, before.hiddenLines);
+      assert.equal(after.hiddenLines.length, 0);
+      assert.equal(await mike.page.locator('.aov-rule').count(), 0);
     });
 
-    await check('a thin rule expands its own run on a click, and nothing else', async () => {
-      const before = await state(mike.page);
-      const rule = before.rules[0];
-      await mike.page.click(`.aov-rule[data-from="${rule.from}"]`);
-      await waitFor(mike.page, from => !window.__proofOpenView.debugState().hiddenLines.includes(from), rule.from);
-      const after = await state(mike.page);
-      for (let i = rule.from; i <= rule.to; i += 1) assert.ok(!after.hiddenLines.includes(i), `line ${i} stayed hidden`);
-      assert.ok(after.hiddenLines.length < before.hiddenLines.length, 'nothing opened');
-      assert.ok(after.hiddenLines.length > 0, 'clicking one rule opened the whole document');
+    await check('both Review scopes name their count and use document order', async () => {
+      await mike.page.locator('[data-accord-review-scope="all-open"]').click();
+      assert.match(await mike.page.locator('.plm-issues-count').innerText(), /^\d+ open$/);
+      const rows = (await nav(mike.page)).issues.filter(row => !row.settled).map(row => row.line);
+      assert.deepEqual(rows, [...new Set(rows)].sort((a,b) => a-b));
+      await mike.page.locator('[data-accord-review-scope="needs-you"]').click();
+      assert.match(await mike.page.locator('.plm-issues-count').innerText(), /^\d+ need you$/);
+    });
+
+    await check('new Review items enter document order without moving the selected row or focus', async () => {
+      const row = mike.page.locator(`.anv-issue[data-line="${L.EXPORTS}"]`);
+      await row.click();
+      await row.focus();
+      const before = await row.boundingBox();
+      await agent(base, created, '/asks', { by: 'ai:izzy', quote: LINES[L.INTRO], to: ['guest:Mike'], recommend: 'Check the introduction.' });
+      await waitFor(mike.page, line => Boolean(document.querySelector(`.anv-issue[data-line="${line}"][data-new="true"]`)), L.INTRO);
+      const after = await row.boundingBox();
+      assert.ok(Math.abs(after.y - before.y) <= 2, `selected row moved ${after.y - before.y}px`);
+      assert.equal(await row.evaluate(node => node === document.activeElement), true, 'focus moved');
+      const rows = (await nav(mike.page)).issues.filter(row => !row.settled).map(row => row.line);
+      assert.deepEqual(rows, [...rows].sort((a,b) => a-b));
+      assert.match(await mike.page.locator(`.anv-issue[data-line="${L.INTRO}"]`).innerText(), /New/);
+      await mike.page.evaluate(() => document.activeElement?.blur());
     });
 
     // ------------------------------------------------------------------ 4
@@ -284,15 +273,15 @@ async function main() {
       }, L.CLAIM);
       await waitFor(mike.page, line => !window.__proofOpenView.debugState().open.lines.includes(line), L.CLAIM, 12_000);
       const after = await state(mike.page);
-      assert.ok(after.settled.includes(L.CLAIM), `the settled row was forgotten: ${JSON.stringify(after.settled)}`);
+      assert.ok((await nav(mike.page)).settled.includes(L.CLAIM), 'the completed row was forgotten');
       assert.ok(!after.hiddenLines.includes(L.CLAIM), 'the settled row vanished under the cursor');
-      const struck = await mike.page.evaluate(() => document.querySelectorAll('.ProseMirror .aov-settled').length);
+      const struck = await mike.page.evaluate(() => document.querySelectorAll('.anv-issue[data-settled="true"]').length);
       assert.ok(struck > 0, 'the settled row is not struck through');
       // ...and the deliberate control takes it away.
-      await mike.page.click('.aov-clear');
-      await waitFor(mike.page, () => window.__proofOpenView.debugState().settled.length === 0);
+      await mike.page.click('.anv-clear-settled');
+      await waitFor(mike.page, () => window.__proofReadingWalk.navigator.debugState().settled.length === 0);
       const cleared = await state(mike.page);
-      assert.ok(cleared.hiddenLines.includes(L.CLAIM) || cleared.open.lines.includes(L.CLAIM), 'Clear settled did nothing');
+      assert.ok(!cleared.hiddenLines.includes(L.CLAIM), 'clearing a completed row hid document text');
     });
 
     await check("the Navigator's Issues tab keeps a settled row in place too", async () => {
@@ -332,8 +321,10 @@ async function main() {
         // Mike agrees to everything; Eric agrees to the first few lines only.
         await markAll(mike.page, 'agreed');
         await markAll(eric.page, 'agreed', 3);
-        await waitFor(mike.page, () => (window.__proofOpenView.debugState().header.text || '').includes('Eric'), null, 15_000);
-        await mike.page.click('.aov-toggle .aov-seg[data-view="accord"]').catch(() => {});
+        // The header names Eric as soon as his first mark syncs ("from line 2"). Wait for the
+        // three marks, which is the state the assertion below describes.
+        await waitFor(mike.page, () => /Eric[^.]* has not read from line 4 on\./.test(window.__proofOpenView.debugState().header.text || ''), null, 20_000);
+        await chooseCopy(mike.page, true);
         await mike.page.waitForTimeout(500);
         const s = await state(mike.page);
         assert.ok(/^Agreed by you/.test(s.header.text), `header: ${s.header.text}`);
@@ -388,7 +379,8 @@ async function main() {
     });
 
     // ------------------------------------------------------------------ 8
-    await check('the zero moment: the toggle goes for the viewer, the header goes for everyone', async () => {
+    await check('resolving the final item preserves the document view and Review controls', async () => {
+      await chooseCopy(mike.page, false);
       // Mike settles everything that is open for him.
       await mike.page.evaluate(async () => {
         const lm = window.__proofLineMarks;
@@ -406,12 +398,11 @@ async function main() {
       const s = await state(mike.page);
       assert.equal(s.open.count, 0);
       assert.equal(s.zero.forViewer, true, 'the zero moment did not fire');
-      assert.equal(s.toggleHidden, true, 'the toggle stayed after the count reached zero');
-      assert.equal(s.view, 'accord', 'at zero the document must simply be the Accord');
-      assert.equal(s.zero.shown, true, 'the zero moment passed unnoticed');
-      assert.equal(s.zero.text, 'Nothing is open for you. This is the Accord.');
+      assert.equal(s.view, 'open', 'completion switched views');
+      assert.equal(s.clean, false, 'completion removed controls');
+      assert.equal(await mike.page.locator('[data-accord-review-toggle]').isVisible(), true);
+      assert.equal(await mike.page.locator('.plm-issues-count').innerText(), '0 need you');
       assert.equal(s.zero.forEveryone, false, 'Eric has still not read it');
-      assert.ok(s.header.text.length > 0 && !s.header.hidden, 'the header must still name who has not read');
       await mike.page.screenshot({ path: path.join(shots, 'open-zero-for-you-1440.png') });
 
       // Now Eric agrees to everything too: zero for EVERYONE, and the header goes.
@@ -428,8 +419,8 @@ async function main() {
         assert.equal(done.zero.forEveryone, true);
         assert.equal(done.header.settled, true);
         assert.equal(done.header.hidden, true, 'when it is zero for everyone the header goes too');
-        assert.equal(done.zero.text, 'Everyone has agreed. This is the Accord.');
-        assert.equal(done.toggleHidden, true);
+        assert.equal(done.zero.text, 'Everyone has agreed.');
+        assert.equal(done.view, 'open');
         await mike.page.screenshot({ path: path.join(shots, 'open-zero-for-everyone-1440.png') });
       } finally {
         await eric.context.close();
@@ -439,50 +430,26 @@ async function main() {
     await mike.context.close();
 
     // ------------------------------------------------------------------ 9 (the phone)
-    await check('the phone gets the toggle too, in the same place: left of the Issues pill', async () => {
+    await check('the phone opens the same Review list in its bottom sheet', async () => {
       const doc2 = await createDoc(base);
       await agent(base, doc2, '/asks', { by: 'ai:izzy', quote: CLAIM, to: ['guest:Mike'], recommend: 'Yes: the figure is audited' });
-      const phone = await openDoc(browser, base, doc2.slug, 'Mike', { width: 390, height: 780 });
+      const phone = await openDoc(browser, base, doc2.slug, 'Mike', { width: 375, height: 812 });
       activePage = phone.page;
       try {
-        await waitFor(phone.page, () => window.__proofOpenView.debugState().open.count > 0, null, 15_000);
-        const place = await phone.page.evaluate(() => {
-          const toggle = document.querySelector('.aov-toggle');
-          const pill = document.querySelector('.plm-issues');
-          const box = toggle?.getBoundingClientRect();
-          const pillBox = pill?.getBoundingClientRect();
-          return {
-            inToolbar: Boolean(toggle?.closest('#share-banner')),
-            // On the phone the toggle sits at the LEFT, right after the title: the space beside the
-            // Issues pill is the middle of a phone screen, and this control changes what the whole
-            // page shows. It is also ONE button there, naming the view it takes you to.
-            afterTitle: document.querySelector('#share-banner .share-pill-title')?.nextElementSibling === toggle,
-            leftOfPill: Boolean(box && pillBox && box.right < pillBox.left),
-            segsShown: [...document.querySelectorAll('.aov-seg')].filter(n => n.getBoundingClientRect().width > 0).length,
-            onScreen: Boolean(box && box.width > 0 && box.right <= window.innerWidth + 1 && box.left >= 0),
-            width: box?.width ?? 0,
-          };
-        });
-        assert.ok(place.inToolbar, 'the phone toggle is not in the top bar');
-        assert.ok(place.afterTitle && place.leftOfPill, `the phone toggle must sit at the left, right after the title: ${JSON.stringify(place)}`);
-        assert.equal(place.segsShown, 1, 'the phone shows one button, naming the view it takes you to');
-        assert.ok(place.onScreen, `the phone toggle is off screen: ${JSON.stringify(place)}`);
-        await phone.page.screenshot({ path: path.join(shots, 'open-toggle-390.png') });
-        // ...and it works there.
-        await phone.page.click('.aov-toggle .aov-seg[data-view="open"]');
-        await waitFor(phone.page, () => window.__proofOpenView.debugState().view === 'open');
-        const s = await state(phone.page);
-        assert.ok(s.hiddenLines.length > 0, 'the phone Open view collapsed nothing');
-        assert.deepEqual(s.dots, s.open.lines, 'the phone disagrees with itself');
-        await phone.page.screenshot({ path: path.join(shots, 'open-view-390.png') });
-        await phone.page.click('.aov-toggle .aov-seg[data-view="accord"]');
-        await waitFor(phone.page, () => window.__proofOpenView.debugState().view === 'accord');
-        const back = await state(phone.page);
-        assert.equal(back.hiddenLines.length, 0, 'the toggle does not switch back');
-        await phone.page.screenshot({ path: path.join(shots, 'open-accord-390.png') });
-      } finally {
-        await phone.context.close();
-      }
+        await waitFor(phone.page, () => window.__proofOpenView.debugState().open.count > 0);
+        const button = phone.page.locator('[data-accord-review-toggle]');
+        const box = await button.boundingBox();
+        assert.ok(box && box.height >= 44 && box.x >= 0 && box.x + box.width <= 375);
+        await button.click();
+        await phone.page.locator('.prw-left.prw-sheet-open').waitFor({ state: 'visible' });
+        await phone.page.locator(`.anv-issue[data-line="${L.CLAIM}"]`).click();
+        assert.equal(await button.getAttribute('aria-expanded'), 'true');
+        assert.equal((await state(phone.page)).hiddenLines.length, 0);
+        await button.click();
+        assert.equal(await button.getAttribute('aria-expanded'), 'false');
+        assert.ok(await phone.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+        await phone.page.screenshot({ path: path.join(shots, 'review-375.png') });
+      } finally { await phone.context.close(); }
     });
 
     // ------------------------------------------------------------------ 10 (desktop shots)
@@ -494,13 +461,13 @@ async function main() {
       activePage = page.page;
       try {
         await waitFor(page.page, () => window.__proofOpenView.debugState().open.count >= 2, null, 15_000);
-        await page.page.click('.aov-toggle .aov-seg[data-view="open"]');
+        await chooseCopy(page.page, false);
         await waitFor(page.page, () => window.__proofOpenView.debugState().view === 'open');
         await page.page.waitForTimeout(500);
         await page.page.screenshot({ path: path.join(shots, 'open-view-1440.png') });
         const s = await state(page.page);
-        assert.ok(s.rules.length > 0 && s.hiddenLines.length > 0, 'the Open view shot has nothing collapsed');
-        await page.page.click('.aov-toggle .aov-seg[data-view="accord"]');
+        assert.equal(s.hiddenLines.length, 0, 'Review filtered the document');
+        await chooseCopy(page.page, true);
         await waitFor(page.page, () => window.__proofOpenView.debugState().view === 'accord');
         await page.page.waitForTimeout(500);
         const back = await state(page.page);

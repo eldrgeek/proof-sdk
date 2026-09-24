@@ -50,6 +50,7 @@ import { TIER_POLICY } from '../shared/line-tiers';
 import { HIGHLIGHT_POLICY, MARKED_UP_TO_POLICY, formatAgo, issuesLeftText } from '../shared/layout-status';
 import { MARGIN_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY, parseRailState, type MarginTab, type RailState } from '../shared/layout-panels';
 import { NavigatorUI } from './navigator';
+import { reviewStorageKey } from '../shared/review-list';
 import type { FoldingUI } from './folding';
 import './reading-walk.css';
 import './layout-panels.css';
@@ -111,7 +112,6 @@ export interface ReadingWalkHost {
 }
 
 const PHONE_QUERY = '(max-width: 700px)';
-const RAIL_STATE_KEY = 'proof:reading-rails';
 /** Step B3b: the reader's reading rate (words per second), per browser. */
 const RATE_KEY = 'proof:reading-rate';
 
@@ -287,7 +287,8 @@ export class ReadingWalkUI {
       focusLine: (index) => { this.host.lineMarks().revealLine(index); this.focusLine(index); if (isPhone()) this.closeSheets(); },
       openBrief: () => { if (isPhone()) this.openSheet('right'); else this.setCollapsed('right', false); this.proxy.briefEl.scrollIntoView({ block: 'nearest' }); },
     });
-    this.left.setAttribute('aria-label', 'Navigator');
+    this.left.setAttribute('aria-label', 'Review panel');
+    this.left.id = 'anv-panel';
     this.right.setAttribute('aria-label', 'Margin: this line, and the room');
     this.focusEl.setAttribute('aria-hidden', 'true');
     this.styleEl.id = 'prw-dynamic-style';
@@ -297,7 +298,8 @@ export class ReadingWalkUI {
       lineMarks: () => this.host.lineMarks(),
       folding: () => this.host.folding?.() ?? null,
       cursor: () => this.cursorLine(),
-      go: (index) => { this.host.lineMarks().revealLine(index); this.focusLine(index); if (isPhone()) this.closeSheets(); },
+      go: (index) => { this.host.lineMarks().revealLine(index); this.focusLine(index); },
+      toggle: () => this.toggleRailFromMenu('left'),
       tabChanged: (tab) => this.saveRailState({ leftTab: tab }),
     }, saved.leftTab, this.sinceHost);
     this.buildRails();
@@ -610,7 +612,7 @@ export class ReadingWalkUI {
     const height = window.innerHeight;
     const doc = Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0);
     return {
-      viewportHeight: height,
+      viewportHeight: isPhone() && this.left.classList.contains('prw-sheet-open') ? this.left.getBoundingClientRect().top : height,
       topInset: Math.min(Math.max(0, chrome), Math.max(0, height - 1)),
       scrollY: window.scrollY,
       maxScroll: Math.max(0, doc - height),
@@ -860,11 +862,12 @@ export class ReadingWalkUI {
 
   /** Accord layout stage 2: View › Navigator / Margin show or hide a rail (phones: open its sheet). */
   toggleRailFromMenu(side: 'left' | 'right'): void {
-    if (isPhone()) { this.openSheet(side); return; }
+    if (isPhone()) { if ((side === 'left' ? this.left : this.right).classList.contains('prw-sheet-open')) this.closeSheets(); else this.openSheet(side); return; }
     this.setCollapsed(side, !document.body.classList.contains(`prw-${side}-collapsed`));
   }
 
   railShown(side: 'left' | 'right'): boolean {
+    if (isPhone()) return (side === 'left' ? this.left : this.right).classList.contains('prw-sheet-open');
     return !document.body.classList.contains(`prw-${side}-collapsed`);
   }
 
@@ -1427,6 +1430,8 @@ export class ReadingWalkUI {
       && (this.boxHost.contains(active) || this.tailHost.contains(active) || this.changesHost.contains(active))
       ? active : null;
     const heldKey = held ? this.marginControlKey(held) : null;
+    const identity = reviewStorageKey(this.host.slug() ?? 'local', this.host.lineMarks().me());
+    if (this.reviewIdentity !== identity) { this.reviewIdentity = identity; this.navigator.resetSession(); this.applyRailState(); }
     this.dockPanel();
     this.renderFocus();
     this.renderDynamicStyle();
@@ -2148,17 +2153,20 @@ export class ReadingWalkUI {
   }
 
   /** Remembered per browser: each rail open or closed, and the tab each shows (layout-panels.ts). */
+  private reviewIdentity = '';
+
   private railState(): RailState {
-    try { return parseRailState(localStorage.getItem(RAIL_STATE_KEY)); } catch { return {}; }
+    try { return parseRailState(localStorage.getItem(reviewStorageKey(this.host.slug() ?? 'local', this.host.lineMarks().me()))); } catch { return {}; }
   }
 
   private saveRailState(patch: RailState): void {
     const saved = { ...this.railState(), ...patch };
-    try { localStorage.setItem(RAIL_STATE_KEY, JSON.stringify(saved)); } catch { /* optional */ }
+    try { localStorage.setItem(reviewStorageKey(this.host.slug() ?? 'local', this.host.lineMarks().me()), JSON.stringify(saved)); } catch { /* optional */ }
   }
 
   private applyRailState(): void {
     const saved = this.railState();
+    this.navigator.select(saved.leftTab ?? NAVIGATOR_POLICY.defaultTab, false);
     // Default: both open when the window has room; the Navigator starts closed on narrower
     // desktops so the text keeps a readable width (NAVIGATOR_POLICY.closedBelowPx).
     const wide = window.innerWidth >= NAVIGATOR_POLICY.closedBelowPx;
@@ -2166,11 +2174,14 @@ export class ReadingWalkUI {
     const rightCollapsed = saved.right ?? false;
     document.body.classList.toggle('prw-left-collapsed', leftCollapsed);
     document.body.classList.toggle('prw-right-collapsed', rightCollapsed);
+    if (isPhone() && saved.left === false && !this.left.classList.contains('prw-sheet-open')) this.openSheet('left');
+    this.navigator.setPanelOpen((!leftCollapsed && !isPhone()) || this.left.classList.contains('prw-sheet-open'));
     this.updateToggleLabels();
   }
 
   private setCollapsed(side: 'left' | 'right', collapsed: boolean): void {
     this.saveRailState({ [side]: collapsed } as RailState);
+    if (side === 'left') this.navigator.setPanelOpen(!collapsed);
     document.body.classList.toggle(`prw-${side}-collapsed`, collapsed);
     this.updateToggleLabels();
     if (side === 'right') this.roomShownListener?.();
@@ -2188,7 +2199,7 @@ export class ReadingWalkUI {
       const btn = rail.querySelector('.prw-collapse') as HTMLButtonElement | null;
       if (!btn) continue;
       const collapsed = document.body.classList.contains(`prw-${side}-collapsed`);
-      const name = side === 'left' ? 'Navigator' : 'Margin';
+      const name = side === 'left' ? 'Review panel' : 'Margin';
       if (phone) { btn.textContent = '×'; btn.setAttribute('aria-label', `Close the ${name}`); btn.removeAttribute('aria-expanded'); continue; }
       btn.textContent = side === 'left' ? (collapsed ? '»' : '«') : (collapsed ? '«' : '»');
       btn.setAttribute('aria-label', `${collapsed ? 'Show' : 'Hide'} the ${name}${side === 'right' && this.chatUnread > 0 ? ` (${this.chatUnread} unread chat ${this.chatUnread === 1 ? 'mention' : 'mentions'})` : ''}`);
@@ -2225,6 +2236,7 @@ export class ReadingWalkUI {
     this.closeSheets();
     const rail = side === 'left' ? this.left : this.right;
     rail.classList.add('prw-sheet-open');
+    if (side === 'left') { this.saveRailState({ left: false }); this.navigator.setPanelOpen(true); }
     if (side === 'right' && this.touchMode()) {
       this.right.prepend(this.strip);
       document.body.classList.add('prw-margin-sheet');
@@ -2237,6 +2249,7 @@ export class ReadingWalkUI {
   }
 
   closeSheets(): void {
+    if (this.left.classList.contains('prw-sheet-open')) { this.saveRailState({ left: true }); this.navigator.setPanelOpen(false); }
     this.left.classList.remove('prw-sheet-open');
     this.right.classList.remove('prw-sheet-open');
     document.body.classList.remove('prw-margin-sheet');

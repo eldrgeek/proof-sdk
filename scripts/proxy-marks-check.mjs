@@ -319,7 +319,7 @@ async function run(browser, style) {
       await mike.locator('.prw-right .ppx-review').click();
       await waitFor(mike, l => window.__proofReadingWalk.debugState().focus === l, flagged[0]);
       assert.match(await mike.locator('.prw-right .ppx-walk').innerText(), new RegExp(`Reviewing flagged: 1 of ${flagged.length}`));
-      await mike.locator('.plm-next').click();
+      await mike.locator('.prw-right .ppx-walk-next').click();
       await waitFor(mike, l => window.__proofReadingWalk.debugState().focus === l, flagged[1]);
       await mike.screenshot({ path: path.join(shots, `${tag}-3-flagged-walk.png`) });
       for (let i = 2; i < flagged.length; i += 1) {

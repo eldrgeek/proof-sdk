@@ -6,6 +6,7 @@
 // 1440 (desktop) and 390 (phone). Screenshots go to .preview/ (or --shots <dir>).
 // Exit code 0 only if every check passes.
 // Usage: node scripts/asks-check.mjs [--style playmaker|proof] [--width 1440] [--shots dir]
+import { nextReview, showReview } from './review-ui.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -166,16 +167,16 @@ async function desktop(browser, base, style, width) {
     const s = await lm(page);
     assert.equal(s.askIssues, 2);
     const title = await page.locator('#share-banner .plm-issues-count').getAttribute('title');
-    assert.match(title, /2 unanswered asks/);
+    assert.match(title, /need you/);
   });
 
   await check(`${tag}: Next issue lands on the ask line first`, async () => {
     await page.evaluate(() => window.scrollTo(0, 0));
     for (let i = 0; i < 12; i += 1) {
-      await page.locator('#share-banner .plm-next').click();
+      await nextReview(page);
       await page.waitForTimeout(120);
-      const current = await page.locator('#share-banner .plm-issues-count').getAttribute('data-current');
-      if (current === 'ask 4') return;
+      const current = await page.evaluate(() => window.__proofReadingWalk.focusIndex());
+      if (current === 3) return;
     }
     throw new Error('Next issue never landed on the ask');
   });

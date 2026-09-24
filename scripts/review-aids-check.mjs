@@ -9,6 +9,7 @@
 // in both review styles at 1440 (desktop) and 390 (phone). Screenshots go to .preview/ (or --shots).
 // Exit code 0 only if every check passes.
 // Usage: node scripts/review-aids-check.mjs [--style playmaker|proof] [--shots dir]
+import { nextReview, showReview } from './review-ui.mjs';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -169,7 +170,8 @@ async function run(browser, style) {
       assert.equal(w.dwellMs, base1 * 2, `dwell ${w.dwellMs} for ${words} words at ${w.rate}/s`);
       const s = await lm(mike);
       assert.equal(s.aids.uncertainIssues, 1);
-      assert.match(await mike.locator('#share-banner .plm-issues-count').getAttribute('title'), /1 uncertain line/);
+      // The Issues pill title listed kinds. The Review count names its scope. Mike, 2026-09-23 (usability brief).
+      assert.match(await mike.locator('#share-banner .plm-issues-count').getAttribute('title'), /^\d+ need you; \d+ open for the team/);
       await mike.waitForTimeout(250);
       await mike.screenshot({ path: path.join(shots, `${tag}-1-uncertain.png`) });
     });
@@ -196,26 +198,17 @@ async function run(browser, style) {
       assert.equal(asked[0].actor, `human:${MIKE_EMAIL}`);
     });
 
-    // Accord layout stage 2 (NEXT_ISSUE_POLICY.viewerFirst): Next takes the Issues that need the
-    // viewer (the pill's count, the amber dots) first, each group in stakes order.
-    await check(`${tag}: Next issue goes by stakes: the uncertain line that needs Mike, then the AI's rejection`, async () => {
-      await mike.evaluate(() => window.scrollTo(0, 0));
-      const s = await lm(mike);
-      assert.equal(s.aids.ranked[0].rule, 'rejected-by-others', JSON.stringify(s.aids.ranked.slice(0, 4)));
-      await mike.locator('#share-banner .plm-next').click();
-      await waitFor(mike, () => document.querySelector('#share-banner .plm-issues-count')?.dataset.current === 'uncertain 4')
-        .catch(async () => { throw new Error(`first Next: ${await mike.evaluate(() => JSON.stringify({ ...document.querySelector('#share-banner .plm-issues-count').dataset, needs: window.__proofLineMarks.needsYouLines() }))}`); });
-      assert.equal((await walk(mike)).focus, L.BETA);
-      // The other Issues that need Mike come next; then the team's, led by the AI's rejection.
-      const needs = await mike.evaluate(() => [...window.__proofLineMarks.needsYouLines()]);
-      for (let i = 0; i < 12; i += 1) {
-        await mike.locator('#share-banner .plm-next').click();
-        await mike.waitForTimeout(120);
-        if (await mike.evaluate(() => document.querySelector('#share-banner .plm-issues-count')?.dataset.priority === 'rejected-by-others')) break;
-        assert.ok(needs.includes((await walk(mike)).focus), `Next left the lines that need Mike before the team's (${(await walk(mike)).focus} not in ${needs})`);
+    await check(`${tag}: Review Next follows document order within Needs you`, async () => {
+      await showReview(mike);
+      await mike.locator('[data-accord-review-scope="needs-you"]').click();
+      const lines = await mike.evaluate(() => window.__proofLineMarks.needsYouLines());
+      assert.ok(lines.length > 0);
+      for (let i = 0; i < lines.length; i++) {
+        const current = (await walk(mike)).focus;
+        const expected = lines.find(line => line > current) ?? lines[0];
+        await nextReview(mike);
+        await waitFor(mike, line => window.__proofReadingWalk.focusIndex() === line, expected);
       }
-      await waitFor(mike, () => document.querySelector('#share-banner .plm-issues-count')?.dataset.priority === 'rejected-by-others');
-      assert.equal((await walk(mike)).focus, L.DELTA);
     });
 
     await check(`${tag}: R on a line opens the reason with chips: the AI author's hints first, then defaults; a chip fills the reason`, async () => {
@@ -285,6 +278,12 @@ async function run(browser, style) {
     });
 
     await check(`${tag}: a sitting of 5 issues: after five, Next says what is left and lets the reader stop`, async () => {
+      const quotes = await mike.evaluate(() => window.__proofLineMarks.lineList().slice(0, 5).map(line => line.text));
+      for (const quote of quotes) {
+        const result = await agent('POST', '/asks', { by: 'ai:claude', quote, to: [`human:${MIKE_EMAIL}`], recommend: 'Review this passage.' });
+        assert.ok(result.status >= 200 && result.status < 300, JSON.stringify(result));
+      }
+      await waitFor(mike, () => window.__proofOpenView.openItems().count >= 5);
       // Accord layout stage 2 (decision 10): This sitting lives in View › Reading settings.
       await mike.locator('#accord-menubar .amb-top[data-menu="view"]').click();
       await mike.locator('.amb-menu .amb-item', { hasText: 'Reading settings…' }).click();
@@ -292,11 +291,11 @@ async function run(browser, style) {
       await setting.selectOption('5');
       await mike.getByRole('button', { name: 'Close reading settings' }).click();
       for (let i = 0; i < 5; i += 1) {
-        await mike.locator('#share-banner .plm-next').click();
+        await nextReview(mike);
         await mike.waitForTimeout(120);
       }
       assert.equal((await lm(mike)).aids.sitting.visited, 5);
-      await mike.locator('#share-banner .plm-next').click();
+      await nextReview(mike);
       // Reaching the budget opens Reading settings, which says what is left.
       const status = mike.locator('#reading-settings .plm-budget .plm-budget-status');
       await waitFor(mike, () => document.querySelector('#reading-settings .plm-budget')?.dataset.state === 'reached');

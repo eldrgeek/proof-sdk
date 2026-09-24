@@ -22,7 +22,7 @@ const arg = (name) => { const i = process.argv.indexOf(name); return i > 0 ? pro
 const shots = arg('--shots') || path.join(root, '.preview', 'usability');
 mkdirSync(shots, { recursive: true });
 
-/** Selectors from src/ui — one adapter; TODO entries await S2/S3/S4 UI. */
+/** Selectors from src/ui — one adapter; TODO entries await S3/S4 UI. */
 const SEL = {
   proseMirror: '.ProseMirror',
   foldChip: '.pfold-chip[data-heading]',
@@ -35,19 +35,17 @@ const SEL = {
   scrollProvisional: '.prw-right .prw-provisional',
   statusBar: '.pst-bar',
   statusProvisional: '.pst-bar .pst-provisional',
-  openToggle: '.aov-toggle',
-  openSegment: '.aov-toggle .aov-seg',
   honestHeader: '.aov-header',
   honestHeaderText: '.aov-header-text',
   issuesPill: '.plm-issues',
   issuesCount: '.plm-issues-count',
-  nextIssue: '#share-banner .plm-next',
+  nextIssue: '.anv-next',
   shareBanner: '#share-banner',
   navigatorTab: '.prw-left .anv-tab[data-tab]',
   threadComposer: '.amg-thread-new',
   threadCard: '.amg-thread',
   playmakerReviewPanel: '.pm-review-panel',
-  // TODO S2 — Review list beside the document (replaces Issues pill queue).
+  // S2a — Review list beside the full document.
   reviewPanelToggle: '[data-accord-review-toggle]',
   reviewList: '[data-accord-review-list]',
   reviewScopeNeedsYou: '[data-accord-review-scope="needs-you"]',
@@ -219,7 +217,7 @@ async function rewriteQuote(base, created, needle, replacement) {
   await agent(base, created, '/edit/v2', body);
 }
 
-async function openDoc(browser, base, slug, name, viewport) {
+async function openDoc(browser, base, slug, name, viewport, pendingProposal = true) {
   const context = await browser.newContext(viewport?.isMobile ? { ...devices['iPhone 13'], ...viewport } : { viewport });
   await context.route('**/*', route => {
     const url = route.request().url();
@@ -238,7 +236,7 @@ async function openDoc(browser, base, slug, name, viewport) {
   await page.waitForFunction(() => window.__proofLineMarks?.debugState().loaded === true, null, { timeout: 12_000 });
   await page.waitForFunction(() => window.__proofReadingWalk?.debugState().ready === true, null, { timeout: 12_000 });
   await page.waitForFunction(() => (window.__proofFolding?.debugState().sections.length ?? 0) >= 3, null, { timeout: 12_000 });
-  await page.waitForFunction(() => (window.proof?.getAllMarks?.() ?? []).filter(m => m.data?.status === 'pending').length >= 1, null, { timeout: 12_000 });
+  if (pendingProposal) await page.waitForFunction(() => (window.proof?.getAllMarks?.() ?? []).filter(m => m.data?.status === 'pending').length >= 1, null, { timeout: 12_000 });
   const toast = page.locator('.proof-share-welcome-toast button');
   if (await toast.count()) await toast.first().click().catch(() => {});
   page.setDefaultTimeout(8000);
@@ -300,10 +298,6 @@ async function isHiddenLine(page, line) {
     const dom = lm.editorView().nodeDOM(l.pos);
     return !!dom && dom.getBoundingClientRect().height === 0;
   }, line);
-}
-
-async function hasReviewListUI(page) {
-  return (await page.locator(SEL.reviewPanelToggle).count()) > 0;
 }
 
 async function hasDraftUI(page) {
@@ -563,8 +557,8 @@ async function runViewportCases(browser, base, created, label, viewport) {
     const before = {
       focus: (await walk(page)).focus,
       folded: (await foldState(page)).folded.slice(),
-      panelOpen: await page.locator(SEL.playmakerReviewPanel).isVisible().catch(() => false),
-      issueHead: await page.evaluate(() => window.__proofReadingWalk.navigator?.debugState?.()?.issues?.[0]?.line ?? null),
+      panelOpen: await page.locator(SEL.reviewPanelToggle).getAttribute('aria-expanded') === 'true',
+      issueHead: await page.evaluate(() => { const row = document.querySelector('.anv-issue[aria-current="true"]') ?? document.querySelector('.anv-issue'); return row ? Math.round(row.getBoundingClientRect().top) : null; }),
     };
     await agent(base, created, '/marks/comment', {
       by: 'ai:bob', quote: para('Three', 4), text: 'Bob added a comment elsewhere while Alice reads.',
@@ -573,8 +567,8 @@ async function runViewportCases(browser, base, created, label, viewport) {
     const after = {
       focus: (await walk(page)).focus,
       folded: (await foldState(page)).folded.slice(),
-      panelOpen: await page.locator(SEL.playmakerReviewPanel).isVisible().catch(() => false),
-      issueHead: await page.evaluate(() => window.__proofReadingWalk.navigator?.debugState?.()?.issues?.[0]?.line ?? null),
+      panelOpen: await page.locator(SEL.reviewPanelToggle).getAttribute('aria-expanded') === 'true',
+      issueHead: await page.evaluate(() => { const row = document.querySelector('.anv-issue[aria-current="true"]') ?? document.querySelector('.anv-issue'); return row ? Math.round(row.getBoundingClientRect().top) : null; }),
     };
     assert.equal(after.focus, before.focus, 'remote comment moved focus');
     assert.deepEqual(after.folded, before.folded, 'remote comment unfolded a section');
@@ -584,23 +578,67 @@ async function runViewportCases(browser, base, created, label, viewport) {
     }
   });
 
-  // 8 — final review item + completion status (S2/S4).
-  if (!(await hasReviewListUI(page))) {
-    skip(`ac08-final-item-status@${label}`, `awaiting S2; selector ${SEL.reviewPanelToggle} TODO`);
-  } else if (!(await page.locator(SEL.personalCompletionStatus).count())) {
-    skip(`ac08-final-item-status@${label}`, `awaiting S4; selector ${SEL.personalCompletionStatus} TODO`);
-  } else {
-    await check(`ac08-final-item-status@${label}`, async () => {
-      assert.fail('Review UI present but case not implemented');
+  // 8 — resolving the final item updates status without changing view or removing controls.
+  await check(`ac08-final-item-status@${label}`, async () => {
+    const response = await fetch(`${base}/api/documents`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...clientHeaders },
+      body: JSON.stringify({ markdown, title: 'Final Review item' }),
     });
-  }
+    assert.equal(response.status, 200);
+    const finalDoc = await response.json();
+    await agent(base, finalDoc, '/asks', { by: 'ai:bob', quote: THREAD_LINE, to: ['guest:Alice'], recommend: 'Confirm this passage.' });
+    const final = await openDoc(browser, base, finalDoc.slug, 'Alice', viewport, false);
+    const p = final.page;
+    activePage = p;
+    try {
+      const toggle = p.locator(SEL.reviewPanelToggle);
+      if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
+      await p.locator(SEL.reviewScopeNeedsYou).click();
+      await waitFor(p, () => window.__proofOpenView.openItems().count === 1);
+      const row = p.locator(`${SEL.reviewList} .anv-issue[data-settled="false"]`);
+      await row.click();
+      const before = await p.evaluate(() => ({
+        view: window.__proofOpenView.debugState().view,
+        clean: window.__proofOpenView.debugState().clean,
+        cursor: window.__proofReadingWalk.focusIndex(),
+        folded: window.__proofFolding.debugState().folded,
+      }));
+      await p.evaluate(async () => {
+        const lm = window.__proofLineMarks;
+        const ask = lm.debugState().asks.find(a => a.openFor?.length);
+        if (!ask) throw new Error('final ask missing');
+        await lm.answerAsk(ask.id, 'yes', 'Confirmed.');
+      });
+      await waitFor(p, () => document.querySelector('.plm-issues-count')?.textContent === '0 need you' && Boolean(document.querySelector('.anv-issue[data-settled="true"]')));
+      assert.equal(await p.locator(SEL.issuesCount).innerText(), '0 need you', 'status did not update');
+      assert.equal(await toggle.isVisible(), true, 'Review control disappeared');
+      assert.equal(await toggle.getAttribute('aria-expanded'), 'true', 'panel closed');
+      assert.equal(await p.locator(SEL.reviewScopeNeedsYou).isVisible(), true, 'scope controls disappeared');
+      assert.equal(await p.locator(SEL.nextIssue).isVisible(), true, 'Next disappeared');
+      assert.equal(await p.locator(SEL.reviewClearCompleted).isVisible(), true, 'Clear completed disappeared');
+      assert.equal(await p.locator(`${SEL.reviewList} .anv-issue[data-settled="true"]`).count(), 1, 'final row vanished');
+      const after = await p.evaluate(() => ({
+        view: window.__proofOpenView.debugState().view,
+        clean: window.__proofOpenView.debugState().clean,
+        cursor: window.__proofReadingWalk.focusIndex(),
+        folded: window.__proofFolding.debugState().folded,
+      }));
+      assert.deepEqual(after, before, 'completion changed the current view or target');
+    } finally { await final.context.close(); activePage = page; }
+  });
 
   // 9 — honest status labels; rejecter not called unread.
   await check(`ac09-honest-status-labels@${label}`, async () => {
     const dotLabel = await page.locator(`${SEL.marginDot}[data-line="${L.SAFE}"]`).getAttribute('aria-label')
       ?? await page.locator(`${SEL.marginDot}[data-line="${L.SAFE}"]`).getAttribute('title');
     assert.ok(dotLabel && dotLabel.length > 2, 'line status has no accessible text');
-    await page.locator(`${SEL.openSegment}[data-view="accord"]`).click().catch(() => {});
+    if (touch) {
+      await page.getByRole('button', { name: /^More options/ }).click();
+      await page.locator('.proof-share-overflow-menu').getByRole('menuitem', { name: 'View agreed copy', exact: true }).click();
+    } else {
+      await page.locator('#accord-menubar .amb-top[data-menu="view"]').click();
+      await page.locator('.amb-menu').getByRole('menuitem', { name: 'View agreed copy', exact: true }).click();
+    }
     await page.waitForTimeout(500);
     const header = await page.locator(SEL.honestHeaderText).innerText().catch(() => '');
     assert.ok(header.length > 0, 'honest header missing in Accord view');
@@ -613,6 +651,13 @@ async function runViewportCases(browser, base, created, label, viewport) {
     if (completion) {
       assert.ok(!/everyone agreed|team agreed|fully agreed/i.test(completion),
         `personal completion claims team agreement: ${completion}`);
+    }
+    if (touch) {
+      await page.getByRole('button', { name: /^More options/ }).click();
+      await page.locator('.proof-share-overflow-menu').getByRole('menuitem', { name: 'Return to document', exact: true }).click();
+    } else {
+      await page.locator('#accord-menubar .amb-top[data-menu="view"]').click();
+      await page.locator('.amb-menu').getByRole('menuitem', { name: 'Return to document', exact: true }).click();
     }
   });
 
@@ -649,16 +694,12 @@ async function runViewportCases(browser, base, created, label, viewport) {
     await page.waitForFunction(() => window.__proofReadingWalk?.debugState().ready === true, null, { timeout: 20_000 });
     await waitFor(page, h => document.querySelector(`.pfold-chip[data-heading="${h}"]`)?.dataset.folded === 'true', L.SEC3);
   });
-  if (await hasReviewListUI(page)) {
-    await check(`ac11-review-document-switch@${label}`, async () => {
-      await page.locator(SEL.reviewPanelToggle).click();
-      await page.waitForTimeout(400);
-      await page.locator(SEL.reviewPanelToggle).click();
-      await waitFor(page, h => document.querySelector(`.pfold-chip[data-heading="${h}"]`)?.dataset.folded === 'true', L.SEC3);
-    });
-  } else {
-    skip(`ac11-review-document-switch@${label}`, `awaiting S2; selector ${SEL.reviewPanelToggle} TODO`);
-  }
+  await check(`ac11-review-document-switch@${label}`, async () => {
+    await page.locator(SEL.reviewPanelToggle).click();
+    await page.waitForTimeout(400);
+    await page.locator(SEL.reviewPanelToggle).click();
+    await waitFor(page, h => document.querySelector(`.pfold-chip[data-heading="${h}"]`)?.dataset.folded === 'true', L.SEC3);
+  });
 
   // 12 — primary actions without hover; focus visible; statuses have text.
   await check(`ac12-actions-a11y@${label}`, async () => {

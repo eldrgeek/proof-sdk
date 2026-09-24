@@ -21,11 +21,11 @@ test('policy: the five menus in Docs order, a 28 px bar over a 44 px toolbar', (
   assert.deepEqual(MENU_BAR_POLICY.menus.map(m => m.key), ['f', 'e', 'v', 'p', 'h']);
   assert.equal(MENU_BAR_POLICY.heightPx, 28);
   assert.equal(TOOLBAR_POLICY.heightPx, 44);
-  assert.deepEqual(TOOLBAR_POLICY.groups, { left: ['mode', 'undo'], centre: ['title', 'saved'], right: ['issues', 'share'] });
+  assert.deepEqual(TOOLBAR_POLICY.groups, { centre: ['title', 'saved'], right: ['review', 'people', 'share'] });
   // Polish pass (COS, 2026-09-21): the phone toolbar is the mockup's: title, Issues, ⋯; the
   // switch and Share lead the ⋯ menu.
-  assert.deepEqual([...TOOLBAR_POLICY.phoneKeeps], ['title', 'issues']);
-  assert.deepEqual([...TOOLBAR_POLICY.phoneMenuTop], ['mode', 'share']);
+  assert.deepEqual([...TOOLBAR_POLICY.phoneKeeps], ['title', 'review', 'people', 'share']);
+  assert.deepEqual([...TOOLBAR_POLICY.phoneMenuTop], ['mode']);
   assert.equal(TOOLBAR_POLICY.phoneSyncDotOnlyWhenNotSaved, true);
 });
 

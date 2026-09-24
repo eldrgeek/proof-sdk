@@ -8,6 +8,7 @@
 // the right rail (no popover); the focus line becomes Seen after a short dwell, so counts below
 // wait for that first.
 // Usage: node scripts/line-marks-check.mjs [--style playmaker|proof]
+import { nextReview, showReview } from './review-ui.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -90,6 +91,18 @@ async function createDoc(base) {
   return await response.json();
 }
 
+async function seedReviewAsks(base, created, page, indices) {
+  const facts = await page.evaluate(indices => ({ viewer: window.__proofLineMarks.me(), quotes: indices.map(i => window.__proofLineMarks.lineList()[i].text) }), indices);
+  for (const quote of facts.quotes) {
+    const response = await fetch(`${base}/api/agent/${created.slug}/asks`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...clientHeaders, 'x-share-token': created.ownerSecret },
+      body: JSON.stringify({ by: 'ai:fixture', quote, to: [facts.viewer], recommend: 'Review this passage.' }),
+    });
+    assert.ok(response.ok, await response.text());
+  }
+  await waitFor(page, indices => indices.every(i => window.__proofOpenView.openItems().lines.includes(i)), indices);
+}
+
 async function openDoc(browser, base, slug, name, contextOptions = {}, query = '') {
   const context = await browser.newContext(contextOptions);
   await context.route('**/*', route => new URL(route.request().url()).origin === base ? route.continue() : route.abort());
@@ -146,13 +159,10 @@ async function desktop(browser, base) {
     assert.ok(info.maxRight <= info.textLeft + 1, `dot right ${info.maxRight} > text left ${info.textLeft}`);
     assert.ok(info.minLeft >= 0, `dot off screen ${info.minLeft}`);
   });
-  await check(`${tag}: top bar shows the issue count and Next issue`, async () => {
-    // The first line is the reading walk's focus line: a short dwell marks it Seen.
+  await check(`${tag}: Review names its scope and excludes unread lines`, async () => {
     await waitFor(page, () => document.querySelector('.plm-dot[data-line="0"]')?.dataset.status === 'seen');
-    // Accord layout stage 2: the pill shows the viewer's own Issues; the team's count is data-team-count.
-    await waitFor(page, n => document.querySelector('#share-banner .plm-issues-count')?.dataset.teamCount === String(n), LINE_COUNT - 1);
-    assert.equal(await page.locator('#share-banner .plm-issues-count').textContent(), '0 Issues', 'unseen lines do not need this viewer');
-    assert.ok(await page.locator('#share-banner .plm-next').isVisible());
+    assert.equal(await page.locator('#share-banner .plm-issues-count').textContent(), '0 need you');
+    assert.ok(await page.locator('[data-accord-review-toggle]').isVisible());
   });
   await check(`${tag}: Seen on line 1 lowers the count`, async () => {
     await mark(page, 0, /Seen/);
@@ -222,19 +232,17 @@ async function desktop(browser, base) {
     await waitFor(page, () => [...document.querySelectorAll('.plm-dot[data-line="2"] .plm-pips i')].some(i => i.dataset.status === 'agreed'), null, 12000);
     await page.screenshot({ path: path.join(shots, `${tag}-2-changed.png`) });
   });
-  await check(`${tag}: Next issue moves the focus line to an issue and highlights it, then moves on`, async () => {
-    await page.evaluate(() => window.scrollTo(0, 0));
-    const flashTop = () => page.evaluate(() => window.__proofReadingWalk.debugState().focus);
-    await page.locator('#share-banner .plm-next').click();
-    await page.locator('.plm-flash').waitFor({ state: 'attached', timeout: 2000 });
-    const first = await flashTop();
-    const focused = await page.evaluate(() => document.activeElement?.dataset?.line ?? null);
-    assert.ok(focused !== null, 'the dot of the issue line is not focused');
-    await page.screenshot({ path: path.join(shots, `${tag}-3-next-issue.png`) });
-    await page.locator('#share-banner .plm-next').click();
-    await page.waitForTimeout(100);
-    const second = await flashTop();
-    assert.ok(second > first, `second Next did not move the focus line down (${first} -> ${second})`);
+  await check(`${tag}: Next selects open passages in document order and preserves keyboard focus`, async () => {
+    await seedReviewAsks(base, created, page, [3, 5]);
+    await showReview(page);
+    const rows = await page.locator('.anv-issue[data-settled="false"]').evaluateAll(nodes => nodes.map(n => Number(n.dataset.line)));
+    const before = await page.evaluate(() => window.__proofReadingWalk.focusIndex());
+    const expected = rows.find(line => line > before) ?? rows[0];
+    await nextReview(page);
+    await waitFor(page, i => window.__proofReadingWalk.focusIndex() === i, expected);
+    assert.equal(await page.locator('.anv-next').evaluate(node => node === document.activeElement), true);
+    await nextReview(page);
+    await waitFor(page, i => window.__proofReadingWalk.focusIndex() === i, rows.find(line => line > expected) ?? rows[0]);
   });
   await check(`${tag}: the owner can Approve`, async () => {
     const o = await openDoc(browser, base, slug, 'Mike', { viewport: { width: 1280, height: 900 } }, `?token=${encodeURIComponent(created.ownerSecret)}`);
@@ -257,7 +265,9 @@ async function desktop(browser, base) {
       }
     }
     await page.evaluate(() => window.__proofLineMarks.refresh());
-    await waitFor(page, () => document.querySelector('#share-banner .plm-issues-count')?.textContent === 'Aligned');
+    // The Issues pill's word "Aligned" is gone. The Review count names its scope. The aligned flag stays.
+    await waitFor(page, () => window.__proofLineMarks.debugState().aligned === true, null, 12000);
+    assert.equal(await page.locator('#share-banner .plm-issues-count').innerText(), '0 need you');
     await page.screenshot({ path: path.join(shots, `${tag}-4-aligned.png`) });
   });
   await b.context.close();
@@ -278,9 +288,9 @@ async function phone(browser, base) {
     await waitFor(page, () => document.querySelector('.plm-dot[data-line="0"]')?.dataset.status === 'seen');
     const h = await page.evaluate(() => document.getElementById('share-banner').getBoundingClientRect().height);
     assert.ok(h <= 60, `bar height ${h}`);
-    const btn = page.locator('#share-banner .plm-next');
+    const btn = page.locator('[data-accord-review-toggle]');
     assert.ok(await btn.isVisible(), 'issue button hidden');
-    await waitFor(page, n => (document.querySelector('#share-banner .plm-issues-count')?.dataset.teamCount === String(n) && document.querySelector('#share-banner .plm-next')?.innerText.trim() === ((v) => `${v} ${v === '1' ? 'Issue' : 'Issues'}`)(document.querySelector('#share-banner .plm-issues-count').dataset.viewerCount)), LINE_COUNT - 1);
+    assert.equal(await page.locator('#share-banner .plm-issues-count').innerText(), '0 need you');
     const r = await btn.boundingBox();
     assert.ok(r.height >= 44 && r.width >= 44, `issue button ${r.width}x${r.height}`);
   });
@@ -319,7 +329,7 @@ async function phone(browser, base) {
     assert.ok(box.height >= 44, `Agree button ${box.height}px tall`);
     await agree.tap();
     await waitFor(page, () => document.querySelector('.plm-dot[data-line="1"]')?.dataset.status === 'agreed');
-    await waitFor(page, n => (document.querySelector('#share-banner .plm-issues-count')?.dataset.teamCount === String(n) && document.querySelector('#share-banner .plm-next')?.innerText.trim() === ((v) => `${v} ${v === '1' ? 'Issue' : 'Issues'}`)(document.querySelector('#share-banner .plm-issues-count').dataset.viewerCount)), LINE_COUNT - 2);
+    assert.equal(await page.locator('#share-banner .plm-issues-count').innerText(), '0 need you');
   });
   await check(`${tag}: Reject asks for a reason on the phone`, async () => {
     await page.locator('.plm-dot[data-line="4"]').tap();
@@ -330,8 +340,9 @@ async function phone(browser, base) {
     await waitFor(page, () => document.querySelector('.plm-dot[data-line="4"]')?.dataset.status === 'rejected');
   });
   await check(`${tag}: the issue button goes to the next issue`, async () => {
-    await page.locator('#share-banner .plm-next').tap();
-    await page.locator('.plm-flash').waitFor({ state: 'attached', timeout: 2000 });
+    await seedReviewAsks(base, created, page, [6]);
+    await nextReview(page);
+    await waitFor(page, () => window.__proofReadingWalk.focusIndex() === 6);
     await page.screenshot({ path: path.join(shots, `${tag}-3-next.png`) });
   });
   await context.close();

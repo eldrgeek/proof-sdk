@@ -8,6 +8,7 @@
 // (desktop) and 390 (phone). Screenshots go to .preview/ (or --shots <dir>).
 // Exit code 0 only if every check passes.
 // Usage: node scripts/do-check.mjs [--style playmaker|proof] [--shots dir]
+import { nextReview, showReview } from './review-ui.mjs';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -182,14 +183,14 @@ async function run(browser, style) {
       assert.equal(await mike.evaluate(() => window.proof.getMarkdownSnapshot()?.content), mdBefore);
       const s = await mike.evaluate(() => window.__proofLineMarks.debugState());
       assert.equal(s.doIssues, 1);
-      assert.match(await mike.locator('#share-banner .plm-issues-count').getAttribute('title'), /1 unfinished action/);
+      assert.match(await mike.locator('#share-banner .plm-issues-count').getAttribute('title'), /need you/);
     });
 
     await check(`${tag}: Next issue lands on the {do} first (waiting for Mike's approval outranks unseen lines)`, async () => {
       await mike.evaluate(() => window.scrollTo(0, 0));
-      await mike.locator('#share-banner .plm-next').click();
+      await nextReview(mike);
       await mike.waitForTimeout(150);
-      assert.equal(await mike.locator('#share-banner .plm-issues-count').getAttribute('data-current'), `do ${L.DO + 1}`);
+      assert.equal(await mike.evaluate(() => window.__proofReadingWalk.focusIndex()), L.DO);
     });
 
     await check(`${tag}: the right rail's box for the {do} line carries the same control, Run disabled`, async () => {

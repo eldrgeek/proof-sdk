@@ -29,7 +29,7 @@ const comment = (line: number, by: string | null): ProofIssue => ({ type: 'comme
 
 test('policy: two Margin tabs, three Navigator tabs, Agree and Reject primary, selection owns the target', () => {
   assert.deepEqual(MARGIN_POLICY.tabs, ['line', 'room']);
-  assert.deepEqual(NAVIGATOR_POLICY.tabs.map(t => t.label), ['Outline', 'Issues', 'Since you']);
+  assert.deepEqual(NAVIGATOR_POLICY.tabs.map(t => t.label), ['Review', 'Outline', 'Since you']);
   assert.deepEqual(MARGIN_POLICY.primaryMarks, ['agreed', 'rejected']);
   for (const item of ['approved', 'seen', 'clear', 'uncertain', 'alternative', 'explain', 'ttl', 'tier']) assert.ok(MARGIN_POLICY.moreItems.includes(item), item);
   assert.equal(NAVIGATOR_POLICY.widthPx, 240);
