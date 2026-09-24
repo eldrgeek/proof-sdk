@@ -17,7 +17,7 @@ const oldBuild = process.env.P0_OLD_BUILD_DIR;
 const temp = mkdtempSync(path.join(tmpdir(), 'proof-marks-restart-'));
 const dbPath = path.join(temp, 'test.db');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-const headers = { 'Content-Type': 'application/json', 'X-Proof-Client-Version': '0.31.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const headers = { 'Content-Type': 'application/json', 'X-Proof-Client-Version': '0.32.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 let server, browser, base, port;
 async function start(repo, style) {
   const fd = openSync(path.join(temp, 'server.log'), 'a');
@@ -102,10 +102,25 @@ try {
             document.addEventListener('visibilitychange', () => { if (document.hidden) window.__p0Hidden++; });
           });
           const page = await context.newPage();
+          let refusedOldClient = false;
+          page.on('response', response => {
+            if (response.status() === 426 && /\/(collab-session|collab-refresh|open-context)(?:\?|$)/.test(response.url())) refusedOldClient = true;
+          });
           await page.goto(`${base}/d/${doc.slug}?token=${encodeURIComponent(doc.accessToken)}`);
           await synced(page); await sleep(1000);
           await stop(); await sleep(3000);
-          await start(root, style); await synced(page);
+          await start(root, style);
+          if (first === root) await synced(page);
+          else {
+            // Old sessions are refused. Reloading the same tab must replay its
+            // durable queue through a current session without losing suggestions.
+            await page.evaluate(() => window.proof.refreshCollabSessionAndReconnect(true));
+            const refusalDeadline = Date.now() + 30_000;
+            while (!refusedOldClient && Date.now() < refusalDeadline) await sleep(100);
+            assert.ok(refusedOldClient, 'Old page must receive the upgrade-required response');
+            await page.reload();
+            await synced(page);
+          }
           if (process.argv.includes('--reinit')) {
             assert.equal(await page.evaluate(() => window.proof.activateShareRuntime()), true);
             await page.waitForFunction(() => !window.proof?.shareRuntimeActivationInFlight);

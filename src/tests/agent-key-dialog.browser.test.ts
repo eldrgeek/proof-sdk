@@ -61,7 +61,7 @@ async function startLocalServer(): Promise<{ base: string; stop: () => Promise<v
 
 const revocationNote = 'Revoking stops that key from working. While this document can be opened from its link without signing in, anyone who has the link can still edit it.';
 const clientHeaders = {
-  'X-Proof-Client-Version': '0.31.0',
+  'X-Proof-Client-Version': '0.32.0',
   'X-Proof-Client-Build': 'test',
   'X-Proof-Client-Protocol': '3',
 };

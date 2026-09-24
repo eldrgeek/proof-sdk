@@ -1,9 +1,12 @@
+import { CURRENT_COLLAB_CLIENT } from '../shared/collab-version';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createServer } from 'node:http';
 import express from 'express';
+
+const clientHeaders = { 'X-Proof-Client-Version': CURRENT_COLLAB_CLIENT.version, 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': CURRENT_COLLAB_CLIENT.protocol };
 
 const temp = mkdtempSync(path.join(tmpdir(), 'proof-key-cookies-'));
 process.env.DATABASE_PATH = path.join(temp, 'test.db');
@@ -35,7 +38,7 @@ try {
       const label = `${method} ${prefix}/documents/:slug/${endpoint}`;
       const request = async (second: string) => {
         const response = await fetch(`http://127.0.0.1:${port}${prefix}/documents/${slug}/${endpoint}`, {
-          method, headers: { cookie: `${cookie(valid.secret)}; ${cookie(second)}` },
+          method, headers: { ...clientHeaders, cookie: `${cookie(valid.secret)}; ${cookie(second)}` },
         });
         return { status: response.status, body: await response.json() };
       };

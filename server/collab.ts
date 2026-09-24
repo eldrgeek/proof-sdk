@@ -1,4 +1,5 @@
-import { observeClientMarks } from './collab-marks-guard.js';
+import { COLLAB_VERSION_POLICY, supportsSuggestionStatus, type CollabClientVersion } from '../src/shared/collab-version.js';
+import { observeClientMarks, pruneResolvedSuggestions } from './collab-marks-guard.js';
 import { documentAccessEvents } from './document-access-events.js';
 import type { Connection } from '@hocuspocus/server';
 import { DEFAULT_AGENT_PRESENCE_TTL_MS } from '../src/shared/agent-presence.js';
@@ -1148,6 +1149,7 @@ export function extractCollabTokenFromHeaders(headers: unknown): string {
 }
 
 type CollabAuthContext = {
+  client?: CollabClientVersion;
   tokenId: string | null;
   slug: string;
   role: ShareRole;
@@ -1221,6 +1223,9 @@ async function authenticateCollabSession(documentName: string, token: string): P
     throw new Error('permission-denied');
   }
 
+  if (!supportsSuggestionStatus(claims.client)) {
+    throw { code: COLLAB_VERSION_POLICY.reloadCode, reason: COLLAB_VERSION_POLICY.reloadReason };
+  }
   assertCollabKeyActive(documentName, claims.tokenId);
   const authDoc = getDocumentAuthStateBySlug(documentName);
   if (!authDoc || authDoc.share_state === 'DELETED') {
@@ -1310,6 +1315,7 @@ async function authenticateCollabSession(documentName: string, token: string): P
     role: claims.role,
     shareState: refreshedAuthDoc.share_state,
     tokenId: claims.tokenId,
+    client: claims.client,
     canWrite,
     accessEpoch: refreshedAccessEpoch,
   };
@@ -1744,6 +1750,9 @@ documentAccessEvents.on('revoked', (slug: string, tokenId: string) => {
 });
 
 async function requireActiveCollabKey(data: { documentName: string; context?: CollabAuthContext }): Promise<void> {
+  if (!supportsSuggestionStatus(data.context?.client)) {
+    throw { code: COLLAB_VERSION_POLICY.reloadCode, reason: COLLAB_VERSION_POLICY.reloadReason };
+  }
   assertCollabKeyActive(data.documentName, data.context?.tokenId);
 }
 
@@ -2433,6 +2442,7 @@ function decodeBase64Url(input: string): Buffer | null {
 }
 
 type CollabSessionClaims = {
+  client?: CollabClientVersion;
   slug: string;
   role: ShareRole;
   exp: number;
@@ -2482,17 +2492,18 @@ function verifyCollabToken(token: string): CollabSessionClaims | null {
   if (typeof jti !== 'string' || jti.length < 6) return null;
   if (Date.now() >= exp * 1000) return null;
 
-  return { slug, role, exp, accessEpoch, tokenId, jti };
+  const client = (claims as CollabSessionClaims).client;
+  return { slug, role, exp, accessEpoch, tokenId, jti, client };
 }
 
 export function isValidCollabSessionToken(token: string): boolean {
   return Boolean(verifyCollabToken(token));
 }
 
-export function getCollabSessionClaims(token: string): { slug: string; role: ShareRole; accessEpoch: number } | null {
+export function getCollabSessionClaims(token: string): { slug: string; role: ShareRole; accessEpoch: number; client?: CollabClientVersion } | null {
   const claims = verifyCollabToken(token);
   if (!claims) return null;
-  return { slug: claims.slug, role: claims.role, accessEpoch: claims.accessEpoch };
+  return { slug: claims.slug, role: claims.role, accessEpoch: claims.accessEpoch, client: claims.client };
 }
 
 function encodeMarksMap(map: Y.Map<unknown>): Record<string, unknown> {
@@ -7920,6 +7931,7 @@ async function persistDoc(
     }
     return;
   }
+  pruneResolvedSuggestions(ydoc);
   const docRow = getDocumentBySlug(slug);
   if (docRow?.share_state === 'REVOKED' || docRow?.share_state === 'DELETED') {
     if (allowDuringShutdown) {
@@ -11326,8 +11338,10 @@ export function buildCollabSession(
   options?: {
     tokenId?: string | null;
     wsUrlBase?: string | null;
+    client?: CollabClientVersion;
   },
 ): CollabSessionInfo | null {
+  if (!supportsSuggestionStatus(options?.client)) return null;
   const startedAtMs = Date.now();
   const doc = getDocumentAuthStateBySlug(slug);
   if (!doc || !doc.doc_id || typeof doc.access_epoch !== 'number') {
@@ -11395,6 +11409,7 @@ export function buildCollabSession(
     accessEpoch: doc.access_epoch,
     tokenId: options?.tokenId ?? null,
     jti: randomUUID(),
+    client: options?.client,
   });
   const snapshot = getLatestYSnapshot(slug);
   const persistedStateVersion = Math.max(

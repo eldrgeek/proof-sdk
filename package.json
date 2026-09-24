@@ -54,7 +54,7 @@
     "check:usability-s1": "node scripts/usability-s1-check.mjs",
     "test:blind-leaks": "tsx src/tests/blind-leaks.test.ts",
     "test:review-list": "tsx src/tests/review-list.test.ts",
-    "test:marks-restart": "tsx src/tests/pending-suggestion-guard.test.ts && tsx src/tests/pending-suggestion-client.test.ts && tsx src/tests/share-live-collab-resolution-routing.test.ts && tsx src/tests/review-decision-collab.test.ts && tsx src/tests/pending-suggestion-readers.test.ts",
+    "test:marks-restart": "tsx src/tests/pending-suggestion-guard.test.ts && tsx src/tests/pending-suggestion-concurrency.test.ts && tsx src/tests/collab-version-replay.test.ts && tsx src/tests/pending-suggestion-client.test.ts && tsx src/tests/share-live-collab-resolution-routing.test.ts && tsx src/tests/review-decision-collab.test.ts && tsx src/tests/pending-suggestion-readers.test.ts",
     "check:marks-restart": "node scripts/marks-restart-check.mjs"
   },
   "dependencies": {

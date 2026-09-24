@@ -1,3 +1,4 @@
+import { CURRENT_COLLAB_CLIENT } from '../shared/collab-version';
 /**
  * Client-side share operations for web viewers.
  * Detects /d/:slug URL, fetches doc from server, manages WebSocket sync.
@@ -170,7 +171,7 @@ export class ShareClient {
   private viewerName: string | null = null;
   private reconnectDelay = 1000;
   private maxReconnectDelay = 30000;
-  private clientVersion = '0.31.0';
+  private clientVersion = CURRENT_COLLAB_CLIENT.version;
   private clientBuild = 'web';
   private clientProtocol = '3';
   private lastObservedUpdatedAt: string | null = null;
@@ -233,7 +234,7 @@ export class ShareClient {
       : null;
     this.clientVersion = (typeof proofConfig.proofClientVersion === 'string' && proofConfig.proofClientVersion.trim())
       ? proofConfig.proofClientVersion.trim()
-      : '0.31.0';
+      : CURRENT_COLLAB_CLIENT.version;
     this.clientBuild = (typeof proofConfig.proofClientBuild === 'string' && proofConfig.proofClientBuild.trim())
       ? proofConfig.proofClientBuild.trim()
       : 'web';

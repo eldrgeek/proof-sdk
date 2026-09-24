@@ -1643,6 +1643,7 @@ class ProofEditorImpl implements ProofEditor {
           this.collabUnsyncedChanges = status.unsyncedChanges;
           this.collabPendingLocalUpdates = status.pendingLocalUpdates;
           this.updateShareEditGate();
+          if (collabClient.terminalCloseReason === 'reload-required') this.showCollabReloadRequired();
           if (status.connectionStatus === 'disconnected' && collabClient.terminalCloseReason === 'permission-denied') {
             void this.refreshCollabSessionAndReconnect(false);
           }
@@ -2326,6 +2327,18 @@ class ProofEditorImpl implements ProofEditor {
     });
   }
 
+  private showCollabReloadRequired(): void {
+    if (this.collabRefreshTimer) clearInterval(this.collabRefreshTimer);
+    this.collabRefreshTimer = null;
+    this.resetShareInitRetryState();
+    this.showErrorBanner('Reload this page to resume editing. Your unsent changes stay in this tab.', {
+      retryLabel: 'Reload', onRetry: () => {
+        collabClient.flushPendingLocalStateForUnload();
+        window.location.reload();
+      },
+    });
+  }
+
   private startCollabRefreshLoop(): void {
     if (this.collabRefreshTimer) {
       clearInterval(this.collabRefreshTimer);
@@ -2459,6 +2472,7 @@ class ProofEditorImpl implements ProofEditor {
   }
 
   private async refreshCollabSessionAndReconnect(preserveLocalState: boolean): Promise<void> {
+    if (collabClient.terminalCloseReason === 'reload-required') return;
     if (!this.collabEnabled || !this.activeCollabSession) return;
     if (this.collabSessionRefreshInFlight) return;
     this.collabSessionRefreshInFlight = true;
@@ -2466,6 +2480,11 @@ class ProofEditorImpl implements ProofEditor {
     try {
       const refreshed = await shareClient.refreshCollabSession();
       if (this.isShareRequestError(refreshed)) {
+        if (refreshed.error.status === 426) {
+          collabClient.requireReload();
+          this.showCollabReloadRequired();
+          return;
+        }
         console.warn('[share] collab session refresh failed', refreshed.error);
         if (refreshed.error.status === 401 || refreshed.error.status === 403 || refreshed.error.status === 404 || refreshed.error.status === 410) {
           this.teardownCollabRuntimeAfterTerminalRefreshFailure();
@@ -2897,6 +2916,7 @@ class ProofEditorImpl implements ProofEditor {
     if (this.collabConnectionStatus === 'connecting') {
       return { label: 'Connecting...', color: '#f59e0b' };
     }
+    if (collabClient.terminalCloseReason === 'reload-required') return { label: 'Reload to resume editing', color: '#ef4444' };
     if (collabClient.terminalCloseReason === 'unshared') {
       return { label: 'Document is no longer shared', color: '#ef4444' };
     }

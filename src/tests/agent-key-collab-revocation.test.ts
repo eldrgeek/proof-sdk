@@ -1,3 +1,4 @@
+import { CURRENT_COLLAB_CLIENT } from '../shared/collab-version';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -8,6 +9,8 @@ import { HocuspocusProvider } from '@hocuspocus/provider';
 import * as Y from 'yjs';
 import express from 'express';
 import type { CollabSessionInfo } from '../../server/collab.js';
+
+const clientHeaders = { 'X-Proof-Client-Version': CURRENT_COLLAB_CLIENT.version, 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': CURRENT_COLLAB_CLIENT.protocol };
 
 const temp = mkdtempSync(path.join(tmpdir(), 'proof-key-collab-'));
 process.env.DATABASE_PATH = path.join(temp, 'test.db');
@@ -43,7 +46,7 @@ try {
   const other = db.createDocumentAccessToken(slug, 'editor');
   async function openSession(secret: string): Promise<CollabSessionInfo> {
     const response = await fetch(`http://127.0.0.1:${port}/api/documents/${slug}/collab-session`, {
-      headers: { 'x-share-token': secret },
+      headers: { ...clientHeaders, 'x-share-token': secret },
     });
     assert.equal(response.status, 200);
     const body = await response.json() as { success: boolean; session: CollabSessionInfo };

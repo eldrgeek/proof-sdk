@@ -1,3 +1,4 @@
+import { readCollabClientVersion, requireCurrentCollabClient } from './client-capabilities.js';
 import { redactSuggestionDecisions, blindReadView, readBlindView, redactAsk, redactTtl, visibleObjection, visibleAlternative } from './blind-view.js';
 import { agentKeyRoutes } from './agent-key-routes.js';
 import { getClientIp, trustProxyHeaders } from './client-address.js';
@@ -2950,7 +2951,9 @@ apiRoutes.get('/documents/:slug/open-context', async (req: Request, res: Respons
     return;
   }
 
+  if (!requireCurrentCollabClient(req, res)) return;
   const session = buildCollabSession(slug, role, {
+    client: readCollabClientVersion(req),
     tokenId: access.tokenId,
     wsUrlBase: resolveRequestScopedCollabWsBase(req),
   });
@@ -3021,7 +3024,9 @@ apiRoutes.post('/documents/:slug/collab-refresh', async (req: Request, res: Resp
   }
 
   const role = access.role;
+  if (!requireCurrentCollabClient(req, res)) return;
   const session = buildCollabSession(slug, role, {
+    client: readCollabClientVersion(req),
     tokenId: access.tokenId,
     wsUrlBase: resolveRequestScopedCollabWsBase(req),
   });
@@ -3076,7 +3081,9 @@ apiRoutes.get('/documents/:slug/collab-session', async (req: Request, res: Respo
   const canComment = doc.share_state === 'ACTIVE'
     && (role === 'commenter' || role === 'editor' || role === 'owner_bot');
 
+  if (!requireCurrentCollabClient(req, res)) return;
   const session = buildCollabSession(slug, role, {
+    client: readCollabClientVersion(req),
     tokenId: access.tokenId,
     wsUrlBase: resolveRequestScopedCollabWsBase(req),
   });

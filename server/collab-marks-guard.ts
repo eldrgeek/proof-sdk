@@ -1,10 +1,39 @@
-/** Protect old clients' unload snapshots too; client-only fixes cannot protect a deploy. */
+/** Protect queued old-client snapshots too; client-only fixes cannot protect a deploy. */
+import { COLLAB_VERSION_POLICY } from '../src/shared/collab-version.js';
 import * as Y from 'yjs';
 import { Connection } from '@hocuspocus/server';
 import { isPendingSuggestion, isSuggestion, SUGGESTION_STATUS_POLICY } from '../src/shared/suggestion-status.js';
 import { addDocumentEvent } from './db.js';
 
 const guarded = new WeakSet<Y.Doc>();
+const restores = new WeakMap<Connection, number[]>();
+const reloadRequested = new WeakSet<Connection>();
+
+export function recordSuggestionRestore(slug: string, connection: Connection, now = Date.now()): void {
+  if (reloadRequested.has(connection)) return;
+  const recent = (restores.get(connection) ?? []).filter(at => now - at < SUGGESTION_STATUS_POLICY.restoreWindowMs);
+  recent.push(now);
+  restores.set(connection, recent);
+  if (recent.length < SUGGESTION_STATUS_POLICY.restoreLimit) return;
+  reloadRequested.add(connection);
+  connection.readOnly = true;
+  addDocumentEvent(slug, 'collab.reload_required', { reason: 'repeated_suggestion_deletion', restores: recent.length }, 'server');
+  console.warn('[collab] reload required after repeated suggestion deletion', { slug, socketId: connection.socketId, restores: recent.length });
+  // Finish broadcasting the repaired transaction before detaching this connection.
+  queueMicrotask(() => connection.close({ code: COLLAB_VERSION_POLICY.reloadCode, reason: COLLAB_VERSION_POLICY.reloadReason }));
+}
+
+export function pruneResolvedSuggestions(doc: Y.Doc, now = Date.now()): void {
+  const marks = doc.getMap('marks');
+  doc.transact(() => {
+    for (const [id, mark] of marks) {
+      if (!isSuggestion(mark) || isPendingSuggestion(mark)) continue;
+      const resolvedAt = typeof mark.resolvedAt === 'string' ? Date.parse(mark.resolvedAt) : NaN;
+      // Unknown dates cannot establish that Undo's window has expired.
+      if (Number.isFinite(resolvedAt) && now - resolvedAt > SUGGESTION_STATUS_POLICY.undoWindowMs) marks.delete(id);
+    }
+  }, SUGGESTION_STATUS_POLICY.pruneOrigin);
+}
 
 export function isClientMarksTransaction(transaction: Y.Transaction): boolean {
   // Hocuspocus MessageReceiver passes Connection to readUpdate/readSyncStep2.
@@ -23,8 +52,16 @@ export function observeClientMarks(slug: string, doc: Y.Doc): void {
       if (change.action === 'delete' && isPendingSuggestion(before)) {
         // Map observers run before afterTransaction/update listeners (persistence and
         // broadcast). The replacement is visible immediately, before either can read.
-        doc.transact(() => marks.set(markId, before), SUGGESTION_STATUS_POLICY.restoreOrigin);
+        if (marks.has(markId)) continue;
+        let restored = false;
+        doc.transact(() => {
+          if (marks.has(markId)) return;
+          marks.set(markId, before);
+          restored = true;
+        }, SUGGESTION_STATUS_POLICY.restoreOrigin);
+        if (!restored) continue;
         addDocumentEvent(slug, 'suggestion.deletion_restored', { markId, kind: before.kind, by: before.by }, 'server');
+        recordSuggestionRestore(slug, transaction.origin as Connection);
         continue;
       }
       const after = marks.get(markId);

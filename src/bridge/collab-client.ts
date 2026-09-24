@@ -1,3 +1,4 @@
+import { COLLAB_VERSION_POLICY } from '../shared/collab-version';
 import { isPendingSuggestion } from '../shared/suggestion-status.js';
 import * as Y from 'yjs';
 import { HocuspocusProvider } from '@hocuspocus/provider';
@@ -16,7 +17,7 @@ export type CollabSyncStatus = {
   offlineSinceMs: number | null;
 };
 type SyncStatusHandler = (status: CollabSyncStatus) => void;
-export type CollabTerminalCloseReason = 'unshared' | 'permission-denied' | null;
+export type CollabTerminalCloseReason = 'unshared' | 'permission-denied' | 'reload-required' | null;
 type MarksHandler = (marks: Record<string, unknown>) => void;
 type DocumentUpdatedHandler = () => void;
 
@@ -704,6 +705,7 @@ export class CollabClient {
     provider.on('authenticationFailed', (event: { reason?: string }) => {
       const reason = typeof event?.reason === 'string' ? event.reason : 'permission-denied';
       this.lastAuthenticationFailureReason = reason;
+      if (reason === COLLAB_VERSION_POLICY.reloadReason) this.requireReload();
       this.connectionStatus = 'disconnected';
       this.hasSynced = false;
       this.lastDisconnectAt = Date.now();
@@ -720,7 +722,8 @@ export class CollabClient {
       this.emitSyncStatus();
     });
 
-    provider.on('close', () => {
+    provider.on('close', ({ event }: { event?: { reason?: string } }) => {
+      if (event?.reason === COLLAB_VERSION_POLICY.reloadReason) this.requireReload();
       this.emitSyncStatus();
     });
 
@@ -758,6 +761,15 @@ export class CollabClient {
     if (this.marksHandler) {
       this.marksHandler(this.readMarks());
     }
+  }
+
+  requireReload(): void {
+    this.terminalCloseReason = 'reload-required';
+    this.connectionStatus = 'disconnected';
+    this.hasSynced = false;
+    this.flushPendingLocalStateForUnload();
+    this.provider?.disconnect();
+    this.emitSyncStatus();
   }
 
   softRefreshSession(session: CollabSessionInfo): boolean {

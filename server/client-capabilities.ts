@@ -1,3 +1,4 @@
+import { COLLAB_VERSION_POLICY, supportsSuggestionStatus, type CollabClientVersion } from '../src/shared/collab-version.js';
 import type { NextFunction, Request, Response } from 'express';
 import {
   AGENT_DOCS_PATH,
@@ -177,4 +178,21 @@ export function capabilitiesPayload(): Record<string, unknown> {
       publicDefaultEditorRole: true,
     },
   };
+}
+
+export function readCollabClientVersion(req: Request): CollabClientVersion {
+  return {
+    version: getHeader(req, REQUIRED_HEADER_VERSION) ?? '',
+    build: getHeader(req, REQUIRED_HEADER_BUILD) ?? '',
+    protocol: getHeader(req, REQUIRED_HEADER_PROTOCOL) ?? '',
+  };
+}
+
+export function requireCurrentCollabClient(req: Request, res: Response): boolean {
+  if (supportsSuggestionStatus(readCollabClientVersion(req))) return true;
+  respondUpgradeRequired(res, buildUpgradePayload('suggestion_status_required', {
+    minVersion: COLLAB_VERSION_POLICY.minVersion,
+    message: 'Client upgrade required. Reload this page to resume editing. Your unsent changes stay in this tab.',
+  }));
+  return false;
 }

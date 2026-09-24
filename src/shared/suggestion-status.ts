@@ -5,6 +5,10 @@ export const SUGGESTION_STATUS_POLICY = {
   preservePendingOnPassiveSnapshot: true,
   restoreClientDeletion: true,
   restoreOrigin: 'server-pending-suggestion-restore',
+  pruneOrigin: 'server-resolved-suggestion-prune',
+  undoWindowMs: 24 * 60 * 60 * 1000,
+  restoreLimit: 3,
+  restoreWindowMs: 5 * 60 * 1000,
 } as const;
 
 export function isSuggestion(value: unknown): value is StoredMark {
