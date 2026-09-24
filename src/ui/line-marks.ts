@@ -263,8 +263,9 @@ export class LineMarksUI {
   readonly bannerEl = document.createElement('span');
   private readonly countEl = document.createElement('span');
   private readonly nextBtn = document.createElement('button');
-  /** Step B3c: "Aligned as of <time>" / "Last aligned <time>", a link to the snapshot's ledger. */
-  private readonly alignedEl = document.createElement('button');
+  /** Step B3c: "Aligned as of <time>" / "Last aligned <time>", a link to the snapshot's ledger.
+   * The toolbar mounts this. The old Issues pill is not in the toolbar. Mike, 2026-09-23 (usability brief). */
+  readonly alignedEl = document.createElement('button');
   private readonly gutter = document.createElement('div');
   private view: EditorView | null = null;
   private lines: DocLine[] = [];

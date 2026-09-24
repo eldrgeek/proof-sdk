@@ -267,7 +267,8 @@ async function desktop(browser, base, style) {
     }
     const link = t.page.locator('#share-banner .plm-aligned-at');
     await waitFor(t.page, () => /Aligned as of/.test(document.querySelector('#share-banner .plm-aligned-at')?.textContent ?? ''), null, 15000);
-    assert.equal(await t.page.locator('#share-banner .plm-issues-count').innerText(), 'Aligned');
+    // The Issues pill said "Aligned". The Review count names the scope. Mike, 2026-09-23 (usability brief).
+    assert.equal(await t.page.locator('#share-banner .plm-issues-count').innerText(), '0 need you');
     await t.page.screenshot({ path: path.join(shots, `${tag}-5-aligned.png`), clip: { x: 0, y: 0, width: 1440, height: 160 } });
     const [ledger] = await Promise.all([t.context.waitForEvent('page'), link.click()]);
     await ledger.waitForLoadState();
@@ -281,9 +282,9 @@ async function desktop(browser, base, style) {
   await check(`${tag}: a later rejection starts a new round: "Last aligned <time>"`, async () => {
     await agent(base, small, '/marks/line', { by: 'ai:check', status: 'rejected', reason: 'Friday is too soon', lineIndex: 1 });
     await waitFor(t.page, () => /Last aligned/.test(document.querySelector('#share-banner .plm-aligned-at')?.textContent ?? ''), null, 12000);
-    // The pill counts the viewer's own Issues (the AI's rejection is its thread); the team has 1.
+    // The count names the viewer's scope. The AI's rejection is the team's open item, not Ada's.
     await waitFor(t.page, () => document.querySelector('#share-banner .plm-issues-count')?.dataset.teamCount === '1');
-    assert.equal(await t.page.locator('#share-banner .plm-issues-count').innerText(), '0 Issues');
+    assert.equal(await t.page.locator('#share-banner .plm-issues-count').innerText(), '0 need you');
   });
   await t.context.close();
 }

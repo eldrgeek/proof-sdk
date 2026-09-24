@@ -219,7 +219,10 @@ async function desktop(browser, base) {
   await check(`${tag}: editing a line resets the others' marks on it and gives the changer Agreed`, async () => {
     // Line 2 ("The second paragraph..."): Ada rejected it; Bob marks it Seen, then edits it directly.
     await mark(b.page, 2, /Seen/);
-    await b.page.getByRole('button', { name: /^Suggesting:/ }).locator('[data-mode="edit"]').click();
+    // Direct editing left the toolbar. Edit › Editing is the labelled control. Mike, 2026-09-23 (usability brief).
+    await b.page.locator('#accord-menubar .amb-top[data-menu="edit"]').click();
+    await b.page.locator('.amb-menu').getByRole('menuitemradio', { name: 'Editing', exact: true }).click();
+    await b.page.waitForFunction(() => window.proof.isSuggestionsEnabled() === false);
     await b.page.locator('.ProseMirror p', { hasText: 'The second paragraph' }).click();
     await b.page.keyboard.press('End');
     await b.page.keyboard.insertText(' Edited by Bob.');
@@ -265,7 +268,9 @@ async function desktop(browser, base) {
       }
     }
     await page.evaluate(() => window.__proofLineMarks.refresh());
-    await waitFor(page, () => document.querySelector('#share-banner .plm-issues-count')?.textContent === 'Aligned');
+    // The Issues pill's word "Aligned" is gone. The Review count names its scope. The aligned flag stays.
+    await waitFor(page, () => window.__proofLineMarks.debugState().aligned === true, null, 12000);
+    assert.equal(await page.locator('#share-banner .plm-issues-count').innerText(), '0 need you');
     await page.screenshot({ path: path.join(shots, `${tag}-4-aligned.png`) });
   });
   await b.context.close();

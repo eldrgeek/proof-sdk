@@ -170,7 +170,8 @@ async function run(browser, style) {
       assert.equal(w.dwellMs, base1 * 2, `dwell ${w.dwellMs} for ${words} words at ${w.rate}/s`);
       const s = await lm(mike);
       assert.equal(s.aids.uncertainIssues, 1);
-      assert.match(await mike.locator('#share-banner .plm-issues-count').getAttribute('title'), /1 uncertain line/);
+      // The Issues pill title listed kinds. The Review count names its scope. Mike, 2026-09-23 (usability brief).
+      assert.match(await mike.locator('#share-banner .plm-issues-count').getAttribute('title'), /^\d+ need you; \d+ open for the team/);
       await mike.waitForTimeout(250);
       await mike.screenshot({ path: path.join(shots, `${tag}-1-uncertain.png`) });
     });

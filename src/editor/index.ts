@@ -3803,7 +3803,7 @@ class ProofEditorImpl implements ProofEditor {
     hidden.setAttribute('aria-hidden', 'true');
     banner.replaceChildren(
       group('center', title, syncStatusInline),
-      group('right', reviewControl, peopleBtn, shareBtn),
+      group('right', reviewControl, lineMarksUi.alignedEl, peopleBtn, shareBtn),
       hidden,
       this.createShareOverflowButton(),
     );
