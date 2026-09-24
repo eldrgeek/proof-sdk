@@ -413,8 +413,10 @@ async function runViewportCases(browser, base, created, label, viewport) {
     boxesStable(boxesBefore, boxesAfter, 'hover on collapsed section heading');
     const hiddenAfter = await hiddenBodyLines();
     assert.equal(hiddenAfter, hiddenBefore, `hover revealed ${hiddenBefore - hiddenAfter} folded body line(s)`);
+    // Hover-peek left the product (Mike, 2026-09-23, usability brief). A missing field is no peek.
+    // The layout and hidden-line checks above are the behaviour. A returned heading index still fails.
     const peeked = await page.evaluate(() => window.__proofFolding.debugState().peeked);
-    assert.equal(peeked, null, `hover peeked section open (peeked=${peeked})`);
+    assert.equal(peeked ?? null, null, `hover peeked section open (peeked=${peeked})`);
   });
 
   // 2 — agree / reject: viewport stays anchored; closed passages stay full text after scroll away.
@@ -494,15 +496,20 @@ async function runViewportCases(browser, base, created, label, viewport) {
     await hoverBlock(page, L.PROPOSAL);
     await blurKeys(page);
     await page.keyboard.press('a');
-    await page.waitForTimeout(700);
-    const agreedLine = await page.evaluate(target => {
+    await waitFor(page, line => {
       const me = window.__proofLineMarks.me();
-      const hit = window.__proofLineMarks.debugState().marks
-        .filter(m => m.by === me && m.status === 'agreed')
-        .sort((a, b) => (b.at ?? 0) - (a.at ?? 0))[0];
-      return hit ? { line: hit.anchor.ordinal, ok: hit.anchor.ordinal === target } : { line: null, ok: false };
+      return window.__proofLineMarks.debugState().marks.some(m => m.by === me && m.anchor.ordinal === line && m.status === 'agreed');
     }, target);
-    assert.ok(agreedLine.ok, `shortcut agreed line ${agreedLine.line}, not selected line ${target}`);
+    // Mark.at is an ISO string. Subtracting two strings is NaN, so a numeric sort does not find
+    // the shortcut's mark. Read the selected line and the hovered line directly.
+    const agreedLine = await page.evaluate(({ target, hovered }) => {
+      const me = window.__proofLineMarks.me();
+      const status = line => window.__proofLineMarks.debugState().marks.find(m => m.by === me && m.anchor.ordinal === line)?.status ?? null;
+      return { focus: window.__proofReadingWalk.debugState().focus, target: status(target), hovered: status(hovered) };
+    }, { target, hovered: L.PROPOSAL });
+    assert.equal(agreedLine.focus, target, `hover moved the selected passage to ${agreedLine.focus}`);
+    assert.equal(agreedLine.target, 'agreed', `shortcut did not agree selected line ${target}`);
+    assert.notEqual(agreedLine.hovered, 'agreed', `shortcut agreed hovered line ${L.PROPOSAL}`);
   });
 
   // 5 — scroll past proposals: no accept, no agreement.
@@ -516,13 +523,16 @@ async function runViewportCases(browser, base, created, label, viewport) {
     }
     await page.waitForTimeout(500);
     const s = await walk(page);
-    assert.equal(s.provisional.length, 0, `scroll created provisional accepts: ${JSON.stringify(s.provisional)}`);
+    // There is no provisional accept list (Mike, 2026-09-23, usability brief). A non-empty list still fails.
+    const provisional = Array.isArray(s.provisional) ? s.provisional : [];
+    assert.equal(provisional.length, 0, `scroll created provisional accepts: ${JSON.stringify(s.provisional)}`);
     const pending = await page.evaluate(() => (window.proof?.getAllMarks?.() ?? []).filter(m => m.data?.status === 'pending').length);
     assert.ok(pending >= 1, 'fixture proposal missing');
     await page.mouse.click(40, 40);
     await page.waitForTimeout(300);
     const s2 = await walk(page);
-    assert.equal(s2.provisional.length, 0, 'click elsewhere committed scroll accepts');
+    const provisionalAfter = Array.isArray(s2.provisional) ? s2.provisional : [];
+    assert.equal(provisionalAfter.length, 0, 'click elsewhere committed scroll accepts');
     const agreedProposal = await page.evaluate(() => {
       const me = window.__proofLineMarks.me();
       return window.__proofLineMarks.debugState().marks.some(m => m.by === me && m.status === 'agreed' && m.kind === 'suggestion');
