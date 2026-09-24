@@ -205,7 +205,11 @@ async function desktop(browser, base, style) {
   // Accord round 2 stage A (2026-09-22): the bar says "Editing line N" where it used to say
   // "Writing" — the same state, named for what the person is doing and on which line.
   await check(`${tag}: the caret in the text shows Editing line N in the bar; Esc shows Reading`, async () => {
-    const box = await block(page, L.S1).boundingBox();
+    // The case above scrolls 250px, which carries line S1 above the window. The click has to
+    // land on the line. The product still shows "Editing line N" when it does.
+    const target = block(page, L.S1);
+    await target.scrollIntoViewIfNeeded();
+    const box = await target.boundingBox();
     await page.mouse.click(box.x + 80, box.y + 10);
     await waitFor(page, () => /^Editing line \d+$/.test(document.querySelector('.pst-bar .pst-mode')?.textContent ?? ''));
     await page.screenshot({ path: path.join(shots, `${tag}-writing.png`), clip: { x: 240, y: 840, width: 880, height: 60 } });

@@ -1074,7 +1074,9 @@ export class ReadingWalkUI {
     const marked = lm.markedUpTo();
     const sheetOpen = this.right.classList.contains('prw-sheet-open');
     const sig = `${index}|${this.lines.length}|${line?.hash ?? ''}|${status}|${Boolean(lm.askForLine(index))}|${marked?.line ?? ''}|${sheetOpen}`;
-    if (sig === this.stripSig || (this.strip.contains(active) && Number(this.strip.dataset.line) === index)) return;
+    // A focused Agree must not freeze the strip: the tap writes the mark, and the strip has to
+    // show "Marked up to line K ↑". An input would be kept; the strip has none. Mike, 2026-09-23.
+    if (sig === this.stripSig) return;
     this.stripSig = sig;
     this.strip.dataset.line = String(index);
     this.strip.dataset.status = status;
@@ -1450,9 +1452,46 @@ export class ReadingWalkUI {
     });
   }
 
+  /**
+   * A button in the margin, named so a rebuild can focus the same control again. A remote
+   * comment redraws the box; the reader's focus stays on the control they were on.
+   * Mike, 2026-09-23 (usability brief): nothing moves unless the reader does it.
+   */
+  private marginControlKey(active: HTMLElement): string | null {
+    if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) return null;
+    const status = active.dataset.status;
+    if (status && active.classList.contains('plm-choice')) {
+      const where = active.closest('.plm-more-marks') ? 'more' : active.closest('.plm-actions') ? 'primary' : 'other';
+      return `choice:${where}:${status}`;
+    }
+    const label = active.getAttribute('aria-label');
+    return label ? `label:${label}` : null;
+  }
+
+  /** Puts focus back on the control a margin rebuild replaced. */
+  private restoreMarginControl(key: string): void {
+    let next: HTMLElement | null = null;
+    if (key.startsWith('choice:')) {
+      const [, where, status] = key.split(':');
+      const sel = `.plm-choice[data-status="${status}"]`;
+      if (where === 'more') next = this.right.querySelector(`.plm-more-marks ${sel}`);
+      else if (where === 'primary') next = this.right.querySelector(`.plm-actions:not(.plm-more-marks) ${sel}`);
+      else next = this.right.querySelector(sel);
+    } else if (key.startsWith('label:')) {
+      const label = key.slice('label:'.length);
+      next = [...this.right.querySelectorAll<HTMLElement>('[aria-label]')].find(el => el.getAttribute('aria-label') === label) ?? null;
+    }
+    if (next && document.activeElement !== next) next.focus({ preventScroll: true });
+  }
+
   private renderNow(): void {
     const walk = this.walk;
     if (!walk || !this.started) return;
+    const active = document.activeElement;
+    const held = active instanceof HTMLElement
+      && (this.boxHost.contains(active) || this.tailHost.contains(active) || this.changesHost.contains(active))
+      ? active : null;
+    const heldKey = held ? this.marginControlKey(held) : null;
     this.dockPanel();
     this.renderFocus();
     this.renderDynamicStyle();
@@ -1473,6 +1512,7 @@ export class ReadingWalkUI {
     this.navigator.render();
     this.host.focusChanged?.(this.cursorLine());
     this.restoreViewport();
+    if (heldKey && held && !held.isConnected) this.restoreMarginControl(heldKey);
   }
 
   /**
