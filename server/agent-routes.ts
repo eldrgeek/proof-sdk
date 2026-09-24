@@ -1,3 +1,4 @@
+import { blindReadView, readBlindView, redactAsk, redactTtl, filterBlindEvents, visibleAlternative } from './blind-view.js';
 import { createHash } from 'crypto';
 import { Router, type Request, type Response } from 'express';
 import {
@@ -43,7 +44,7 @@ import { canonicalizeStoredMarks, type StoredMark } from '../src/formats/marks.j
 import { buildIssueReport, computeServerLines, listCanonicalLineMarks, resolveAgentLineTarget, viewerParticipantStatus, writeAgentLineMark } from './line-marks.js';
 import { TIER_POLICY } from '../src/shared/line-tiers.js';
 import { evaluateDocumentTiers, listTierRecords, serializeTierViews, writeTiers } from './line-tiers.js';
-import { bindFamiliar, briefFor, issueReportFor, listFamiliars, proxyStateReport, resolveHuman, serializeBrief, writeAgentProxyMarks } from './proxy-marks.js';
+import { bindFamiliar, familiarOf, briefFor, issueReportFor, listFamiliars, proxyStateReport, resolveHuman, serializeBrief, writeAgentProxyMarks } from './proxy-marks.js';
 import { EVIDENCE_POLICY, PROXY_POLICY, isClaimedMark } from '../src/shared/proxy-marks.js';
 import { buildSinceYou, freezeIfAligned, listSnapshotInfos, scheduleAlignmentCheck, sendSnapshotFile } from './alignment.js';
 import { agentKeyActor, anchorForLine as anchorForDocLine } from '../src/shared/line-marks.js';
@@ -114,11 +115,11 @@ import {
   withdrawAlternative,
   type LineEditor,
 } from './proof-extras.js';
-import { blindViewFor, redactIssues, serializeExplain, termsReport } from './proof-extras-eval.js';
-import { getProofSettings, listExplains, listPicks } from './proof-extras-store.js';
+import { redactIssues, serializeExplain, termsReport } from './proof-extras-eval.js';
+import { getProofSettings, listExplains } from './proof-extras-store.js';
 import { BUNDLE_POLICY } from '../src/shared/bundles.js';
 import { ALT_POLICY } from '../src/shared/alternatives.js';
-import { BLIND_POLICY, objectionLinesRevealed } from '../src/shared/blind.js';
+import { BLIND_POLICY, objectionLinesRevealed, proxyVisibleTo } from '../src/shared/blind.js';
 import { EXPLAIN_POLICY, TERM_POLICY } from '../src/shared/explain.js';
 import { TTL_POLICY } from '../src/shared/ttl.js';
 import { getChatMessage, listChatMessages, mentionCandidates, postChatMessage, serializeChatMessage } from './chat.js';
@@ -2271,12 +2272,12 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
         body.blind = { on: true, viewer: viewer ?? null };
         if (viewer !== undefined) {
           const lines = report.docLines ?? [];
-          const answered = ((askReport as ReturnType<typeof buildAskReport> | null)?.views ?? [])
-            .filter(view => view.lineIndex !== null && view.ask.answers.some(a => actorKeyOf(a.by) === actorKeyOf(viewer ?? '')))
-            .map(view => view.lineIndex as number);
-          const view = blindViewFor({ lines, lineMarks: report.lineMarks, viewer: viewer ?? '', answeredLines: answered, picks: listPicks(slug) });
+          const view = blindReadView(slug, lines, viewer, report.lineMarks)!;
           revealedLines = view.revealed;
           body.lineMarks = view.lineMarks;
+          body.dialectHistory = historyNotesForState(slug, lines, view.revealed);
+          body.tiers = serializeTierViews(evaluateDocumentTiers(slug, lines, view.lineMarks, viewer), lines);
+          body.sections = report.sections.map(({ issues: _issues, ...section }) => section);
           // Mike, 2026-09-23 (usability brief): the status and the rest of /state must not
           // disclose a hidden rejection through an objection's reason, condition or Issue.
           const visibleObjections = report.objections.filter(objection => {
@@ -2287,7 +2288,8 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
           body.objections = visibleObjections;
           body.issues = redactIssues(report.issues, view.revealed).filter(issue =>
             issue.type !== 'objection' || visibleObjectionIds.has(issue.objectionId));
-          body.asks = (body.asks as Array<Record<string, unknown>>).map(ask => redactAsk(ask, view.revealed, viewer ?? ''));
+          body.ttls = report.ttls.map(ttl => redactTtl(ttl, view));
+          body.asks = (body.asks as Array<Record<string, unknown>>).map(ask => redactAsk(ask, view));
           body.alternatives = redactAltSets(report.alternatives, view.revealed, viewer ?? '');
           body.disagreementLines = report.disagreementLines.filter(index => view.revealed.has(index));
           body.carriedMarks = report.carried.filter(c => view.revealed.has(c.lineIndex) || actorKeyOf(c.by) === actorKeyOf(viewer ?? ''));
@@ -2314,7 +2316,7 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
       if (Array.isArray(body.lineMarks)) {
         body.lineMarks = (body.lineMarks as Array<Record<string, unknown>>).map(mark => (isClaimedMark(mark as { by: string; hidden?: boolean; evidence?: string | null }) ? { ...mark, claimed: true } : mark));
       }
-      // Mike, 2026-09-23 (usability brief): additive. Existing alignment fields are unchanged.
+      // Mike, 2026-09-23 (usability brief): publish status from visible positions.
       /**
        * Under blind marking this is recomputed from the marks this caller is allowed to see.
        * participantStatus.aligned answers: has everyone seen the current text, with nobody rejecting it?
@@ -2326,10 +2328,9 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
       );
       body.alignment = {
         /** alignment.aligned answers: are there zero Issues, including open comments and proposals? */
-        aligned: report.aligned,
+        ...(revealedLines ? {} : { aligned: report.aligned, counts: report.counts }),
         team: report.team,
         owners: report.owners,
-        counts: report.counts,
         unratifiedProxies,
         proxyRule: 'Proxy marks from a Familiar never count until their person ratifies them',
         lastSnapshot: snapshot ? { ...snapshot, ledger: `/api/agent/${slug}/snapshots/${snapshot.id}.md` } : null,
@@ -3750,7 +3751,7 @@ agentRoutes.get('/:slug/export', async (req: Request, res: Response) => {
   try {
     const state = await currentAgentState(slug);
     const doc = getDocumentBySlug(slug);
-    const viewer = role === 'owner_bot' && typeof req.query.by !== 'string' ? null : (blindViewer(req, slug, role) ?? presentedKeyActor(req, slug) ?? 'guest:export');
+    const viewer = blindViewer(req, slug, role) ?? null;
     const result = await exportProofDocument(slug, { markdown: state.markdown, marks: state.marks, format, title: doc?.title ?? null, viewer, authored: req.query.authored === '1' });
     res.setHeader('Content-Type', result.contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${result.filename.replace(/"/g, '')}"`);
@@ -3806,10 +3807,12 @@ agentRoutes.post('/:slug/tiers', async (req: Request, res: Response) => {
 agentRoutes.get('/:slug/tiers', async (req: Request, res: Response) => {
   const slug = getSlug(req);
   if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
-  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  const role = checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot']);
+  if (!role) return;
   const state = await currentAgentState(slug);
   const lines = await computeServerLines(state.markdown);
-  const evaluation = evaluateDocumentTiers(slug, lines, listCanonicalLineMarks(slug));
+  const view = blindReadView(slug, lines, blindViewer(req, slug, role));
+  const evaluation = evaluateDocumentTiers(slug, lines, view?.lineMarks ?? listCanonicalLineMarks(slug), view?.viewer);
   res.setHeader('Cache-Control', 'no-store');
   res.json({
     success: true,
@@ -3848,7 +3851,7 @@ agentRoutes.post('/:slug/marks/proxy', async (req: Request, res: Response) => {
   sendMutationResponse(res, result.status, result.body, { route, slug });
 });
 
-// A person's brief: GET /marks/proxy?for=human:<email> (the Familiar, the owner credential, or any reader).
+// A person's brief: while blind, only that person, their Familiar or the owner credential.
 agentRoutes.get('/:slug/marks/proxy', async (req: Request, res: Response) => {
   const slug = getSlug(req);
   if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
@@ -3860,7 +3863,12 @@ agentRoutes.get('/:slug/marks/proxy', async (req: Request, res: Response) => {
   if (typeof req.query.for === 'string') {
     const human = resolveHuman(slug, req.query.for);
     if (!human) { res.status(400).json({ success: false, code: 'INVALID_FOR', error: '"for" must name a verified person: human:<email>' }); return; }
-    res.json({ success: true, brief: serializeBrief(briefFor(slug, human, report, state.marks)), policy: PROXY_POLICY });
+    const viewer = report.settings.blind ? blindViewer(req, slug, role) : undefined;
+    const binding = familiarOf(slug, human);
+    if (viewer !== undefined && !proxyVisibleTo({ for: human, familiar: binding?.familiar ?? '' }, viewer)) {
+      res.status(403).json({ success: false, code: 'BLIND_PROXY_PRIVATE', error: 'This blind brief belongs to the person and their Familiar' }); return;
+    }
+    res.json({ success: true, brief: serializeBrief(briefFor(slug, human, report, state.marks, undefined, viewer)), policy: PROXY_POLICY });
     return;
   }
   const viewer = report.settings.blind ? blindViewer(req, slug, role) : undefined;
@@ -3925,35 +3933,20 @@ function actorKeyOf(actor: string): string {
 }
 
 /**
- * Step B4f: who a read is for, under blind marking. An agent key is its AI; `?by=` names the
- * caller otherwise. The owner credential with no `by` reads everything (undefined); any other
- * caller that names nobody sees no one's positions ('' reveals no line).
+ * Mike, 2026-09-23 (usability brief): only a bound key or owner credential grants reveal.
+ * Typed AI names on ordinary share tokens reveal nothing. The owner credential with no `by`
+ * keeps the administrative view (undefined); an unverified caller gets the empty viewer.
  */
 function blindViewer(req: Request, slug: string, role: ShareRole): string | undefined {
+  const key = presentedKeyActor(req, slug);
+  if (key) return key;
   const typed = typeof req.query.by === 'string' ? req.query.by : undefined;
-  if (role === 'owner_bot' && !typed && BLIND_POLICY.ownerCredentialSeesAll) {
-    const tokenId = agentRequestTokenIds.get(req) ?? null;
-    if (!tokenId) return undefined;
+  if (role === 'owner_bot') {
+    if (!typed && BLIND_POLICY.ownerCredentialSeesAll) return undefined;
+    const actor = resolveAgentActor(req, slug, { by: typed }, role);
+    return actor.ok ? actor.by : '';
   }
-  const actor = resolveAgentActor(req, slug, typed ? { by: typed } : {}, role);
-  return actor.ok ? actor.by : '';
-}
-
-/** Step B4f: an ask's answers as a blind viewer may see them (their own answer stays). */
-function redactAsk(ask: Record<string, unknown>, revealed: ReadonlySet<number>, viewer: string): Record<string, unknown> {
-  const index = typeof ask.lineIndex === 'number' ? ask.lineIndex : null;
-  if (index !== null && revealed.has(index)) return ask;
-  const me = actorKeyOf(viewer);
-  const hide = (a: Record<string, unknown>) => (actorKeyOf(String(a.by ?? a.actor ?? '')) === me ? a : { by: a.by ?? a.actor, at: a.at ?? null, hidden: true });
-  return {
-    ...ask,
-    status: 'hidden',
-    summary: 'Answers are hidden until you mark this line (blind marking)',
-    people: Array.isArray(ask.people) ? (ask.people as Array<Record<string, unknown>>).map(p => (actorKeyOf(String(p.actor ?? '')) === me ? p
-      : { actor: p.actor, state: p.state === 'open' ? 'open' : 'hidden', choice: null, words: null, at: null })) : ask.people,
-    answers: Array.isArray(ask.answers) ? (ask.answers as Array<Record<string, unknown>>).map(hide) : ask.answers,
-    history: Array.isArray(ask.history) ? (ask.history as Array<Record<string, unknown>>).map(hide) : ask.history,
-  };
+  return '';
 }
 
 /** Step B4f: alternative picks as a blind viewer may see them. */
@@ -3966,6 +3959,8 @@ function redactAltSets(sets: Array<Record<string, unknown>>, revealed: ReadonlyS
       ...set,
       unanimous: null,
       disagree: false,
+      summary: 'Picks are hidden until you mark this line (blind marking)',
+      openFor: undefined,
       picks: Array.isArray(set.picks) ? (set.picks as Array<Record<string, unknown>>).map(p => (actorKeyOf(String(p.by ?? '')) === me ? p : { by: p.by, choice: null, hidden: true })) : set.picks,
     };
   });
@@ -3982,8 +3977,12 @@ async function currentAgentMarkdown(slug: string): Promise<string> {
 agentRoutes.get('/:slug/asks', async (req: Request, res: Response) => {
   const slug = getSlug(req);
   if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
-  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
-  const result = await listAgentAsks(slug, await currentAgentMarkdown(slug));
+  const role = checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const markdown = await currentAgentMarkdown(slug);
+  const result = await listAgentAsks(slug, markdown);
+  const view = await readBlindView(slug, markdown, blindViewer(req, slug, role));
+  if (view && Array.isArray(result.body.asks)) result.body.asks = result.body.asks.map(ask => redactAsk(ask, view));
   res.setHeader('Cache-Control', 'no-store');
   res.status(result.status).json(result.body);
 });
@@ -4203,8 +4202,9 @@ agentRoutes.get('/:slug/snapshots', (req: Request, res: Response) => {
 agentRoutes.get('/:slug/snapshots/:file', (req: Request, res: Response) => {
   const slug = getSlug(req);
   if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
-  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
-  sendSnapshotFile(res, slug, String(req.params.file ?? ''));
+  const role = checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  sendSnapshotFile(res, slug, String(req.params.file ?? ''), blindViewer(req, slug, role) === undefined);
 });
 
 // What changed since this AI last marked a line on purpose (or since the last aligned snapshot).
@@ -4216,7 +4216,8 @@ agentRoutes.get('/:slug/since-you', async (req: Request, res: Response) => {
   if (!role) return;
   const actor = resolveAgentActor(req, slug, typeof req.query.by === 'string' ? { by: req.query.by } : {}, role);
   if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
-  const report = await buildSinceYou(slug, actor.by);
+  const viewer = getProofSettings(slug).blind ? blindViewer(req, slug, role) : undefined;
+  const report = await buildSinceYou(slug, viewer ?? actor.by);
   res.setHeader('Cache-Control', 'no-store');
   if (!report) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
   res.json({ success: true, ...report });
@@ -4504,9 +4505,16 @@ for (const [path, key] of [['/:slug/notes', 'notes'], ['/:slug/flags', 'flags'],
   agentRoutes.get(path, async (req: Request, res: Response) => {
     const slug = getSlug(req);
     if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
-    if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+    const role = checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot']);
+    if (!role) return;
     const state = await currentAgentState(slug);
     const report = await aidsReport(slug, state.markdown, state.marks);
+    const view = await readBlindView(slug, state.markdown, blindViewer(req, slug, role));
+    if (view && key === 'objections') {
+      const visible = (o: unknown) => isRecord(o) && Array.isArray(o.lines) && objectionLinesRevealed(o.lines.map(l => l.lineIndex), view.revealed);
+      report.objections = report.objections.filter(visible);
+      report.closedObjections = report.closedObjections.filter(visible);
+    }
     res.setHeader('Cache-Control', 'no-store');
     if (key === 'notes') res.json({ success: true, notes: report.notes, policy: { why: WHY_POLICY, rejectChips: REJECT_CHIPS, priority: ISSUE_PRIORITY } });
     else if (key === 'flags') res.json({ success: true, flags: report.flags, policy: UNCERTAIN_POLICY });
@@ -4661,8 +4669,9 @@ agentRoutes.get('/:slug/alternatives', async (req: Request, res: Response) => {
     const viewer = blindViewer(req, slug, role);
     if (viewer !== undefined) {
       const lines = await computeServerLines(state.markdown);
-      const view = blindViewFor({ lines, lineMarks: listCanonicalLineMarks(slug), viewer, picks: listPicks(slug) });
+      const view = blindReadView(slug, lines, viewer)!;
       sets = redactAltSets(sets, view.revealed, viewer);
+      if (report.closed) report.closed = report.closed.filter(alt => visibleAlternative(alt, view));
     }
   }
   res.setHeader('Cache-Control', 'no-store');
@@ -4722,13 +4731,21 @@ agentRoutes.get('/:slug/terms', async (req: Request, res: Response) => {
 agentRoutes.get('/:slug/ttl', async (req: Request, res: Response) => {
   const slug = getSlug(req);
   if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
-  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  const role = checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot']);
+  if (!role) return;
   const state = await currentAgentState(slug);
   res.setHeader('Cache-Control', 'no-store');
-  res.json({ success: true, evaluatedAt: new Date().toISOString(), ttls: await ttlReport(slug, state.markdown, state.marks), policy: TTL_POLICY });
+  const view = await readBlindView(slug, state.markdown, blindViewer(req, slug, role));
+  const ttls = await ttlReport(slug, state.markdown, state.marks);
+  res.json({ success: true, evaluatedAt: new Date().toISOString(), ttls: view ? ttls.map(ttl => redactTtl(ttl, view)) : ttls, policy: TTL_POLICY });
 });
-aidRoute('/:slug/ttl', 'POST /ttl', ['commenter', 'editor', 'owner_bot'], async ({ slug, by, payload }) =>
-  setTtl(slug, { by, target: payload, ttl: payload.ttl, markdown: (await currentAgentState(slug)).markdown, source: 'agent' }));
+aidRoute('/:slug/ttl', 'POST /ttl', ['commenter', 'editor', 'owner_bot'], async ({ req, slug, by, payload, role }) => {
+  const state = await currentAgentState(slug);
+  const result = await setTtl(slug, { by, target: payload, ttl: payload.ttl, markdown: state.markdown, source: 'agent' });
+  const view = await readBlindView(slug, state.markdown, blindViewer(req, slug, role));
+  if (view && isRecord(result.body.ttl)) result.body.ttl = redactTtl(result.body.ttl, view);
+  return result;
+});
 aidRoute('/:slug/ttl/:ttlId/clear', 'POST /ttl/:id/clear', ['commenter', 'editor', 'owner_bot'], async ({ req, slug, by, role }) =>
   clearTtl(slug, { id: String(req.params.ttlId ?? ''), by, isOwner: role === 'owner_bot', source: 'agent' }));
 // Step B4f: an AI answers "still true?": { stillTrue: true | false, why? }.
@@ -5396,14 +5413,15 @@ agentRoutes.post('/:slug/clone-from-canonical', async (req: Request, res: Respon
   sendMutationResponse(res, responseStatus, responseBody, { route: mutationRoute, slug });
 });
 
-agentRoutes.get('/:slug/events/pending', (req: Request, res: Response) => {
+agentRoutes.get('/:slug/events/pending', async (req: Request, res: Response) => {
   const slug = getSlug(req);
   if (!slug) {
     recordCollabRouteLatency('events_pending', 'invalid_slug', 0);
     res.status(400).json({ success: false, error: 'Invalid slug' });
     return;
   }
-  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  const role = checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot']);
+  if (!role) return;
   const after = Number.parseInt(String(req.query.after ?? '0'), 10);
   const limit = Number.parseInt(String(req.query.limit ?? '100'), 10);
   const events = listDocumentEvents(slug, Number.isFinite(after) ? Math.max(0, after) : 0, Number.isFinite(limit) ? limit : 100);
@@ -5428,9 +5446,12 @@ agentRoutes.get('/:slug/events/pending', (req: Request, res: Response) => {
       },
     });
   }
+  const view = await readBlindView(slug, await currentAgentMarkdown(slug), blindViewer(req, slug, role));
+  const visibleEvents = view ? filterBlindEvents(slug, events, view) : events;
+  res.setHeader('Cache-Control', 'no-store');
   res.json({
     success: true,
-    events: events.map((event) => ({
+    events: visibleEvents.map((event) => ({
       id: event.id,
       type: event.event_type,
       data: (() => {

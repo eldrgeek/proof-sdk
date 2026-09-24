@@ -1,4 +1,5 @@
 /**
+ * Mike, 2026-09-23 (usability brief): exports filter positions before text and counts; blind imported history is withheld.
  * Proof Documents — export and import in the Proof dialect (and CriticMarkup), server side.
  * The codec is pure (src/shared/proof-dialect.ts); this module reads every mark stored beside a
  * document and writes a Proof Document, and imports one into a new document.
@@ -22,6 +23,8 @@
  * alternatives and picks always import as history (IMPORT_POLICY.alwaysHistory): a file must not
  * be able to propose an executable action, bind a Familiar, or settle a wording by unanimity.
  */
+import { blindReadView } from './blind-view.js';
+import { objectionLinesRevealed, proxyVisibleTo, markLineIndex } from '../src/shared/blind.js';
 import { randomUUID } from 'crypto';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
@@ -335,7 +338,9 @@ function historyGroup(note: HistoryNote, h: (actor: string | null | undefined) =
 }
 
 /** /state: every history note with the line it sits on now (null when the line is gone). */
-export function historyNotesForState(slug: string, lines: DocLine[]): Array<Record<string, unknown>> {
+export function historyNotesForState(slug: string, lines: DocLine[], revealed?: ReadonlySet<number>): Array<Record<string, unknown>> {
+  // Imported history can embed arbitrary position records without a reliable covered span.
+  if (revealed) return [];
   return listHistoryNotes(slug).map(note => {
     const resolved = note.anchor ? resolveLineAnchor(lines, note.anchor) : null;
     return {
@@ -408,7 +413,7 @@ function fileNameFor(title: string | null | undefined, slug: string, format: Exp
 }
 
 /** Finds a stored mark's span in the body: every occurrence of its quote, the one nearest startRel wins. */
-function locateQuote(body: string, stripped: { stripped: string; map: number[] }, quote: string, nearStripped: number | null, within?: { from: number; to: number }): { start: number; end: number } | null {
+function locateQuote(_body: string, stripped: { stripped: string; map: number[] }, quote: string, nearStripped: number | null, within?: { from: number; to: number }): { start: number; end: number } | null {
   const q = String(quote ?? '');
   if (!q.trim()) return null;
   const candidates: Array<{ start: number; end: number; strippedAt: number }> = [];
@@ -474,7 +479,8 @@ export async function exportProofDocument(slug: string, input: {
     teamExtra: askTeamActors(listCanonicalAsks(slug)),
   });
   const blind = report.settings.blind && EXPORT_POLICY.blindHidesOthers && input.viewer !== null && input.viewer !== undefined;
-  const visibleActor = (actor: string) => !blind || actorKey(actor) === actorKey(String(input.viewer));
+  const view = blind ? blindReadView(slug, lines, String(input.viewer)) : null;
+  const visibleAt = (actor: string, index: number | null) => !view || actorKey(actor) === actorKey(view.viewer) || (index !== null && view.revealed.has(index));
 
   // Line groups per editor line index.
   const perLine = new Map<number, MarkGroup[]>();
@@ -614,7 +620,7 @@ export async function exportProofDocument(slug: string, input: {
   const lineMarks: LineMark[] = listCanonicalLineMarks(slug);
   const statusGroups: Array<{ index: number; actorOrder: number; group: MarkGroup }> = [];
   for (const mark of lineMarks) {
-    if (!visibleActor(mark.by)) { bump('hiddenByBlind'); continue; }
+    if (!visibleAt(mark.by, markLineIndex(mark, lines))) { bump('hiddenByBlind'); continue; }
     const resolved = resolveLineAnchor(lines, mark.anchor);
     if (!resolved) { warnings.push(`A ${mark.status} mark by ${mark.by} is on a line that is gone`); bump('unplaced'); continue; }
     const line = lines[resolved.lineIndex];
@@ -666,7 +672,7 @@ export async function exportProofDocument(slug: string, input: {
       fields: fields([['to', to.map(t => `@${ctx.h(t)}`).join(' ') || 'anyone'], ['recommend', ask.recommend], ['ifyes', ask.ifYes]]),
     });
     for (const answer of (ask.answers as Array<Record<string, unknown>> | undefined) ?? []) {
-      if (!visibleActor(String(answer.by))) continue;
+      if (!visibleAt(String(answer.by), ask.lineIndex as number | null)) continue;
       addLine(ask.lineIndex as number | null, { type: 'answer', source: ctx.h(String(answer.by)), fields: fields([['choice', answer.choice], ['words', answer.words]]) });
     }
     bump('asks');
@@ -675,6 +681,7 @@ export async function exportProofDocument(slug: string, input: {
   let objectionN = 0;
   for (const objection of report.objections) {
     if (objection.status !== 'open') continue;
+    if (view && !objectionLinesRevealed((objection.lines as Array<{ lineIndex: number | null }>).map(l => l.lineIndex), view.revealed)) continue;
     objectionN += 1;
     for (const covered of (objection.lines as Array<{ lineIndex: number | null }> | undefined) ?? []) {
       addLine(covered.lineIndex, { type: 'objection', source: ctx.h(String(objection.by)), fields: fields([['id', `o${objectionN}`], ['reason', objection.reason], ['if', objection.condition]]) });
@@ -692,7 +699,7 @@ export async function exportProofDocument(slug: string, input: {
       addLine(set.lineIndex as number | null, { type: 'alternative', source: ctx.h(String(option.by ?? '')), fields: fields([['id', `a${altN}`], ['text', option.text]]) });
     }
     for (const pick of (set.picks as Array<Record<string, unknown>> | undefined) ?? []) {
-      if (!visibleActor(String(pick.by))) continue;
+      if (!visibleAt(String(pick.by), set.lineIndex as number | null)) continue;
       addLine(set.lineIndex as number | null, { type: 'pick', source: ctx.h(String(pick.by)), fields: fields([['choice', idMap.get(String(pick.choice)) ?? String(pick.choice)]]) });
     }
     bump('alternatives');
@@ -709,12 +716,13 @@ export async function exportProofDocument(slug: string, input: {
   }
   // Familiar proxies (history on import): every stored proxy, moot ones too.
   for (const proxy of listProxyMarks(slug)) {
+    if (view && !proxyVisibleTo(proxy, view.viewer)) continue;
     const resolved = resolveLineAnchor(lines, proxy.anchor);
     addLine(resolved ? resolved.lineIndex : null, { type: 'proxy', source: ctx.h(proxy.familiar), fields: fields([['for', `@${ctx.h(proxy.for)}`], ['status', proxy.status], ['confidence', proxy.confidence], ['evidence', proxy.evidence]]) });
     bump('proxies');
   }
   // History notes from earlier imports (always written back as history).
-  for (const note of listHistoryNotes(slug)) {
+  for (const note of (view ? [] : listHistoryNotes(slug))) {
     const resolved = note.anchor ? resolveLineAnchor(lines, note.anchor) : null;
     addLine(resolved ? resolved.lineIndex : null, historyGroup(note, ctx.h));
     bump('history');

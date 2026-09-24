@@ -1,4 +1,5 @@
 /**
+ * Mike, 2026-09-23 (usability brief): blind proxy holds never disclose another person's position.
  * Proof Documents — Familiar proxy marks.
  *
  * Authorship: Mike Wolf ruled Yes on 2026-09-19 to "Familiar proxy marks: your Familiar AI
@@ -152,9 +153,11 @@ export function isClaimedMark(mark: Pick<LineMark, 'by' | 'hidden'> & { evidence
 // Held lines: never auto-included in "Ratify all"
 // ============================================================================
 
-export type HoldReason = 'objection' | 'ask' | 'uncertain' | 'do' | 'rejected' | 'suggestion';
+export type HoldReason = 'blind' | 'objection' | 'ask' | 'uncertain' | 'do' | 'rejected' | 'suggestion';
 
+// Mike, 2026-09-23 (usability brief): every unrevealed line has the same neutral hold.
 export const HOLD_LABEL: Record<HoldReason, string> = {
+  blind: 'positions hidden until you finish marking the document',
   objection: 'an open objection',
   ask: 'an open ask',
   uncertain: 'flagged uncertain',

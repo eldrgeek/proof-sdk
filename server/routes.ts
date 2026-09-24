@@ -1,3 +1,4 @@
+import { blindReadView, readBlindView, redactAsk, redactTtl, visibleObjection, visibleAlternative } from './blind-view.js';
 import { agentKeyRoutes } from './agent-key-routes.js';
 import { getClientIp, trustProxyHeaders } from './client-address.js';
 import { createHash, randomUUID } from 'crypto';
@@ -30,7 +31,6 @@ import {
   createDocument,
   createDocumentAccessToken,
   deleteDocument,
-  getDocument,
   getDocumentBySlug,
   getStoredIdempotencyRecord,
   pauseDocument,
@@ -42,7 +42,6 @@ import {
   revokeDocument,
   revokeDocumentAccessTokens,
   storeIdempotencyResult,
-  updateDocument,
   updateDocumentTitle,
   updateMarks,
 } from './db.js';
@@ -67,13 +66,10 @@ import {
   validateHostedSessionToken,
 } from './hosted-auth.js';
 import {
-  AGENT_DOCS_PATH,
-  CANONICAL_CREATE_API_PATH,
   DIRECT_SHARE_AUTH_FIX,
   LEGACY_CREATE_API_PATH,
   buildLegacyCreateDeprecationPayload,
   buildLegacyCreateDisabledPayload,
-  canonicalCreateLink,
   getLegacyCreateResponseHeaders,
   resolveLegacyCreateMode,
   type LegacyCreateMode,
@@ -81,7 +77,6 @@ import {
 import { captureDocumentCreatedTelemetry } from './telemetry.js';
 import { executeDocumentOperationAsync, type EngineExecutionResult } from './document-engine.js';
 import {
-  type DocumentOpType,
   authorizeDocumentOp,
   parseDocumentOpRequest,
   resolveDocumentOpRoute,
@@ -118,9 +113,7 @@ import { listFlags, listObjections, listReviewNotes } from './review-aids-store.
 import { clearTtl, decideAlternative, offerAlternative, pickAlternative, recordBundleDecision, recordExplain, setBlindSetting, setTtl, withdrawAlternative } from './proof-extras.js';
 import { getProofSettings, listAlternatives, listBundles, listExplains, listPicks, listTtls } from './proof-extras-store.js';
 import { closeThread, reopenThread, replyOnThread, startThreadRow, threadRows, undoStartThread } from './threads.js';
-import { blindViewFor } from './proof-extras-eval.js';
 import { lineEditor } from './agent-routes.js';
-import { ASK_POLICY, evaluateAsks } from '../src/shared/asks.js';
 import { guestActor, isGuestActor, normalizeActorString } from '../src/shared/identity.js';
 import { buildDirectory, clientDirectory, decideActor, sessionIdentity, type ActorDecision } from './identity.js';
 import { attestedFor, documentSession, getGuestAccessMode, guestMarksCount, resolveTokenlessAccess } from './document-team.js';
@@ -129,8 +122,6 @@ import {
   agentProvenanceMap,
   displayName as crossDisplayName,
   documentProvenance,
-  listNominations,
-  activeAttestations,
 } from './cross-invitation.js';
 import { IDENTITY_POLICY, actorsIn, isEmailAddress, verifiedHumanActor, type IdentityDirectory, type ViewerIdentity } from '../src/shared/identity.js';
 import { actorKey, agentKeyActor } from '../src/shared/line-marks.js';
@@ -1471,7 +1462,7 @@ apiRoutes.put('/documents/:slug/title', (req: Request, res: Response) => {
 
 // Update document content + marks (from native app owner or web viewer)
 apiRoutes.put('/documents/:slug', async (req: Request, res: Response) => {
-  const { markdown, marks, title, actor, clientId, ownerSecret, ownerId } = req.body;
+  const { markdown, marks, title, actor, clientId } = req.body;
   const slug = getSlugParam(req);
   if (!slug) {
     res.status(400).json({ error: 'Invalid slug' });
@@ -2053,6 +2044,15 @@ function resolvePageActor(req: Request, slug: string, access: ReturnType<typeof 
   return decision;
 }
 
+/** Mike, 2026-09-23 (usability brief): a typed name never authorizes blind disclosure. */
+function pageBlindViewer(req: Request, slug: string, access: ReturnType<typeof resolveLineMarkAccess>): string | undefined {
+  const key = presentedAgentKeyLabel(req, slug);
+  if (key) return agentKeyActor(key);
+  if (access.ownerAuthorized && access.role === 'owner_bot') return undefined;
+  const me = viewerIdentity(req, slug, access, buildDirectory(slug));
+  return me.trust === 'verified' ? me.actor : '';
+}
+
 /** Step B6: who the page viewer is, for the right rail header and for every new mark. */
 function viewerIdentity(req: Request, slug: string, access: ReturnType<typeof resolveLineMarkAccess>, dir: IdentityDirectory): ViewerIdentity {
   const signInUrl = isLibraryEnabled() ? '/' : null;
@@ -2100,8 +2100,7 @@ apiRoutes.get('/documents/:slug/export', async (req: Request, res: Response) => 
     const body = (state.body ?? {}) as Record<string, unknown>;
     const markdown = typeof body.markdown === 'string' ? body.markdown : stripSpansForExport(doc.markdown ?? '');
     const marks = body.marks && typeof body.marks === 'object' ? body.marks : doc.marks;
-    const me = viewerIdentity(req, slug, access, buildDirectory(slug));
-    const viewer = access.ownerAuthorized && access.role === 'owner_bot' ? null : (me.actor || 'guest:export');
+    const viewer = pageBlindViewer(req, slug, access) ?? null;
     const result = await exportProofDocument(slug, { markdown, marks, format, title: doc.title ?? null, viewer, authored: req.query.authored === '1' });
     res.setHeader('Content-Type', result.contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${result.filename.replace(/"/g, '')}"`);
@@ -2137,7 +2136,7 @@ apiRoutes.get('/documents/:slug/line-marks', async (req: Request, res: Response)
   // Step B4c/B4d: flags, AI review notes and open objections (the page evaluates them).
   const flags = listFlags(slug);
   const reviewNotes = listReviewNotes(slug);
-  const objections = listObjections(slug);
+  let objections = listObjections(slug);
   const directory = clientDirectory(dir, [
     ...actorsIn(lineMarks, asks, [...owners, ...agentKeyActors, ...reviewAuthors, me.actor]),
     ...listLineMarks(slug).map(mark => mark.by),
@@ -2147,8 +2146,9 @@ apiRoutes.get('/documents/:slug/line-marks', async (req: Request, res: Response)
   // {do} action lines: the page evaluates them against its own lines (same poll).
   let dos: ReturnType<typeof listDos> = [];
   try { dos = listDos(slug); } catch { dos = []; }
-  const blindView = await pageExtras(req, slug, doc, me, lineMarks, asks);
+  const blindView = await pageExtras(req, slug, doc, lineMarks, asks);
   const extras = blindView.extras;
+  if (blindView.view) objections = objections.filter(o => visibleObjection(o, blindView.view!));
   // Familiar proxy marks: the viewer's own binding, their Familiar's current proxies (never
   // counted as theirs) and the ratifications they can still undo. Other people's proxies stay off
   // the page (PROXY_POLICY.pageShowsOnlyOwnProxies).
@@ -2185,11 +2185,9 @@ apiRoutes.get('/documents/:slug/line-marks', async (req: Request, res: Response)
     proxies,
     ratifications: binding ? undoableRatifications(slug, me.actor) : [],
     proxyPolicy: { ratifyThreshold: PROXY_POLICY.ratifyThreshold, hold: PROXY_POLICY.hold, evidence: EVIDENCE_POLICY },
-    // Line tiers: every tag (the page evaluates them against its own lines), and what covers a
-    // context line: AI reads with evidence and Familiars' proxies, from the unredacted marks (so a
-    // blind placeholder does not hide a read; only that an AI read the line is revealed).
+    // Mike, 2026-09-23 (usability brief): derive tier signals from visible positions only.
     tiers: listTierRecords(slug),
-    tierSignals: tierSignals(slug, lineMarks),
+    tierSignals: tierSignals(slug, blindView.lineMarks, blindView.view?.viewer),
     tierPolicy: TIER_POLICY,
     // Steps B4e + B4f: bundles, alternatives (open, plus recent history) and picks, settings,
     // Explain threads and times-to-live. The page evaluates them against its own lines; expiry
@@ -2203,10 +2201,10 @@ apiRoutes.get('/documents/:slug/line-marks', async (req: Request, res: Response)
  * answers and picks on lines this viewer has not marked are replaced by placeholders here, so
  * they never reach the browser.
  */
-async function pageExtras(req: Request, slug: string, doc: NonNullable<ReturnType<typeof getDocumentBySlug>>, me: ViewerIdentity, lineMarks: ReturnType<typeof listCanonicalLineMarks>, asks: ReturnType<typeof listCanonicalAsks>): Promise<{ extras: Record<string, unknown>; lineMarks: typeof lineMarks; asks: typeof asks }> {
+async function pageExtras(req: Request, slug: string, doc: NonNullable<ReturnType<typeof getDocumentBySlug>>, lineMarks: ReturnType<typeof listCanonicalLineMarks>, asks: ReturnType<typeof listCanonicalAsks>): Promise<{ extras: Record<string, unknown>; lineMarks: typeof lineMarks; asks: typeof asks; view?: ReturnType<typeof blindReadView> }> {
   const settings = getProofSettings(slug);
   const allAlternatives = listAlternatives(slug, { includeClosed: true });
-  let picks = listPicks(slug);
+  const picks = listPicks(slug);
   const extras: Record<string, unknown> = {
     settings,
     bundles: listBundles(slug),
@@ -2220,26 +2218,18 @@ async function pageExtras(req: Request, slug: string, doc: NonNullable<ReturnTyp
     serverNow: new Date().toISOString(),
   };
   if (!settings.blind) return { extras: { ...extras, picks }, lineMarks, asks };
-  const typed = typeof req.query.by === 'string' ? normalizeActorString(req.query.by) : '';
-  const viewer = me.actor || (typed && isGuestActor(typed) ? typed : '');
+  const access = resolveLineMarkAccess(req, slug, doc);
+  const viewer = pageBlindViewer(req, slug, access);
   const lines = await computeServerLines(doc.markdown ?? '');
-  const views = evaluateAsks(asks, lines);
-  const answered = views.filter(v => v.lineIndex !== null && v.ask.answers.some(a => actorKey(a.by) === actorKey(viewer))).map(v => v.lineIndex as number);
-  const view = blindViewFor({ lines, lineMarks, viewer, answeredLines: answered, picks });
-  picks = view.picks;
-  const redactedAsks = asks.map(ask => {
-    const at = views.find(v => v.ask.id === ask.id)?.lineIndex ?? null;
-    if (at !== null && view.revealed.has(at)) return ask;
-    return {
-      ...ask,
-      answers: ask.answers.map(answer => (actorKey(answer.by) === actorKey(viewer) ? answer
-        : { ...answer, choice: (ASK_POLICY.closes[answer.choice] ? 'yes' : 'not_yet') as typeof answer.choice, words: '', hidden: true })),
-    };
-  });
+  const view = blindReadView(slug, lines, viewer, lineMarks, asks);
+  if (!view) return { extras: { ...extras, picks }, lineMarks, asks };
   return {
-    extras: { ...extras, picks, blind: { on: true, viewer, revealedLines: [...view.revealed].sort((a, b) => a - b), hiddenPositions: view.hidden } },
+    extras: { ...extras, picks: view.picks,
+      alternativeHistory: allAlternatives.filter(alt => alt.status !== 'open' && visibleAlternative(alt, view)).slice(-100),
+      blind: { on: true, viewer, revealedLines: [...view.revealed].sort((a, b) => a - b), hiddenPositions: view.hidden } },
     lineMarks: view.lineMarks,
-    asks: redactedAsks,
+    asks: asks.map(ask => redactAsk(ask, view)),
+    view,
   };
 }
 
@@ -2421,10 +2411,13 @@ pageAidRoute('/documents/:slug/threads/:threadId/reply', ({ req, slug, by, body 
 pageAidRoute('/documents/:slug/threads/:threadId/undo', ({ req, slug, by }) =>
   undoStartThread(slug, { id: String(req.params.threadId ?? ''), by }));
 // Step B4f: a line's time-to-live: { anchor, ttl: "7d" }; the setter or an Owner clears it.
-pageAidRoute('/documents/:slug/ttl', async ({ slug, by, body }) => {
+pageAidRoute('/documents/:slug/ttl', async ({ req, slug, by, access, body }) => {
   const state = await currentDocumentState(slug);
   if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
-  return setTtl(slug, { by, anchor: body.anchor, ttl: body.ttl, markdown: state.markdown, source: 'page' });
+  const result = await setTtl(slug, { by, anchor: body.anchor, ttl: body.ttl, markdown: state.markdown, source: 'page' });
+  const view = await readBlindView(slug, state.markdown, pageBlindViewer(req, slug, access));
+  if (view && isRecord(result.body.ttl)) result.body.ttl = redactTtl(result.body.ttl, view);
+  return result;
 });
 pageAidRoute('/documents/:slug/ttl/:ttlId/clear', ({ req, slug, by, access }) =>
   clearTtl(slug, { id: String(req.params.ttlId ?? ''), by, isOwner: access.canApprove, source: 'page' }));
@@ -2510,7 +2503,8 @@ apiRoutes.get('/documents/:slug/since-you', async (req: Request, res: Response) 
   if (!access.canRead) { res.status(403).json({ success: false, error: 'No read access' }); return; }
   const actor = resolvePageActor(req, slug, access, typeof req.query.by === 'string' ? req.query.by : undefined, 'talk');
   if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
-  const report = await buildSinceYou(slug, actor.actor);
+  const viewer = getProofSettings(slug).blind ? pageBlindViewer(req, slug, access) : undefined;
+  const report = await buildSinceYou(slug, viewer ?? actor.actor);
   res.setHeader('Cache-Control', 'no-store');
   if (!report) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
   res.json({ success: true, ...report });
@@ -2526,6 +2520,9 @@ apiRoutes.post('/documents/:slug/alignment-check', opsRateLimiter, async (req: R
   if (!access.canRead) { res.status(403).json({ success: false, error: 'No read access' }); return; }
   const result = await checkAlignment(slug);
   if (!result) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  if (getProofSettings(slug).blind && pageBlindViewer(req, slug, access) !== undefined) {
+    res.json({ success: true, blind: true }); return;
+  }
   res.json({ success: true, ...result });
 });
 
@@ -2546,7 +2543,7 @@ apiRoutes.get('/documents/:slug/snapshots/:file', (req: Request, res: Response) 
   if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
   const access = resolveLineMarkAccess(req, slug, doc);
   if (!access.canRead) { res.status(403).json({ success: false, error: 'No read access' }); return; }
-  sendSnapshotFile(res, slug, String(req.params.file ?? ''));
+  sendSnapshotFile(res, slug, String(req.params.file ?? ''), pageBlindViewer(req, slug, access) === undefined);
 });
 
 apiRoutes.post('/documents/:slug/line-marks', opsRateLimiter, (req: Request, res: Response) => {
@@ -2602,7 +2599,7 @@ apiRoutes.post('/documents/:slug/line-marks', opsRateLimiter, (req: Request, res
 });
 
 // Proof Documents Step B3: asks for the page. Reads need read access; answering needs comment access.
-apiRoutes.get('/documents/:slug/asks', (req: Request, res: Response) => {
+apiRoutes.get('/documents/:slug/asks', async (req: Request, res: Response) => {
   const slug = getSlugParam(req);
   const doc = slug ? getDocumentBySlug(slug) : undefined;
   if (!slug || !doc) {
@@ -2615,7 +2612,8 @@ apiRoutes.get('/documents/:slug/asks', (req: Request, res: Response) => {
     return;
   }
   res.setHeader('Cache-Control', 'no-store');
-  res.json({ success: true, asks: listCanonicalAsks(slug) });
+  const view = await readBlindView(slug, doc.markdown ?? '', pageBlindViewer(req, slug, access));
+  res.json({ success: true, asks: listCanonicalAsks(slug).map(ask => view ? redactAsk(ask, view) : ask) });
 });
 
 // Body: { by, choice: yes|not_yet|no, words?, anchor } where anchor is the question line as the

@@ -1,4 +1,5 @@
 /**
+ * Mike, 2026-09-23 (usability brief): omit unrevealed Issue rows so their existence and ranking cannot disclose hidden choices.
  * Proof Documents Steps B4e + B4f — evaluating bundles, alternatives, blind marking, Explain
  * threads and times-to-live against a document's current lines, on the server (for /state,
  * alignment and the page's poll).
@@ -19,7 +20,7 @@ import {
 } from '../src/shared/line-marks.js';
 import { bundleIndex, describeBundle, evaluateBundle, type BundleView, type MemberState, type ProofBundle } from '../src/shared/bundles.js';
 import { ALT_POLICY, alternativeIssueInputs, altLineIndex, describeAltSet, evaluateAlternatives, type AltPick, type AltSetView, type ProofAlternative } from '../src/shared/alternatives.js';
-import { BLIND_POLICY, disagreementCounts, disagreementLines, hiddenMark, markLineIndex, redactLineMarks, revealedLines } from '../src/shared/blind.js';
+import { BLIND_POLICY, objectionLinesRevealed, disagreementCounts, disagreementLines, hiddenMark, markLineIndex, redactLineMarks, revealedLines } from '../src/shared/blind.js';
 import { EXPLAIN_POLICY, findTerms, firstTermUses } from '../src/shared/explain.js';
 import { applyDecay, describeTtl, evaluateTtls, ttlIssueInputs, type ProofTtl, type TtlView } from '../src/shared/ttl.js';
 import {
@@ -275,12 +276,15 @@ export function blindViewFor(input: {
   return { revealed, lineMarks: redacted.marks, picks, hidden: redacted.hidden + hiddenPicks };
 }
 
-/** Hides other people's positions inside /state Issues on lines not revealed to the viewer. */
+/**
+ * Mike, 2026-09-23 (usability brief): an unrevealed Issue's existence, priority and counts can
+ * disclose its cause. Omit position-dependent rows until their inputs can be shown.
+ */
 export function redactIssues(issues: ProofIssue[], revealed: ReadonlySet<number>): ProofIssue[] {
-  return issues.map(issue => {
-    if (issue.type !== 'line' || revealed.has(issue.lineIndex)) return issue;
-    if (issue.rejectedBy.length === 0) return issue;
-    return { ...issue, rejectedBy: [], reasons: issue.reasons.filter(r => r !== 'rejected'), disagreement: undefined };
+  return issues.filter(issue => {
+    if (issue.type === 'comment' || issue.type === 'suggestion' || issue.type === 'nomination') return true;
+    if (issue.type === 'objection') return objectionLinesRevealed(issue.lineIndices, revealed);
+    return 'lineIndex' in issue && issue.lineIndex !== null && revealed.has(issue.lineIndex);
   });
 }
 
