@@ -1,37 +1,23 @@
 /**
- * Reading commands act on the selected passage. Hover and scrolling never end Writing.
- * Letter shortcuts are optional and never run during typing or composition.
- * Mike, 2026-09-23 (usability brief).
+ * Review keys act on the selected passage. S opens a local draft; E stays Explain.
+ * Hover and scrolling never end Writing. Letter shortcuts are optional and never run
+ * during typing or composition.
+ * Mike, 2026-09-23 (usability brief). Direct Editing and draft fields never run letter commands.
  */
-
 export const READING_MODE_POLICY = {
-  /** A press on the text (not on a link, a widget or a folded line) starts writing. */
-  textPressStartsWriting: true,
-  /** Enter while reading puts the caret at the end of the focus line and starts writing. */
-  enterStartsWriting: true,
-  /** Esc while writing ends the edit. It POSTS first (2026-09-22): it no longer drops out silently. */
-  escapeEndsWriting: true,
-  /** Cmd+Enter (Ctrl+Enter off a Mac) ends the edit. The advertised door; it posts. */
-  cmdEnterEndsWriting: true,
-  leavingPostsTheEdit: true,
-  /** A visible way into editing: a pencil in the margin's dot column on the cursor line. */
-  marginPencilStartsWriting: true,
-  /** At most this long after a press on the text (until its click), a focus arriving in the text is that press. */
-  pressFocusWindowMs: 800,
   /** No caret blinks in the text while reading. */
   hideCaretWhileReading: true,
-  /** The status bar under the page shows "Reading" / "Editing line N" (state, not a switch: src/shared/layout-status.ts). */
   showModeChip: true,
 } as const;
 
 /** The single-letter and digit keys that are commands while reading (lower case). */
 export const READING_COMMAND_KEYS: ReadonlySet<string> = new Set([
-  'a', 'r', 'y', 'n', 't', 'd', 'e', 'j', 'k',
+  'a', 'r', 'y', 'n', 't', 'd', 'e', 's', 'j', 'k',
   '1', '2', '3', '4', '5', '6', '7', '8', '9',
 ]);
 
 /** Named keys that are commands while reading. */
-export const READING_COMMAND_NAMED: ReadonlySet<string> = new Set(['ArrowUp', 'ArrowDown', 'Enter']);
+export const READING_COMMAND_NAMED: ReadonlySet<string> = new Set(['ArrowUp', 'ArrowDown']);
 
 /** Keys that change text when the editor holds the keyboard. */
 const TEXT_CHANGING_NAMED: ReadonlySet<string> = new Set(['Backspace', 'Delete', 'Enter', 'Tab']);
@@ -88,10 +74,10 @@ export function routeKey(input: KeyRouteInput): KeyRoute {
     if (target === 'field' || (target === 'editor' && input.writing)) return 'type';
     return target === 'editor' && isTextChangingKey(key) ? 'swallow' : 'pass';
   }
-  if (target === 'field' || input.writing) return 'type';
+  if (target === 'field') return 'type';
+  if (input.writing) return target === 'editor' ? 'type' : 'pass';
   if (input.letterShortcuts === false && /^[a-z]$/i.test(key)) return target === 'editor' ? 'swallow' : 'pass';
   if (target === 'editor') {
-    if (input.writing) return 'type';
     if (isReadingCommandKey(key)) return 'command';
     if (key === 'Tab') return 'pass'; // Tab moves between controls while reading
     if (isTextChangingKey(key)) return 'swallow';

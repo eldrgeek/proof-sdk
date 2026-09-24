@@ -120,9 +120,13 @@ const counts = page => page.evaluate(() => ({
 }));
 
 async function typeInto(page, words, where = 'last') {
-  // Writing mode (2026-09-21): only a person's press on the text makes keys type (a caret put
-  // there by code is reading, and the keys would be swallowed). Press the text like a person does,
+  // Direct Editing is the labelled control. A click while Reading only selects, so the keys
+  // would be swallowed. Mike, 2026-09-23 (usability brief). Press the text like a person does,
   // at the end of the line, then pin the caret to the exact position below.
+  await page.evaluate(() => {
+    const btn = document.querySelector('.share-pill-suggest-toggle');
+    if (btn && btn.getAttribute('aria-label') !== 'Leave Editing') btn.click();
+  });
   const at = await page.evaluate(where => {
     const view = window.__proofLineMarks.editorView();
     const lines = window.__proofLineMarks.lineList();

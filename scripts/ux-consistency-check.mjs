@@ -214,6 +214,13 @@ async function runDesktop(browser, base, tag) {
     await page.waitForTimeout(300);
     const box = await target.boundingBox();
     markBeforeAsk = await myMarkOn(page, LATER_HEAD + 1);
+    // The "?" is typed into the document, which is direct Editing. A click while Reading only selects.
+    // Mike, 2026-09-23 (usability brief).
+    await page.evaluate(() => {
+      const btn = document.querySelector('.share-pill-suggest-toggle');
+      if (btn && btn.getAttribute('aria-label') !== 'Leave Editing') btn.click();
+    });
+    await page.waitForFunction(() => document.querySelector('.pst-mode')?.textContent === 'Editing');
     await page.mouse.click(box.x + box.width - 30, box.y + box.height / 2);
     await page.waitForTimeout(250);
     await page.keyboard.press('End');
@@ -254,6 +261,10 @@ async function runDesktop(browser, base, tag) {
     const after = (await page.evaluate(() => window.__proofClarify.debugState())).converted.length;
     assert.equal(after, before, 'ordinary prose was turned into a clarify request');
     assert.match(await target.innerText(), /Is this right\?/);
+    await page.evaluate(() => {
+      const btn = document.querySelector('.share-pill-suggest-toggle');
+      if (btn && btn.getAttribute('aria-label') === 'Leave Editing') btn.click();
+    });
   });
 
   // ---- item 2: reject after accept ----------------------------------------

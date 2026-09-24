@@ -204,16 +204,18 @@ async function desktop(browser, base, style) {
   });
   // Accord round 2 stage A (2026-09-22): the bar says "Editing line N" where it used to say
   // "Writing" — the same state, named for what the person is doing and on which line.
-  await check(`${tag}: the caret in the text shows Editing line N in the bar; Esc shows Reading`, async () => {
-    // The case above scrolls 250px, which carries line S1 above the window. The click has to
-    // land on the line. The product still shows "Editing line N" when it does.
+  await check(`${tag}: the labelled control shows Editing; Esc keeps it; Leave Editing shows Reading`, async () => {
+    // The case above scrolls 250px, which carries line S1 above the window. The click has to land on the line.
     const target = block(page, L.S1);
     await target.scrollIntoViewIfNeeded();
     const box = await target.boundingBox();
     await page.mouse.click(box.x + 80, box.y + 10);
-    await waitFor(page, () => /^Editing line \d+$/.test(document.querySelector('.pst-bar .pst-mode')?.textContent ?? ''));
+    await waitFor(page, () => document.querySelector('.pst-bar .pst-mode')?.textContent === 'Reading');
     await page.screenshot({ path: path.join(shots, `${tag}-writing.png`), clip: { x: 240, y: 840, width: 880, height: 60 } });
+    await page.getByRole('button', { name: 'Enter Editing', exact: true }).click();
     await page.keyboard.press('Escape');
+    assert.equal((await bar(page)).mode, 'Editing');
+    await page.getByRole('button', { name: 'Leave Editing', exact: true }).click();
     await waitFor(page, () => document.querySelector('.pst-bar .pst-mode')?.textContent === 'Reading');
   });
 
@@ -318,17 +320,20 @@ async function phone(browser, base, style) {
     assert.ok(fits, 'the strip overflows');
     await page.screenshot({ path: path.join(shots, `${tag}-marked.png`) });
   });
-  await check(`${tag}: a tap on the text shows Editing line N; the bar stays on screen when the strip steps aside`, async () => {
+  await check(`${tag}: a tap selects text while Reading; the bar stays on screen`, async () => {
+    // A tap selects the passage. It does not put a caret in the text, so Reading stays Reading
+    // and the phone strip (the bar the reader sees) stays on screen. Mike, 2026-09-23 (usability brief).
     await block(page, L.S1).scrollIntoViewIfNeeded();
     const box = await block(page, L.S1).boundingBox();
     await page.touchscreen.tap(box.x + 60, box.y + 10);
-    await waitFor(page, () => /^Editing line \d+$/.test(document.querySelector('.pst-bar .pst-mode')?.textContent ?? ''));
-    await page.locator('.pst-bar').waitFor({ state: 'visible' });
-    const b = await bar(page);
-    assert.ok(b.bottom <= b.innerHeight + 1 && b.top >= 0, 'the bar left the screen');
-    assert.ok(b.height <= 28, `bar height ${b.height}`);
-    const fits = await page.evaluate(() => { const e = document.querySelector('.pst-bar'); return e.scrollWidth <= e.clientWidth + 1; });
-    assert.ok(fits, 'the bar overflows its one line');
+    await waitFor(page, i => window.__proofReadingWalk.debugState().focus === i, L.S1);
+    assert.equal(await page.locator('.pst-mode').evaluate(el => el.textContent), 'Reading');
+    assert.notEqual(await page.locator('.ProseMirror').getAttribute('contenteditable'), 'true', 'a tap started direct editing');
+    const strip = await page.locator('.prw-strip').boundingBox();
+    assert.ok(strip, 'the strip left the screen');
+    assert.ok(Math.abs(strip.y + strip.height - 844) <= 2, `strip bottom ${strip.y + strip.height}`);
+    const fits = await page.evaluate(() => { const e = document.querySelector('.prw-strip'); return e.scrollWidth <= e.clientWidth + 1; });
+    assert.ok(fits, 'the strip overflows');
     await page.screenshot({ path: path.join(shots, `${tag}-writing.png`) });
   });
   await context.close();
@@ -397,7 +402,7 @@ async function desktop2(browser, base, style) {
     // added ONE more thing by Mike's ruling — the Open | Accord toggle, immediately left of the
     // Issues pill, because the pill counts what Open holds. The list stays exact, so nothing else
     // can creep in behind it.
-    for (const label of c.controls) assert.match(label, /^(Suggesting|Editing|Undo|Nothing to undo|Next issue|No issues|Share|Waiting on Mike|Open|Accord)$|^(Suggesting|Editing|Undo|Nothing to undo|Next issue|No issues|Share|Waiting on Mike)/, `unexpected toolbar control: ${label}`);
+    for (const label of c.controls) assert.match(label, /^(Enter Editing|Leave Editing|Suggesting|Editing|Undo|Nothing to undo|Next issue|No issues|Share|Waiting on Mike|Open|Accord)$|^(Enter Editing|Leave Editing|Suggesting|Editing|Undo|Nothing to undo|Next issue|No issues|Share|Waiting on Mike)/, `unexpected toolbar control: ${label}`);
     // ...and the toggle really is where this stage says it is.
     const toggle = await page.evaluate(() => {
       const t = document.querySelector('#share-banner .share-pill-right .aov-toggle');
@@ -481,17 +486,14 @@ async function desktop2(browser, base, style) {
     await panel.getByRole('button', { name: 'Close reading settings' }).click();
     assert.equal(await panel.isVisible(), false);
   });
-  await check(`${tag}: Edit › Suggesting / Editing is the same switch as the toolbar's; the toolbar switch is two halves`, async () => {
+  await check(`${tag}: Edit and the toolbar expose the same labelled Editing control`, async () => {
     await page.locator('#accord-menubar .amb-top[data-menu="edit"]').click();
     const items = await menuItems(page);
-    assert.equal(items.find(i => i.label === 'Suggesting')?.checked, 'true');
-    await page.locator('.amb-menu .amb-item', { hasText: 'Editing' }).click();
-    await waitFor(page, () => window.proof.isSuggestionsEnabled() === false);
-    assert.equal(await page.locator('#share-banner .amb-seg-opt[data-mode="edit"]').getAttribute('data-on'), 'true');
-    await page.locator('#share-banner .amb-seg-opt[data-mode="edit"]').click();
-    assert.equal(await page.evaluate(() => window.proof.isSuggestionsEnabled()), false, 'the chosen half toggled');
-    await page.locator('#share-banner .amb-seg-opt[data-mode="suggest"]').click();
-    await waitFor(page, () => window.proof.isSuggestionsEnabled() === true);
+    assert.ok(items.some(i => i.label === 'Enter Editing'));
+    await page.locator('.amb-menu .amb-item', { hasText: 'Enter Editing' }).click();
+    assert.equal(await page.locator('.pst-mode').innerText(), 'Editing');
+    await page.getByRole('button', { name: 'Leave Editing', exact: true }).click();
+    assert.equal(await page.locator('.pst-mode').innerText(), 'Reading');
   });
   await check(`${tag}: the toolbar's Undo says Undo, names what it reverses in its tooltip, and reverses it; Edit › Undo is the same Undo`, async () => {
     await selectPassage(page, L.S1 + 2);
@@ -641,11 +643,11 @@ async function phone2(browser, base, style) {
     for (const heading of ['FILE', 'EDIT', 'VIEW', 'PEOPLE', 'HELP']) assert.ok(text.toUpperCase().includes(heading), `no ${heading} group`);
     for (const label of ['Open…', 'Reading settings…', 'Share…', 'Add agent…', 'Keyboard shortcuts']) assert.ok(text.includes(label), `no ${label}`);
     // The switch and Share lead the menu (TOOLBAR_POLICY.phoneMenuTop), each only once.
-    const top = await menu.evaluate(m => [...m.querySelectorAll('.amb-item')].slice(0, 3).map(b => ({ label: b.querySelector('.amb-label').textContent, checked: b.getAttribute('aria-checked') })));
-    assert.deepEqual(top.map(t => t.label), ['Suggesting', 'Editing', 'Share…']);
-    assert.equal(top[0].checked, 'true', 'Suggesting is not the chosen mode');
+    const top = await menu.evaluate(m => [...m.querySelectorAll('.amb-item')].slice(0, 2).map(b => ({ label: b.querySelector('.amb-label').textContent, checked: b.getAttribute('aria-checked') })));
+    assert.deepEqual(top.map(t => t.label), ['Enter Editing', 'Share…']);
+    assert.equal(await page.locator('.pst-mode').innerText(), 'Reading');
     const count = label => menu.evaluate((m, l) => [...m.querySelectorAll('.amb-item .amb-label')].filter(n => n.textContent === l).length, label);
-    for (const label of ['Suggesting', 'Editing', 'Share…']) assert.equal(await count(label), 1, `${label} appears twice`);
+    for (const label of ['Enter Editing', 'Share…']) assert.equal(await count(label), 1, `${label} appears twice`);
     await page.screenshot({ path: path.join(shots, `${tag}-overflow.png`) });
     await menu.getByRole('menuitem', { name: /Reading settings/ }).tap();
     const panel = page.locator('#reading-settings');
@@ -655,19 +657,13 @@ async function phone2(browser, base, style) {
     await page.screenshot({ path: path.join(shots, `${tag}-settings.png`) });
     await panel.getByRole('button', { name: 'Close reading settings' }).tap();
   });
-  await check(`${tag}: ⋯ › Editing switches the mode; ⋯ › Suggesting switches it back`, async () => {
+  await check(`${tag}: the phone menu enters and leaves Editing through one labelled control`, async () => {
     await page.getByRole('button', { name: /^More options/ }).tap();
-    await page.locator('.proof-share-overflow-menu .apm-mode').getByRole('menuitemradio', { name: 'Editing' }).tap();
-    await page.locator('.proof-share-overflow-menu').waitFor({ state: 'detached' });
+    await page.locator('.apm-mode').getByRole('menuitem', { name: 'Enter Editing' }).tap();
+    assert.equal(await page.locator('.pst-mode').innerText(), 'Editing');
     await page.getByRole('button', { name: /^More options/ }).tap();
-    const state = await page.locator('.proof-share-overflow-menu .apm-mode .amb-item').evaluateAll(bs => bs.map(b => b.getAttribute('aria-checked')));
-    assert.deepEqual(state, ['false', 'true'], 'Editing did not take');
-    await page.locator('.proof-share-overflow-menu .apm-mode').getByRole('menuitemradio', { name: 'Suggesting' }).tap();
-    await page.getByRole('button', { name: /^More options/ }).tap();
-    const back = await page.locator('.proof-share-overflow-menu .apm-mode .amb-item').evaluateAll(bs => bs.map(b => b.getAttribute('aria-checked')));
-    assert.deepEqual(back, ['true', 'false'], 'Suggesting did not take');
-    await page.screenshot({ path: path.join(shots, `${tag}-menu-top.png`) });
-    await page.keyboard.press('Escape');
+    await page.locator('.apm-mode').getByRole('menuitem', { name: 'Leave Editing' }).tap();
+    assert.equal(await page.locator('.pst-mode').innerText(), 'Reading');
   });
   await check(`${tag}: ⋯ › Share… opens the Share dialog; it fits the phone`, async () => {
     await page.getByRole('button', { name: /^More options/ }).tap();

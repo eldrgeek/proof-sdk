@@ -129,13 +129,15 @@ async function runDesktop(browser, base, tag) {
   });
   await check(`${tag}: while editing, the caret owns the focus (hover does not move it)`, async () => {
     await page.waitForFunction(() => window.__proofReadingWalk?.debugState().ready === true, null, { timeout: 10_000 });
+    // A click while Reading only selects. Direct Editing is the labelled control.
+    // Mike, 2026-09-23 (usability brief).
+    await page.evaluate(() => document.querySelector('.share-pill-suggest-toggle').click());
+    await page.waitForFunction(() => document.querySelector('.pst-mode')?.textContent === 'Editing');
     const target = block(page, 14);
     await target.evaluate(el => el.scrollIntoView({ block: 'center', behavior: 'instant' }));
     await page.waitForTimeout(300);
     const box = await target.boundingBox();
     await page.mouse.click(box.x + 20, box.y + box.height / 2);
-    // Let the click settle into the editor's selection before typing (see the report: typing at
-    // once after a click here put the caret at the end of the document, with or without folds).
     await page.waitForTimeout(200);
     await page.keyboard.type('x');
     await page.waitForFunction(() => window.__proofReadingWalk.debugState().target === 14, null, { timeout: 2000 });
@@ -143,6 +145,7 @@ async function runDesktop(browser, base, tag) {
     await page.waitForTimeout(4500);
     assert.equal((await walk(page)).target, 14);
     assert.equal(await page.evaluate(() => window.__proofEditingGuard().writing), true);
+    await page.evaluate(() => document.querySelector('.share-pill-suggest-toggle').click());
   });
   await check(`${tag}: closed-Issue records never collapse text after reload`, async () => {
     await page.reload();
@@ -203,17 +206,18 @@ async function runPhone(browser, base, tag) {
     await page.waitForFunction(() => !document.querySelector('.prw-right.prw-sheet-open'), null, { timeout: 2000 });
   });
 
-  await check(`${tag}: tapping text still edits, and the strip steps aside while the keyboard is up`, async () => {
+  await check(`${tag}: a tap selects the passage while Reading, and the strip stays`, async () => {
+    // A tap does not put a caret in the text, so the strip does not step aside.
+    // Mike, 2026-09-23 (usability brief).
     const focus = (await walk(page)).focus;
-    const target = block(page, focus + 1);
+    const next = focus + 1;
+    const target = block(page, next);
     const box = await target.boundingBox();
     await page.touchscreen.tap(box.x + 20, box.y + box.height / 2);
-    await page.waitForTimeout(300);
-    const where = await page.evaluate(() => ({ active: document.activeElement?.className ?? '', tag: document.activeElement?.tagName, hit: document.elementFromPoint(100, 100)?.className }));
-    assert.equal(await page.evaluate(() => Boolean(document.activeElement?.closest?.('.ProseMirror'))), true, `no caret ${JSON.stringify(where)} at ${JSON.stringify(box)}`);
-    await page.waitForFunction(() => document.querySelector('.prw-strip')?.hidden === true, null, { timeout: 2000 });
-    await page.evaluate(() => document.activeElement?.blur());
-    await page.waitForFunction(() => document.querySelector('.prw-strip')?.hidden === false, null, { timeout: 2000 });
+    await page.waitForFunction(i => window.__proofReadingWalk.debugState().focus === i, next);
+    assert.equal(await page.locator('.pst-mode').evaluate(el => el.textContent), 'Reading');
+    assert.notEqual(await page.locator('.ProseMirror').getAttribute('contenteditable'), 'true');
+    assert.equal(await page.locator('.prw-strip').isVisible(), true, 'the strip stepped aside');
   });
   await context.close();
 }

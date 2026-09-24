@@ -1,186 +1,177 @@
-/**
- * Accord round 2, stage A — the one rule with three doors, proved before the feature was built.
- *
- * The property this file exists for: leaving an edit NEVER loses a character. Whatever the person
- * typed, whichever door they left by, the proposal carries their text exactly.
- *
- * Authorship: Mike Wolf (rulings), built by Claude Opus 5 (worker accord-edit), 2026-09-22.
- */
+/** Local drafts and one attributed proposal. Mike, 2026-09-23 (usability brief). */
 import assert from 'node:assert/strict';
-import {
-  EDIT_SESSION_POLICY, KEPT_NOTICE_TEXT, POSTED_NOTICE_TEXT, beginEditSession, describeEditProposal,
-  editingHelpText, editingStatusText, endEditSession, keptNoticeText, postedNoticeText,
-  type EditDoor,
-} from '../shared/edit-session';
-import { smallestEdit } from '../ui/edit-gesture';
-import { READING_MODE_POLICY } from '../shared/reading-keys';
-import { UNDO_KINDS } from '../shared/undo';
-
+import { beginDraft, draftAction, draftKey, draftPrefix, parseDraft, resolveDraft, EDIT_SESSION_POLICY, type EditDoor } from '../shared/edit-session';
+import { extractLines, hashLine, type DocLine, type LineSourceNode } from '../shared/line-marks';
+import { routeKey } from '../shared/reading-keys';
+import { UndoStack } from '../shared/undo';
+import { EditGestureUI } from '../ui/edit-gesture';
+import { getMarks, reject as rejectMark, suggestReplace, modifySuggestionContent } from '../editor/plugins/marks';
+import { installLocalWriteResyncPolicy } from '../editor/local-write-resync';
+import { pair, schema } from './review-history-fixture';
 let passed = 0;
-function test(name: string, fn: () => void): void {
-  fn();
-  passed += 1;
-  console.log(`✓ ${name}`);
+function test(name: string, fn: () => void) { fn(); passed++; console.log(`✓ ${name}`); }
+const doc = schema.node('doc', null, ['same', 'same', 'third'].map(t => schema.node('paragraph', null, schema.text(t))));
+const lines = extractLines(doc as unknown as LineSourceNode);
+const draft = beginDraft(lines[1], 'same');
+test('only the explicit submit doors publish; all other exits keep every character', () => {
+  assert.deepEqual(EDIT_SESSION_POLICY.publishDoors, ['propose', 'cmd-enter']);
+  assert.equal(EDIT_SESSION_POLICY.convertDirectEditsToProposals, false);
+  const texts = ['', 'a', '  double  spaces  ', '🙂 é\t\n', '# heading\n\nbody', 'safe → unsafe'];
+  const doors: EditDoor[] = ['propose', 'cmd-enter', 'escape', 'click-outside', 'scrolled-away', 'hover', 'blur', 'reload', 'cancel'];
+  for (const proposed of texts) for (const door of doors) {
+    const value = { ...draft, proposed };
+    assert.equal(draftAction(value, door), door === 'cancel' ? 'discard' : door === 'propose' || door === 'cmd-enter' ? 'publish' : 'keep');
+    assert.equal(value.proposed, proposed);
+    assert.deepEqual(parseDraft(JSON.stringify(value)), value);
+  }
+  assert.equal(draftAction(draft, 'propose'), 'keep', 'unchanged drafts publish nothing');
+});
+test('keys isolate documents, readers and repeated passages', () => {
+  const key = draftKey('doc', 'guest:Alice', draft.anchor);
+  assert.ok(key.startsWith(draftPrefix('doc', 'guest:Alice')));
+  assert.notEqual(key, draftKey('other', 'guest:Alice', draft.anchor));
+  assert.notEqual(key, draftKey('doc', 'guest:Bob', draft.anchor));
+  assert.notEqual(key, draftKey('doc', 'guest:Alice', beginDraft(lines[0], 'same').anchor));
+  assert.equal(key, draftKey('doc', 'GUEST:alice', draft.anchor));
+});
+function rewrite(line: DocLine, text: string): DocLine {
+  return { ...line, text, hash: hashLine(line.kind, text) };
 }
+test('a draft resolves by exact text, then by the lapsed-mark search, and never by an unrelated line', () => {
+  assert.equal(resolveDraft(draft, lines)?.line.index, 1);
+  assert.equal(resolveDraft(draft, lines)?.changed, false);
+  // The old ordinal fallback attached this unrelated text. It must not.
+  const unrelated = lines.map((l, i) => rewrite(l, `changed ${i}`));
+  assert.equal(resolveDraft(draft, unrelated), null);
+  assert.equal(resolveDraft(draft, []), null);
+  assert.equal(parseDraft('{broken'), null);
+  assert.equal(parseDraft('{"original":"x","proposed":"y","anchor":{}}'), null);
 
-const session = (original: string, suggesting = false, lineIndex = 13) =>
-  beginEditSession({ lineIndex, original, suggesting, now: 1000 });
-
-test('policy: leaving posts, nothing discards, and Cmd+Enter is the advertised door', () => {
-  assert.equal(EDIT_SESSION_POLICY.leavingPosts, true);
-  assert.equal(EDIT_SESSION_POLICY.undoIsTheOnlyRemoval, true);
-  assert.equal(EDIT_SESSION_POLICY.undoEntriesPerPost, 1);
-  assert.equal(EDIT_SESSION_POLICY.advertisedDoor, 'cmd-enter');
-  assert.deepEqual([...EDIT_SESSION_POLICY.deliberateDoors], ['cmd-enter', 'click-outside', 'escape'],
-    'the three doors a person opens on purpose');
-  for (const door of EDIT_SESSION_POLICY.deliberateDoors) {
-    assert.ok(EDIT_SESSION_POLICY.doors.includes(door), `${door} is a door`);
-  }
-  assert.equal(EDIT_SESSION_POLICY.phoneDoneControl, true, 'a phone has no Cmd+Enter, so it shows Done');
-});
-
-test('THE PROPERTY: a leave with text never loses a character, through any door', () => {
-  // Awkward text on purpose: emoji, combining marks, tabs, trailing space, a lone surrogate pair,
-  // markdown syntax, and a string that differs from the original only in whitespace.
-  const originals = ['', 'a', 'The line as it stood.', '  leading and trailing  ', '# A heading'];
-  const typed = [
-    '', 'a', 'The line as it stood.', 'The line as it stood. ', 'The line as it stood.​',
-    'x', 'ürgen 👨‍👩‍👧‍👦 é́ ok', '\ttabbed\t', 'one\ntwo', '**bold** and `code`',
-    'a'.repeat(5000), '  leading and trailing  ', 'The line as it stood!', '🙂', '𝔘𝔫𝔦𝔠𝔬𝔡𝔢',
+  const sentence = 'The edit gesture line is long enough to survive a small edit.';
+  const longDoc = schema.node('doc', null, [
+    'An intro paragraph that stays where it is.',
+    sentence,
+    'A closing paragraph that stays where it is.',
+  ].map(t => schema.node('paragraph', null, schema.text(t))));
+  const longLines = extractLines(longDoc as unknown as LineSourceNode);
+  const longDraft = beginDraft(longLines[1], sentence);
+  assert.equal(resolveDraft(longDraft, longLines)?.changed, false);
+  assert.equal(resolveDraft(longDraft, longLines)?.line.text, sentence);
+  const edited = 'The edit gesture line is long enough to survive a larger edit.';
+  const editedLines = longLines.map((l, i) => i === 1 ? rewrite(l, edited) : l);
+  assert.equal(resolveDraft(longDraft, editedLines)?.line.index, 1);
+  assert.equal(resolveDraft(longDraft, editedLines)?.changed, true);
+  assert.equal(resolveDraft(longDraft, editedLines)?.line.text, edited);
+  // A new unrelated paragraph now sits at the old ordinal. The draft follows the edited sentence.
+  const moved = [
+    longLines[0],
+    rewrite({ ...longLines[0], index: 1 }, 'Zebras seldom publish quarterly tax guidance for coastal lighthouses.'),
+    rewrite({ ...longLines[1], index: 2 }, edited),
   ];
-  let posts = 0;
-  let silences = 0;
-  for (const original of originals) {
-    for (const current of typed) {
-      for (const door of EDIT_SESSION_POLICY.doors) {
-        for (const suggesting of [false, true]) {
-          const leave = endEditSession(session(original, suggesting), current, door);
-          if (current === original) {
-            silences += 1;
-            assert.equal(leave.posted, false, `unchanged text must be silent (${door})`);
-            continue;
-          }
-          posts += 1;
-          assert.equal(leave.posted, true, `changed text must post (${door}, ${JSON.stringify(current)})`);
-          if (!leave.posted) continue;
-          // Character for character. Not trimmed, not normalised, not shortened.
-          assert.equal(leave.proposal.proposed, current, 'the proposal is exactly what was typed');
-          assert.equal(leave.proposal.proposed.length, current.length, 'no characters were dropped');
-          assert.equal([...leave.proposal.proposed].length, [...current].length, 'no code points were dropped');
-          assert.equal(leave.proposal.original, original, 'the original stays readable underneath');
-          assert.equal(leave.proposal.lineIndex, 13);
-          assert.equal(leave.door, door);
-          assert.equal(leave.alreadyTracked, suggesting);
-        }
-      }
-    }
-  }
-  assert.ok(posts > 500 && silences > 0, `covered ${posts} posts and ${silences} silent leaves`);
+  assert.equal(resolveDraft(longDraft, moved)?.line.index, 2);
+  assert.equal(resolveDraft(longDraft, moved)?.line.text, edited);
+  assert.equal(resolveDraft(longDraft, moved)?.changed, true);
+  const lost = longLines.map((l, i) => i === 1 ? rewrite(l, 'Zebras seldom publish quarterly tax guidance for coastal lighthouses.') : l);
+  assert.equal(resolveDraft(longDraft, lost), null);
 });
-
-test('the three doors are one action: same text in, same proposal out', () => {
-  const original = 'Greg hosts Legends.';
-  const current = 'Greg hosts Legends, with Bill.';
-  const results = (['cmd-enter', 'click-outside', 'escape'] as EditDoor[])
-    .map(door => endEditSession(session(original), current, door));
-  for (const leave of results) {
-    assert.equal(leave.posted, true);
-    if (!leave.posted) return;
-    assert.deepEqual(leave.proposal, results[0].posted ? results[0].proposal : null,
-      'every door produces the same proposal');
-    assert.equal(leave.undoDescription, describeEditProposal(13));
+test('S suggests, E explains, and draft fields and direct Editing never run letter commands', () => {
+  for (const key of ['s', 'S', 'e']) assert.equal(routeKey({ key, target: 'editor', writing: false }), 'command');
+  for (const key of ['a', 's', 'e', 'j', '1', 'Enter']) {
+    assert.equal(routeKey({ key, target: 'field', writing: false }), 'type');
+    assert.equal(routeKey({ key, target: 'editor', writing: true }), 'type');
+    assert.equal(routeKey({ key, target: 'control', writing: true }), 'pass');
   }
 });
 
-test('hover and scrolling are not edit doors; other doors stay for S3', () => {
-  assert.deepEqual(EDIT_SESSION_POLICY.doors, ['cmd-enter', 'click-outside', 'escape', 'blur']);
-  assert.equal(READING_MODE_POLICY.escapeEndsWriting, true);
-  assert.equal(READING_MODE_POLICY.leavingPostsTheEdit, true);
-});
-
-test('nothing changed: leaving posts nothing and says nothing', () => {
-  for (const door of EDIT_SESSION_POLICY.doors) {
-    const leave = endEditSession(session('unchanged text'), 'unchanged text', door);
-    assert.equal(leave.posted, false);
-    assert.equal(leave.posted === false && leave.reason, 'unchanged');
-  }
-  // A caret moved through a line without typing is the common case, and it must be silent.
-  const leave = endEditSession(session(''), '', 'cmd-enter');
-  assert.equal(leave.posted, false);
-});
-
-test('one Undo entry per posted proposal, in the words the person reads', () => {
-  assert.equal(describeEditProposal(0), 'proposed a change to line 1');
-  assert.equal(describeEditProposal(13), 'proposed a change to line 14');
-  assert.ok('suggestion' in UNDO_KINDS, 'the Undo entry is a change (src/shared/undo.ts)');
-  assert.equal(UNDO_KINDS.suggestion, 'change');
-});
-
-test('what the person is told: the state, and the way out', () => {
-  assert.equal(editingStatusText(13), 'Editing line 14');
-  assert.equal(editingStatusText(0), 'Editing line 1');
-  assert.equal(POSTED_NOTICE_TEXT, 'Proposed');
-  assert.match(editingHelpText(false), /Cmd\+Enter/, 'the desktop names the advertised gesture');
-  assert.match(editingHelpText(false), /Esc/, 'and says Esc is safe');
-  assert.match(editingHelpText(true), /Done/, 'the phone names its visible control');
-  assert.doesNotMatch(editingHelpText(true), /Cmd\+Enter/, 'a phone has no Cmd+Enter');
-});
-
-test('a session carries the mode it began in, so the poster never writes a second proposal', () => {
-  const tracked = endEditSession(session('a', true), 'ab', 'cmd-enter');
-  assert.equal(tracked.posted && tracked.alreadyTracked, true, 'Suggesting mode already made the proposal');
-  const direct = endEditSession(session('a', false), 'ab', 'cmd-enter');
-  assert.equal(direct.posted && direct.alreadyTracked, false, 'Editing mode: the poster converts it');
-});
-
-test('the direct-Editing conversion is gated OFF, and the gate says why and when to open it', () => {
-  // The one part of Mike's 2026-09-22 ruling not yet built. In Suggesting mode (what a share opens
-  // in) the whole rule holds. In direct Editing mode the leave keeps the typed words in the text
-  // instead of converting them to a proposal, because that conversion writes the document twice
-  // and those writes are not safe under a second writer yet (the policy carries the measurement).
-  assert.equal(EDIT_SESSION_POLICY.convertDirectEditsToProposals, false,
-    'turning this on needs scripts/caret-stability-check.mjs green over five consecutive runs');
-  // Whatever the gate says, the decision itself never changes: a leave with text always posts.
-  const leave = endEditSession(session('before', false), 'before and after', 'cmd-enter');
-  assert.equal(leave.posted, true, 'the rule is the same; only what the poster may write is gated');
-  // And the person is told where their change went, either way.
-  assert.equal(keptNoticeText(9, false), 'Edited line 10 — your change is in the text.');
-  assert.equal(keptNoticeText(9, true), 'Edited line 10');
-  assert.equal(postedNoticeText(9, false), 'Proposed line 10 — Undo takes it back.');
-  assert.equal(postedNoticeText(9, true), 'Proposed line 10');
-  assert.notEqual(KEPT_NOTICE_TEXT, POSTED_NOTICE_TEXT, 'the two outcomes read differently');
-});
-
-test('smallestEdit: the revert touches only the characters that differ, and is exact', () => {
-  // The leave puts the line back before it posts the proposal. If that replacement is off by a
-  // character the line reads twice (it did, on 2026-09-22, before the live-document read).
-  const cases: Array<[string, string]> = [
-    ['', ''], ['a', 'a'], ['', 'abc'], ['abc', ''],
-    ['The line as it stood.', 'The line as it stood.'],
-    ['The line as it stood.', 'The line as it stZZood.'],
-    ['The line as it stood.', 'The line as it stood. And more.'],
-    ['prefix middle suffix', 'prefix suffix'],
-    ['aaaa', 'aa'], ['aa', 'aaaa'],
-    ['🙂 text', '🙂 other text'],
-    ['one\ntwo', 'one\ntwo\nthree'],
-    ['abc', 'xyz'],
-  ];
-  for (const [before, after] of cases) {
-    const edit = smallestEdit(before, after);
-    if (before === after) { assert.equal(edit, null, `${JSON.stringify(before)} is unchanged`); continue; }
-    assert.ok(edit, `${JSON.stringify([before, after])} should produce an edit`);
-    // Applying it must reproduce `after` exactly — this is the whole contract.
-    const applied = before.slice(0, edit!.from) + edit!.text + before.slice(edit!.to);
-    assert.equal(applied, after, `applying the edit gave ${JSON.stringify(applied)}`);
-    assert.ok(edit!.from >= 0 && edit!.to >= edit!.from && edit!.to <= before.length, `range ${JSON.stringify(edit)}`);
-  }
-  // It is minimal: a one-character change replaces one character.
-  const one = smallestEdit('abcdef', 'abXdef');
-  assert.deepEqual(one, { from: 2, to: 3, text: 'X' });
-  // An insertion replaces nothing.
-  assert.deepEqual(smallestEdit('abcdef', 'abcXdef'), { from: 3, to: 3, text: 'X' });
-  // A deletion inserts nothing.
-  assert.deepEqual(smallestEdit('abcXdef', 'abcdef'), { from: 3, to: 4, text: '' });
-});
-
+// Real marks, Yjs and the UI submission path, without a browser. Draft widgets are tested by draft-check.
+installLocalWriteResyncPolicy();
+const peers = await pair();
+const saved = new Map<string, string>();
+Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
+  get length() { return saved.size; }, key: (i: number) => [...saved.keys()][i],
+  getItem: (key: string) => saved.get(key) ?? null, setItem: (key: string, value: string) => saved.set(key, value), removeItem: (key: string) => saved.delete(key),
+} });
+try {
+  const { alice, bob } = peers;
+  const stack = new UndoStack();
+  let allowed = true, writes = 0;
+  const dispatch = alice.view.dispatch.bind(alice.view);
+  alice.view.dispatch = (tr: any) => { if (tr.getMeta('proofLocalMarkChange')) writes++; dispatch(tr); };
+  const host = {
+    view: () => alice.view, slug: () => 'fixture', actor: () => 'human:Alice', canPropose: () => allowed,
+    suggestReplace: (view: any, quote: string, by: string, content: string, range: { from: number; to: number }) => suggestReplace(view, quote, by, content, range)?.id ?? null,
+    pending: (id: string, content?: string) => getMarks(alice.view.state).some(m => m.id === id && (m.data as any)?.status === 'pending' && (content === undefined || (m.data as any).content === content)),
+    decide: (ids: string[]) => { for (const id of ids) assert.ok(rejectMark(alice.view, id)); },
+    undoStack: () => stack, proposed: () => {}, notice: () => {},
+  };
+  const ui = new EditGestureUI(host);
+  test('opening and typing a draft writes no shared text or marks', () => {
+    assert.equal(ui.open(0), true);
+    const entry = [...ui['drafts'].values()][0];
+    entry.draft.proposed = 'Proposed  words 🙂'; ui['save'](entry);
+    assert.equal(alice.view.state.doc.textContent, 'OriginalSecond');
+    assert.equal(getMarks(alice.view.state).length, 0);
+    assert.equal(writes, 0);
+    assert.equal(saved.size, 1);
+  });
+  test('reload restores exact draft text; concurrent edits survive one attributed submission', () => {
+    const resumed = new EditGestureUI(host);
+    assert.equal(resumed.open(0), true);
+    const entry = [...resumed['drafts'].values()][0];
+    assert.equal(entry.draft.proposed, 'Proposed  words 🙂');
+    bob.edit(() => bob.view.dispatch(bob.view.state.tr.insertText(' remote', 9)));
+    const current = alice.view.state.doc.textContent;
+    resumed['submit'](entry, 'propose');
+    assert.equal(writes, 1);
+    assert.equal(alice.view.state.doc.textContent, current, 'submission never rewrites the original or remote text');
+    assert.equal(bob.view.state.doc.textContent, current);
+    assert.equal(alice.view.state.doc.childCount, 2);
+    const marks = getMarks(alice.view.state);
+    assert.equal(marks.length, 1); assert.equal(marks[0].by, 'human:Alice');
+    assert.equal((marks[0].data as any).content, 'Proposed  words 🙂');
+    assert.equal(stack.depth(), 1); assert.equal(saved.size, 0);
+    resumed['submit'](entry, 'propose'); assert.equal(writes, 1, 'double submit is ignored');
+  });
+  const outcome = await stack.undo();
+  test('one Undo removes the proposal and preserves the concurrent text', () => {
+    assert.equal(outcome.ok, true);
+    assert.equal(getMarks(alice.view.state).filter(m => (m.data as any).status === 'pending').length, 0);
+    assert.equal(alice.view.state.doc.child(0).textContent, 'Original remote');
+    assert.equal(bob.view.state.doc.child(0).textContent, 'Original remote');
+  });
+  const changed = new EditGestureUI(host);
+  changed.open(0);
+  const changeEntry = [...changed['drafts'].values()][0];
+  changeEntry.draft.proposed = 'First proposal'; changed['submit'](changeEntry, 'propose');
+  const changedId = changed.posted[0].markId;
+  modifySuggestionContent(bob.view, changedId, 'Collaborator changed the proposal');
+  const refused = await stack.undo();
+  test('Undo refuses to remove a proposal another participant revised', () => {
+    assert.equal(refused.ok, false);
+    assert.equal((getMarks(alice.view.state).find(m => m.id === changedId)?.data as any)?.content, 'Collaborator changed the proposal');
+    assert.equal(host.pending(changedId), true);
+  });
+  test('revoked permission keeps the draft and refuses submission', () => {
+    const other = new EditGestureUI(host); assert.ok(other.open(1));
+    const entry = [...other['drafts'].values()][0]; entry.draft.proposed = 'Not permitted'; other['save'](entry);
+    allowed = false;
+    const before = writes; other['submit'](entry, 'cmd-enter');
+    assert.equal(writes, before); assert.equal(saved.size, 1);
+    assert.equal(other.open(0), false);
+  });
+  test('a small edit stays attached and an unrelated replacement is listed as lost', () => {
+    allowed = true;
+    const ui = new EditGestureUI(host);
+    assert.equal(ui.open(0), true);
+    const openEntry = [...ui['drafts'].values()].find(d => d.open)!;
+    const original = openEntry.draft.original;
+    const end = () => alice.view.state.doc.child(0).nodeSize - 1;
+    alice.view.dispatch(alice.view.state.tr.insertText(`${original} today`, 1, end()));
+    assert.equal(ui.lostDrafts().some(d => d.original === original), false, 'the edited passage still holds the draft');
+    alice.view.dispatch(alice.view.state.tr.insertText('Zebras seldom publish quarterly tax guidance for coastal lighthouses.', 1, end()));
+    const lost = ui.lostDrafts().filter(d => d.original === original);
+    assert.equal(lost.length, 1);
+    assert.equal(lost[0].proposed, original);
+  });
+} finally { peers.close(); }
 console.log(`\n${passed} edit-session tests passed`);

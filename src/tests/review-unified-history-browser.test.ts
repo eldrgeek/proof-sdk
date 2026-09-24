@@ -24,7 +24,8 @@ async function openEditor(browser: any, url: string, name: string): Promise<any>
   const page = await context.newPage();
   await page.addInitScript((slug: string) => sessionStorage.setItem(`proof_share_welcome_${slug}`, '1'), new URL(url).pathname.split('/').pop());
   await page.goto(url, { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => document.querySelector('.ProseMirror')?.getAttribute('contenteditable') === 'true');
+  // The review document is not editable until Enter Editing. Readiness is the editor and the sync, not a caret in the text. Mike, 2026-09-23 (usability brief).
+  await page.waitForFunction(() => Boolean(document.querySelector('.ProseMirror')) && (window as any).proof?.collabIsSynced === true);
   const nameInput = page.getByPlaceholder('Your name');
   if (await nameInput.isVisible()) {
     await nameInput.fill(name);
@@ -91,7 +92,8 @@ async function run(): Promise<void> {
           method: 'POST', headers: { ...CLIENT_HEADERS, 'Content-Type': 'application/json' },
           body: JSON.stringify({ title: 'History cursor', markdown: 'Original\n\nSecond\n', marks: {} }),
         }));
-        const page = await openEditor(browser, `${httpBase}/d/${created.slug}?token=${encodeURIComponent(created.accessToken)}&mode=edit`, 'Alice');
+        const page = await openEditor(browser, `${httpBase}/d/${created.slug}?token=${encodeURIComponent(created.accessToken)}`, 'Alice');
+        await page.getByRole('button', { name: 'Enter Editing', exact: true }).click();
         let stage = 'style and initial typing';
         try {
           await page.getByLabel('Review style', { exact: true }).selectOption(source);

@@ -4,7 +4,7 @@
 // scattered fragments). Clicks at a mid-document position and types 40 characters at human speed
 // (60–120 ms per key) while (a) the line-marks poll fires, (b) another client writes marks,
 // comments and asks through the API, (c) the mouse hovers over other lines (desktop). Runs in both
-// review styles, in Suggesting and Editing modes, at 1440 and on a 390x844 phone.
+// review styles, in direct Editing and in the draft editor (Suggest change), at 1440 and on a 390x844 phone.
 // Asserts: every character lands contiguously at the click position, the selection never jumps,
 // the typed line keeps its place on screen (scrollY moves only by the height of content inserted
 // above it, by browser scroll anchoring). Every transaction that changes the selection and was not caused by the
@@ -299,6 +299,133 @@ const selectionNow = page => page.evaluate(() => {
 const blockText = (page, index) => page.evaluate(i => document.querySelectorAll('.ProseMirror > *')[i]?.textContent ?? '', index);
 const jitter = () => 60 + Math.floor(Math.random() * 61);
 
+/**
+ * Suggesting, under the draft model: typing happens in the inline draft, not in the document.
+ * A remote writer edits the same passage while the draft is typed. The caret is the draft field's
+ * caret. Then one submission. Mike, 2026-09-23 (usability brief).
+ */
+async function runDraft(page, created, tag, phone) {
+  await page.evaluate(i => { window.__caretTarget = i; window.__proofReadingWalk.focusLine(i); }, TARGET_LINE);
+  if (phone) {
+    await page.waitForFunction(i => document.querySelector('.plm-edit-pencil')?.dataset.line === String(i), TARGET_LINE, { timeout: 5000 });
+    await page.locator('.plm-edit-pencil').click();
+  }
+  else {
+    await page.evaluate(() => document.activeElement?.blur());
+    await page.keyboard.press('s');
+  }
+  const field = page.locator('.accord-draft textarea');
+  await field.waitFor();
+  await page.waitForFunction(needle => {
+    const el = document.querySelector('.accord-draft textarea');
+    return Boolean(el && el.value.includes(needle));
+  }, CLICK_BEFORE, { timeout: 3000 }).catch(() => {});
+  const original = await field.inputValue();
+  const offset = original.indexOf(CLICK_BEFORE);
+  if (offset <= 0) {
+    await check(`${tag}: the draft is the target passage`, async () => {
+      assert.fail(`draft text was ${JSON.stringify(original.slice(0, 160))}`);
+    });
+    return;
+  }
+  const expected = original.slice(0, offset) + TYPED + original.slice(offset);
+  await field.evaluate((el, at) => { el.focus(); el.setSelectionRange(at, at); }, offset);
+  const peerContext = await page.context().browser().newContext(phone ? { ...devices['iPhone 13'], viewport: { width: 390, height: 844 } } : { viewport: { width: 1440, height: 900 } });
+  await peerContext.route('**/*', route => new URL(route.request().url()).origin === new URL(page.url()).origin ? route.continue() : route.abort());
+  await peerContext.addInitScript(() => { try { localStorage.setItem('proof-share-viewer-name', 'Bob'); } catch {} });
+  const peer = await peerContext.newPage();
+  await peer.goto(page.url());
+  await peer.waitForFunction(() => window.proof?.collabConnectionStatus === 'connected' && window.proof?.collabIsSynced === true, null, { timeout: 20_000 });
+  const toast = peer.locator('.proof-share-welcome-toast button');
+  if (await toast.count()) await toast.first().click().catch(() => {});
+  await peer.waitForFunction(() => document.querySelector('.share-pill-suggest-toggle'));
+  await peer.evaluate(() => document.querySelector('.share-pill-suggest-toggle').click());
+
+  const writer = startWriter(created);
+  const samples = [];
+  const caretNow = () => field.evaluate(el => {
+    const r = el.getBoundingClientRect();
+    return { start: el.selectionStart, end: el.selectionEnd, top: Math.round(r.top), scrollY: window.scrollY, active: document.activeElement === el };
+  });
+  let clickSel;
+  try {
+    await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))));
+    clickSel = await caretNow();
+    for (let i = 0; i < TYPED.length; i += 1) {
+      await page.keyboard.type(TYPED[i]);
+      samples.push({ i, ...(await caretNow()) });
+      if (i === 8 || i === 24) {
+        const word = i === 8 ? ' REMOTE-BEFORE' : ' REMOTE-DURING';
+        await peer.evaluate(({ index, word }) => {
+          const view = window.__editorView;
+          let pos = 0;
+          for (let n = 0; n < index; n += 1) pos += view.state.doc.child(n).nodeSize;
+          const block = view.state.doc.child(index);
+          view.dispatch(view.state.tr.insertText(word, pos + block.nodeSize - 1));
+        }, { index: TARGET_LINE, word });
+        await page.waitForFunction(w => window.__editorView.state.doc.textContent.includes(w), word);
+      }
+      if (i === 12 || i === 27) await page.evaluate(() => window.__proofLineMarks?.refresh?.());
+      if (!phone && i % 3 === 1) {
+        const other = OTHER_LINES[i % OTHER_LINES.length];
+        const box = await page.evaluate(k => {
+          const r = document.querySelectorAll('.ProseMirror > *')[k]?.getBoundingClientRect();
+          return r ? { x: r.left + 40, y: r.top + r.height / 2 } : null;
+        }, other);
+        if (box && box.y > 0 && box.y < 900) await page.mouse.move(box.x + (i % 7) * 9, box.y, { steps: 3 });
+      }
+      await page.waitForTimeout(jitter());
+    }
+    await page.waitForTimeout(800);
+  } finally {
+    const w = await writer.stop();
+    if (w.errors.length) console.log(`  writer errors (${tag}): ${w.errors.slice(0, 3).join(' ; ')}`);
+  }
+  await check(`${tag}: the click puts the caret before "${CLICK_BEFORE}"`, async () => {
+    assert.equal(clickSel.start, clickSel.end, 'the draft caret is a range');
+    assert.equal(clickSel.start, offset, `draft caret at ${clickSel.start}, expected ${offset}`);
+    assert.equal(clickSel.active, true);
+  });
+  await check(`${tag}: every character lands contiguously at the click position`, async () => {
+    assert.equal(await field.inputValue(), expected, 'the draft text');
+    const doc = await blockText(page, TARGET_LINE);
+    assert.equal(doc.includes(TYPED), false, 'the draft was written into the document');
+  });
+  await check(`${tag}: the selection never jumps while typing`, async () => {
+    const jumps = samples.filter(s => s.start !== s.end || s.start !== offset + s.i + 1 || s.active !== true);
+    assert.equal(jumps.length, 0, `jumps: ${JSON.stringify(jumps.slice(0, 4))}`);
+  });
+  await check(`${tag}: scrollY is stable: the typed line keeps its place on screen`, async () => {
+    const drift = Math.max(...samples.map(s => Math.abs(s.top - clickSel.top)));
+    assert.ok(drift <= 2, `the draft moved on screen by ${drift}px (tops ${samples.map(s => s.top).join(',')}; scrollY ${samples.map(s => s.scrollY).join(',')})`);
+  });
+  await check(`${tag}: one submission, and the remote edit is not duplicated`, async () => {
+    const before = await page.evaluate(() => window.__editorView.state.doc.childCount);
+    if (phone) await page.locator('[data-draft-action="propose"]').click();
+    else await field.press('Control+Enter');
+    await page.waitForFunction(() => (window.proof.getAllMarks() ?? []).some(m => m.kind === 'replace' && m.data?.content?.includes('caret stays put')));
+    const proposals = await page.evaluate(() => (window.proof.getAllMarks() ?? [])
+      .filter(m => (m.kind === 'replace' || m.kind === 'insert') && (m.data?.status ?? 'pending') === 'pending' && String(m.by).includes('Ada'))
+      .map(m => ({ content: String(m.data?.content ?? '') })));
+    assert.equal(proposals.length, 1);
+    assert.equal(proposals[0].content, expected);
+    const text = await page.evaluate(() => window.__editorView.state.doc.textContent);
+    assert.equal(text.split('REMOTE-BEFORE').length - 1, 1);
+    assert.equal(text.split('REMOTE-DURING').length - 1, 1);
+    assert.equal(text.includes(TYPED), false, 'submission wrote the draft into the document');
+    assert.equal(await page.evaluate(() => window.__editorView.state.doc.childCount), before);
+    const both = await page.evaluate(() => {
+      const view = window.__editorView;
+      const pm = []; view.state.doc.forEach(node => pm.push(node.textContent));
+      const binding = view.state.plugins.map(p => p.getState(view.state)).find(s => s?.binding)?.binding;
+      const yjs = binding?.type.toArray().map(t => t.toString().replace(/<[^>]+>/g, ''));
+      return { pm, yjs };
+    });
+    assert.deepEqual(both.pm, both.yjs, 'Yjs and ProseMirror disagree');
+  });
+  await peerContext.close();
+}
+
 async function run(browser, base, style, mode, device) {
   const phone = device === 'phone';
   const tag = `caret-${style}-${mode}-${phone ? 'phone-390x844' : '1440'}`;
@@ -306,7 +433,16 @@ async function run(browser, base, style, mode, device) {
   const created = await createDoc(base);
   const { context, page } = await openDoc(browser, base, created.slug, 'Ada', contextOptions);
   activePage = page;
-  await page.evaluate(m => { if (m === 'editing') window.proof.disableSuggestions(); else window.proof.enableSuggestions?.(); }, mode);
+  if (mode === 'suggesting') {
+    await instrument(page);
+    if (trace) await page.evaluate(() => { window.__caretTrace = true; });
+    await runDraft(page, created, tag, phone);
+    await page.screenshot({ path: path.join(shots, `${tag}.png`), timeout: 15_000 }).catch(() => {});
+    await context.close();
+    return;
+  }
+  // Direct Editing: the labelled control, then typing in the document.
+  await page.evaluate(() => document.querySelector('.share-pill-suggest-toggle').click());
   await page.waitForTimeout(300);
   await instrument(page);
   if (trace) await page.evaluate(() => { window.__caretTrace = true; });

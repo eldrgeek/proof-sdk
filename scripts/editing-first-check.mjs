@@ -125,7 +125,7 @@ async function run(browser, base, style, tag, contextOptions, phone) {
   activePage = page;
   const comment = await page.evaluate(() => (window.proof.getAllMarks() ?? []).find(m => m.kind === 'comment')?.id);
 
-  await check(`${tag}: clicking text under a comment places the caret and opens nothing`, async () => {
+  await check(`${tag}: clicking text under a comment selects its passage and opens nothing`, async () => {
     const highlight = page.locator(`.ProseMirror [data-mark-id="${comment}"]`).first();
     await highlight.evaluate(el => el.scrollIntoView({ block: 'center', behavior: 'instant' }));
     await page.waitForTimeout(600);
@@ -135,23 +135,24 @@ async function run(browser, base, style, tag, contextOptions, phone) {
     else await page.mouse.click(box.x + 4, box.y + box.height / 2);
     await page.waitForTimeout(400);
     assert.equal(await reviewUiOpen(page), 0, 'a review dialog or popover opened');
-    const caret = await page.evaluate(() => {
-      const sel = getSelection();
-      return { collapsed: sel.isCollapsed, inside: !!document.querySelector('.ProseMirror')?.contains(sel.anchorNode) };
-    });
-    assert.ok(caret.inside && caret.collapsed, `caret ${JSON.stringify(caret)}`);
+    assert.equal((await walk(page)).focus, TARGET_LINE, 'click did not select the passage');
+    assert.equal(await page.evaluate(() => window.__proofEditingGuard().writing), false);
+
   });
 
-  await check(`${tag}: typing 30 characters edits where typed and never moves the view`, async () => {
+  await check(`${tag}: typing a local draft keeps every character and never moves the view`, async () => {
+    await page.evaluate(i => window.__proofEditGesture.open(i), TARGET_LINE);
+    await page.locator('.accord-draft textarea').focus();
+    await page.locator('.accord-draft textarea').evaluate(e => e.setSelectionRange(0, 0));
     const before = await page.evaluate(() => window.scrollY);
     const textBefore = await lineText(page);
     for (const ch of TYPED) { await page.keyboard.type(ch); await page.waitForTimeout(25); }
     await page.waitForTimeout(700);
     const after = await page.evaluate(() => window.scrollY);
     assert.ok(Math.abs(after - before) <= 2, `the view moved from ${before} to ${after}`);
-    const text = await page.evaluate(i => document.querySelectorAll('.ProseMirror > *')[i]?.textContent ?? '', TARGET_LINE);
+    const text = await page.locator('.accord-draft textarea').inputValue();
     assert.ok(text.includes(TYPED), `the typed text is not in the target line: ${text}`);
-    assert.ok(text !== textBefore, 'the line did not change');
+    assert.equal(await lineText(page), textBefore, 'drafting changed the shared line');
     assert.equal(await reviewUiOpen(page), 0, 'a review dialog or popover opened while typing');
     await page.screenshot({ path: path.join(shots, `${tag}-typed.png`) });
   });
@@ -168,15 +169,17 @@ async function run(browser, base, style, tag, contextOptions, phone) {
     assert.equal((await walk(page)).focus, focus, 'the focus moved while editing');
   });
 
-  await check(`${tag}: in Suggesting mode the typed text is a suggestion (as before)`, async () => {
-    assert.equal(await page.evaluate(() => window.proof.isSuggestionsEnabled()), true, 'this share starts in Suggesting mode');
-    const pending = await page.evaluate(() => (window.proof.getAllMarks() ?? [])
-      .filter(m => (m.kind === 'insert' || m.kind === 'replace') && m.data?.status === 'pending' && String(m.by).includes('Ada')).length);
-    assert.ok(pending >= 1, 'no pending suggestion by the typist');
+  await check(`${tag}: only Propose change writes one attributed proposal`, async () => {
+    assert.equal(await page.evaluate(() => window.proof.isSuggestionsEnabled()), false);
+    const mine = () => page.evaluate(() => window.proof.getAllMarks().filter(m => m.kind === 'replace' && m.data?.status === 'pending' && String(m.by).includes('Ada')));
+    assert.equal((await mine()).length, 0);
+    await page.locator('[data-draft-action="propose"]').click();
+    assert.equal((await mine()).length, 1);
+    assert.ok((await mine())[0].data.content.includes(TYPED));
   });
 
   await check(`${tag}: editing another's statement in Editing mode: the editor's mark is Agreed and the rail says the meaning changed`, async () => {
-    await page.evaluate(() => window.proof.disableSuggestions());
+    await page.evaluate(() => document.querySelector('.share-pill-suggest-toggle').click());
     const words = page.locator('.ProseMirror > *').nth(TARGET_LINE);
     await words.evaluate(el => el.scrollIntoView({ block: 'center', behavior: 'instant' }));
     await page.waitForTimeout(300);

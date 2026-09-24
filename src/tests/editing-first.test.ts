@@ -8,7 +8,7 @@ import {
   MARK_VIAS, PASSIVE_VIAS, STATEMENT_POLICY, dwellMarkFor, isOthersStatement, type LineMark,
 } from '../shared/line-marks';
 import { classifyLineChange } from '../shared/line-change';
-import { EDITING_GUARD_POLICY, isEditing, noteEditingActivity, resetEditingGuardForTests } from '../editor/editing-guard';
+import { EDITING_GUARD_POLICY, isEditing, noteEditingActivity, resetEditingGuardForTests, setDirectEditing } from '../editor/editing-guard';
 
 let passed = 0;
 function test(name: string, fn: () => void): void {
@@ -73,6 +73,7 @@ test('editing guard: editing = caret in the text and activity within the grace p
   try {
     resetEditingGuardForTests();
     assert.equal(isEditing(1000), false, 'no activity yet');
+    setDirectEditing(true);
     noteEditingActivity(1000);
     assert.equal(isEditing(1000 + EDITING_GUARD_POLICY.graceMs - 1), true);
     assert.equal(isEditing(1000 + EDITING_GUARD_POLICY.graceMs), false, 'the grace period ended');

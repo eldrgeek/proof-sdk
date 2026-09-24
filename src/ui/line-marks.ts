@@ -1,7 +1,9 @@
 /**
+ * Proof Documents Step 1 — the line-marks UI.
+ * Mike, 2026-09-23 (usability brief): the pencil opens a local Suggest change draft.
+ * Clicking passage text selects it; it never begins direct Editing.
  * Line marks target the selected passage. Explicit section agreement captures text identities,
  * and it is offered only when every line of the section is visible.
- * Mike, 2026-09-23 (usability brief).
  *
  * Authorship: spec by Mike Wolf (2026-09-18); built by Claude Opus 5 (worker proof-line-marks).
  *
@@ -125,7 +127,6 @@ import { buildTierRow, loadOnlyDecisions, renderTierControl, saveOnlyDecisions }
 import { HIGHLIGHT_POLICY, issueNeedsViewer, markedUpTo, type MarkedUpTo } from '../shared/layout-status';
 import { openView, type OpenView } from '../shared/open-view';
 import { MARGIN_POLICY, MARKED_BY_POLICY, markedByFold, type NeedsYouItem } from '../shared/layout-panels';
-import { READING_MODE_POLICY } from '../shared/reading-keys';
 import { ISSUES_PILL_POLICY, NEXT_ISSUE_POLICY, issuesPillText, issuesPillTitle } from '../shared/layout-chrome';
 import './line-marks.css';
 
@@ -171,8 +172,8 @@ export interface LineMarksHost {
   /** Editing first: true while the editor is in Suggesting mode (edits become suggestions). */
   isSuggesting?(): boolean;
   /**
-   * Accord round 2 stage A: the margin's pencil. Puts the caret in the line and starts editing.
-   * Option+click still works as the shortcut; this is the affordance it never had.
+   * The margin pencil. Opens a local Suggest change draft on this line.
+   * Mike, 2026-09-23 (usability brief). It does not begin direct Editing.
    */
   startEditingLine?(lineIndex: number): boolean;
   /** The line the cursor is on (the pencil shows there only). */
@@ -1554,12 +1555,11 @@ export class LineMarksUI {
       dot.setAttribute('aria-label', `Line ${line.index + 1}${needsYou ? ' (needs you)' : ''}: your mark ${myStatus === 'changed' ? 'is out of date (the line changed)' : shownLabel(myStatus)}${carriedText}${extraText}${othersText ? `. ${othersText}` : ''}. Mark this line`);
       dot.title = othersText ? `You: ${myStatus === 'changed' ? 'changed since you marked it' : shownLabel(myStatus)}\n${othersText.replace(/; /g, '\n')}` : 'Mark this line';
     }
-    // Accord round 2 stage A: a visible way into editing on the cursor line only (Option+click has
-    // no affordance at all). One small pencil in this same dot column, beside its dot.
+    // Suggest change is also reachable from the selected passage's margin pencil.
     const cursor = this.host.cursorLine?.() ?? -1;
     const pencilKey = 'edit-pencil';
     const cursorLine = cursor >= 0 ? this.lines[cursor] : null;
-    const canEdit = READING_MODE_POLICY.marginPencilStartsWriting && Boolean(this.host.startEditingLine) && this.canMark;
+    const canEdit = Boolean(this.host.startEditingLine) && this.canMark;
     const cursorDom = cursorLine ? view.nodeDOM(cursorLine.pos) as HTMLElement | null : null;
     if (canEdit && cursorLine && cursorDom && typeof cursorDom.getBoundingClientRect === 'function' && cursorDom.getBoundingClientRect().height > 0) {
       used.add(pencilKey);
@@ -1575,8 +1575,8 @@ export class LineMarksUI {
       const rect = cursorDom.getBoundingClientRect();
       const lh = parseFloat(getComputedStyle(cursorDom).lineHeight) || 24;
       pencil.dataset.line = String(cursor);
-      pencil.setAttribute('aria-label', `Edit line ${cursor + 1}`);
-      pencil.title = 'Edit this line (Option+click the words does the same). Cmd+Enter, a click outside, or Esc posts it as a proposal.';
+      pencil.setAttribute('aria-label', `Suggest change to line ${cursor + 1}`);
+      pencil.title = 'Suggest change: opens a local draft. Propose change or Cmd/Ctrl+Enter submits it.';
       pencil.style.top = `${Math.round(rect.top - containerRect.top + Math.max(0, (Math.min(lh, rect.height) - dotSize) / 2))}px`;
       pencil.style.left = `${Math.round(Math.max(0, leftEdge) - (phone ? 22 : 20))}px`;
       pencil.style.width = `${dotSize}px`;

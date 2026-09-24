@@ -8,8 +8,8 @@ import {
   READING_MODE_POLICY, isReadingCommandKey, isTextChangingKey, routeKey, type KeyTarget,
 } from '../shared/reading-keys';
 import {
-  EDITING_GUARD_POLICY, endWriting, isEditing, isWriting, keyTargetOf, noteEditingActivity, pressStartsWriting,
-  resetEditingGuardForTests, startWriting,
+  EDITING_GUARD_POLICY, isEditing, isWriting, keyTargetOf, noteEditingActivity,
+  resetEditingGuardForTests, setDirectEditing,
 } from '../editor/editing-guard';
 import { RAIL_FOLLOW_POLICY } from '../ui/rail-follow';
 
@@ -24,11 +24,9 @@ const route = (key: string, target: KeyTarget, writing: boolean, mods: { ctrlKey
   routeKey({ key, target, writing, ...mods });
 
 test('policy: the rule Mike reads is the rule the code follows', () => {
-  assert.equal(READING_MODE_POLICY.textPressStartsWriting, true);
-  assert.equal(READING_MODE_POLICY.enterStartsWriting, true);
-  assert.equal(READING_MODE_POLICY.escapeEndsWriting, true);
   assert.equal(READING_MODE_POLICY.hideCaretWhileReading, true);
-  for (const key of ['a', 'A', 'r', 'y', 'n', 't', 'd', 'e', 'j', 'k', '1', '9', 'ArrowUp', 'ArrowDown', 'Enter']) {
+  assert.equal(READING_MODE_POLICY.showModeChip, true);
+  for (const key of ['a', 'A', 'r', 'y', 'n', 't', 'd', 'e', 'j', 'k', '1', '9', 'ArrowUp', 'ArrowDown']) {
     assert.equal(isReadingCommandKey(key), true, key);
   }
   for (const key of ['x', 'z', ' ', 'Escape', 'Tab', 'ArrowLeft', '0']) assert.equal(isReadingCommandKey(key), false, key);
@@ -39,10 +37,10 @@ test('writing: every key types into the text, the reading keys included', () => 
 });
 
 test('reading with the keyboard in the text (a caret the person did not put there): a key acts or does nothing, never both', () => {
-  for (const key of ['a', 'A', 'r', 'y', 'n', 't', 'd', 'e', 'j', 'k', '1', '5', 'ArrowDown', 'Enter']) {
+  for (const key of ['a', 'A', 'r', 'y', 'n', 't', 'd', 'e', 'j', 'k', '1', '5', 'ArrowDown']) {
     assert.equal(route(key, 'editor', false), 'command', key);
   }
-  for (const key of ['x', 'z', 'Q', ' ', 'Backspace', 'Delete', '0', '?']) assert.equal(route(key, 'editor', false), 'swallow', key);
+  for (const key of ['x', 'z', 'Q', ' ', 'Backspace', 'Delete', '0', '?', 'Enter']) assert.equal(route(key, 'editor', false), 'swallow', key);
   for (const key of ['Escape', 'Tab', 'ArrowLeft', 'Shift', 'Home']) assert.equal(route(key, 'editor', false), 'pass', key);
   // Option+A types "å" on a Mac: not a command, and not typed while reading.
   assert.equal(route('å', 'editor', false, { altKey: true }), 'swallow');
@@ -63,7 +61,7 @@ test('fields and controls: typing in a field always types; Enter and Space belon
   assert.equal(route('Enter', 'control', false), 'pass', 'Enter presses the button');
   assert.equal(route(' ', 'control', false), 'pass');
   assert.equal(route('a', 'other', false), 'command');
-  assert.equal(route('Enter', 'other', false), 'command', 'Enter on the page starts writing on the focus line');
+  assert.equal(route('Enter', 'other', false), 'pass', 'Enter no longer starts writing');
   assert.equal(route('x', 'other', false), 'pass');
 });
 
@@ -100,15 +98,9 @@ test('where a key is aimed', () => {
   assert.equal(keyTargetOf(null), 'other');
 });
 
-test('a press on the text starts writing; a press on a link, a widget or outside the text does not', () => {
-  assert.equal(pressStartsWriting(fakeEl({ inEditor: true }) as unknown as EventTarget), true);
-  assert.equal(pressStartsWriting(fakeEl({ inEditor: true, link: true }) as unknown as EventTarget), false, 'a link opens');
-  assert.equal(pressStartsWriting(fakeEl({ inEditor: true, link: true }) as unknown as EventTarget, true), true, 'Alt+press on a link edits it');
-  assert.equal(pressStartsWriting(fakeEl({ inEditor: true, widget: true }) as unknown as EventTarget), false, 'a fold chip or a folded line');
-  assert.equal(pressStartsWriting(fakeEl({ inEditor: false }) as unknown as EventTarget), false);
-});
 
-test('writing needs the caret in the text; editing needs writing and recent activity', () => {
+
+test('direct Editing survives blur; the viewport guard requires focus and recent activity', () => {
   const g = globalThis as unknown as { document?: unknown };
   const previous = g.document;
   const editorEl = { isContentEditable: true, closest: (sel: string) => (sel === '.ProseMirror' ? {} : null), blur() { doc.activeElement = bodyEl; } };
@@ -119,19 +111,20 @@ test('writing needs the caret in the text; editing needs writing and recent acti
     resetEditingGuardForTests();
     assert.equal(isWriting(), false, 'focus handed to the text by code is not writing');
     assert.equal(isEditing(), false);
-    startWriting();
-    assert.equal(isWriting(), true, 'Enter / the chip start writing');
-    endWriting();
-    assert.equal(isWriting(), false, 'Esc ends writing');
-    assert.equal(doc.activeElement, bodyEl, 'ending writing takes the caret out of the text');
+    setDirectEditing(true);
+    assert.equal(isWriting(), true, 'the labelled control starts Editing');
+    setDirectEditing(false);
+    assert.equal(isWriting(), false, 'the labelled control ends Editing');
+    assert.equal(doc.activeElement, editorEl, 'the labelled control changes mode without moving selection');
     doc.activeElement = editorEl;
+    setDirectEditing(true);
     noteEditingActivity(1000);
     assert.equal(isWriting(), true, 'typing in the text is writing');
     assert.equal(isEditing(1000 + EDITING_GUARD_POLICY.graceMs - 1), true);
     assert.equal(isEditing(1000 + EDITING_GUARD_POLICY.graceMs), false, 'the grace period ended (still writing)');
     assert.equal(isWriting(), true);
     doc.activeElement = bodyEl;
-    assert.equal(isWriting(), false, 'the caret left the text');
+    assert.equal(isWriting(), true, 'blur never leaves direct Editing');
   } finally {
     resetEditingGuardForTests();
     g.document = previous;

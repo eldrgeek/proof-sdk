@@ -24,7 +24,8 @@ async function openEditor(browser: any, url: string, name: string): Promise<any>
   const page = await context.newPage();
   await page.addInitScript((slug: string) => sessionStorage.setItem(`proof_share_welcome_${slug}`, '1'), new URL(url).pathname.split('/').pop());
   await page.goto(url, { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => document.querySelector('.ProseMirror')?.getAttribute('contenteditable') === 'true');
+  // The review document is not editable until Enter Editing. Readiness is the editor and the sync, not a caret in the text. Mike, 2026-09-23 (usability brief).
+  await page.waitForFunction(() => Boolean(document.querySelector('.ProseMirror')) && (window as any).proof?.collabIsSynced === true);
   const nameInput = page.getByPlaceholder('Your name');
   if (await nameInput.isVisible()) {
     await nameInput.fill(name);
@@ -221,7 +222,7 @@ async function run(): Promise<void> {
     await page.getByRole('button', { name: 'Reject all', exact: true }).click();
     await check([commentId], 'reject all');
     await page.keyboard.press('Control+z'); await check([...ids, commentId], 'undo reject all');
-    await page.getByRole('button', { name: /^Suggesting:/ }).click();
+    await page.getByRole('button', { name: 'Enter Editing', exact: true }).click();
     // Typing on the page dismisses the decision dialog and keeps native undo.
     await page.locator(`[data-review-row="${ids[0]}"]`).click();
     await page.locator('.ProseMirror h1').click();

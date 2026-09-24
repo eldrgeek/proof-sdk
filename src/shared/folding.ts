@@ -132,12 +132,12 @@ export function remapFoldedKeys(
 }
 
 /** Folded sections, keeping only keys that still name a heading. */
-export function foldedSections(sections: DocSection[], folded: ReadonlySet<string>): DocSection[] {
+export function foldedSections(sections: readonly DocSection[], folded: ReadonlySet<string>): DocSection[] {
   return sections.filter(section => folded.has(section.key));
 }
 
 /** Lines the reader cannot see: the bodies of folded sections. */
-export function hiddenLineSet(sections: DocSection[], folded: ReadonlySet<string>): Set<number> {
+export function hiddenLineSet(sections: readonly DocSection[], folded: ReadonlySet<string>): Set<number> {
   const hidden = new Set<number>();
   for (const section of foldedSections(sections, folded)) {
     for (let i = section.headingIndex + 1; i < section.lineEnd; i += 1) hidden.add(i);

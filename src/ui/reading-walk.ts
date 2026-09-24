@@ -1,7 +1,27 @@
 /**
- * The selected passage owns actions. Hover changes nothing. Scrolling records reading
- * progress separately and never commits a proposal or changes the selected passage.
- * Mike, 2026-09-23 (usability brief).
+ * The reading layout and reading walk.
+ * Mike, 2026-09-23 (usability brief): a click selects a passage. S and Suggest change open
+ * a local draft. Only Propose change or Cmd/Ctrl+Enter publishes. Direct Editing is the
+ * labelled control. Hover changes nothing. Scrolling records Seen only. It never commits a
+ * proposal and it never changes the selected passage.
+ *
+ * Authorship: requirements by Mike Wolf ("Reading and marking", 2026-09-18) with the COS's
+ * decisions for the gaps; built by Claude Opus 5 (worker reading-walk), 2026-09-18.
+ *
+ * Layout (desktop): a left rail, the document in a readable centre column, and a right rail
+ * that holds the selected passage's mark box and the changes on that line. Both rails collapse.
+ * Phones (<= 700 px): one column; the rails open as bottom sheets from the ⋯ menu, and a margin
+ * dot opens Step 1's mark sheet.
+ *
+ * The selected passage is where A, R, S and the Margin act. Scrolling moves the reading position
+ * used to record Seen. It does not move the selected passage. A heading mark covers the heading only.
+ * Keys run only while nobody is typing and letter shortcuts are on: A agree, R reject, J / ↓ next,
+ * K / ↑ back, S opens a draft, E explains. Direct Editing and draft fields never run letter commands.
+ *
+ * Accord layout stage 3 (Ren's proposal, Mike ruled 2026-09-21; decisions 4, 6, 7, 8, 11;
+ * policies in src/shared/layout-panels.ts): the left rail is the Navigator (Outline · Issues ·
+ * Since you, src/ui/navigator.ts), the right rail is the Margin (Line N · Room).
+ * Phones: a bottom strip (Line N of M, Agree, Reject, ⋯) and the Margin as a sheet under it.
  */
 import type { Mark, CommentData, ReplaceData } from '../formats/marks';
 import { getActorName, getMarkColor } from '../formats/marks';
@@ -14,13 +34,12 @@ import { READING_WALK, ReadingWalk, countWords, dwellMsFor, type WalkLine, type 
 import type { SinceItem, SinceYouReport, RingerItem } from '../shared/alignment';
 import type { LineMarksUI, MarkBox } from './line-marks';
 import { isOpenReviewMark, type PlayMakerReview, type ReviewAction } from './playmaker-review';
-import { editSession, editingGuardDebug, editingRemainingMs, endWriting, installEditingGuard, isEditing, isReadingOwned, isWriting, onEditSessionChange, isInputComposing, letterShortcutsEnabled, setLetterShortcutsEnabled, onEditingActivity, onWritingChange, startWriting, syncEditSession } from '../editor/editing-guard';
-import { EDIT_SESSION_POLICY, editingHelpText, editingStatusText, keptNoticeText, postedNoticeText } from '../shared/edit-session';
+import { editingGuardDebug, editingRemainingMs, installEditingGuard, isEditing, isInputComposing, isReadingOwned, isWriting, letterShortcutsEnabled, onEditingActivity, onWritingChange, setLetterShortcutsEnabled } from '../editor/editing-guard';
+import { EDIT_SESSION_POLICY, postedNoticeText } from '../shared/edit-session';
 import { READING_MODE_POLICY } from '../shared/reading-keys';
 // Accord round 2, stage D: the discussion on a line lives in the document, in the Line tab.
 import { ThreadsPanel } from './threads';
 import { THREAD_POLICY, type ThreadAsks, type ThreadStatus } from '../shared/threads';
-import { Selection } from '@milkdown/kit/prose/state';
 import { ProxyMarksUI } from './proxy-marks';
 import { ReadingSettingsUI } from './reading-settings';
 import { SETTINGS_POLICY } from '../shared/layout-chrome';
@@ -28,7 +47,7 @@ import { ScrollFollower, containRailWheel } from './rail-follow';
 import { setReadingAnchor } from '../editor/caret-anchor';
 import { SCROLL_CAMERA_POLICY, anchoredScroll, bandFractionFor, cameraScroll, deadZone, type CameraView } from '../shared/scroll-camera';
 import { TIER_POLICY } from '../shared/line-tiers';
-import { HIGHLIGHT_POLICY, MARKED_UP_TO_POLICY, STATUS_BAR_POLICY, formatAgo, issuesLeftText } from '../shared/layout-status';
+import { HIGHLIGHT_POLICY, MARKED_UP_TO_POLICY, formatAgo, issuesLeftText } from '../shared/layout-status';
 import { MARGIN_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY, parseRailState, type MarginTab, type RailState } from '../shared/layout-panels';
 import { NavigatorUI } from './navigator';
 import type { FoldingUI } from './folding';
@@ -68,6 +87,8 @@ const STATUS_WORDS: Record<string, string> = {
 
 export interface ReadingWalkHost {
   slug(): string | null;
+  suggestChange(line: number): boolean;
+  canSuggest(): boolean;
   actor(): string;
   lineMarks(): LineMarksUI;
   /** Every review mark in the document (the editor's marks state). */
@@ -120,6 +141,7 @@ function isTypingTarget(target: EventTarget | null): boolean {
   const typing = (node: HTMLElement | null): boolean => {
     if (!node || typeof node.closest !== 'function') return false;
     if (['INPUT', 'TEXTAREA', 'SELECT'].includes(node.tagName)) return true;
+    if (node.closest('.accord-draft')) return true;
     if (!node.isContentEditable) return false;
     return node.closest('.ProseMirror') ? isWriting() : true;
   };
@@ -170,9 +192,8 @@ export class ReadingWalkUI {
   /** Accord round 2 stage A: "Proposed — Undo" after a leave posts, then it goes quiet. */
   private readonly sbNotice = el('span', 'pst-notice');
   private noticeTimer: ReturnType<typeof setTimeout> | null = null;
-  private unsubscribeSession: (() => void) | null = null;
   /** Phones: the visible Done control while editing (there is no Cmd+Enter on a phone). */
-  private readonly doneBtn = el('button', 'prw-edit-done', EDIT_SESSION_POLICY.phoneDoneLabel);
+  private readonly suggestBtn = el('button', 'prw-edit-done', 'Suggest change');
   /**
    * Accord layout stage 1: the status bar fixed under the page (Line N of M · You marked up to
    * line K · Issues left · Reading / Writing), and the "You marked up to
@@ -339,7 +360,6 @@ export class ReadingWalkUI {
     installEditingGuard();
     (window as unknown as { __proofEditingGuard?: typeof editingGuardDebug }).__proofEditingGuard = editingGuardDebug;
     this.unsubscribeWriting = onWritingChange(() => { this.renderMode(); this.queueRender(); });
-    this.unsubscribeSession = onEditSessionChange(() => { this.renderMode(); this.queueRender(); });
     this.renderMode();
     this.unsubscribeEditing = onEditingActivity(() => {
       // The press that places the caret lands before focus moves: check on the next frame.
@@ -374,8 +394,6 @@ export class ReadingWalkUI {
     this.unsubscribeEditing = null;
     this.unsubscribeWriting?.();
     this.unsubscribeWriting = null;
-    this.unsubscribeSession?.();
-    this.unsubscribeSession = null;
     for (const cleanup of this.railWheelCleanups.splice(0)) cleanup();
     this.resizeObserver?.disconnect();
     this.host.playmaker()?.dock(null);
@@ -504,7 +522,7 @@ export class ReadingWalkUI {
   private followCaret(): void {
     const walk = this.walk;
     const view = this.view();
-    if (!walk || !view || !this.started || !isEditing()) return;
+    if (!walk || !view || !this.started || !isWriting() || !isEditing()) return;
     const line = this.host.lineMarks().lineAtPos(view.state.selection.head);
     if (line < 0 || walk.isHidden(line)) return;
     this.selectPassage(line);
@@ -673,18 +691,14 @@ export class ReadingWalkUI {
     // The editing guard prevents a reading key's default when the text holds the keyboard without
     // the person writing (so it never types): that key is still ours to run.
     if (!this.walk || (event.defaultPrevented && !isReadingOwned(event)) || event.metaKey || event.ctrlKey || event.altKey) return;
-    if (isTypingTarget(event.target) || isWriting() || event.isComposing || event.keyCode === 229 || isInputComposing()) return;
+    if (isWriting() || isTypingTarget(event.target) || event.isComposing || event.keyCode === 229 || isInputComposing()) return;
     if (/^[a-z]$/i.test(event.key) && (!letterShortcutsEnabled() || this.host.directEditing?.())) return;
     const target = event.target as HTMLElement | null;
     if (target?.closest?.('[role="dialog"], .pm-review-dialog, .mark-popover, .plm-menu, .proof-share-overflow-menu, [role="menu"]')) return;
     const key = event.key;
     if (key === 'Escape' && this.host.lineMarks().selectionLines().length) { this.host.lineMarks().clearSelection(); return; }
-    // Enter while reading: write at the end of the focus line (not on a button, which Enter presses).
-    if (key === 'Enter') {
-      if (!READING_MODE_POLICY.enterStartsWriting || target?.closest?.('button, a[href], summary, [role="button"]')) return;
-      event.preventDefault();
-      this.writeAtFocus();
-      return;
+    if (key.toLowerCase() === 's') {
+      event.preventDefault(); this.host.suggestChange(this.cursorLine()); return;
     }
     // Reading keys act only on the explicitly selected passage.
     if (key === 'a' || key === 'A') { event.preventDefault(); this.markFocus('agreed'); return; }
@@ -821,39 +835,6 @@ export class ReadingWalkUI {
     return bottom + pad - body.clientHeight;
   }
 
-  /** Enter while reading, or the mode chip: the caret goes to the end of the focus line and the person writes. */
-  writeAtFocus(): boolean {
-    const walk = this.walk;
-    const view = this.view();
-    if (!walk || !view || !view.editable) return false;
-    const line = this.lines[this.targetLine()];
-    if (!line) return false;
-    const end = Math.max(1, Math.min(view.state.doc.content.size - 1, line.pos + line.nodeSize - 1));
-    try {
-      view.dispatch(view.state.tr.setSelection(Selection.near(view.state.doc.resolve(end), -1)));
-    } catch { /* keep the selection */ }
-    view.focus();
-    startWriting();
-    // Accord round 2 stage A: the caret is in a line on purpose, so the edit session opens here
-    // too, not only on a press (the guard opens it after a press or a focusin).
-    syncEditSession();
-
-    this.queueRender();
-    this.renderMode();
-    return true;
-  }
-
-  /**
-   * Accord round 2 stage A: the margin's pencil. Moves the cursor to the line and opens the edit
-   * there. Option+click on the words is the same thing without an affordance; this is the
-   * affordance. Returns false when the document is not editable.
-   */
-  editLine(lineIndex: number): boolean {
-    if (!this.walk || lineIndex < 0 || lineIndex >= this.walk.lineCount) return false;
-    if (lineIndex !== this.cursorLine()) this.focusLine(lineIndex);
-    return this.writeAtFocus();
-  }
-
   /** Step B4d: the cursor (shift-click ranges in the margin start here; the chat's 📍 points here). */
   letterShortcutsEnabled(): boolean { return letterShortcutsEnabled(); }
   toggleLetterShortcuts(): void { setLetterShortcutsEnabled(!letterShortcutsEnabled()); }
@@ -906,11 +887,12 @@ export class ReadingWalkUI {
   /** Re-reads the documents list (File › Open does before it shows it). */
   reloadDocuments(): Promise<void> { return this.loadDocuments(); }
 
-  /** A click on a review mark in the text is an explicit action on its line. */
+  /** A click selects the passage. It does not start Editing, and a draft keeps the click. */
   private onDocClick = (event: MouseEvent): void => {
+    if (isWriting()) return;
     const view = this.view();
     const target = event.target as HTMLElement | null;
-    if (!view || !this.walk || !target || !view.dom.contains(target) || target.closest('button, input, textarea, a[href]')) return;
+    if (!view || !this.walk || !target || !view.dom.contains(target) || target.closest('button, input, textarea, a[href], .accord-draft')) return;
     const pos = view.posAtCoords({ left: event.clientX, top: event.clientY });
     if (!pos) return;
     const line = this.host.lineMarks().lineAtPos(pos.inside >= 0 ? pos.inside + 1 : pos.pos);
@@ -950,9 +932,8 @@ export class ReadingWalkUI {
   }
 
   /**
-   * One cursor (Accord layout stage 3, decision 4): the reading focus and the focus line are one
-   * line. Scrolling moves it, a click sets it (the caret's line, a dot, a list item), J / K move it.
-   * The blue bar, the status bar and the reading position name it.
+   * The selected passage is one line. A click sets it, and J / K move it. Scrolling records Seen
+   * and does not move it. Mike, 2026-09-23 (usability brief).
    */
   private selectedIndex = 0;
   private selectedKey: string | null = null;
@@ -968,7 +949,9 @@ export class ReadingWalkUI {
     if (index !== previousIndex || this.selectedKey !== previousKey) this.host.focusChanged?.(index);
   }
 
+  /** The selected passage. Hover never changes it. Mike, 2026-09-23 (usability brief). */
   targetLine(): number { return this.cursorLine(); }
+
 
   private onFocusChange = (): void => { this.renderMode(); this.queueRender(); };
 
@@ -979,67 +962,19 @@ export class ReadingWalkUI {
    */
   private renderMode(): void {
     const writing = isWriting();
-    const session = editSession();
-    const phone = this.touchMode();
-    const mode = !writing ? 'reading' : session ? 'editing' : 'writing';
-    const line = session ? session.lineIndex : -1;
-    const sig = `${mode}|${line}|${phone}`;
-    if (this.modeEl.dataset.sig === sig) return;
-    this.modeEl.dataset.sig = sig;
-    this.modeEl.dataset.mode = mode;
-    if (session) this.modeEl.dataset.line = String(line); else delete this.modeEl.dataset.line;
-    const help = editingHelpText(phone);
-    this.modeEl.textContent = session ? editingStatusText(session.lineIndex) : writing ? 'Writing' : 'Reading';
-    this.modeEl.title = session ? help
-      : writing
-        ? 'Writing: the caret is in the text and keys type. Esc, or a click outside the text, returns to reading.'
-        : 'Reading: keys are commands (A agree, R reject, J/K next/previous). Click the text, or press Enter, to write.';
-    this.modeEl.setAttribute('aria-label', session
-      ? `${editingStatusText(session.lineIndex)}. ${help}`
-      : writing ? 'Writing: keys type into the text. Esc returns to reading.' : 'Reading: keys are commands. Click the text or press Enter to write.');
-    // The line's edge, the toolbar's indicator and the phone's Done control read this one flag.
-    document.body.classList.toggle('prw-editing', Boolean(session));
-    for (const el of Array.from(document.querySelectorAll<HTMLElement>('.share-pill-suggest-toggle'))) {
-      if (session) el.dataset.editingLine = String(session.lineIndex + 1); else delete el.dataset.editingLine;
-    }
-    this.renderToolbarEditingState(session ? session.lineIndex : null);
-    const showDone = Boolean(session) && phone && EDIT_SESSION_POLICY.phoneDoneControl;
-    this.doneBtn.hidden = !showDone;
-    // The phone's Margin sheet sits over the status bar, so an open sheet would hide the one door
-    // a phone has. Editing closes it — the same reason the touch strip stands down while editing
-    // (TOUCH_FOCUS_POLICY.hideWhileEditing): you cannot mark a line and rewrite it at once.
-    if (showDone && this.right.classList.contains('prw-sheet-open')) this.closeSheets();
+    this.modeEl.dataset.mode = writing ? 'editing' : 'reading';
+    this.modeEl.textContent = writing ? 'Editing' : 'Reading';
+    this.modeEl.title = writing ? 'Typing changes the document directly. Use Leave Editing to return to review.'
+      : 'Select a passage. Suggest change or S opens a local draft.';
+    this.modeEl.setAttribute('aria-label', this.modeEl.textContent);
+    document.body.classList.toggle('prw-editing', writing);
+    this.suggestBtn.disabled = !this.host.canSuggest() || writing;
     this.renderFocus();
-  }
-
-  /**
-   * The toolbar's mode indicator, beside the Suggesting | Editing switch. It says "Editing line N"
-   * — the same words as the status bar — so the transient state is never confused with the switch's
-   * standing Editing setting.
-   */
-  private renderToolbarEditingState(line: number | null): void {
-    const switchEl = document.querySelector<HTMLElement>('.share-pill-suggest-toggle');
-    const group = switchEl?.parentElement;
-    if (!group) return;
-    let pill = group.querySelector<HTMLElement>('.share-pill-editing-state');
-    if (line === null) { pill?.remove(); return; }
-    if (!pill) {
-      pill = el('span', 'share-pill-editing-state');
-      pill.setAttribute('role', 'status');
-      switchEl!.after(pill);
-    }
-    pill.textContent = editingStatusText(line);
-    pill.title = editingHelpText(this.touchMode());
   }
 
   /** Accord round 2 stage A: a proposal posted on this line. The bar says so, briefly. */
   showEditProposed(lineIndex: number): void {
     this.showEditNotice(postedNoticeText(lineIndex, this.touchMode()));
-  }
-
-  /** Accord round 2 stage A: a direct edit ended and stands in the text as itself. */
-  showEditKept(lineIndex: number): void {
-    this.showEditNotice(keptNoticeText(lineIndex, this.touchMode()));
   }
 
   /** Accord round 2 stage A: a line in the status bar after a leave. No modal, no focus steal. */
@@ -1548,11 +1483,10 @@ export class ReadingWalkUI {
     const text = view.dom.getBoundingClientRect();
     this.focusEl.hidden = false;
     this.focusEl.dataset.line = String(focus);
-    this.focusEl.dataset.source = isEditing() ? 'caret' : 'reading';
+    this.focusEl.dataset.source = isWriting() ? 'caret' : 'reading';
     // Accord round 2 stage A: the "you are here" look intensified (same hue, no third colour) on
     // the line an edit is open on, so the edit has a visible edge.
-    const session = editSession();
-    if (session && session.lineIndex === focus) this.focusEl.dataset.editing = 'true'; else delete this.focusEl.dataset.editing;
+    if (isWriting()) this.focusEl.dataset.editing = 'true'; else delete this.focusEl.dataset.editing;
     void walk;
     this.focusEl.style.top = `${Math.round(r.top - c.top - 3)}px`;
     this.focusEl.style.height = `${Math.round(r.height + 6)}px`;
@@ -1961,8 +1895,8 @@ export class ReadingWalkUI {
     // The Line tab: the line's quote and marks, its changes, the Familiar's note and everyone's
     // marks, a reply box, then who the viewer's marks name.
     this.threads = this.buildThreads();
-    this.rightBody.append(this.lineTools, this.boxHost, this.changesHost, this.threads.element, this.tailHost, this.replyHost, this.meRow);
-    // Decision errors sit under the tabs, outside the scrolling body.
+    this.rightBody.append(this.lineTools, this.suggestBtn, this.boxHost, this.changesHost, this.threads.element, this.tailHost, this.replyHost, this.meRow);
+    // The line notice sits under the tabs, outside the scrolling body: it stays in view and
     // does not move when the pane scrolls or the line's box changes size (2026-09-21).
     this.linePane.append(this.provisionalEl, this.rightBody);
     // The Room tab: the document chat, full height (it pushes nothing off screen).
@@ -2104,24 +2038,16 @@ export class ReadingWalkUI {
     bar.setAttribute('aria-label', 'Status');
     this.modeEl.setAttribute('role', 'status');
     this.modeEl.hidden = !READING_MODE_POLICY.showModeChip;
-    if (STATUS_BAR_POLICY.modeIsSwitch) {
-      // Ruled off (2026-09-21, proposal decision 9); kept as one switch should a later ruling want it.
-      this.modeEl.tabIndex = 0;
-      this.modeEl.addEventListener('mousedown', event => event.preventDefault());
-      this.modeEl.onclick = () => { if (isWriting()) endWriting('click-outside'); else this.writeAtFocus(); this.renderMode(); };
-    }
     this.sbLine.setAttribute('aria-live', 'polite');
     this.sbProvisional.hidden = true;
     const sep = () => { const s = el('span', 'pst-sep'); s.setAttribute('aria-hidden', 'true'); return s; };
     this.sbNotice.hidden = true;
     this.sbNotice.setAttribute('role', 'status');
-    // The phone's door: there is no Cmd+Enter on a phone, so the way out is a control it can see.
-    this.doneBtn.hidden = true;
-    this.doneBtn.setAttribute('type', 'button');
-    this.doneBtn.setAttribute('aria-label', `${EDIT_SESSION_POLICY.phoneDoneLabel}: post this change as a proposal`);
-    this.doneBtn.addEventListener('mousedown', event => event.preventDefault());
-    this.doneBtn.onclick = () => { endWriting('click-outside'); this.renderMode(); };
-    bar.append(this.sbLine, sep(), this.sbMarked, sep(), this.sbIssues, this.sbProvisional, this.sbNotice, this.doneBtn, this.modeEl);
+    this.suggestBtn.type = 'button';
+    this.suggestBtn.style.minHeight = '44px';
+    this.suggestBtn.title = 'Suggest a change to the selected passage (S)';
+    this.suggestBtn.onclick = () => this.host.suggestChange(this.cursorLine());
+    bar.append(this.sbLine, sep(), this.sbMarked, sep(), this.sbIssues, this.sbProvisional, this.sbNotice, this.modeEl);
     this.ruleEl.setAttribute('aria-hidden', 'true');
     this.ruleEl.hidden = true;
   }
@@ -2391,9 +2317,9 @@ export class ReadingWalkUI {
       writing: isWriting(),
       mode: this.modeEl.dataset.mode ?? null,
       modeText: this.modeEl.textContent ?? '',
-      editing: editSession(),
+      editing: isWriting(),
       notice: this.sbNotice.hidden ? '' : (this.sbNotice.textContent ?? ''),
-      doneVisible: !this.doneBtn.hidden,
+      doneVisible: !this.suggestBtn.hidden,
       statusBar: { line: this.sbLine.textContent, marked: this.sbMarked.textContent, issues: this.sbIssues.dataset.count === '' ? null : Number(this.sbIssues.dataset.count), provisional: 0 },
       rule: this.ruleEl.hidden ? null : Number(this.ruleEl.dataset.line),
       rail: this.railFollow?.debugState() ?? null,

@@ -209,7 +209,7 @@ async function desktop(browser, base) {
   await check(`${tag}: editing a line resets the others' marks on it and gives the changer Agreed`, async () => {
     // Line 2 ("The second paragraph..."): Ada rejected it; Bob marks it Seen, then edits it directly.
     await mark(b.page, 2, /Seen/);
-    await b.page.getByRole('button', { name: /^Suggesting:/ }).locator('[data-mode="edit"]').click();
+    await b.page.getByRole('button', { name: 'Enter Editing', exact: true }).click();
     await b.page.locator('.ProseMirror p', { hasText: 'The second paragraph' }).click();
     await b.page.keyboard.press('End');
     await b.page.keyboard.insertText(' Edited by Bob.');
