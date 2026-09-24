@@ -3803,11 +3803,11 @@ class ProofEditorImpl implements ProofEditor {
       node.append(...children);
       return node;
     };
-    const hidden = group('hidden', suggestToggle, syncStatusSep, this.createReviewStyleControl(), suggestionReview);
+    const hidden = group('hidden', syncStatusSep, this.createReviewStyleControl(), suggestionReview);
     hidden.setAttribute('aria-hidden', 'true');
     banner.replaceChildren(
       group('center', title, syncStatusInline),
-      group('right', reviewControl, lineMarksUi.alignedEl, peopleBtn, shareBtn),
+      group('right', reviewControl, suggestToggle, lineMarksUi.alignedEl, peopleBtn, shareBtn),
       hidden,
       this.createShareOverflowButton(),
     );
@@ -3861,7 +3861,9 @@ class ProofEditorImpl implements ProofEditor {
     if (!ui) return;
     // Inside #editor, not #editor-container: #editor carries the top padding that clears the fixed
     // menu bar and toolbar, so a header prepended to the container would sit underneath them.
-    const host = document.getElementById('editor') ?? document.getElementById('editor-container');
+    const host = ui.current() === 'accord'
+      ? document.getElementById('editor') ?? document.getElementById('editor-container')
+      : this.readingWalk?.navigator.panes.issues;
     if (host && (ui.headerEl.parentElement !== host || host.firstElementChild !== ui.headerEl)) {
       host.prepend(ui.headerEl);
     }
@@ -4227,7 +4229,7 @@ class ProofEditorImpl implements ProofEditor {
         folding: () => this.folding,
         slug: () => shareClient.getSlug(),
         go: (index) => { lineMarks.revealLine(index); walkUi.focusLine(index); },
-        changed: () => { walkUi.onFoldChange(); this.scheduleBannerLayoutUpdate(); },
+        changed: () => { this.mountOpenView(); walkUi.onFoldChange(); this.scheduleBannerLayoutUpdate(); },
       });
       (window as unknown as { __proofOpenView?: OpenViewUI }).__proofOpenView = this.openViewUI;
       this.openViewUI.start();
