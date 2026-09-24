@@ -41,7 +41,7 @@ We launch in the second quarter.
 
 The budget is fixed at ten thousand.
 
-Background: the team is five people in two cities.
+Background: the team is five poeple in two cities.
 
 Last line of the plan.`;
 
@@ -184,7 +184,7 @@ try {
 
   await test('a tag follows its line over a cosmetic edit; a meaning change drops it (the default tier returns)', async () => {
     const records = [tag('t1', 'Background', 'context', MIKE, 1), tag('t2', 'second quarter', 'context', MIKE, 2)];
-    const edited = await serverLines.computeServerLines(doc.replace('five people in two cities', 'five people in two cities!').replace('second quarter', 'fourth quarter'));
+    const edited = await serverLines.computeServerLines(doc.replace('five poeple in two cities', 'five people in two cities').replace('second quarter', 'fourth quarter'));
     const evaluation = tiers.evaluateTiers({ lines: edited, records });
     const bg = edited.find(l => l.text.includes('Background'))!;
     const launch = edited.find(l => l.text.includes('fourth quarter'))!;

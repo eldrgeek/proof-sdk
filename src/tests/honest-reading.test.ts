@@ -11,6 +11,7 @@ import { createServer } from 'node:http';
 const temp = mkdtempSync(path.join(tmpdir(), 'proof-honest-'));
 process.env.DATABASE_PATH = path.join(temp, 'test.db');
 const change = await import('../shared/line-change');
+const { COMMON_MISSPELLINGS } = await import('../shared/common-misspellings');
 const shared = await import('../shared/line-marks');
 const alignment = await import('../shared/alignment');
 const serverLines = await import('../../server/line-marks');
@@ -37,11 +38,11 @@ await test('classifier: identical text (any whitespace) is "same"', () => {
 
 await test('classifier: whitespace, case and punctuation only are cosmetic', () => {
   assert.equal(kind('We ship on friday', 'We ship on Friday.'), 'cosmetic');
-  assert.equal(kind('Hello, world', 'Hello world!'), 'cosmetic');
+  assert.equal(kind('Hello, world', 'Hello world.'), 'cosmetic');
   assert.equal(kind('the plan is final', 'The plan is final.'), 'cosmetic');
 });
 
-await test('classifier: a small spelling fix in a long enough line is cosmetic', () => {
+await test('classifier: a listed spelling correction is cosmetic', () => {
   assert.equal(kind('We will review teh budget with the whole team next week.', 'We will review the budget with the whole team next week.'), 'cosmetic');
   assert.equal(kind('The recieved documents are filed in the shared folder today.', 'The received documents are filed in the shared folder today.'), 'cosmetic');
   const fix = change.classifyLineChange('Please review teh draft and the notes carefully.', 'Please review the draft and the notes carefully.');
@@ -78,11 +79,112 @@ await test('classifier: capitalised words (names) changing are substantive; a se
   assert.equal(kind('Teh contract goes out before the call tomorrow morning.', 'The contract goes out before the call tomorrow morning.'), 'cosmetic');
 });
 
-await test('classifier: too many edits, a whole-word change or a short line are substantive', () => {
-  assert.equal(kind('teh cat', 'the cat'), 'substantive', '1 edit in a 6-letter line is over 10%');
+await test('classifier: unlisted changes are substantive regardless of distance or line length', () => {
+  assert.equal(kind('recieve', 'receive'), 'cosmetic', 'listed corrections no longer depend on line length');
   assert.equal(kind('The cat sat on the mat by the door today.', 'The dog sat on the mat by the door today.'), 'substantive', 'cat -> dog is 3 edits');
-  assert.equal(kind('We reviewd teh bugdet and teh plna for the whole quarter.', 'We reviewed the budget and the plan for the whole quarter.'), 'substantive', 'many fixes exceed 10% of the line');
+  assert.equal(kind('We reviewd bugdet plna with care.', 'We reviewed budget plan with care.'), 'substantive', 'these corrections are not listed');
   assert.equal(kind('It is fine to merge this change after review today.', 'It it fine to merge this change after review today.'), 'substantive', 'two-letter words: any change matters');
+});
+
+// S5 regressions use ordinary sentences with at least 25 letters: a long line must
+// never turn these meaning changes into spelling fixes. Check both directions.
+const substantivePairs: Array<[string, string]> = [
+  ['The committee will fund the project before winter.', 'The committee will find the project before winter.'],
+  ['The team needs a causal explanation for the delay.', 'The team needs a casual explanation for the delay.'],
+  ['The instructions say form a group before delivery.', 'The instructions say from a group before delivery.'],
+  ['The trial begins near the loading dock this morning.', 'The trail begins near the loading dock this morning.'],
+  ['The instructions say lose the rope before delivery.', 'The instructions say loose the rope before delivery.'],
+  ['The team will file the report before the meeting.', 'The team will fire the report before the meeting.'],
+  ['The team selected the colour for the loading dock.', 'The team selected the color for the loading dock.'],
+  ['The team will organise the delivery before winter.', 'The team will organize the delivery before winter.'],
+  ['The delivery team reviewed its schedule this morning.', 'The delivery team reviewed it’s schedule this morning.'],
+  ['The updated rules affect the entire delivery team.', 'The updated rules effect the entire delivery team.'],
+  ['The instructions say then proceed with the delivery.', 'The instructions say than proceed with the delivery.'],
+  ['The team will reviewd the shipment this afternoon.', 'The team will reviewed the shipment this afternoon.'],
+
+  ['The loading dock is safe for night deliveries.', 'The loading dock is unsafe for night deliveries.'],
+  ['The invoice is paid for the delivery this morning.', 'The invoice is unpaid for the delivery this morning.'],
+  ['This arrangement is legal for the delivery team.', 'This arrangement is illegal for the delivery team.'],
+  ['The crew is able to finish the delivery today.', 'The crew is unable to finish the delivery today.'],
+  ['The team expects orders to increase during this month.', 'The team expects orders to decrease during this month.'],
+  ['The company plans to hire the delivery manager.', 'The company plans to fire the delivery manager.'],
+  ['The instructions say accept the delivery today.', 'The instructions say except the delivery today.'],
+  ['The male patient is waiting for the appointment.', 'The female patient is waiting for the appointment.'],
+  ['The delivery fee is $10 for the entire shipment.', 'The delivery fee is $100 for the entire shipment.'],
+  ['The team shall deliver the order this afternoon.', 'The team may deliver the order this afternoon.'],
+  ['We ship Friday. The delivery team is ready.', 'We ship Friday? The delivery team is ready.'],
+  ['The delivery team is ready for the shipment.', 'The delivery team is ready for the shipment!'],
+  ['We ship Friday? The delivery team is ready.', 'We ship Friday. The delivery team is ready?'],
+  ['The typical schedule suits the delivery team.', 'The atypical schedule suits the delivery team.'],
+  ['The moral argument concerns the entire team.', 'The amoral argument concerns the entire team.'],
+  ['The shipment includes a gift for the entire team.', 'The shipment includes a git for the entire team.'],
+  ['The team will seperete the shipments this afternoon.', 'The team will separate the shipments this afternoon.'],
+];
+for (const [before, after] of substantivePairs) {
+  await test(`classifier: substantive in both directions: ${before} -> ${after}`, () => {
+    for (const text of [before, after]) assert.ok((text.match(/\p{L}/gu) ?? []).length >= 25);
+    assert.equal(kind(before, after), 'substantive');
+    assert.equal(kind(after, before), 'substantive');
+  });
+}
+
+const cosmeticPairs: Array<[string, string]> = [
+  ['The team will review teh budget before delivery.', 'The team will review the budget before delivery.'],
+  ['The team will definately review the delivery today.', 'The team will definitely review the delivery today.'],
+
+  ['The team will recieve the shipment this afternoon.', 'The team will receive the shipment this afternoon.'],
+  ['The team will seperate the shipments this afternoon.', 'The team will separate the shipments this afternoon.'],
+  ['The team can accomodate the shipment this afternoon.', 'The team can accommodate the shipment this afternoon.'],
+];
+for (const [before, after] of cosmeticPairs) {
+  await test(`classifier: listed correction carries only forward: ${before} -> ${after}`, () => {
+    for (const text of [before, after]) assert.ok((text.match(/\p{L}/gu) ?? []).length >= 25);
+    assert.equal(kind(before, after), 'cosmetic');
+    assert.equal(kind(after, before), 'substantive', 'introducing a misspelling is not a listed correction');
+  });
+}
+await test('classifier: case and punctuation remain cosmetic in both directions', () => {
+  const before = 'the delivery team is ready for the shipment';
+  const after = 'The delivery team is ready for the shipment.';
+  assert.equal(kind(before, after), 'cosmetic');
+  assert.equal(kind(after, before), 'cosmetic');
+});
+
+await test('correction list: fixed lower-case pairs exclude real-word confusions and regional variants', () => {
+  assert.ok(COMMON_MISSPELLINGS.size >= 150 && COMMON_MISSPELLINGS.size <= 300);
+  for (const word of ['fund', 'causal', 'form', 'trial', 'lose', 'loose', 'file', 'then', 'its', 'affect', 'colour', 'color', 'organise', 'organize', 'calender', 'untill', 'miniscule']) {
+    assert.equal(COMMON_MISSPELLINGS.has(word), false, word);
+  }
+  for (const [from, to] of COMMON_MISSPELLINGS) {
+    assert.match(from, /^[a-z]+$/u);
+    assert.match(to, /^[a-z]+$/u);
+    assert.notEqual(from, to);
+    assert.equal(COMMON_MISSPELLINGS.has(to), false, 'a correction cannot itself be a listed misspelling');
+    // Every listed pair works in ordinary lower-case prose, and never in reverse.
+    const before = `The proofreader replaced the word ${from} in the printed instructions.`;
+    const after = `The proofreader replaced the word ${to} in the printed instructions.`;
+    const result = change.classifyLineChange(before, after);
+    assert.equal(result.kind, 'cosmetic', `${from} -> ${to}`);
+    assert.deepEqual(result.fixes, [{ from, to }]);
+    assert.equal(kind(after, before), 'substantive', `${to} -> ${from}`);
+  }
+});
+
+await test('classifier: all changed words must be listed, and fixes retain their original case and order', () => {
+  const before = 'Teh team will definately recieve the shipment this afternoon.';
+  const after = 'The team will definitely receive the shipment this afternoon.';
+  const result = change.classifyLineChange(before, after);
+  assert.equal(result.kind, 'cosmetic');
+  assert.deepEqual(result.fixes, [
+    { from: 'Teh', to: 'The' }, { from: 'definately', to: 'definitely' }, { from: 'recieve', to: 'receive' },
+  ]);
+  assert.equal(kind(before, after.replace('shipment', 'payment')), 'substantive');
+  assert.equal(kind('Send the instructions to Freind before the meeting.', 'Send the instructions to Friend before the meeting.'), 'substantive', 'the name guard wins over the list');
+  assert.equal(kind(before, after.replace('afternoon.', 'afternoon?')), 'substantive');
+});
+
+await test('classifier: whitespace in a long sentence remains unchanged for carry purposes', () => {
+  assert.equal(kind('The delivery team is ready for the shipment.', '  The delivery  team is ready for the shipment.  '), 'same');
 });
 
 await test('classifier: edge cases (empty lines, word removed, editDistance)', () => {
@@ -127,6 +229,39 @@ await test('carry: a cosmetic edit carries every mark (tagged carried); a substa
   assert.equal(states[0].marks.get('human:mike@x.com')?.carried, undefined, 'an untouched line is exact, not carried');
   const issues = shared.computeIssues({ lines: newLines, lineMarks: marks, team: ['human:mike@x.com', 'ai:claude'] });
   assert.deepEqual(issues.issues.map(i => (i.type === 'line' ? i.lineIndex : -1)), [2, 3], 'only the substantive edits are Issues');
+});
+
+await test('carry: meaning changes lapse agreement at read time without changing the stored mark', async () => {
+  for (const [before, after] of substantivePairs) {
+    const old = (await serverLines.computeServerLines(before))[0];
+    const lines = await serverLines.computeServerLines(after);
+    const mark = mk('human:reader', old, 'agreed');
+    const stored = JSON.stringify(mark);
+    assert.equal(shared.findCarryTarget(lines, mark.anchor), null, after);
+    const entry = shared.buildLineStates(lines, [mark])[0].marks.get('human:reader');
+    assert.equal(entry?.current, false, after);
+    assert.equal(entry?.carried, undefined, after);
+    assert.equal(entry?.mark.status, 'agreed');
+    assert.equal(JSON.stringify(mark), stored, 'reading must preserve the historical mark');
+  }
+});
+
+await test('carry: listed corrections carry agreement without rewriting it; reversed corrections lapse', async () => {
+  for (const [before, after] of cosmeticPairs) {
+    const old = (await serverLines.computeServerLines(before))[0];
+    const lines = await serverLines.computeServerLines(after);
+    const mark = mk('human:reader', old, 'agreed');
+    const stored = JSON.stringify(mark);
+    const entry = shared.buildLineStates(lines, [mark])[0].marks.get('human:reader');
+    assert.equal(entry?.current, true, after);
+    assert.equal(entry?.carried, true, after);
+    assert.equal(entry?.carriedFrom, before);
+    assert.equal(JSON.stringify(mark), stored);
+    const reverseMark = mk('human:reader', lines[0], 'agreed');
+    const reversed = shared.buildLineStates([old], [reverseMark])[0].marks.get('human:reader');
+    assert.equal(reversed?.current, false, before);
+    assert.equal(reversed?.carried, undefined, before);
+  }
 });
 
 await test('carry: an exact mark wins over a carried one; carry can be switched off by policy', () => {

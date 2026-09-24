@@ -10,21 +10,23 @@
  * change resets it, as before. When in doubt the answer is "substantive": a wrong reset costs a
  * re-read, a wrong carry lets a real change past a reader unseen.
  *
+ * Rule: Mike, 2026-09-23 (usability brief). Carry-over is computed at read time from
+ * stored anchor text; no stored mark is changed.
+ *
  * Cosmetic means one of:
- *   - whitespace, letter case or punctuation changed, and nothing else;
- *   - small spelling fixes: the same words in the same order, each changed word within
- *     LINE_CHANGE_POLICY.maxEditsPerToken character edits (a swap of two neighbours is one edit),
- *     all edits together at most LINE_CHANGE_POLICY.maxLineEditRatio of the line.
+ *   - whitespace, letter case or punctuation other than ? and ! changed, and nothing else;
+ *   - listed spelling corrections: the same words in the same order, each changed word
+ *     a lower-case misspelling -> correction pair in COMMON_MISSPELLINGS. The reverse
+ *     direction and every unlisted word change are substantive, including regional variants.
  * Always substantive: a number, amount or percentage changed; a word added, removed or moved;
  * a negation or other meaning-carrying word changed (LINE_CHANGE_POLICY.meaningWords); a
- * capitalised word that does not start a sentence changed (usually a name).
+ * capitalised word that does not start a sentence changed (usually a name); a sentence gains
+ * or loses ? or !.
  */
 
+import { COMMON_MISSPELLINGS } from './common-misspellings.js';
+
 export const LINE_CHANGE_POLICY = {
-  /** Largest per-word edit (Damerau: insert, delete, substitute or swap neighbours) that is a spelling fix. */
-  maxEditsPerToken: 2,
-  /** All edits together at most this share of the line's letters and digits. */
-  maxLineEditRatio: 0.1,
   /**
    * Words whose change always matters, even by one letter ("not" -> "now", "and" -> "any").
    * Compared lower-case with apostrophes removed.
@@ -45,7 +47,7 @@ export type LineChangeKind = 'same' | 'cosmetic' | 'substantive';
 
 export interface LineChange {
   kind: LineChangeKind;
-  /** One short phrase for people and logs ("spelling: teh -> the", "number changed"). */
+  /** One short phrase for people and logs ("spelling: recieve -> receive", "number changed"). */
   why: string;
   /** Cosmetic spelling fixes, old -> new, for the "what changed" view. */
   fixes?: Array<{ from: string; to: string }>;
@@ -118,17 +120,28 @@ export function editDistance(a: string, b: string, cap = Number.POSITIVE_INFINIT
   return prev[cols - 1];
 }
 
+/** Keep ? and ! tied to their passage position, so moving one between sentences matters too. */
+function sentenceForce(text: string): string {
+  return JSON.stringify(Array.from(text.matchAll(/[.!?]+/gu))
+    .filter(match => /[!?]/u.test(match[0]))
+    .map(match => [words(text.slice(0, match.index)).length, match[0].replace(/\./gu, '')]));
+}
+
 const bare = (word: string) => word.replace(/['’]/gu, '');
 
 /**
  * Classifies the change from `before` to `after` (the text of one line, any whitespace).
- * Deterministic and symmetric in what it calls cosmetic.
+ * Deterministic; spelling carry-over is directional, from listed misspelling to correction.
  */
 export function classifyLineChange(before: string, after: string): LineChange {
   const a = normalize(before);
   const b = normalize(after);
   if (a === b) return { kind: 'same', why: 'unchanged' };
   if (!a || !b) return { kind: 'substantive', why: a ? 'line emptied' : 'line added' };
+
+  if (sentenceForce(a) !== sentenceForce(b)) {
+    return { kind: 'substantive', why: 'question or exclamation changed' };
+  }
 
   // Numbers first: "$10" -> "$100", "1.5" -> "15" and "10%" -> "10" all matter.
   const numsA = numbers(a);
@@ -151,11 +164,8 @@ export function classifyLineChange(before: string, after: string): LineChange {
   const sortedB = wb.map(t => t.lower).sort().join(' ');
   if (sortedA === sortedB) return { kind: 'substantive', why: 'words moved' };
 
-  const lettersInLine = Math.max(a.replace(/[^\p{L}\p{N}]/gu, '').length, b.replace(/[^\p{L}\p{N}]/gu, '').length);
-  const budget = lettersInLine * LINE_CHANGE_POLICY.maxLineEditRatio;
   const oldSet = new Set(wa.map(t => t.lower));
   const newSet = new Set(wb.map(t => t.lower));
-  let total = 0;
   const fixes: Array<{ from: string; to: string }> = [];
   for (let i = 0; i < wa.length; i += 1) {
     const x = wa[i];
@@ -170,22 +180,11 @@ export function classifyLineChange(before: string, after: string): LineChange {
     }
     // A word swapped with another word of the line is a move, not a spelling fix.
     if (oldSet.has(y.lower) && newSet.has(x.lower)) return { kind: 'substantive', why: 'words moved' };
-    const distance = editDistance(x.lower, y.lower, LINE_CHANGE_POLICY.maxEditsPerToken);
-    if (distance > LINE_CHANGE_POLICY.maxEditsPerToken) {
+    if (COMMON_MISSPELLINGS.get(x.lower) !== y.lower) {
       return { kind: 'substantive', why: `word changed: ${x.text} -> ${y.text}` };
     }
-    // Words of one or two letters are function words ("is" -> "it", "a" -> "I"): any change matters.
-    if (Math.max(x.lower.length, y.lower.length) <= 2) {
-      return { kind: 'substantive', why: `short word changed: ${x.text} -> ${y.text}` };
-    }
-    // A short word is mostly its letters: "cat" -> "dog" would pass two edits on one letter each.
-    if (distance >= Math.max(x.lower.length, y.lower.length)) {
-      return { kind: 'substantive', why: `word changed: ${x.text} -> ${y.text}` };
-    }
-    total += distance;
     fixes.push({ from: x.text, to: y.text });
   }
-  if (total > budget) return { kind: 'substantive', why: `too many letters changed (${total} of ${lettersInLine})` };
   return { kind: 'cosmetic', why: `spelling: ${fixes.map(f => `${f.from} -> ${f.to}`).join(', ')}`, fixes };
 }
 
