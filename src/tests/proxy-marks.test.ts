@@ -99,8 +99,8 @@ try {
     assert.match(proxy.briefHeadline(brief, 'Claude'), /^Claude read 5 lines for you: agreed 1, flagged 3 for you, \d+ need you$/);
     // Another Familiar's proxies are not this person's brief.
     assert.equal(proxy.evaluateProxies({ proxies, human: 'human:mw@mike-wolf.com', familiar: 'ai:other', lines, states, held }).items.length, 0);
-    // Edits: "second" -> "third" changes the meaning (reset); "Budget" case change is cosmetic (carries).
-    const edited = await serverLines.computeServerLines(doc.replace('second quarter', 'third quarter').replace('fixed at ten', 'fixed at ten,'));
+    // Edits: "second" -> "third" changes the meaning (reset); removing a final period is cosmetic (carries).
+    const edited = await serverLines.computeServerLines(doc.replace('second quarter', 'third quarter').replace('fixed at ten thousand.', 'fixed at ten thousand'));
     const after = proxy.evaluateProxies({ proxies, human: 'human:mw@mike-wolf.com', familiar: 'ai:claude', lines: edited, states: shared.buildLineStates(edited, []), held: new Map() });
     assert.deepEqual(after.reset.map(p => p.id), ['a'], 'the meaning change reset the proxy');
     assert.equal(after.items.find(i => i.proxy.id === 'bb')?.carried, true, 'the cosmetic change carried it');
@@ -346,7 +346,7 @@ try {
   await test('a meaning-changing edit resets a proxy; a cosmetic edit carries it (server)', async () => {
     // A second document already carries the edits; the proxies were written on the old text.
     const slug2 = 'proxy-edited';
-    const edited = doc.replace('second quarter', 'third quarter').replace('fixed at ten thousand.', 'fixed at ten thousand!');
+    const edited = doc.replace('second quarter', 'third quarter').replace('fixed at ten thousand.', 'fixed at ten thousand');
     db.createDocument(slug2, edited, {}, 'Proxy edited', 'owner-2', 'owner-secret-proxy2');
     const key2 = db.createDocumentAccessToken(slug2, 'editor', undefined, { label: 'Claude', requestedBy: 'test', requestedFrom: '127.0.0.1' });
     const bound = await call(`/api/agent/${slug2}/familiars`, 'POST', { for: MIKE_ACTOR, familiar: 'ai:claude' }, { 'x-share-token': 'owner-secret-proxy2' });
