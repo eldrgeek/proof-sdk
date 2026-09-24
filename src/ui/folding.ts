@@ -328,7 +328,11 @@ export class FoldingUI {
     const wasFolded = this.folded.has(section.key);
     if (wasFolded) this.folded.delete(section.key); else this.folded.add(section.key);
     this.commit();
-    if (options.record !== false) this.record(`${wasFolded ? 'expanded' : 'collapsed'} section`, () => this.toggle(headingIndex, { record: false }));
+    if (options.record !== false) {
+      const name = this.lines[section.headingIndex]?.text ?? 'section';
+      const short = name.length > 40 ? `${name.slice(0, 40)}…` : name;
+      this.record(`${wasFolded ? 'expanded' : 'collapsed'} “${short}”`, () => this.toggle(headingIndex, { record: false }));
+    }
   }
 
   /** Puts a fold change on the one Undo stack (a fold is a person's action like any other). */

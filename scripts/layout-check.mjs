@@ -453,7 +453,7 @@ async function desktop2(browser, base, style) {
     await page.keyboard.press('Control+Alt+KeyV');
     await page.locator('.amb-menu[data-menu="view"]').waitFor();
     const view = (await menuItems(page)).map(i => i.label);
-    for (const label of ['Navigator', 'Margin', 'Fold all sections', 'Unfold all sections', 'Show only decisions', 'Reading settings…', 'Familiar’s brief', 'Keyboard shortcuts']) assert.ok(view.includes(label), `View lacks ${label}: ${view}`);
+    for (const label of ['Navigator', 'Margin', 'Collapse all sections', 'Expand all sections', 'Show only decisions', 'Reading settings…', 'Familiar’s brief', 'Keyboard shortcuts']) assert.ok(view.includes(label), `View lacks ${label}: ${view}`);
     await page.keyboard.press('Escape');
     await reading(page);
     await page.keyboard.press('Alt+Slash');
@@ -821,7 +821,7 @@ async function desktop3(browser, base, style) {
     assert.deepEqual(rows.map(r => r.heading), [L.H1, 5]);
     assert.equal(rows[1].text, 'Needs your hands');
     assert.match(rows[1].count, /^\d+$/);
-    for (const label of ['Fold every section', 'Unfold every section']) assert.equal(await page.locator('.prw-left .anv-tools').getByRole('button', { name: label, exact: true }).count(), 1, `${label} is not on the Outline`);
+    for (const label of ['Collapse all sections', 'Expand all sections']) assert.equal(await page.locator('.prw-left .anv-tools').getByRole('button', { name: label, exact: true }).count(), 1, `${label} is not on the Outline`);
     await page.locator('.prw-left .anv-row[data-heading="5"] .anv-fold').click();
     await waitFor(page, () => window.__proofFolding.isFolded(5) === true);
     assert.equal(await page.locator('.prw-left .anv-row[data-heading="5"] .anv-fold').getAttribute('data-folded'), 'true');

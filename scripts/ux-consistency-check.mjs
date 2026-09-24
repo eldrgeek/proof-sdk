@@ -194,7 +194,7 @@ async function runDesktop(browser, base, tag) {
     await page.waitForTimeout(300);
     const state = await undoState(page);
     assert.equal(state.next?.kind, 'fold');
-    assert.match(state.next?.description ?? '', /folded “Quiet”/);
+    assert.match(state.next?.description ?? '', /collapsed “Quiet”/);
     await page.locator('.pundo-btn').first().click();
     await page.waitForTimeout(500);
     assert.equal((await folds(page)).folded.length, 0, 'the fold was not undone');

@@ -1377,8 +1377,9 @@ export class LineMarksUI {
     details.dataset.line = String(index);
     details.dataset.count = String(fold.count);
     details.dataset.auto = fold.open ? 'open' : 'closed';
-    if (!this.teamFoldChoice.has(index)) this.teamFoldChoice.set(index, fold.open);
-    details.open = this.teamFoldChoice.get(index)!;
+    // A click is a choice and stays. The first render is not a choice, so a later Reject still opens it.
+    const chosen = this.teamFoldChoice.get(index);
+    details.open = chosen === undefined ? fold.open : chosen;
     const summary = document.createElement('summary');
     summary.className = 'plm-team-sum';
     const label = document.createElement('span');

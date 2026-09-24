@@ -200,7 +200,7 @@ async function desktop(browser, base, style) {
     await waitFor(page, i => window.__proofReadingWalk.debugState().readingFocus === i, L.SHORT);
     // Accord layout stage 3 (decision 8): Seen is under the line's ⋯ More.
     await rail.locator('.plm-box .plm-more-btn').click();
-    await rail.locator('.plm-box .plm-more').getByRole('button', { name: /^•\s*Seen$/ }).click();
+    await rail.locator('.plm-box .plm-more').getByRole('button', { name: /^Seen$/ }).click();
     await waitFor(page, () => { document.querySelectorAll('.prw-right .plm-team-fold:not([open]) > summary').forEach(s => s.click()); return /Seen \(marked\)/.test(document.querySelector('.prw-right .plm-team')?.innerText ?? ''); });
     assert.equal((await myMark(page, L.SHORT)).via, 'click');
   });
