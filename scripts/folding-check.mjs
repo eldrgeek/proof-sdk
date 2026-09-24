@@ -252,8 +252,11 @@ async function desktop(browser, base, style, width) {
     await waitFor(page, () => document.querySelector('.pfold-chip[data-heading="2"]')?.dataset.folded === 'true');
     await page.locator(`.plm-dot[data-line="${L.ALPHA}"]`).click();
     await waitFor(page, i => window.__proofReadingWalk.debugState().focus === i, L.ALPHA);
-    const note = await page.locator('.prw-right .plm-section-note').innerText();
-    assert.equal(note, 'Agree with this section (7 lines)');
+    const note = page.locator('.prw-right .plm-section-note');
+    assert.equal(await note.innerText(), 'Show all 7 lines to agree with this section');
+    await note.click();
+    await waitFor(page, () => document.querySelector('.pfold-chip[data-heading="2"]')?.dataset.folded === 'false');
+    assert.equal(await note.innerText(), 'Agree with this section (7 lines)');
     await page.evaluate(() => document.activeElement?.blur());
     const before = batchPosts.length;
     await page.locator('.prw-right .plm-section-note').click();
@@ -312,6 +315,11 @@ async function desktop(browser, base, style, width) {
       await p.evaluate(() => { window.__proofReadingWalk.focusLine(17); });
       await p.evaluate(() => document.activeElement?.blur());
       await p.waitForTimeout(200);
+      const note = p.locator('.prw-right .plm-section-note');
+      if ((await note.innerText()).startsWith('Show all')) {
+        await note.click();
+        await p.waitForFunction(() => document.querySelector('.prw-right .plm-section-note')?.textContent?.startsWith('Agree with this section'));
+      }
       await p.locator('.prw-right .plm-section-note').click();
       await p.waitForTimeout(500);
     }
@@ -381,8 +389,11 @@ async function phone(browser, base, style) {
     await page.locator(`.plm-dot[data-line="${L.BETA}"]`).tap();
     const sheet = page.locator('.plm-menu.plm-sheet');
     await sheet.waitFor({ state: 'visible' });
-    assert.equal(await sheet.locator('.plm-section-note').innerText(), 'Agree with this section (5 lines)');
+    const section = sheet.locator('.plm-section-note');
+    assert.equal(await section.innerText(), 'Show all 5 lines to agree with this section');
     await page.screenshot({ path: path.join(shots, `${tag}-2-sheet.png`) });
+    await section.tap();
+    await page.waitForFunction(() => document.querySelector('.plm-menu.plm-sheet .plm-section-note')?.textContent === 'Agree with this section (5 lines)');
     await sheet.locator('.plm-section-note').tap();
     await waitFor(page, () => window.__proofLineMarks.debugState().marks.filter(m => m.by === 'guest:Pat' && m.status === 'agreed' && !m.id.startsWith('local-')).length >= 5);
     await page.screenshot({ path: path.join(shots, `${tag}-3-marked.png`) });

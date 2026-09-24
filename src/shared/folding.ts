@@ -1,6 +1,9 @@
 /**
  * Sections change visibility only by disclosure, bulk view commands or navigation.
- * Heading marks always affect the heading; explicit section agreement captures its text scope.
+ * Heading marks always affect the heading.
+ * "Agree with this section (N lines)" is offered only when every line of that section is visible.
+ * A collapsed section or subsection offers "Show all N lines to agree with this section" instead.
+ * That control expands the collapsed sections inside it. Explicit agreement then captures text identity.
  * Mike, 2026-09-23 (usability brief).
  */
 import type { DocLine, IssueSummary, LineMarkStatus } from './line-marks.js';
@@ -206,6 +209,37 @@ export function planSectionMark(lineIndices: number[], status: LineMarkStatus, m
     plan.apply.push(lineIndex);
   }
   return plan;
+}
+
+/**
+ * Whether "Agree with this section" may be offered.
+ * `allVisible` is true only when no line from the heading through the section end is hidden.
+ * `collapsedHeadings` are the folded sections inside that range, including this section when it is folded.
+ * Mike, 2026-09-23 (usability brief).
+ */
+export interface SectionAgreementOffer {
+  lineCount: number;
+  allVisible: boolean;
+  collapsedHeadings: number[];
+}
+
+export function sectionAgreementOffer(
+  section: DocSection,
+  sections: readonly DocSection[],
+  folded: ReadonlySet<string>,
+): SectionAgreementOffer {
+  const hidden = hiddenLineSet(sections, folded);
+  const indices = sectionLineIndices(section);
+  const collapsedHeadings = sections
+    .filter(candidate => folded.has(candidate.key)
+      && candidate.headingIndex >= section.headingIndex
+      && candidate.lineEnd <= section.lineEnd)
+    .map(candidate => candidate.headingIndex);
+  return {
+    lineCount: indices.length,
+    allVisible: indices.every(index => !hidden.has(index)),
+    collapsedHeadings,
+  };
 }
 
 /** A displayed section scope is captured by text identity, never recomputed from indices. */

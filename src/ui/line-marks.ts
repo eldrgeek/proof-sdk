@@ -1,5 +1,6 @@
 /**
- * Line marks target the selected passage. Explicit section agreement captures text identities.
+ * Line marks target the selected passage. Explicit section agreement captures text identities,
+ * and it is offered only when every line of the section is visible.
  * Mike, 2026-09-23 (usability brief).
  *
  * Authorship: spec by Mike Wolf (2026-09-18); built by Claude Opus 5 (worker proof-line-marks).
@@ -39,7 +40,7 @@ import {
 } from '../shared/line-marks';
 import { classifyLineChange } from '../shared/line-change';
 import type { SinceYouReport } from '../shared/alignment';
-import { FOLDING, planSectionMark, resolveSectionScope, type SectionScope } from '../shared/folding';
+import { FOLDING, planSectionMark, resolveSectionScope, type SectionAgreementOffer, type SectionScope } from '../shared/folding';
 import { UndoStack, conflictRefusal, describeLineMark, type UndoOutcome } from '../shared/undo';
 import { ANYONE, askIssueInputs, askTeamActors, evaluateAsks, type AskChoice, type AskView, type ProofAsk } from '../shared/asks';
 import { askViewKey, setAskDecorations, type AskDecorationSpec } from '../editor/plugins/ask-view';
@@ -143,6 +144,13 @@ export interface LineMarksHost {
   viewUpdated?(): void;
   /** Text identities listed by the explicit section agreement action. */
   sectionScope?(lineIndex: number): SectionScope | null;
+  /**
+   * Agree is present only when `allVisible`. Otherwise the button expands the collapsed
+   * sections inside this one. `scope` is captured at render time. Mike, 2026-09-23 (usability brief).
+   */
+  sectionAgreement?(lineIndex: number): (SectionAgreementOffer & { scope: SectionScope | null }) | null;
+  /** Expands the collapsed sections inside this heading so the reader can see every line. */
+  showSectionLines?(lineIndex: number): void;
   /** Step B2: unfold whatever hides a line. Returns true when something unfolded. */
   revealLine?(lineIndex: number): boolean;
   /** Step B4d: the line a shift-click range starts from (the reading walk's focus line). */
@@ -1791,14 +1799,29 @@ export class LineMarksUI {
       place(skim);
     }
 
-    const scope = this.host.sectionScope?.(line.index);
-    if (scope) {
+    const agreement = this.host.sectionAgreement?.(line.index) ?? null;
+    if (agreement) {
       const sectionAgree = document.createElement('button');
       sectionAgree.type = 'button';
       sectionAgree.className = 'plm-section-note';
-      sectionAgree.textContent = `Agree with this section (${scope.lines.length} lines)`;
-      sectionAgree.disabled = !this.canMark;
-      sectionAgree.onclick = () => { void this.writeSectionMark(scope, 'agreed'); };
+      const armAgree = (scope: SectionScope, count: number) => {
+        sectionAgree.textContent = `Agree with this section (${count} lines)`;
+        sectionAgree.disabled = !this.canMark;
+        sectionAgree.onclick = () => { void this.writeSectionMark(scope, 'agreed'); };
+      };
+      if (agreement.allVisible && agreement.scope) {
+        armAgree(agreement.scope, agreement.lineCount);
+      } else {
+        sectionAgree.textContent = `Show all ${agreement.lineCount} lines to agree with this section`;
+        sectionAgree.disabled = false;
+        sectionAgree.onclick = () => {
+          this.host.showSectionLines?.(line.index);
+          const next = this.host.sectionAgreement?.(line.index);
+          // The rail rebuilds this box on the fold change. The phone sheet does not, so this
+          // same button becomes Agree once every line is visible.
+          if (next?.allVisible && next.scope) armAgree(next.scope, next.lineCount);
+        };
+      }
       place(sectionAgree);
     }
     const choose = (status: StatusChoice, reason?: string, via: MarkVia = 'click'): boolean => {
@@ -1976,7 +1999,9 @@ export class LineMarksUI {
       more.append(moreMarks, ...flagMore);
       if (extras.querySelector('.plm-extras-links')?.childElementCount || extras.querySelector('form')) more.append(extras);
       if (tierRow) more.append(tierRow);
+      root.append(actions, more, reasonRow, thread);
     } else {
+      root.append(actions, reasonRow);
     }
 
     // Everyone's marks on this line.

@@ -127,6 +127,33 @@ try {
     assert.equal(folding.resolveSectionScope(scope, now).length, scope.lines.length - 1);
   });
 
+  await test('section agreement is offered only when every line of the section is visible', () => {
+    const goals = folding.sectionByHeading(sections, GOALS)!;
+    const detail = folding.sectionByHeading(sections, DETAIL)!;
+    const open = folding.sectionAgreementOffer(goals, sections, new Set());
+    assert.equal(open.allVisible, true);
+    assert.equal(open.lineCount, folding.sectionLineIndices(goals).length);
+    assert.deepEqual(open.collapsedHeadings, []);
+    const detailFolded = new Set([detail.key]);
+    const hiddenDetail = folding.sectionAgreementOffer(goals, sections, detailFolded);
+    assert.equal(hiddenDetail.allVisible, false, 'a collapsed subsection hides lines the reader has not seen');
+    assert.deepEqual(hiddenDetail.collapsedHeadings, [DETAIL]);
+    assert.equal(hiddenDetail.lineCount, open.lineCount, 'the count names every line, including the hidden ones');
+    const whole = new Set([goals.key, detail.key]);
+    const hiddenGoals = folding.sectionAgreementOffer(goals, sections, whole);
+    assert.equal(hiddenGoals.allVisible, false);
+    assert.deepEqual(hiddenGoals.collapsedHeadings, [GOALS, DETAIL]);
+    const shown = new Set(whole);
+    for (const heading of hiddenGoals.collapsedHeadings) {
+      const key = folding.sectionByHeading(sections, heading)!.key;
+      shown.delete(key);
+    }
+    assert.equal(folding.sectionAgreementOffer(goals, sections, shown).allVisible, true);
+    // The capture still lists hidden lines. The offer is what stops them being agreed unseen.
+    const captured = folding.captureSectionScope(goals, lines);
+    assert.equal(captured.lines.length, hiddenDetail.lineCount);
+  });
+
   await test('section Issue count: the same Issues as the top bar, restricted to the section (review marks by position)', () => {
     const team = ['human:A'];
     const lineMarks = lines.filter(l => l.index !== GOALS + 1 && l.index !== PLAN + 1)

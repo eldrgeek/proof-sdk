@@ -4119,6 +4119,8 @@ class ProofEditorImpl implements ProofEditor {
         focusLine: (lineIndex) => this.readingWalk?.focusLine(lineIndex) ?? false,
         viewUpdated: () => { this.readingWalk?.notifyViewUpdate(); this.folding?.queueRender(); },
         sectionScope: (lineIndex) => this.folding?.sectionScope(lineIndex) ?? null,
+        sectionAgreement: (lineIndex) => this.folding?.sectionAgreement(lineIndex) ?? null,
+        showSectionLines: (lineIndex) => { this.folding?.showSectionLines(lineIndex); },
         revealLine: (lineIndex) => this.folding?.reveal(lineIndex) ?? false,
         // Step B4d: shift-click ranges start at the reading walk's focus line.
         anchorLine: () => this.readingWalk?.focusIndex() ?? 0,

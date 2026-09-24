@@ -955,11 +955,14 @@ export class ReadingWalkUI {
   private selectedKey: string | null = null;
   cursorLine(): number { return this.selectedIndex; }
   private selectPassage(index: number): void {
-    const previous = this.selectedKey;
+    const previousIndex = this.selectedIndex;
+    const previousKey = this.selectedKey;
     this.selectedIndex = index;
     const line = this.lines[index];
     this.selectedKey = line ? `${line.hash}:${line.occurrence}` : null;
-    if (this.selectedKey !== previous) this.rememberViewport();
+    if (this.selectedKey !== previousKey) this.rememberViewport();
+    // Listeners (the chat) follow the selected passage even when no render follows.
+    if (index !== previousIndex || this.selectedKey !== previousKey) this.host.focusChanged?.(index);
   }
 
   targetLine(): number { return this.cursorLine(); }

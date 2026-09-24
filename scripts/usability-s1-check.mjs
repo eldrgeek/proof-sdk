@@ -88,6 +88,21 @@ async function createDoc(base) {
   return created;
 }
 
+/** One base only: the server refuses baseToken together with baseRevision. */
+async function agentEdit(base, created, operations, key) {
+  const headers = { 'Content-Type': 'application/json', 'x-share-token': created.accessToken };
+  const snap = await (await fetch(`${base}/api/agent/${created.slug}/snapshot`, { headers })).json();
+  const body = { by: 'ai:remote', operations };
+  if (snap.mutationBase) body.baseToken = typeof snap.mutationBase === 'string' ? snap.mutationBase : snap.mutationBase.token;
+  else if (snap.revision !== undefined && snap.revision !== null) body.baseRevision = snap.revision;
+  assert.ok(body.baseToken || body.baseRevision !== undefined, `no base on the snapshot: ${JSON.stringify({ revision: snap.revision, mutationBase: snap.mutationBase })}`);
+  const response = await fetch(`${base}/api/agent/${created.slug}/edit/v2`, {
+    method: 'POST', headers: { ...headers, 'Idempotency-Key': key },
+    body: JSON.stringify(body),
+  });
+  assert.ok(response.ok, await response.text());
+}
+
 async function agentMark(base, created, payload) {
   const r = await fetch(`${base}/api/agent/${created.slug}/marks/line`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'x-share-token': created.accessToken },
@@ -165,7 +180,7 @@ async function desktop(browser, base, style, width) {
     assert.equal(await page.evaluate(() => window.__proofLineMarks.debugState().sectionWrites), before);
     for (const i of [10, 11, 12, 13]) assert.notEqual(await page.evaluate(i => window.__proofLineMarks.myStatus(i), i), 'agreed');
     const explicit = page.locator('.prw-right .plm-section-note');
-    assert.equal(await explicit.textContent(), 'Agree with this section (5 lines)');
+    assert.equal(await explicit.textContent(), 'Show all 5 lines to agree with this section');
   });
   await check(`${tag}: J/K treat the collapsed section as one passage`, async () => {
     await selectPassage(page, 9);
@@ -264,13 +279,7 @@ async function desktop(browser, base, style, width) {
     });
     const before = await top();
     const edit = async (operations) => {
-      const headers = { 'Content-Type': 'application/json', 'x-share-token': created.accessToken };
-      const snap = await (await fetch(`${base}/api/agent/${created.slug}/snapshot`, { headers })).json();
-      const response = await fetch(`${base}/api/agent/${created.slug}/edit/v2`, {
-        method: 'POST', headers: { ...headers, 'Idempotency-Key': `s1-${Date.now()}` },
-        body: JSON.stringify({ by: 'ai:remote', baseRevision: snap.revision, operations }),
-      });
-      assert.ok(response.ok, await response.text());
+      await agentEdit(base, created, operations, `s1-${Date.now()}-${Math.random()}`);
     };
     await edit([
       { op: 'replace_block', ref: 'b2', block: { markdown: 'Remote expanded introduction. '.repeat(45) } },
@@ -284,20 +293,25 @@ async function desktop(browser, base, style, width) {
     await page.reload(); await ready(page);
     assert.equal(await page.evaluate(() => window.__proofFolding.isFolded(9)), true);
   });
+  await check(`${tag}: a collapsed subsection must be shown before the section can be agreed`, async () => {
+    await page.evaluate(() => window.__proofFolding.setFolded(6, true));
+    await selectPassage(page, 2);
+    const note = page.locator('.prw-right .plm-section-note');
+    assert.equal(await note.textContent(), 'Show all 7 lines to agree with this section');
+    await note.click();
+    await waitFor(page, () => window.__proofFolding.isFolded(6) === false && window.__proofFolding.isFolded(2) === false);
+    assert.equal(await note.textContent(), 'Agree with this section (7 lines)');
+    assert.notEqual(await page.evaluate(() => window.__proofLineMarks.myStatus(3)), 'agreed', 'showing the lines agreed a hidden line');
+  });
   await check(`${tag}: captured section agreement excludes a concurrent insertion`, async () => {
     await selectPassage(page, 14);
     await page.evaluate(() => {
       const action = document.querySelector('.prw-right .plm-section-note');
       window.__s1SectionAction = action;
     });
-    const headers = { 'Content-Type': 'application/json', 'x-share-token': created.accessToken };
-    const snap = await (await fetch(`${base}/api/agent/${created.slug}/snapshot`, { headers })).json();
-    const response = await fetch(`${base}/api/agent/${created.slug}/edit/v2`, {
-      method: 'POST', headers: { ...headers, 'Idempotency-Key': `s1-scope-${Date.now()}` },
-      body: JSON.stringify({ by: 'ai:remote', baseRevision: snap.revision,
-        operations: [{ op: 'insert_after', ref: 'b16', blocks: [{ markdown: 'A newly inserted sentence is not consented to.' }] }] }),
-    });
-    assert.ok(response.ok, await response.text());
+    await agentEdit(base, created, [
+      { op: 'insert_after', ref: 'b16', blocks: [{ markdown: 'A newly inserted sentence is not consented to.' }] },
+    ], `s1-scope-${Date.now()}-${Math.random()}`);
     await waitFor(page, () => window.__proofLineMarks.lineList().some(l => l.text.startsWith('A newly inserted')));
     await page.evaluate(() => window.__s1SectionAction.click());
     await waitFor(page, () => window.__proofLineMarks.myStatus(14) === 'agreed');

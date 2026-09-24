@@ -233,3 +233,24 @@ export function stableReviewOrder(previous: readonly string[], incoming: readonl
   const known = new Set(kept);
   return [...kept, ...incoming.filter(key => !known.has(key))];
 }
+
+/** Text identity of a passage, captured when a review row settles. Mike, 2026-09-23 (usability brief). */
+export interface SettledIdentity {
+  hash: string;
+  occurrence: number;
+}
+
+/**
+ * The line a settled row names now. A remote insert above the row changes indices.
+ * The hash and occurrence captured at settle time do not, so the row stays on its passage.
+ * Returns null when that passage has left the document.
+ */
+export function resolveSettledIndex(
+  item: SettledIdentity,
+  lines: ReadonlyArray<{ hash: string; occurrence: number; index?: number }>,
+): number | null {
+  const at = lines.findIndex(line => line.hash === item.hash && line.occurrence === item.occurrence);
+  if (at < 0) return null;
+  const index = lines[at].index;
+  return typeof index === 'number' ? index : at;
+}

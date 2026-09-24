@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import type { ProofIssue } from '../shared/line-marks';
 import { needsYouLines } from '../shared/layout-status';
 import {
-  stableReviewOrder, MARGIN_POLICY, MARKED_BY_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY,
+  stableReviewOrder, resolveSettledIndex, MARGIN_POLICY, MARKED_BY_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY,
   markedByFold, needsYouItems, needsYouLabel, outlineRows, parseRailState,
 } from '../shared/layout-panels';
 
@@ -106,6 +106,25 @@ test('markedByFold: "Marked by N" folds; open only for a current Reject or an op
 test('incoming review rows append without moving the existing rows', () => {
   assert.deepEqual(stableReviewOrder(['later', 'last'], ['new-first', 'later', 'last']), ['later', 'last', 'new-first']);
   assert.deepEqual(stableReviewOrder(['gone', 'last'], ['last', 'new']), ['last', 'new']);
+});
+
+test('a settled row resolves by the identity captured when it settled, not by its old index', () => {
+  const settled = { hash: 'charlie', occurrence: 1 };
+  const before = [
+    { hash: 'alpha', occurrence: 1, index: 0 },
+    { hash: 'bravo', occurrence: 1, index: 1 },
+    { hash: 'charlie', occurrence: 1, index: 2 },
+  ];
+  assert.equal(resolveSettledIndex(settled, before), 2);
+  const inserted = [
+    { hash: 'new', occurrence: 1, index: 0 },
+    { hash: 'alpha', occurrence: 1, index: 1 },
+    { hash: 'bravo', occurrence: 1, index: 2 },
+    { hash: 'charlie', occurrence: 1, index: 3 },
+  ];
+  assert.equal(resolveSettledIndex(settled, inserted), 3, 'an insert above must not point the settled row at another line');
+  assert.equal(resolveSettledIndex({ hash: 'charlie', occurrence: 2 }, inserted), null);
+  assert.equal(resolveSettledIndex(settled, inserted.filter(line => line.hash !== 'charlie')), null, 'a removed passage stays unresolved');
 });
 
 console.log(`\n${passed} layout-panels tests passed`);

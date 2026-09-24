@@ -1,5 +1,6 @@
 /**
  * Sections stay as the reader left them. Hover and Issue closure never fold text.
+ * Section agreement is offered only when every line of the section is visible.
  * Mike, 2026-09-23 (usability brief).
  */
 import type { EditorView } from '@milkdown/kit/prose/view';
@@ -14,10 +15,12 @@ import {
   foldedAncestors,
   hiddenBlockRanges,
   hiddenLineSet,
+  sectionAgreementOffer,
   sectionByHeading,
   sectionIssueCount,
   visibleLineFor,
   type DocSection,
+  type SectionAgreementOffer,
 } from '../shared/folding';
 import { hiddenBlocks, setHiddenBlocks, type FoldRule } from '../editor/plugins/fold-view';
 import type { LineMarksUI } from './line-marks';
@@ -300,6 +303,32 @@ export class FoldingUI {
   sectionScope(lineIndex: number): SectionScope | null {
     const section = sectionByHeading(this.sections, lineIndex);
     return section ? captureSectionScope(section, this.lines) : null;
+  }
+
+  /**
+   * Agree is offered only when every line is visible. Otherwise the control expands first.
+   * The scope is captured here, at render, so a later insertion cannot join it.
+   */
+  sectionAgreement(lineIndex: number): (SectionAgreementOffer & { scope: SectionScope | null }) | null {
+    const section = sectionByHeading(this.sections, lineIndex);
+    if (!section) return null;
+    const offer = sectionAgreementOffer(section, this.sections, this.folded);
+    return { ...offer, scope: offer.allVisible ? captureSectionScope(section, this.lines) : null };
+  }
+
+  /** Expands this section and every collapsed section inside it. One Undo restores the folds. */
+  showSectionLines(lineIndex: number): void {
+    const section = sectionByHeading(this.sections, lineIndex);
+    if (!section) return;
+    const offer = sectionAgreementOffer(section, this.sections, this.folded);
+    if (offer.allVisible || offer.collapsedHeadings.length === 0) return;
+    const before = { folded: [...this.folded] };
+    this.record('showed the section', () => { this.folded = new Set(before.folded); this.commit(); });
+    for (const heading of offer.collapsedHeadings) {
+      const collapsed = sectionByHeading(this.sections, heading);
+      if (collapsed) this.folded.delete(collapsed.key);
+    }
+    this.commit();
   }
 
   toggle(headingIndex: number, options: { record?: boolean } = {}): void {
