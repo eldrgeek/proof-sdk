@@ -1,14 +1,7 @@
 /**
- * Proof Documents — Step B2: folding (pure code, shared by the browser and the server).
- *
- * Authorship: spec by Mike Wolf ("A Proof Document typically has a hierarchical outline and can
- * be folded and unfolded in the Proof Editor"; "A folded section carries one or two marks: one
- * indicates 'issues remain' the other 'issues resolved'"); section marking and the policy below
- * are the COS's decisions; built by Claude Opus 5 (worker proof-fold), 2026-09-18.
- *
- * A section is a top-level heading plus everything after it until the next top-level heading of
- * the same or a higher level (an H2 section ends at the next H1 or H2). Folding is a view state
- * only: it never changes the document's text, its marks or its Yjs state.
+ * Sections change visibility only by disclosure, bulk view commands or navigation.
+ * Heading marks always affect the heading; explicit section agreement captures its text scope.
+ * Mike, 2026-09-23 (usability brief).
  */
 import type { DocLine, IssueSummary, LineMarkStatus } from './line-marks.js';
 
@@ -17,8 +10,8 @@ import type { DocLine, IssueSummary, LineMarkStatus } from './line-marks.js';
 // ============================================================================
 
 export const FOLDING = {
-  /** A mark chosen on a FOLDED heading applies to every line in its section (COS decision). */
-  foldedHeadingScope: 'section' as 'section' | 'heading',
+  /** Folding never changes the scope of a heading mark. */
+  foldedHeadingScope: 'heading' as const,
   /** A mark chosen on an UNFOLDED heading applies to the heading line only. */
   unfoldedHeadingScope: 'heading' as 'section' | 'heading',
   /** Reject needs a specific line: a folded section cannot be rejected as a whole. */
@@ -27,8 +20,6 @@ export const FOLDING = {
   sectionMarkKeepsRejects: true,
   /** A section-wide mark never lowers a stronger mark (an Approved line stays Approved on Agree). */
   sectionMarkNeverDowngrades: true,
-  /** "Clear my mark" on a folded heading clears the heading line only, never the whole section. */
-  sectionClearAllowed: false,
   /** How long the "Undo" toast after a section mark stays up. */
   undoToastMs: 8000,
   /** The largest batch the line-mark routes accept in one request. */
@@ -38,93 +29,6 @@ export const FOLDING = {
   /** The badge counts the same Issues as the top bar (team-wide), restricted to the section. */
   badgeCounts: 'team' as 'team',
 } as const;
-
-/**
- * Mike, 2026-09-19: "Leaving a group with no issues closes the group. Hovering over a closed group
- * opens it." and "When a folded item below an H level is unfolded it does not refold."
- *
- * The one model every folding and focus path in Proof follows:
- *   1. An explicit person action beats any automatic one. A section the person unfolded by hand
- *      stays unfolded (`sticky`): no auto-close, no fold-to-level and no later fold pass refolds
- *      it. Only another explicit fold (its chip, Fold all, fold-to-level used again on it after a
- *      deliberate fold) takes the stickiness off.
- *   2. Nothing folds or moves under the reader's eyes. An automatic fold waits until the section
- *      is out of view and scrolling has settled (the same rule closed-Issue folding already uses).
- *   3. Hover previews; click commits. Hovering a folded heading peeks its body open without
- *      changing the stored fold state; moving away re-folds it. A click changes the state.
- */
-export const SECTION_AUTOCLOSE = {
-  enabled: true,
-  /** Only a section with no Issues for the viewer closes itself. */
-  requireZeroIssues: true,
-  /**
-   * Whose Issues count. Mike's words are "a group with no issues" from the reader's side, so this
-   * is the viewer's own open Issues (an unread line of theirs, a rejection, an open comment or
-   * suggestion on it) — not the team-wide count the fold chip's badge shows, which would keep a
-   * section open because a teammate has not read it yet.
-   */
-  countIssues: 'viewer' as 'viewer' | 'team',
-  /** ...and only one with at least this many body lines (folding a one-line section is noise). */
-  minBodyLines: 2,
-  /** The reading focus must have left the section, and the section must be out of view... */
-  requireOutOfView: true,
-  /** ...and scrolling must have been still this long (rule 2: nothing folds under the reader). */
-  idleMs: 700,
-  /** Rule 1: a section the person unfolded by hand never auto-closes. */
-  respectStickyUnfold: true,
-  /** Rule 3: hovering a folded heading peeks it open. */
-  hoverPeek: true,
-  /** Rest this long on the folded heading before it peeks. */
-  hoverPeekDelayMs: 150,
-  /** Re-fold this long after the pointer leaves (a peek that flickers is worse than no peek). */
-  hoverPeekLeaveMs: 260,
-  /** localStorage key prefix for the set of sections the person unfolded by hand. */
-  stickyPrefix: 'proof:fold-sticky:',
-} as const;
-
-export interface AutoCloseInput {
-  sections: DocSection[];
-  folded: ReadonlySet<string>;
-  /** Sections the person unfolded by hand (rule 1). */
-  sticky: ReadonlySet<string>;
-  /** The reading / hover focus line, or -1. */
-  focusLine: number;
-  /** Issues in the section for the viewer. */
-  issueTotal: (section: DocSection) => number;
-  /** Is any part of the section on screen? (rule 2) */
-  inView: (section: DocSection) => boolean;
-}
-
-/**
- * The sections that should close themselves now: zero Issues, the focus has left them, they are
- * out of view, and the person has not unfolded them by hand. Pure: the caller folds the keys.
- */
-export function planAutoClose(input: AutoCloseInput): string[] {
-  if (!SECTION_AUTOCLOSE.enabled) return [];
-  const out: string[] = [];
-  for (const section of input.sections) {
-    if (input.folded.has(section.key)) continue;
-    if (SECTION_AUTOCLOSE.respectStickyUnfold && input.sticky.has(section.key)) continue;
-    const bodyLines = section.lineEnd - section.headingIndex - 1;
-    if (bodyLines < SECTION_AUTOCLOSE.minBodyLines) continue;
-    // The focus is still inside it: leaving is the trigger, so it has not been left yet.
-    if (input.focusLine >= section.headingIndex && input.focusLine < section.lineEnd) continue;
-    if (SECTION_AUTOCLOSE.requireZeroIssues && input.issueTotal(section) > 0) continue;
-    if (SECTION_AUTOCLOSE.requireOutOfView && input.inView(section)) continue;
-    out.push(section.key);
-  }
-  return out;
-}
-
-/**
- * Fold to level N while keeping rule 1: sections the person unfolded by hand stay unfolded.
- * (`foldToLevel` is the raw shape; this is what a person's "H2" button does.)
- */
-export function foldToLevelRespectingSticky(sections: DocSection[], level: number, sticky: ReadonlySet<string>): Set<string> {
-  const folded = foldToLevel(sections, level);
-  for (const key of sticky) folded.delete(key);
-  return folded;
-}
 
 const STATUS_RANK: Record<LineMarkStatus, number> = { skimmed: 0, seen: 1, agreed: 2, approved: 3, rejected: 0 };
 
@@ -233,27 +137,6 @@ export function visibleLineFor(sections: DocSection[], folded: ReadonlySet<strin
   return ancestors.length ? ancestors[0].headingIndex : lineIndex;
 }
 
-/**
- * Fold to level N: every heading of level N or deeper whose enclosing sections are all shallower
- * than N is folded; everything else is unfolded. So level 1 shows only the H1s, level 2 shows the
- * H1s and H2s, and so on.
- */
-export function foldToLevel(sections: DocSection[], level: number): Set<string> {
-  const byHeading = new Map(sections.map(section => [section.headingIndex, section]));
-  const folded = new Set<string>();
-  for (const section of sections) {
-    if (section.level < level) continue;
-    const parent = section.parent === null ? null : byHeading.get(section.parent);
-    if (!parent || parent.level < level) folded.add(section.key);
-  }
-  return folded;
-}
-
-/** Heading levels present in the document (for the fold-to-level control). */
-export function headingLevels(sections: DocSection[]): number[] {
-  return [...new Set(sections.map(section => section.level))].sort((a, b) => a - b);
-}
-
 // ============================================================================
 // Issue counts per section
 // ============================================================================
@@ -323,4 +206,20 @@ export function planSectionMark(lineIndices: number[], status: LineMarkStatus, m
     plan.apply.push(lineIndex);
   }
   return plan;
+}
+
+/** A displayed section scope is captured by text identity, never recomputed from indices. */
+export interface SectionScope { lines: Array<Pick<DocLine, 'hash' | 'occurrence' | 'text'> & { copies: number }>; heading: string }
+export function captureSectionScope(section: DocSection, lines: DocLine[]): SectionScope {
+  return { heading: lines[section.headingIndex]?.text ?? '',
+    lines: lines.slice(section.headingIndex, section.lineEnd).map(({ hash, occurrence, text }) => ({ hash, occurrence, text, copies: lines.filter(line => line.hash === hash && line.text === text).length })) };
+}
+/** Changed or removed text is skipped; new lines cannot enter a captured scope. */
+export function resolveSectionScope(scope: SectionScope, lines: DocLine[]): number[] {
+  return scope.lines.flatMap(saved => {
+    // A new identical copy makes occurrence-based identity ambiguous: never mark it by accident.
+    if (lines.filter(line => line.hash === saved.hash && line.text === saved.text).length !== saved.copies) return [];
+    const line = lines.find(line => line.hash === saved.hash && line.occurrence === saved.occurrence && line.text === saved.text);
+    return line ? [line.index] : [];
+  });
 }

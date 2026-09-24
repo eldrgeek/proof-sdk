@@ -7,11 +7,7 @@ import assert from 'node:assert/strict';
 
 const { UndoStack, UNDO_POLICY, conflictRefusal, describeLineMark } = await import('../shared/undo');
 const { detectClarify, clarifyQuestion, lastSentence, CLARIFY_POLICY } = await import('../shared/clarify');
-const {
-  SECTION_AUTOCLOSE, planAutoClose, foldToLevelRespectingSticky, foldToLevel, computeSections,
-} = await import('../shared/folding');
 const { SETTLED_DECISION_POLICY } = await import('../shared/settled-decision');
-const serverLines = await import('../../server/line-marks');
 
 let passed = 0;
 async function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -164,68 +160,5 @@ await test('asking never marks the line and is never an Issue for the asker', ()
 });
 
 // ============================================================================
-// Items 4 and 6 — auto-close, and "an unfolded thing does not refold"
-// ============================================================================
-
-const markdown = [
-  '# Title', 'Intro paragraph that is long enough to read.',
-  '## Quiet', 'Quiet body one.', 'Quiet body two.',
-  '## Noisy', 'Noisy body one.', 'Noisy body two.',
-  '## Tiny', 'One line only.',
-].join('\n\n');
-const lines = await serverLines.computeServerLines(markdown);
-const sections = computeSections(lines);
-const byText = (text: string) => sections.find(s => lines[s.headingIndex].text === text)!;
-const quiet = byText('Quiet');
-const noisy = byText('Noisy');
-const tiny = byText('Tiny');
-
-const plan = (over: Partial<Parameters<typeof planAutoClose>[0]> = {}) => planAutoClose({
-  sections,
-  folded: new Set<string>(),
-  sticky: new Set<string>(),
-  focusLine: lines.length - 1,
-  issueTotal: section => (section.key === noisy.key ? 3 : 0),
-  inView: () => false,
-  ...over,
-});
-
-await test('a section with no Issues closes itself once the reader has left it', () => {
-  assert.deepEqual(plan(), [quiet.key], 'only the quiet, big-enough, out-of-view section closed');
-});
-
-await test('a section with Issues never closes itself', () => {
-  assert.ok(!plan().includes(noisy.key));
-  assert.deepEqual(plan({ issueTotal: () => 0 }).includes(noisy.key), true);
-});
-
-await test('nothing closes while it is in view or holds the focus (nothing moves under the reader)', () => {
-  assert.deepEqual(plan({ inView: () => true }), [], 'closed a section the reader can see');
-  assert.deepEqual(plan({ focusLine: quiet.headingIndex + 1 }), [], 'closed the section the focus is in');
-});
-
-await test('a one-line section is too small to be worth closing', () => {
-  assert.ok(!plan({ issueTotal: () => 0 }).includes(tiny.key));
-  assert.ok(tiny.lineEnd - tiny.headingIndex - 1 < SECTION_AUTOCLOSE.minBodyLines);
-});
-
-await test('item 6: a section the person unfolded by hand never auto-closes', () => {
-  assert.deepEqual(plan({ sticky: new Set([quiet.key]) }), [], 'auto-close refolded a hand-unfolded section');
-});
-
-await test('item 6: fold-to-level leaves hand-unfolded sections alone', () => {
-  const raw = foldToLevel(sections, 2);
-  assert.ok(raw.has(quiet.key), 'fold-to-level 2 normally folds the H2s');
-  const kept = foldToLevelRespectingSticky(sections, 2, new Set([quiet.key]));
-  assert.ok(!kept.has(quiet.key), 'fold-to-level refolded a hand-unfolded section');
-  assert.ok(kept.has(noisy.key), 'it stopped folding the other sections too');
-});
-
-await test('the model is switchable in one line where Mike may want it otherwise', () => {
-  assert.equal(SECTION_AUTOCLOSE.respectStickyUnfold, true);
-  assert.equal(SECTION_AUTOCLOSE.requireOutOfView, true);
-  assert.equal(SECTION_AUTOCLOSE.hoverPeek, true);
-  assert.ok(SECTION_AUTOCLOSE.idleMs >= 500, 'a fold must never land mid-gesture');
-});
-
+// Folding regressions now live in folding.test.ts and usability-s1-check.mjs.
 console.log(`\nux-consistency tests: ${passed} passed`);

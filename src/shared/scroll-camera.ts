@@ -1,5 +1,6 @@
 /**
- * Accord round 2, stage B — the scroll camera with a centred dead zone.
+ * Selected passages keep their screen position when layout changes above them.
+ * Mike, 2026-09-23 (usability brief). Explicit navigation uses the centred dead zone.
  *
  * Mike, 2026-09-22: "Highlighted line tends to be at the top of the scrolling area and sometimes is
  * only partially visible. What about moving toward the center of the screen as the user scrolls
@@ -132,4 +133,10 @@ export function cameraWouldMove(line: CameraLine, view: CameraView): boolean {
 /** The band fraction for a surface. Phones get their own. */
 export function bandFractionFor(phone: boolean): number {
   return phone ? SCROLL_CAMERA_POLICY.phoneBandFraction : SCROLL_CAMERA_POLICY.bandFraction;
+}
+
+/** Restore a passage's screen position, accounting for deliberate scrolling since capture. */
+export function anchoredScroll(before: { top: number; scrollY: number }, after: { top: number; scrollY: number }, maxScroll: number): number {
+  const layoutShift = after.top - before.top + after.scrollY - before.scrollY;
+  return clamp(after.scrollY + layoutShift, 0, Math.max(0, maxScroll));
 }

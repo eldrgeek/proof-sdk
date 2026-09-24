@@ -112,12 +112,19 @@ try {
     assert.deepEqual(folding.foldedAncestors(sections, both, DETAIL + 1).map(s => s.headingIndex), [TITLE, DETAIL]);
   });
 
-  await test('fold to level: level 2 shows H1s and H2s; level 1 only H1s', () => {
-    const keyOf = (i: number) => folding.sectionByHeading(sections, i)!.key;
-    assert.deepEqual([...folding.foldToLevel(sections, 2)].sort(), [keyOf(GOALS), keyOf(PLAN)].sort());
-    assert.deepEqual([...folding.foldToLevel(sections, 1)].sort(), [keyOf(TITLE), keyOf(APPENDIX)].sort());
-    assert.deepEqual([...folding.foldToLevel(sections, 3)], [keyOf(DETAIL)]);
-    assert.deepEqual(folding.headingLevels(sections), [1, 2, 3]);
+  await test('section agreement captures text identities and excludes new or changed lines', () => {
+    const section = folding.sectionByHeading(sections, GOALS)!;
+    const scope = folding.captureSectionScope(section, lines);
+    const inserted = { ...lines[GOALS + 1], text: 'New line', hash: 'new-identity' };
+    const now = [...lines.slice(0, GOALS + 1), inserted, ...lines.slice(GOALS + 1)]
+      .map((line, index) => ({ ...line, index }));
+    const duplicate = [...lines, { ...lines[GOALS + 1], index: lines.length, occurrence: 2 }];
+    assert.ok(!folding.resolveSectionScope(scope, duplicate).includes(GOALS + 1), 'ambiguous duplicate text must not gain agreement');
+    const resolved = folding.resolveSectionScope(scope, now);
+    assert.equal(resolved.length, scope.lines.length);
+    assert.ok(!resolved.includes(GOALS + 1), 'concurrent insertion cannot be agreed implicitly');
+    now[GOALS + 2] = { ...now[GOALS + 2], text: 'Changed', hash: 'changed' };
+    assert.equal(folding.resolveSectionScope(scope, now).length, scope.lines.length - 1);
   });
 
   await test('section Issue count: the same Issues as the top bar, restricted to the section (review marks by position)', () => {
@@ -146,7 +153,7 @@ try {
     assert.deepEqual(plan.apply, [0, 4, 5]);
     assert.deepEqual(plan.skipped, [{ lineIndex: 1, reason: 'rejected' }, { lineIndex: 2, reason: 'stronger' }, { lineIndex: 3, reason: 'same' }]);
     assert.equal(folding.FOLDING.allowSectionReject, false);
-    assert.equal(folding.FOLDING.foldedHeadingScope, 'section');
+    assert.equal(folding.FOLDING.foldedHeadingScope, 'heading');
     assert.equal(folding.FOLDING.unfoldedHeadingScope, 'heading');
   });
 
@@ -160,12 +167,11 @@ try {
       { key: 'd', marks: [] },
     ];
     const walk = new ReadingWalk(walkLines, 0);
-    assert.equal(walk.barrier(0), null, 'a hidden suggestion does not hold the page');
     assert.equal(walk.nextVisible(1), 4);
     walk.moveTo(4, 1000, 'scroll', [20, 20, 20, 20, 20]);
     const events = walk.drain();
     assert.deepEqual(events.filter(e => e.type === 'seen').map(e => (e as any).line), [0], 'only the heading was read');
-    assert.equal(walk.provisionalCount, 0, 'a hidden suggestion was not provisionally accepted');
+    assert.equal(walk.snapshot().provisional.length, 0, 'a hidden suggestion was not provisionally accepted');
     assert.equal(walk.nextVisible(-1), 0);
   });
 

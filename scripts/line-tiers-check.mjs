@@ -3,7 +3,7 @@
 // document looks as before (no ◆); an AI (agent key) tags setup lines context, which shows as "AI
 // proposed context"; context lines are quieter, decision lines get a ◆; a context line an AI read is
 // not an Issue for Mike, an unread one still is; Mike confirms from the rail box; D flips the focus
-// line; J / K skip covered context lines; "Show only decisions" folds them (view only). Desktop 1440
+// line; J / K visit every visible passage; "Show only decisions" folds them (view only). Desktop 1440
 // and phone 390, both review styles.
 // Authorship: Claude Opus 5 (worker proof-tiers), 2026-09-19, in the style of proxy-marks-check.mjs.
 // Starts an isolated local server on the current dist/ build (run `npm run build` first).
@@ -222,21 +222,16 @@ async function run(browser, style) {
       assert.deepEqual(history.body.history.map(h => h.by), ['ai:claude', 'ai:claude', 'ai:claude', MIKE]);
     });
 
-    await check(`${tag}: J / K skip the context lines Claude read; the unread one is still a stop`, async () => {
-      await mike.evaluate(() => window.__proofReadingWalk.focusLine(0));
-      await mike.locator('body').click({ position: { x: 5, y: 450 } }).catch(() => {});
-      await mike.evaluate(() => document.activeElement?.blur?.());
-      await mike.keyboard.press('j');
-      await waitFor(mike, l => window.__proofReadingWalk.debugState().focus === l, L.BUDGET);
-      await mike.keyboard.press('j');
-      await waitFor(mike, l => window.__proofReadingWalk.debugState().focus === l, L.LAUNCH);
-      await mike.keyboard.press('j');
-      await waitFor(mike, l => window.__proofReadingWalk.debugState().focus === l, L.HISTORY);
-      await mike.keyboard.press('k');
-      await waitFor(mike, l => window.__proofReadingWalk.debugState().focus === l, L.LAUNCH);
-      await mike.keyboard.press('k');
-      await mike.keyboard.press('k');
-      await waitFor(mike, () => window.__proofReadingWalk.debugState().focus === 0);
+    await check(`${tag}: J / K visit context passages even after someone read them`, async () => {
+      await mike.evaluate(() => { document.activeElement?.blur(); window.__proofReadingWalk.focusLine(0); });
+      for (const index of [1, 2, 3]) {
+        await mike.keyboard.press('j');
+        await waitFor(mike, i => window.__proofReadingWalk.debugState().cursor === i, index);
+      }
+      for (const index of [2, 1, 0]) {
+        await mike.keyboard.press('k');
+        await waitFor(mike, i => window.__proofReadingWalk.debugState().cursor === i, index);
+      }
     });
 
     await check(`${tag}: D flips the focus line to context (Claude read it: no longer Mike's Issue) and back`, async () => {

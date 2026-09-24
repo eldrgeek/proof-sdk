@@ -194,14 +194,14 @@ try {
     assert.equal(evaluation.views[launch.index].tagged, false);
   });
 
-  await test('reading walk: J / K stop only on lines that are not skippable context lines (falls back when none is left)', () => {
+  await test('reading walk: J / K visit all visible passages, including covered context', () => {
     const walk = new walkMod.ReadingWalk([
       { key: 'a', marks: [] }, { key: 'b', marks: [], skipStep: true }, { key: 'c', marks: [], skipStep: true }, { key: 'd', marks: [] }, { key: 'e', marks: [], skipStep: true },
     ], 0);
-    assert.equal(walk.nextStop(1), 3);
+    assert.equal(walk.nextStop(1), 1);
     walk.moveTo(3, 1000, 'jump');
-    assert.equal(walk.nextStop(-1), 0);
-    assert.equal(walk.nextStop(1), null, 'nothing left: the caller falls back to nextVisible');
+    assert.equal(walk.nextStop(-1), 2);
+    assert.equal(walk.nextStop(1), 4, 'visible context passages remain reachable');
     assert.equal(walk.nextVisible(1), 4);
   });
 

@@ -1,3 +1,6 @@
+/** Incoming review updates preserve list order and focused controls. Mike, 2026-09-23 (usability brief). */
+import { isInputComposing, letterShortcutsEnabled } from '../editor/editing-guard';
+import { stableReviewOrder } from '../shared/layout-panels';
 import { productName } from '../shared/product-identity';
 import { getActorName, getMarkColor, type Mark, type CommentData, type ReplaceData } from '../formats/marks';
 import { getReviewStyle, setReviewStyle, getReviewWalk, setReviewWalk, REVIEW_STYLE_EVENT, REVIEW_STYLE_POLICY } from '../editor/review-style';
@@ -59,6 +62,7 @@ export class PlayMakerReview {
   private walk = getReviewWalk();
   private settled = new Set<string>();
   private panelSignature = '';
+  private panelOrder: string[] = [];
   private previousOpen = new Set<string>();
   private failedIds = new Set<string>();
   private historyMessage = '';
@@ -81,6 +85,7 @@ export class PlayMakerReview {
     this.toggle.type = 'button'; this.toggle.className = 'pm-review-toggle'; this.toggle.textContent = 'Marks';
     this.toggle.onclick = () => { this.panel.hidden = !this.panel.hidden; this.toggle.setAttribute('aria-expanded', String(!this.panel.hidden)); };
     this.control.append(this.toggle);
+    this.panel.addEventListener('focusout', () => queueMicrotask(() => this.update()));
     this.panel.className = 'pm-review-panel'; this.panel.setAttribute('aria-label', 'Marks');
     this.historyNotice.className = 'review-history-notice';
     this.historyNotice.setAttribute('role', 'alert');
@@ -145,6 +150,8 @@ export class PlayMakerReview {
     this.historyNotice.hidden = !this.historyMessage || getReviewStyle() === 'playmaker';
     if (getReviewStyle() !== 'playmaker') return;
     const marks = this.openMarks();
+    this.panelOrder = stableReviewOrder(this.panelOrder, marks.map(mark => mark.id));
+    marks.sort((a, b) => this.panelOrder.indexOf(a.id) - this.panelOrder.indexOf(b.id));
     const openIds = new Set(marks.map(mark => mark.id));
     for (const id of this.previousOpen) if (!openIds.has(id)) this.settled.add(id);
     this.previousOpen = openIds;
@@ -158,8 +165,12 @@ export class PlayMakerReview {
     }
     const signature = JSON.stringify([marks, [...this.settled], this.walk, [...this.failedIds], this.historyMessage]);
     if (signature === this.panelSignature) return;
+    if (this.panel.contains(document.activeElement)) {
+      const counts = this.panel.querySelector('.pm-review-counts');
+      if (counts) counts.textContent = `${marks.length} open · ${this.settled.size} settled`;
+      return;
+    }
     this.panelSignature = signature;
-    const focusId = (document.activeElement as HTMLElement)?.dataset.reviewRow;
     this.panel.replaceChildren();
     const heading = document.createElement('h2'); heading.textContent = 'Marks';
     const closeMarks = this.button('×', () => this.closePanel()); closeMarks.className = 'pm-review-panel-close';
@@ -198,7 +209,6 @@ export class PlayMakerReview {
       const message = document.createElement('p'); message.setAttribute('role', 'alert');
       message.textContent = this.historyMessage; this.panel.append(message);
     }
-    if (focusId) this.panel.querySelector<HTMLElement>(`[data-review-row="${CSS.escape(focusId)}"]`)?.focus();
   }
   private button(label: string, action: () => void, disabled = false): HTMLButtonElement {
     const button = document.createElement('button'); button.type = 'button'; button.textContent = label;
@@ -441,7 +451,8 @@ export class PlayMakerReview {
       const next = event.shiftKey ? (index <= 0 ? focusable.length - 1 : index - 1) : (index + 1) % focusable.length;
       event.preventDefault(); focusable[next]?.focus(); return;
     }
-    if (!typing && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    if (!typing && !event.metaKey && !event.ctrlKey && !event.altKey
+      && !event.isComposing && event.keyCode !== 229 && !isInputComposing() && letterShortcutsEnabled()) {
       const button = this.dialog.querySelector<HTMLButtonElement>(`[data-review-key="${CSS.escape(event.key.toLowerCase())}"]`);
       if (button) { event.preventDefault(); event.stopImmediatePropagation(); button.click(); }
     }

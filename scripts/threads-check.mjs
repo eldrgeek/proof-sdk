@@ -286,7 +286,7 @@ async function desktop(browser, base, style) {
       .catch(async () => { throw new Error(`the old comment did not resolve; threads: ${JSON.stringify(await threads(page))}`); });
   });
 
-  await check(`${tag}: a resolved thread folds to one mark, and the mark reopens the history`, async () => {
+  await check(`${tag}: resolution stays expanded; returning offers history that opens explicitly`, async () => {
     await focusLine(page, L.CLAIM);
     const card = rail.locator('.amg-thread[data-asks="yes-no"]').first();
     await card.waitFor({ state: 'visible' });
@@ -294,6 +294,10 @@ async function desktop(browser, base, style) {
     await card.locator('.amg-thread-reply-send').click();
     await waitFor(page, () => window.__proofLineMarks.allThreads().some(v => v.thread.asks === 'yes-no' && v.thread.replies.length === 1), null, 12000);
     await rail.locator('.amg-thread[data-asks="yes-no"] .amg-thread-resolve[data-resolve="resolved"]').first().click();
+    await waitFor(page, () => window.__proofLineMarks.allThreads().some(v => v.thread.asks === 'yes-no' && v.thread.status === 'resolved'), null, 12000);
+    assert.equal(await rail.locator('.amg-thread[data-asks="yes-no"]').count(), 1, 'resolving collapsed the thread under the reader');
+    await focusLine(page, L.NOTES);
+    await focusLine(page, L.CLAIM);
     await waitFor(page, () => window.__proofReadingWalk.threadsPanel().debugState().threads.some(t => t.folded), null, 12000);
     const mark = rail.locator('.amg-thread-mark[data-folded="true"]').first();
     await mark.waitFor({ state: 'visible' });
@@ -304,6 +308,8 @@ async function desktop(browser, base, style) {
     const reopened = rail.locator('.amg-thread[data-asks="yes-no"]').first();
     await reopened.waitFor({ state: 'visible' });
     assert.match(await reopened.locator('.amg-thread-replies').innerText(), /Yes, that is the Q2 figure\./, 'the history is back');
+    await reopened.locator('.amg-thread-fold').click();
+    await mark.waitFor({ state: 'visible' });
   });
 
   await check(`${tag}: the \`?\` clarify gesture produces the same object — a thread that asks clarify`, async () => {

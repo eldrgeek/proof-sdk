@@ -11,7 +11,7 @@
  * Authorship: Mike Wolf (rulings), Ren (SOMA UI, the proposal), built by Claude Opus 5 (worker
  * accord-layout3), 2026-09-21.
  */
-import { NAVIGATOR_POLICY, needsYouLabel, outlineRows, type NavigatorTab } from '../shared/layout-panels';
+import { NAVIGATOR_POLICY, stableReviewOrder, needsYouLabel, outlineRows, type NavigatorTab } from '../shared/layout-panels';
 import type { LineMarksUI } from './line-marks';
 import type { FoldingUI } from './folding';
 
@@ -60,6 +60,7 @@ export class NavigatorUI {
   private readonly badge = el('span', 'anv-badge');
   private tab: NavigatorTab;
   private outlineSig = '';
+  private issueOrder: string[] = [];
   private issuesSig = '';
   /** The last row drawn for each line, so a settled row keeps the words it had. */
   private lastRows = new Map<number, { kinds: string[]; label: string }>();
@@ -97,6 +98,8 @@ export class NavigatorUI {
     this.settledTools.hidden = true;
     this.panes.issues.append(this.issuesEmpty, this.settledTools, this.issuesList);
     this.panes.since.append(this.sinceEmpty, sinceHost);
+    this.outlineList.addEventListener('focusout', () => queueMicrotask(() => this.render()));
+    this.issuesList.addEventListener('focusout', () => queueMicrotask(() => this.render()));
     this.applyTab();
   }
 
@@ -105,7 +108,7 @@ export class NavigatorUI {
   select(tab: NavigatorTab, remember = true): void {
     if (tab === this.tab) return;
     // Leaving the Issues tab is the other way a settled row goes (OPEN_VIEW_POLICY.keepSettled).
-    if (this.tab === 'issues') { this.settled.clear(); this.tracked.clear(); }
+    if (this.tab === 'issues') { this.settled.clear(); this.tracked.clear(); this.issueOrder = []; }
     this.tab = tab;
     this.applyTab();
     if (remember) this.host.tabChanged(tab);
@@ -141,7 +144,7 @@ export class NavigatorUI {
     const sinceShown = this.panes.since.querySelector('.prw-since:not([hidden])');
     this.sinceEmpty.hidden = Boolean(sinceShown);
     if (this.tab === 'issues') this.renderIssues(items);
-    if (this.tab === 'outline') this.renderOutline();
+    if (this.tab === 'outline') this.renderOutline(force);
   }
 
   private renderIssues(items: ReturnType<LineMarksUI['needsYouItems']>): void {
@@ -164,23 +167,32 @@ export class NavigatorUI {
     const rows = [
       ...items.map(item => ({ line: item.line, settled: false, kinds: item.kinds as string[], label: needsYouLabel(item, actor => lm.displayName(actor), lm.me()) })),
       ...settledLines.map(line => ({ line, settled: true, kinds: this.settled.get(line)!.kinds, label: this.settled.get(line)!.label })),
-    ].sort((a, b) => a.line - b.line);
+    ];
+    const keyOf = (line: number): string => {
+      const passage = lines[line];
+      return passage ? `${passage.hash}:${passage.occurrence}` : `removed:${line}`;
+    };
+    this.issueOrder = stableReviewOrder(this.issueOrder, rows.map(row => keyOf(row.line)));
+    rows.sort((a, b) => this.issueOrder.indexOf(keyOf(a.line)) - this.issueOrder.indexOf(keyOf(b.line)));
     const sig = JSON.stringify([rows.map(r => [r.line, r.settled, r.kinds, r.label, lines[r.line]?.hash]), cursor]);
-    if (sig === this.issuesSig) return;
+    if (sig === this.issuesSig || this.issuesList.contains(document.activeElement)) return;
     this.issuesSig = sig;
     this.issuesEmpty.hidden = rows.length > 0 || !lm.isLoaded();
     const n = this.settled.size;
     this.settledTools.hidden = n === 0;
     this.settledLabel.textContent = n ? `${n} settled ${n === 1 ? 'row' : 'rows'}` : '';
-    this.issuesList.replaceChildren();
+    const existing = new Map([...this.issuesList.children].map(node => [(node as HTMLElement).dataset.key, node as HTMLElement]));
     for (const row of rows) {
-      const li = el('li');
-      const b = el('button', 'anv-issue');
+      const key = keyOf(row.line);
+      const li = existing.get(key) ?? el('li');
+      li.dataset.key = key;
+      existing.delete(key);
+      const b = li.querySelector<HTMLButtonElement>('button') ?? el('button', 'anv-issue');
       b.type = 'button';
       b.dataset.line = String(row.line);
       b.dataset.kind = row.kinds[0] ?? 'changed';
-      if (row.settled) b.dataset.settled = 'true';
-      if (row.line === cursor) b.setAttribute('aria-current', 'true');
+      b.dataset.settled = String(row.settled);
+      if (row.line === cursor) b.setAttribute('aria-current', 'true'); else b.removeAttribute('aria-current');
       const dot = el('span', 'anv-dot');
       dot.setAttribute('aria-hidden', 'true');
       const text = lines[row.line]?.text ?? '';
@@ -190,14 +202,15 @@ export class NavigatorUI {
         el('span', 'anv-issue-title', title || `Line ${row.line + 1}`),
         el('small', 'anv-issue-kind', row.settled ? `Settled · line ${row.line + 1}` : row.label),
       );
-      b.append(dot, body);
+      b.replaceChildren(dot, body);
       b.onclick = () => this.host.go(row.line);
-      li.append(b);
-      this.issuesList.append(li);
+      if (b.parentElement !== li) li.append(b);
+      if (li.parentElement !== this.issuesList) this.issuesList.append(li);
     }
+    for (const node of existing.values()) node.remove();
   }
 
-  private renderOutline(): void {
+  private renderOutline(force = false): void {
     const folding = this.host.folding();
     const lm = this.host.lineMarks();
     const lines = lm.lineList();
@@ -208,7 +221,7 @@ export class NavigatorUI {
     let here = -1;
     for (const row of rows) if (row.headingIndex <= cursor) here = row.headingIndex;
     const sig = JSON.stringify([rows, here, lm.isLoaded()]);
-    if (sig === this.outlineSig) return;
+    if (sig === this.outlineSig || (!force && this.outlineList.contains(document.activeElement))) return;
     this.outlineSig = sig;
     this.outlineList.replaceChildren();
     if (rows.length === 0) {

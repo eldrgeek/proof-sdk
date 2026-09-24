@@ -1,32 +1,7 @@
 /**
- * Reading keys and writing mode (Mike, 2026-09-21: "Typing A to accept sometimes inserts an A in
- * the text.").
- *
- * The rule, as the person sees it:
- *   - Editing: you clicked (or tapped) the text, pressed Enter on the focus line, or used the
- *     margin's pencil. The caret blinks, every key types, and the state is visible in four places
- *     at once: a solid left bar and tint on the line, "Editing line N" in the status bar under the
- *     page, "Editing line N" beside the toolbar's Suggesting | Editing switch, and the caret
- *     itself. ("Writing" is the same state under its older name; the status bar says Editing.)
- *   - Reading: everything else. The reading keys (A R Y N T D E J K 1-9, ↑ ↓) are commands and
- *     never type; other letters do nothing to the text. No caret blinks in the text.
- *   - You leave an edit through one of three doors, and they are ONE action: Cmd+Enter
- *     (Ctrl+Enter off a Mac, the advertised gesture), a click anywhere outside the edited line, or
- *     Esc. Two more paths leave without the person meaning to — resting the pointer on another
- *     line after typing pauses (EDITING_GUARD_POLICY.graceMs), and scrolling the caret's line out
- *     of view — and they are doors too.
- *   - **Leaving ALWAYS posts what you typed as a proposal others can see, and never discards it.**
- *     Undo is the only way to remove a posted proposal. Leaving a line you did not change is
- *     silent. src/shared/edit-session.ts holds that rule; this module holds the keys.
- *
- * Why a mode and not "is the caret in the text": the editor can hold the keyboard without the
- * person having put it there (a dialog or popover hands focus back to the text when it closes;
- * a click on a link used to place a caret). Before this, such a caret silently turned the next
- * A into a typed "A" while the rail showed a different focus line. Now focus the person did not
- * give to the text is reading, and a key is either a command or typing, never both.
- *
- * Pure: routeKey decides; src/editor/editing-guard.ts holds the state and applies it.
- * Authorship: Claude Opus 5 (worker proof-bugs6), 2026-09-21, from Mike's report that day.
+ * Reading commands act on the selected passage. Hover and scrolling never end Writing.
+ * Letter shortcuts are optional and never run during typing or composition.
+ * Mike, 2026-09-23 (usability brief).
  */
 
 export const READING_MODE_POLICY = {
@@ -38,20 +13,6 @@ export const READING_MODE_POLICY = {
   escapeEndsWriting: true,
   /** Cmd+Enter (Ctrl+Enter off a Mac) ends the edit. The advertised door; it posts. */
   cmdEnterEndsWriting: true,
-  /**
-   * Resting the pointer on another line, once typing has paused for the editing grace period,
-   * returns to reading: the line under the pointer becomes the focus line the keys act on.
-   * It posts what was typed, like every other door.
-   */
-  hoverEndsWriting: true,
-  /** Scrolling the caret's line out of view returns to reading (you cannot type where you cannot see). */
-  caretOutOfViewEndsWriting: true,
-  /**
-   * The one rule behind all of those: every path out of an edit posts what was typed as a
-   * proposal, and no path discards it (src/shared/edit-session.ts). Turning this off would make
-   * hoverEndsWriting and caretOutOfViewEndsWriting silently drop typed text again, which is the
-   * bug this stage fixed; it exists so the rule is a named switch, not an accident of wiring.
-   */
   leavingPostsTheEdit: true,
   /** A visible way into editing: a pencil in the margin's dot column on the cursor line. */
   marginPencilStartsWriting: true,
@@ -94,6 +55,7 @@ export interface KeyRouteInput {
   target: KeyTarget;
   /** The person is writing (see the module header). */
   writing: boolean;
+  letterShortcuts?: boolean;
 }
 
 /**
@@ -126,7 +88,8 @@ export function routeKey(input: KeyRouteInput): KeyRoute {
     if (target === 'field' || (target === 'editor' && input.writing)) return 'type';
     return target === 'editor' && isTextChangingKey(key) ? 'swallow' : 'pass';
   }
-  if (target === 'field') return 'type';
+  if (target === 'field' || input.writing) return 'type';
+  if (input.letterShortcuts === false && /^[a-z]$/i.test(key)) return target === 'editor' ? 'swallow' : 'pass';
   if (target === 'editor') {
     if (input.writing) return 'type';
     if (isReadingCommandKey(key)) return 'command';

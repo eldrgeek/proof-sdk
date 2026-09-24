@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Browser check for Proof Documents Steps B3b and B3c: honest reading and alignment.
 //   B3b: the reading time scales with a line's words (a per-reader rate in the rail); a line
-//        scrolled past faster is "skimmed" (hollow dot, still an Issue); the rail says how a Seen
+//        scrolled past faster stays unmarked; the rail says how a Seen
 //        was earned; a spelling fix carries marks forward (tilde badge, "Was:", Mark unseen) while
 //        a number change resets them.
 //   B3c: "Since you last marked" (the Navigator's Since you tab since Accord layout stage 3; items move the focus line) with the ringer
@@ -14,6 +14,7 @@
 // Exit code 0 only if every check passes.
 // Usage: node scripts/honest-reading-check.mjs [--style playmaker|proof] [--shots dir]
 import assert from 'node:assert/strict';
+
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
@@ -150,7 +151,7 @@ async function desktop(browser, base, style) {
     const rate = settings.locator('.prw-rate select');
     assert.equal(await rate.inputValue(), '8', 'default rate is 8 words/s');
     await page.keyboard.press('j'); await page.keyboard.press('j');
-    await waitFor(page, i => window.__proofReadingWalk.debugState().focus === i, L.LONG);
+    await waitFor(page, i => window.__proofReadingWalk.debugState().readingFocus === i, L.LONG);
     let s = await walk(page);
     assert.equal(s.dwellMs, 3000, `24 words at the default 8 words/s take 3 s (got ${s.dwellMs})`);
     await page.waitForTimeout(1200);
@@ -171,42 +172,32 @@ async function desktop(browser, base, style) {
     await page.screenshot({ path: path.join(shots, `${tag}-1-rate.png`) });
   });
 
-  await check(`${tag}: lines passed faster than their reading time are skimmed: hollow dot, still Issues`, async () => {
+  await check(`${tag}: lines passed too fast stay unmarked; reading never records agreement`, async () => {
     // J past lines 3 and 4 at once (well under their reading time), then fling to the end.
     await page.keyboard.press('j');
     await page.keyboard.press('j');
     await page.keyboard.press('j');
     await page.mouse.move(700, 500);
     await page.mouse.wheel(0, 3000);
-    await waitFor(page, () => window.__proofReadingWalk.debugState().focus >= 12);
+    await waitFor(page, () => window.__proofReadingWalk.debugState().readingFocus >= 12);
     await page.waitForTimeout(900);
     const s = await walk(page);
     for (const line of [L.TYPO, L.PRICE, 5, 6, 7, 8]) {
       assert.ok(!s.seenWrites.includes(line), `line ${line} was marked Seen while skimming`);
-      assert.equal(await dotStatus(page, line), 'skimmed', `line ${line}`);
+      assert.equal(await dotStatus(page, line), 'unseen', `line ${line}`);
     }
-    const look = await page.evaluate(i => {
-      const g = document.querySelector(`.plm-dot[data-line="${i}"] .plm-glyph`);
-      const cs = getComputedStyle(g);
-      return { bg: cs.backgroundColor, border: cs.borderTopColor, width: cs.borderTopWidth };
-    }, 6);
-    assert.equal(look.bg, 'rgb(255, 255, 255)', `a skimmed dot is hollow (${JSON.stringify(look)})`);
-    assert.notEqual(look.border, 'rgb(229, 231, 235)', 'a skimmed ring is darker than an unseen one');
-    const skimmedIssues = await page.evaluate(() => window.__proofLineMarks.issueSummary().issues.filter(i => i.type === 'line' && i.skimmedBy.length > 0).length);
-    assert.ok(skimmedIssues >= 6, `skimmed lines are still Issues (${skimmedIssues})`);
-    const batches = await page.evaluate(() => window.__proofLineMarks.debugState().skimWrites);
-    assert.ok(batches >= 6, `skim writes ${batches}`);
+    assert.equal(await page.evaluate(() => window.__proofLineMarks.debugState().skimWrites), 0);
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.screenshot({ path: path.join(shots, `${tag}-2-skimmed.png`) });
   });
 
   await check(`${tag}: the rail says how a Seen was earned: "by scrolling" vs "marked"`, async () => {
     await page.locator(`.plm-dot[data-line="${L.LONG}"]`).click();
-    await waitFor(page, i => window.__proofReadingWalk.debugState().focus === i, L.LONG);
+    await waitFor(page, i => window.__proofReadingWalk.debugState().readingFocus === i, L.LONG);
     // Polish pass: everyone's marks fold into "Marked by N"; open it (a person's click, kept for the line).
     await waitFor(page, () => { document.querySelectorAll('.prw-right .plm-team-fold:not([open]) > summary').forEach(s => s.click()); return /Seen \(by scrolling\)/.test(document.querySelector('.prw-right .plm-team')?.innerText ?? ''); });
     await page.locator(`.plm-dot[data-line="${L.SHORT}"]`).click();
-    await waitFor(page, i => window.__proofReadingWalk.debugState().focus === i, L.SHORT);
+    await waitFor(page, i => window.__proofReadingWalk.debugState().readingFocus === i, L.SHORT);
     // Accord layout stage 3 (decision 8): Seen is under the line's ⋯ More.
     await rail.locator('.plm-box .plm-more-btn').click();
     await rail.locator('.plm-box .plm-more').getByRole('button', { name: /^•\s*Seen$/ }).click();
@@ -217,7 +208,7 @@ async function desktop(browser, base, style) {
   await check(`${tag}: a spelling fix carries marks forward (tilde, "Was:", Mark unseen); a number change resets them`, async () => {
     for (const line of [L.TYPO, L.PRICE]) {
       await page.locator(`.plm-dot[data-line="${line}"]`).click();
-      await waitFor(page, i => window.__proofReadingWalk.debugState().focus === i, line);
+      await waitFor(page, i => window.__proofReadingWalk.debugState().readingFocus === i, line);
       await rail.locator('.plm-box').getByRole('button', { name: /Agree/ }).click();
       await waitFor(page, i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.status === 'agreed', line);
     }
@@ -262,7 +253,7 @@ async function desktop(browser, base, style) {
     assert.ok(await since.locator('.prw-ringers .prw-since-item[data-line="2"]').count() === 1, 'the long line (seen by scrolling, then a suggestion) is a ringer');
     await page.screenshot({ path: path.join(shots, `${tag}-4-since-you.png`) });
     await since.locator('.prw-since-item[data-type="rejection"]').first().click();
-    await waitFor(page, i => window.__proofReadingWalk.debugState().focus === i, L.P7);
+    await waitFor(page, i => window.__proofReadingWalk.debugState().readingFocus === i, L.P7);
   });
   await context.close();
 
@@ -305,12 +296,12 @@ async function phone(browser, base, style) {
     ...devices['iPhone 13'], viewport, screen: viewport, hasTouch: true, isMobile: true,
   });
   activePage = page;
-  await check(`${tag}: a quick scroll skims (hollow dots); no sideways scroll`, async () => {
+  await check(`${tag}: a quick scroll leaves skipped lines unmarked; no sideways scroll`, async () => {
     await page.evaluate(() => window.scrollBy(0, 1400));
-    await waitFor(page, () => window.__proofReadingWalk.debugState().focus >= 6);
+    await waitFor(page, () => window.__proofReadingWalk.debugState().readingFocus >= 6);
     await page.waitForTimeout(900);
-    const skimmed = await page.evaluate(() => [...document.querySelectorAll('.plm-dot[data-status="skimmed"]')].length);
-    assert.ok(skimmed >= 3, `skimmed dots ${skimmed}`);
+    const unseen = await page.evaluate(() => [...document.querySelectorAll('.plm-dot[data-status="unseen"]')].length);
+    assert.ok(unseen >= 3, `unseen dots ${unseen}`);
     const info = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));
     assert.ok(info.sw <= info.cw + 1, `scrollWidth ${info.sw}`);
     await page.screenshot({ path: path.join(shots, `${tag}-1-skimmed.png`) });
@@ -342,7 +333,7 @@ async function phone(browser, base, style) {
     assert.ok(box && box.height >= 44, `tap target ${box?.height}`);
     await page.screenshot({ path: path.join(shots, `${tag}-2-since-sheet.png`) });
     await item.tap();
-    await waitFor(page, () => window.__proofReadingWalk.debugState().focus === 5);
+    await waitFor(page, () => window.__proofReadingWalk.debugState().readingFocus === 5);
     assert.equal(await page.locator('.prw-left.prw-sheet-open').count(), 0, 'the sheet closes after moving the focus');
   });
   await context.close();

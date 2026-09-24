@@ -17,6 +17,8 @@
 // Exit 0 only if every check passes.
 // Usage: node scripts/layout-check.mjs [--style playmaker|proof] [--stage 1|2|3] [--shots dir] [--peek]
 import assert from 'node:assert/strict';
+import { selectPassage, hoverChangesNothing, scrollAcceptsNothing } from './usability-s1-assertions.mjs';
+
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
@@ -195,18 +197,10 @@ async function desktop(browser, base, style) {
     assert.match(b.marked, /No marks from you yet/);
     assert.equal(await page.locator('.prw-right .prw-rail-head .prw-mode, .prw-right .prw-rail-head .prw-status').count(), 0);
   });
-  await check(`${tag}: scrolling moves the line number and never moves the bar`, async () => {
-    const before = await bar(page);
-    await page.mouse.move(700, 500);
-    for (let i = 0; i < 6; i += 1) { await page.mouse.wheel(0, 240); await page.waitForTimeout(120); }
-    await page.waitForTimeout(300);
-    const after = await bar(page);
-    const w = await walk(page);
-    assert.ok(w.target > 0, 'the walk did not move');
-    assert.equal(after.line, `Line ${w.target + 1} of ${w.lines}`);
-    assert.equal(Math.round(after.top), Math.round(before.top), 'the bar moved');
-    await page.evaluate(() => window.scrollTo(0, 0));
-    await page.waitForTimeout(300);
+  await check(`${tag}: scrolling keeps the selected passage and the status bar in place`, async () => {
+    const before = await bar(page); const selected = (await walk(page)).cursor;
+    await page.evaluate(() => window.scrollBy(0, 250)); await page.waitForTimeout(300);
+    assert.equal((await walk(page)).cursor, selected); assert.equal((await bar(page)).line, before.line);
   });
   // Accord round 2 stage A (2026-09-22): the bar says "Editing line N" where it used to say
   // "Writing" — the same state, named for what the person is doing and on which line.
@@ -222,7 +216,7 @@ async function desktop(browser, base, style) {
   await check(`${tag}: marking lines explicitly sets "You marked up to line K · just now" and the rule sits after line K`, async () => {
     assert.equal((await walk(page)).rule, null, 'a rule with no marks');
     for (const i of [L.S1, L.S2]) {
-      await hoverLine(page, i);
+      await selectPassage(page, i);
       await page.keyboard.press('a');
       await waitFor(page, i => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i && m.status === 'agreed'), i);
     }
@@ -260,7 +254,7 @@ async function desktop(browser, base, style) {
     assert.equal(colors.filter(c => c === 'rgb(217, 140, 0)').length, lines.length, 'another dot is amber');
   });
   await check(`${tag}: answering an ask takes its amber dot away and the count follows`, async () => {
-    await hoverLine(page, L.ASK);
+    await selectPassage(page, L.ASK);
     await page.keyboard.press('y');
     await waitFor(page, i => !document.querySelector(`.plm-dot[data-line="${i}"][data-needs-you="true"]`), L.ASK);
     const lines = await amber(page);
@@ -270,64 +264,15 @@ async function desktop(browser, base, style) {
 
   // Stage 3 (decision 4, one cursor): hovering another line previews it in the Margin only; the one
   // "you are here" bar stays on the cursor (proposal: "the text never changes").
-  await check(`${tag}: one "you are here" look — the bar stays on the cursor while another line is hovered`, async () => {
-    const style = () => page.evaluate(() => { const f = document.querySelector('.prw-focus'); const s = getComputedStyle(f); return { source: f.dataset.source, line: Number(f.dataset.line), bg: s.backgroundColor, shadow: s.boxShadow }; });
-    await page.mouse.move(5, 450);
-    await page.keyboard.press('j');
-    await page.waitForTimeout(200);
-    const reading = await style();
-    // The hovered line has to be one the page can actually show: the unstepped ask at L.ASK2 is a
-    // barrier, and since the scroll camera (stage B, 2026-09-22) stops the page with the barrier
-    // line on the reading line — the middle band, not the top of the window — the lines a screen
-    // below it cannot be scrolled to until the reader steps through the ask. The check is about
-    // hovering ANOTHER line, so it hovers one this side of the barrier.
-    const HOVERED = L.COMMENT;
-    await hoverLine(page, HOVERED);
-    await page.waitForTimeout(250);
-    const hover = await style();
-    // (hoverLine may scroll the line into view first; scrolling reads, so the cursor can move then.)
-    const w = await walk(page);
-    assert.equal(w.preview, HOVERED, 'the hovered line is not previewed');
-    assert.notEqual(w.cursor, HOVERED, 'the hover moved the cursor');
-    assert.equal(reading.source, 'reading');
-    assert.equal(hover.source, 'reading', 'the hover drew its own band');
-    assert.equal(hover.line, w.cursor, 'the bar left the cursor on hover');
-    assert.equal(hover.bg, reading.bg);
-    const alpha = Number(/rgba?\([^)]*?([\d.]+)\)$/.exec(hover.bg)?.[1] ?? '1');
-    assert.ok(alpha >= 0.1, `the band is too faint (alpha ${alpha})`);
-    assert.match(hover.shadow, /inset/, 'no left bar');
+  await check(`${tag}: hover preserves the selected highlight and target`, async () => {
+    await selectPassage(page, L.S1 + 1); await hoverChangesNothing(page, L.S1 + 2);
   });
   await check(`${tag}: no decision ◆ in the margin and no dimmed context text`, async () => {
     assert.equal(await page.locator('.plm-dot .plm-tier').count(), 0);
     assert.equal(await page.evaluate(() => document.body.classList.contains('phl-context-dim')), false);
   });
-  await check(`${tag}: a change scrolled past stays an ordinary insert / delete; the bar lists it with Save`, async () => {
-    await page.evaluate(() => window.scrollTo(0, 0));
-    await page.waitForTimeout(300);
-    await page.mouse.move(5, 450);
-    for (let i = 0; i < 40; i += 1) {
-      const s = await walk(page);
-      if (s.focus > L.CHANGE) break;
-      await page.keyboard.press('j');
-      await page.waitForTimeout(40);
-    }
-    await waitFor(page, () => window.__proofReadingWalk.debugState().provisional.length === 1);
-    const look = await page.evaluate(() => {
-      const del = document.querySelector('.ProseMirror .mark-delete');
-      const ins = document.querySelector('.ProseMirror .mark-insert:not(.mark-delete), .ProseMirror .mark-replace-insert');
-      return { delShown: del ? getComputedStyle(del).display !== 'none' : null, insBorder: ins ? getComputedStyle(ins).borderBottomStyle : null };
-    });
-    assert.equal(look.delShown, true, 'the old words were hidden');
-    assert.notEqual(look.insBorder, 'dashed', 'the new words are dashed');
-    const b = await bar(page);
-    assert.match(b.provisional, /1 accepted by scrolling, not saved/);
-    await page.screenshot({ path: path.join(shots, `${tag}-provisional.png`) });
-    await page.locator('.pst-bar .pst-save').click();
-    await waitFor(page, () => window.__proofReadingWalk.debugState().provisional.length === 0);
-    const w = await walk(page);
-    assert.ok(w.commits.some(c => c.ok), 'Save did not commit');
-    await waitFor(page, () => !document.querySelector('.pst-bar .pst-provisional:not([hidden])'));
-    await waitFor(page, i => !document.querySelector(`.plm-dot[data-line="${i}"][data-needs-you="true"]`), L.CHANGE);
+  await check(`${tag}: reading does not offer Save accepted changes`, async () => {
+    await scrollAcceptsNothing(page);
   });
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.waitForTimeout(300);
@@ -545,7 +490,7 @@ async function desktop2(browser, base, style) {
     await waitFor(page, () => window.proof.isSuggestionsEnabled() === true);
   });
   await check(`${tag}: the toolbar's Undo says Undo, names what it reverses in its tooltip, and reverses it; Edit › Undo is the same Undo`, async () => {
-    await hoverLine(page, L.S1 + 2);
+    await selectPassage(page, L.S1 + 2);
     await page.keyboard.press('a');
     const undo = page.locator('#share-banner .pundo-btn').first();
     // Stage 3 (COS): the toolbar button says just "Undo"; its tooltip and Edit › Undo name what it reverses.
@@ -895,53 +840,23 @@ async function desktop3(browser, base, style) {
     await page.locator('.prw-left .anv-tab[data-tab="issues"]').click();
   });
 
-  await check(`${tag}: hover previews the Margin — the Line tab says preview, the bar and the status bar stay on the cursor, the dot gets a ring`, async () => {
-    await page.locator(`.prw-left .anv-issue[data-line="${L.ASK}"]`).click();
-    await waitFor(page, i => window.__proofReadingWalk.debugState().focus === i, L.ASK);
-    await hoverLine(page, L.S2 + 5);
-    const w = await walk(page);
-    assert.equal(w.cursor, L.ASK, 'hover moved the cursor');
-    assert.equal(w.preview, L.S2 + 5);
-    assert.equal(await page.evaluate(() => Number(document.querySelector('.prw-focus').dataset.line)), L.ASK, 'the bar followed the hover');
-    assert.equal((await bar(page)).line, `Line ${L.ASK + 1} of 25`, 'the status bar followed the hover');
-    const tab = page.locator('.prw-right .amg-tab[data-tab="line"]');
-    assert.equal(await tab.locator('.amg-tab-label').textContent(), `Line ${L.S2 + 6}`);
-    assert.equal(await tab.locator('.amg-preview').textContent(), 'preview');
-    assert.equal(await page.locator(`.plm-dot[data-line="${L.S2 + 5}"]`).getAttribute('data-preview'), 'true');
-    await page.screenshot({ path: path.join(shots, `${tag}-preview.png`) });
+  await check(`${tag}: hover leaves the Margin on the selected passage`, async () => {
+    await selectPassage(page, L.S2 + 3); await hoverChangesNothing(page, L.S2 + 5);
   });
-  await check(`${tag}: a key commits the preview — A marks the previewed line, and the cursor moves there without scrolling`, async () => {
-    const y = await page.evaluate(() => window.scrollY);
+  await check(`${tag}: a key after hover acts on the selected passage`, async () => {
+    await selectPassage(page, L.S2 + 3); await hoverChangesNothing(page, L.S2 + 5);
     await page.keyboard.press('a');
-    await waitFor(page, i => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i && m.status === 'agreed'), L.S2 + 5);
-    const w = await walk(page);
-    assert.equal(w.cursor, L.S2 + 5);
-    assert.equal(w.preview, null);
-    assert.ok(w.previewCommits.some(c => c.line === L.S2 + 5 && c.via === 'key'));
-    assert.equal(await page.evaluate(() => window.scrollY), y, 'the page moved under the reader');
-    assert.equal((await bar(page)).line, `Line ${L.S2 + 6} of 25`);
-    assert.equal(await page.locator(`.plm-dot[data-preview="true"]`).count(), 0);
+    await waitFor(page, i => window.__proofLineMarks.myStatus(i) === 'agreed', L.S2 + 3);
+    assert.equal((await walk(page)).cursor, L.S2 + 3);
   });
-  await check(`${tag}: a click in the Margin commits the preview first (⋯ More acts on the previewed line)`, async () => {
-    await hoverLine(page, L.S2 + 7);
-    await page.mouse.move(1300, 200, { steps: 4 });
-    await page.waitForTimeout(250);
-    assert.equal((await walk(page)).preview, L.S2 + 7, 'the preview ended on the way to the Margin');
+  await check(`${tag}: Margin controls keep the selected passage after hover`, async () => {
+    await selectPassage(page, L.S2 + 3); await hoverChangesNothing(page, L.S2 + 5);
     await page.locator('.prw-right .plm-more-btn').click();
-    await waitFor(page, i => window.__proofReadingWalk.debugState().cursor === i, L.S2 + 7);
-    assert.ok((await walk(page)).previewCommits.some(c => c.line === L.S2 + 7 && c.via === 'margin'));
-    await page.locator('.prw-right .plm-more').waitFor({ state: 'visible' });
-    await page.locator('.prw-right .plm-more .plm-choice[data-status="seen"]').click();
-    await waitFor(page, i => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i && m.status === 'seen'), L.S2 + 7);
+    assert.equal((await walk(page)).cursor, L.S2 + 3);
   });
-  await check(`${tag}: the preview ends over the Navigator; J moves the cursor, never the preview`, async () => {
-    await hoverLine(page, L.S2 + 9);
-    await page.mouse.move(120, 600, { steps: 3 });
-    await waitFor(page, () => window.__proofReadingWalk.debugState().preview === null);
-    const before = (await walk(page)).cursor;
-    await page.mouse.move(5, 450);
-    await page.keyboard.press('j');
-    await waitFor(page, n => window.__proofReadingWalk.debugState().cursor > n, before);
+  await check(`${tag}: J selects the next visible passage after hover`, async () => {
+    await selectPassage(page, L.S2 + 3); await hoverChangesNothing(page, L.S2 + 5);
+    await page.keyboard.press('j'); assert.equal((await walk(page)).cursor, L.S2 + 4);
   });
 
   await check(`${tag}: Room is the chat, full height; its badge counts unread @mentions; the tab never switches itself`, async () => {

@@ -84,7 +84,6 @@ body.prw-right-collapsed .prw-right .prw-rail-head { padding: 6px 2px; justify-c
 /* Right rail content */
 .prw-provisional { flex-shrink: 0; margin: 8px 12px 0; padding: 8px 10px; border-radius: 10px; background: #f0fdf4; border: 1px dashed #16a34a; }
 .prw-provisional[hidden] { display: none; }
-.prw-provisional-text { margin: 0 0 6px; font-size: 12px; color: #166534; }
 .prw-commit { min-height: 32px; padding: 0 12px; border: none; border-radius: 8px; background: #16a34a; color: #fff; font: 600 13px system-ui, sans-serif; cursor: pointer; }
 .prw-error { margin: 6px 0 0; color: #b91c1c; font-size: 12px; }
 .prw-linebox .plm-box { margin-top: 4px; }
@@ -102,7 +101,6 @@ body.prw-right-collapsed .prw-right .prw-rail-head { padding: 6px 2px; justify-c
 .prw-step-nav button:disabled { opacity: .45; cursor: default; }
 .prw-card { margin: 8px 0; padding: 8px 10px; border: 1px solid #e3e2dc; border-left: 3px solid var(--review-author, #9ca3af); border-radius: 8px; background: #fff; }
 .prw-card[data-current="true"] { box-shadow: 0 0 0 2px #2563eb; }
-.prw-card[data-provisional="true"] { background: #f0fdf4; border-style: dashed; border-left-style: solid; }
 .prw-card-who { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
 .prw-card-who span { color: #646b73; }
 .prw-card-body { margin: 4px 0 6px; overflow-wrap: anywhere; font-size: 13px; }
@@ -213,21 +211,8 @@ body.prw-right-collapsed .prw-right .prw-chat { display: none; }
 .prw-edit-note { margin: 4px 0 6px; font-size: 12px; color: #92400e; }
 .prw-edit-note[data-kind="correct"] { color: #4b5563; }
 
-/*
- * Hover focus (desktop). Mike, 2026-09-19: "If the user moves the mouse on desktop, the selected
- * element becomes highlighted and is the focus." The hovered line gets the SAME strong band the
- * touch build uses, so the current element is unmistakable — the earlier 5% wash was almost
- * invisible against the page. The left bar is lighter than the reading band so the two are still
- * told apart: a solid bar means "this is where I am reading", a hatched-lighter bar means "this is
- * what the mouse is on".
- */
-/* Accord layout stage 1: the separate hover look is off (HIGHLIGHT_POLICY.hoverBand puts
-   phl-hover-band on the body to bring it back). Every source (reading, hover, caret) draws the one
-   "you are here" bar and tint set on .prw-focus above. */
-body.phl-hover-band .prw-focus[data-source="hover"] {
-  background: rgba(37, 99, 235, 0.11);
-  box-shadow: inset 6px 0 0 #60a5fa, 0 0 0 1px rgba(37, 99, 235, .28);
-}
+/* The selected passage keeps the same highlight after hover. Mike, 2026-09-23. */
+
 
 /* Touch focus (Claude Opus 5, 2026-09-19): the current line is unmistakable without hover. */
 .prw-strip { display: none; }
@@ -347,3 +332,6 @@ body.pst-on .plm-toast { bottom: 40px; }
   body.pst-on.prw-strip-on .plm-toast { bottom: calc(var(--prw-strip-h, 64px) + 40px); }
   .pst-rule-label { font-size: 11px; }
 }
+
+/* The selected-passage anchor owns compensation; native anchoring would apply it twice. */
+body.prw-on { overflow-anchor: none; }

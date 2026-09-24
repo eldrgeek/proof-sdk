@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import type { ProofIssue } from '../shared/line-marks';
 import { needsYouLines } from '../shared/layout-status';
 import {
-  CURSOR_POLICY, MARGIN_POLICY, MARKED_BY_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY,
+  stableReviewOrder, MARGIN_POLICY, MARKED_BY_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY,
   markedByFold, needsYouItems, needsYouLabel, outlineRows, parseRailState,
 } from '../shared/layout-panels';
 
@@ -27,14 +27,11 @@ const ask = (line: number, openFor: string[], by = 'ai:cos'): ProofIssue => ({
 const suggestion = (line: number, by: string | null): ProofIssue => ({ type: 'suggestion', markId: `s${line}`, pos: line * 10 + 2, kind: 'replace', by, excerpt: '' });
 const comment = (line: number, by: string | null): ProofIssue => ({ type: 'comment', markId: `c${line}`, pos: line * 10 + 3, kind: 'comment', by, excerpt: '' });
 
-test('policy: two Margin tabs, three Navigator tabs, Agree and Reject primary, hover previews', () => {
+test('policy: two Margin tabs, three Navigator tabs, Agree and Reject primary, selection owns the target', () => {
   assert.deepEqual(MARGIN_POLICY.tabs, ['line', 'room']);
   assert.deepEqual(NAVIGATOR_POLICY.tabs.map(t => t.label), ['Outline', 'Issues', 'Since you']);
   assert.deepEqual(MARGIN_POLICY.primaryMarks, ['agreed', 'rejected']);
   for (const item of ['approved', 'seen', 'clear', 'uncertain', 'alternative', 'explain', 'ttl', 'tier']) assert.ok(MARGIN_POLICY.moreItems.includes(item), item);
-  assert.equal(CURSOR_POLICY.hoverPreviews, true);
-  assert.equal(CURSOR_POLICY.keyCommitsPreview, true);
-  assert.equal(CURSOR_POLICY.marginClickCommitsPreview, true);
   assert.equal(NAVIGATOR_POLICY.widthPx, 240);
   assert.equal(MARGIN_POLICY.widthPx, 340);
   assert.equal(NAVIGATOR_POLICY.closedBelowPx, 1100);
@@ -104,6 +101,11 @@ test('markedByFold: "Marked by N" folds; open only for a current Reject or an op
   assert.equal(markedByFold(['agreed'], true).open, true, 'an open objection opens it');
   assert.equal(markedByFold(['unseen', 'unseen'], false).label, 'Not marked yet');
   assert.equal(markedByFold(['hidden', 'seen'], false).count, 2, 'a blind mark still counts as a mark');
+});
+
+test('incoming review rows append without moving the existing rows', () => {
+  assert.deepEqual(stableReviewOrder(['later', 'last'], ['new-first', 'later', 'last']), ['later', 'last', 'new-first']);
+  assert.deepEqual(stableReviewOrder(['gone', 'last'], ['last', 'new']), ['last', 'new']);
 });
 
 console.log(`\n${passed} layout-panels tests passed`);

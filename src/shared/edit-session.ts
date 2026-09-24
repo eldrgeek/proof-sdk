@@ -1,29 +1,7 @@
 /**
- * Accord round 2, stage A — an edit has a visible state, and one gesture that ends it by posting.
- *
- * Mike, 2026-09-22: "When option clicking to edit, the cursor changes, but there should be some
- * better indication that we are in editing mode. Not clear how to get out of editing mode."
- *
- * The one rule, as the person sees it:
- *   Leaving an edit ALWAYS posts what you typed as a proposal other people can see. Nothing is
- *   ever discarded by leaving. Undo is the only way to remove a posted proposal.
- *
- * The rule has three doors, and they are the same action:
- *   - Cmd+Enter (Ctrl+Enter off a Mac) — the advertised gesture.
- *   - A click outside the edited line — what people do by accident, so the accident is correct.
- *   - Esc — not advertised, but bound, so nobody who presses it is trapped or loses text.
- * Two more paths leave an edit without the person meaning to (resting the pointer on another line,
- * scrolling the caret out of view). They are doors too: they post, they do not drop text.
- *
- * "Posts" means the typed line becomes an ordinary open suggestion (src/editor/plugins/
- * suggestions.ts) attributed to the editor, with the original text still readable underneath. It
- * is a proposal, not an edit to the document, until someone accepts it.
- *
- * Pure: this module decides. src/editor/editing-guard.ts holds the session and routes the doors;
- * src/editor/index.ts posts the proposal; src/ui/reading-walk.ts and src/ui/line-marks.ts show the
- * state.
- *
- * Authorship: Mike Wolf (rulings), built by Claude Opus 5 (worker accord-edit), 2026-09-22.
+ * Hover and scrolling keep the edit open. The remaining edit doors are unchanged
+ * until the draft stage (S3); the direct-edit conversion gate remains off.
+ * Mike, 2026-09-23 (usability brief).
  */
 
 /** Every way an edit ends. The first three are the doors a person uses on purpose. */
@@ -34,16 +12,12 @@ export type EditDoor =
   | 'click-outside'
   /** Esc. Replaces the old "drop out of writing" behaviour: it posts first. */
   | 'escape'
-  /** The pointer rested on another line after typing paused (READING_MODE_POLICY.hoverEndsWriting). */
-  | 'hover'
-  /** The caret's line scrolled out of view (READING_MODE_POLICY.caretOutOfViewEndsWriting). */
-  | 'scrolled-away'
   /** Focus left the text for something else on the page (a field, a dialog). */
   | 'blur';
 
 export const EDIT_SESSION_POLICY = {
   /** Every door, in the order the module header lists them. */
-  doors: ['cmd-enter', 'click-outside', 'escape', 'hover', 'scrolled-away', 'blur'] as readonly EditDoor[],
+  doors: ['cmd-enter', 'click-outside', 'escape', 'blur'] as readonly EditDoor[],
   /** The doors a person opens deliberately; the other three happen to them. All three post. */
   deliberateDoors: ['cmd-enter', 'click-outside', 'escape'] as readonly EditDoor[],
   /** The one door the product teaches (the status bar and the margin pencil name it). */

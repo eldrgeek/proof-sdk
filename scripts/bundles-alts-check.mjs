@@ -220,12 +220,14 @@ async function run(browser, style) {
       await mike.screenshot({ path: path.join(shots, `${tag}-1-bundle-card.png`) });
     });
 
-    await check(`${tag}: the reading walk steps the bundle as one unit (one step passes both; one step back reverts both)`, async () => {
+    await check(`${tag}: J/K navigate passages without accepting bundle members`, async () => {
       await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.LAUNCH);
       await mike.evaluate(() => window.__proofReadingWalk.next());
-      await waitFor(mike, ids => ids.every(id => window.__proofReadingWalk.debugState().provisional.includes(id)), launchIds);
+      assert.equal((await walk(mike)).cursor, L.LAUNCH + 1);
       await mike.evaluate(() => window.__proofReadingWalk.previous());
-      await waitFor(mike, () => window.__proofReadingWalk.debugState().provisional.length === 0);
+      assert.equal((await walk(mike)).cursor, L.LAUNCH);
+      const pending = await mike.evaluate(() => window.proof.getAllMarks().filter(m => (m.data?.status ?? 'pending') === 'pending').map(m => m.id));
+      assert.ok(launchIds.every(id => pending.includes(id)), 'navigation accepted the bundle');
     });
 
     await check(`${tag}: Accept bundle applies both changes in one step; the lines still need their own marks`, async () => {
