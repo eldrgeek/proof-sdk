@@ -1,0 +1,58 @@
+# Accord — agent context (proof-sdk fork, branch `deploy/vps`)
+
+_`AGENTS.md` and `CLAUDE.md` in this repo are the same text by rule: Codex and Cursor are given the first, Claude the second. Change both in one commit; `src/tests/agents-claude-sync.test.ts` fails when they differ. Written 2026-09-23 by Mike Wolf + Claude Fable 5.1 (CCc) so that a non-Claude AI can work on Accord to the estate's standard; every count and command below was checked against the tree at 7b5c574 that day._
+
+## What this is
+
+- **Accord** is the SOMA standard, the editor and the documents that replace the Marked Document Protocol (MDP). A team of humans and AIs reads one document ("an Accord") line by line, marks it, and answers its asks, until it has no Issues left. Mike named it on 2026-09-19: "Accord it is, use it everywhere."
+- **This repo** is Mike's fork of the open-source Proof SDK (`eldrgeek/proof-sdk`; upstream `EveryInc/proof-sdk`). The engine keeps its own name, Proof SDK. Every user-facing string comes from `src/shared/product-identity.ts`, and nothing machine-visible (routes, headers, fields, events, error codes, tables, slugs, tokens, CSS classes, test selectors) was renamed, by design.
+- **Branches.** `deploy/vps` is the integration branch and is what runs on the VPS. `main` is a mirror of the public upstream and carries no Accord code, so never work there and never point an AI at `~/Projects/proof-sdk`, whose checkout is `main`. Work in a worktree under `~/Projects/.fleet-wt/` cut from `origin/deploy/vps`. Unmerged as of 2026-09-23: `accord/yjs-resync` (b8a7c97), the y-prosemirror resync fix.
+- **Live:** https://proof.vpsmikewolf.duckdns.org (pm2 `proof` on the VPS, Express on 127.0.0.1:4400 there, data and keys in the VPS's `~/proof-data/`). Documents that matter: the spec `/d/hgff4jxe`, Ren's layout proposal `/d/6ybuxh8e`, Waiting on Mike `/d/ttq18nc1`. An AI joins a document through a key a person creates in the page ("Add agent"), sent as `x-share-token` on `/api/agent/<slug>/*`; see `docs/agent-docs.md`.
+
+## Read these, in this order
+
+1. This file.
+2. `docs/accord/spec-hgff4jxe-2026-09-23.md` — Mike's spec, his text unchanged, with the nine asks and his answers. A snapshot; the live document is canonical.
+3. `docs/accord/layout-6ybuxh8e-2026-09-23.md` — Ren's layout proposal, ruled Yes to all twelve on 2026-09-21. It says why the page looks the way it does.
+4. `docs/accord/rulings.md` — Mike's rulings in date order with sources, the standing gates, and what is not to be started.
+5. `~/Projects/ESTATE.md`, the changelog lines from 2026-09-19 to 2026-09-23 that begin "Accord": what shipped, in what order, and the measured reason behind each gate. `grep -n "^- 2026-09-2[0-9] — Accord\|^- 2026-09-19 — \*\*Accord\|^- 2026-09-19 — Accord" ~/Projects/ESTATE.md`.
+6. The predecessor standard whose reasoning Accord inherits: `~/Projects/SOMA/specs/marked-document-protocol-v1.md` (rules R1 to R19), `~/Projects/SOMA/shared-cognition/mdp-agreed-model.md` (the rulings of 2026-09-03 and 09-12: bracketed assent, the ringer list, the answer format), `~/Projects/SOMA/shared-cognition/mdp-v2-clarification-layer.md` (define every term a page uses).
+7. The engine's own docs: `README.md`, `AGENT_CONTRACT.md`, `docs/agent-docs.md` (the HTTP API an AI uses), `docs/proof.SKILL.md`, `docs/self-hosting.md` (every environment flag), `docs/PROVENANCE-SPEC-v2.md`, `docs/adr/`. Handoffs from earlier rounds: `docs/x1-agent-keys-handoff.md`, `docs/x1e-agent-presence-revocation-handoff.md`, `docs/a1-soma-app-handoff.md`, `docs/r1a-review-style.md`, `docs/e1-load-remote-update.md`.
+8. The estate's rules for any AI: `~/Projects/AGENTS.md` (you are given only this repo's file, so read that one by path; it carries the plain-writing register Mike reads in, his shorthand, and the "If you are Codex" paragraph), `~/Projects/START-HERE.md`, `~/Projects/_estate/SEATS.md`, `~/Projects/_estate/ACTIVE-WORK.md`.
+
+## Where the code is
+
+- `src/shared/*.ts` — one module per Accord behaviour. Each has a header comment stating the rule and the ruling it comes from, an exported `*_POLICY` object holding the switches, and pure functions the editor and the server both call. 40 policy objects on 7b5c574: `grep -n "export const [A-Z_]*POLICY" src/shared/*.ts`. Start with `line-marks.ts`, `reading-walk.ts`, `open-view.ts`, `threads.ts`, `edit-session.ts`, `asks.ts`, `scroll-camera.ts`, `layout-chrome.ts`, `layout-status.ts`, `layout-panels.ts`, `product-identity.ts`.
+- `server/` — the Express routes, the collab runtime (Yjs, `server/collab.ts`), SQLite (`server/db.ts`), the library and SOMA Auth (`server/library/`), the feedback chip proxy (`server/soma-feedback.ts`), agent keys (`server/share-page-access.ts`).
+- `src/editor/`, `src/bridge/`, `src/agent/` — the ProseMirror editor, the share client and the agent bridge; mostly upstream code.
+- `src/tests/*.test.ts` — 208 files. `npm test` runs the suites wired in `package.json` (34 with this file's sync test), each with `tsx` and `node:assert`, against a server on a loopback port with a temporary database.
+- `scripts/*-check.mjs` — 31 browser checks. Each starts the server on a loopback port and drives Playwright Chromium in both review styles and at phone width; screenshots land in `.preview/`.
+- Every Accord behaviour has all four: a policy module, a unit suite, a browser check, and `.preview/` screenshots. Keep that pattern when you add one.
+
+## What is ruled (do not reopen; sources in docs/accord/rulings.md)
+
+- 2026-09-19: the nine spec asks, all Yes; the name is Accord everywhere and the engine stays Proof SDK.
+- 2026-09-19: clicking marked text edits it, Docs-like, with no review pop-ups; the view never jumps while a person types; scroll is acceptance and agreement, provisional until the next deliberate action; assent is bracketed.
+- 2026-09-21: Yes to Ren's twelve layout decisions. "Yes to both": resting the mouse on another line ends Writing once typing has paused; Option+click edits a link and a plain click opens it.
+- 2026-09-22: round 2 (the scroll camera, threads in the document, the Open and Accord views, the edit gesture) built on "Great ideas. Go and build."
+- Direct Editing mode's conversion to proposals is gated OFF (`EDIT_SESSION_POLICY.convertDirectEditsToProposals`), because a second write to a line a remote writer is touching makes y-prosemirror resync and concatenate the document; that was measured and four other causes were ruled out. The gate to open it is `scripts/caret-stability-check.mjs` green five runs in a row; the fix is on `accord/yjs-resync`.
+- Open for Mike: unread lines are not Open (`OPEN_VIEW_POLICY.unreadLinesAreOpen = false`).
+- Not built, and not to be started without Mike's word: the room scribe, a conversation-first landing, and promotion of a floor message onto the page.
+
+## Working here as an AI (any runtime — read before your first edit)
+
+These rules apply to Claude, Codex, Cursor and anyone else. A document enforces nothing; the gates named here do.
+
+- **Branch and merge.** Work on a branch in a worktree cut from `origin/deploy/vps`. This fork has no CI and no pull-request flow: the reviewer (a Claude session) runs the suites and the checks, fast-forwards `deploy/vps`, backs up the database, deploys with `ssh vps "bash ~/proof-data/proof-deploy.sh <sha>"`, restarts pm2, reads `/health`, does the live check in Mike's Chrome, and writes the ESTATE.md changelog line. None of that is yours. Never push to `deploy/vps` or `main`, never deploy, never touch the VPS, `~/proof-data`, keys, `.env` or mail, and never write to a live document.
+- **Claim the files first.** This repo is not in the beads pilot. Run `~/Projects/_estate/bin/work-claim add --paths "<paths>" --session "<intent>" --agent "<seat>"` and release the claim when done. Seats: `dee` or `ccc-adhoc` for an interactive Claude session, `cursor-worker` for Cursor, `codex-builder` for Codex (registry: `~/Projects/_estate/SEATS.md`). Put `Seat: <seat>` in the commit trailer and credit the model with `Co-Authored-By`.
+- **A fresh worktree needs three commands before any test:** `npm install`, then `npm run build`, then `npm test`. The editor-page tests read the built bundle in `dist/`; without it `test:soma-feedback` fails with a 500 that looks like a product bug (found 2026-09-23). `package-lock.json` is gitignored, so installs float; say which `npm ls --depth=0` you tested against if a failure looks version-shaped.
+- **Green before you report.** `npm test` runs the 34 wired suites. `npx tsc --noEmit -p tsconfig.json` reports 490 errors on the untouched tree, all in upstream files, so the rule is no new type errors in the files you touched: `npx tsc --noEmit -p tsconfig.json 2>&1 | grep "<file>"`. Run the `scripts/*-check.mjs` that cover the behaviour you changed and say which ran. The commit message ends with a `Verified:` line naming what ran and its result, as every Accord commit does.
+- **Say what you verified.** Every assertion in a report or a test comes from code you read or a run you did. Name the facts you did not check. A report is a claim; a recorded run is evidence.
+- **Live checks belong to the reviewer**, in Mike's Chrome. Do not drive a browser against the live server from a worker run. Local Playwright runs against a local server are fine when your sandbox allows them.
+- **Write for Mike in the plain register** (`~/Projects/AGENTS.md`, "Writing for Mike"): one claim per sentence, the connective stated, literal words, the claim first. A recommendation is a decision he can ratify or refuse, never a menu of options. Anything he must rule on is published as an Accord, never as a bare `.md` file.
+- **Codex specifically.** Under `codex exec -s workspace-write` the `.git` directory is read-only, so you cannot commit: leave the working tree changed, write your final report to the `-o` file, and the reviewer commits for you as author `Codex <codex@openai.com>` with `Seat: codex-builder`. The same sandbox refuses to open a loopback socket (`listen EPERM`, verified 2026-09-23 with codex-cli 0.154.0), so `npm test` and every `scripts/*-check.mjs` fail inside it: say so in your report and let the reviewer run them, unless your launcher passed `-c sandbox_workspace_write.network_access=true`. A usage-limit stop exits 0 with no work done, so your report file is the proof, not the exit code. You are given this file and your brief and nothing else; read `~/Projects/AGENTS.md` by path.
+- **Cursor specifically.** `~/Projects/_estate/bin/cursor-worker <worktree> <prompt-file>` runs you as seat `cursor-worker` on a `cursor/*` branch. Commit your work there, and commit or revert generated files before you finish.
+
+## Running it locally
+
+`npm run dev` serves the editor on port 3000 and `npm run serve` the API on port 4000; the flags are in `.env.example` and `docs/self-hosting.md`. The library, SOMA Auth and the feedback chip are off by default, and the tests need nothing outside this machine.
