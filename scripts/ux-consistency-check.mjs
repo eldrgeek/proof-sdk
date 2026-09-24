@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { assertRetiredMarks, assertMarkKeysInactive, assertSinglePanel, assertPassageActions, assertPanelToggle, seedLegacyMark } from './left-panel-assertions.mjs';
 // Browser check for Mike's 2026-09-19 UX round:
 //  1. One Undo covers every change: line marks, section marks, folds, suggestion decisions, asks.
 //     The rail names what it would reverse ("Undo agreed line 12"); Cmd/Ctrl+Z runs it.
@@ -151,7 +152,7 @@ async function runDesktop(browser, base, tag) {
   await check(`${tag}: item 1 — the Undo names the action it would reverse (its name and tooltip)`, async () => {
     await selectPassage(page, 5);
     await page.waitForFunction(() => window.__proofReadingWalk.debugState().target === 5, null, { timeout: 1500 });
-    await page.keyboard.press('a');
+    await seedLegacyMark(page, await page.evaluate(() => window.__proofReadingWalk.cursorLine()), 'agreed');
     await page.waitForFunction(i => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i && m.status === 'agreed'), 5, { timeout: 4000 });
     const button = page.locator('.pundo-btn').first();
     await button.waitFor({ state: 'visible', timeout: 3000 });
@@ -175,7 +176,7 @@ async function runDesktop(browser, base, tag) {
     await page.evaluate(() => document.activeElement?.blur());
     await selectPassage(page, 6);
     await page.waitForFunction(() => window.__proofReadingWalk.debugState().target === 6, null, { timeout: 1500 });
-    await page.keyboard.press('a');
+    await seedLegacyMark(page, await page.evaluate(() => window.__proofReadingWalk.cursorLine()), 'agreed');
     await page.waitForFunction(i => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i && m.status === 'agreed'), 6, { timeout: 5000 });
     const depth = (await undoState(page)).depth;
     await page.evaluate(() => document.activeElement?.blur());
@@ -316,22 +317,9 @@ async function runPhone(browser, base, tag) {
   const { context, page } = await openDoc(browser, base, created.slug, 'Bea', { ...devices['iPhone 13'], viewport: { width: 390, height: 844 } });
   activePage = page;
 
-  await check(`${tag}: the Undo button is reachable and full-width in the rail`, async () => {
-    if (!(await page.locator('.prw-right.prw-sheet-open').count())) await page.locator('.prw-strip-where').tap();
-    await page.locator('.prw-right .plm-primary-row [data-status="agreed"]').tap();
-    await page.locator('.prw-strip-grab').tap();
-    await page.waitForFunction(() => window.__proofUndo.debugState().depth > 0, null, { timeout: 6000 });
-    await page.locator('.prw-sheet-open, .prw-right-open, .prw-strip-more').first().tap().catch(() => {});
-    await page.waitForTimeout(400);
-    const button = page.locator('.pundo-btn').first();
-    if (await button.count() && await button.isVisible()) {
-      const box = await button.boundingBox();
-      assert.ok(box.height >= 40, `the Undo button is ${box.height}px tall on a phone`);
-      assert.ok(box.x >= 0 && box.x + box.width <= 390 + 1, 'the Undo button runs off the phone');
-      await page.screenshot({ path: path.join(shots, `${tag}-undo.png`) });
-    }
-    // Whatever the rail is showing, the stack itself must have the action.
-    assert.match((await undoState(page)).next.description, /agreed line/);
+  await check(`${tag}: ac-2vs: the phone Undo for a stored mark is reachable on Outline`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await seedLegacyMark(page,3,'agreed'); await page.locator('.prw-strip-review').tap(); await page.locator('#anv-tab-outline').tap(); const undo=page.locator('.prw-left .pundo-btn'); assert.equal(await undo.isVisible(),true); assert.ok((await undo.boundingBox()).height>=40);
   });
 
   await check(`${tag}: Undo works from the phone and the page never scrolls sideways`, async () => {

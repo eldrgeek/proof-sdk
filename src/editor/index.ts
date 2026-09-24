@@ -1,3 +1,4 @@
+import { NAVIGATOR_POLICY } from '../shared/layout-panels';
 import { markApiView, isOwnHumanMarkChange, withHumanReviewWrite } from './review-mark-origin';
 /**
  * Proof Editor
@@ -4063,8 +4064,7 @@ class ProofEditorImpl implements ProofEditor {
         }
         if (walk) {
           items.push(
-            { id: 'view-navigator', label: 'Review panel', kind: 'checkbox', checked: walk.railShown('left'), keywords: 'left rail documents', run: () => walk.toggleRailFromMenu('left') },
-            { id: 'view-margin', label: 'Margin', kind: 'checkbox', checked: walk.railShown('right'), keywords: 'right rail this line', run: () => walk.toggleRailFromMenu('right') },
+            { id: 'view-navigator', label: NAVIGATOR_POLICY.label, kind: 'checkbox', checked: walk.railShown('left'), keywords: 'left rail documents', run: () => walk.toggleRailFromMenu('left') },
           );
         }
         if (folding && sections.length > 0) {
@@ -4203,6 +4203,7 @@ class ProofEditorImpl implements ProofEditor {
       (window as unknown as { __proofFolding?: FoldingUI }).__proofFolding = this.folding;
       this.readingWalk = new ReadingWalkUI({
         slug: () => shareClient.getSlug(),
+        title: () => this.shareDocTitle,
         suggestChange: (line) => this.editGesture?.open(line) ?? false,
         canSuggest: () => this.shareAllowLocalEdits,
         // Step B6: the reading walk acts as the same identity the line marks write with.
@@ -4406,15 +4407,11 @@ class ProofEditorImpl implements ProofEditor {
         }
       }
       const phoneItems: MenuItemSpec[] = [];
-      if (this.readingWalk) {
-        // Accord layout stage 3 (decision 11): the Margin sheet on its Line tab, or its Room tab.
-        phoneItems.push({ id: 'phone-line', label: 'This line', detail: 'Margin · Line', run: () => { this.readingWalk?.selectMarginTab('line'); this.readingWalk?.openSheet('right'); } });
-      }
       if (this.chat) {
         phoneItems.push({ id: 'phone-chat', label: 'Room', detail: this.chatUnread > 0 ? `chat · ${this.chatUnread} @you` : 'chat', run: () => this.chat?.open(true) });
       }
       if (this.readingWalk) {
-        phoneItems.push({ id: 'phone-docs', label: 'Review panel', detail: 'Review · Outline · Since you', run: () => this.readingWalk?.openSheet('left') });
+        phoneItems.push({ id: 'phone-docs', label: NAVIGATOR_POLICY.label, detail: 'Review · Outline · Since you · Room', run: () => this.readingWalk?.openSheet('left') });
       }
       if (phoneItems.length && moved.size > 0) {
         const sep = document.createElement('div');

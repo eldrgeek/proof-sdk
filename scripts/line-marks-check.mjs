@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { assertRetiredMarks, assertMarkKeysInactive, assertSinglePanel, assertPassageActions, assertPanelToggle, seedLegacyMark } from './left-panel-assertions.mjs';
 // Browser check for Proof Documents Step 1 (line marks, Issues, Next issue).
 // Authorship: Claude Opus 5 (worker proof-line-marks), 2026-09-18, in the style of mobile-check.mjs.
 // Starts an isolated local server on the current dist/ build (run `npm run build` first), creates
@@ -121,24 +122,13 @@ async function openDoc(browser, base, slug, name, contextOptions = {}, query = '
   return { context, page };
 }
 
-const dotStatus = (page, line) => page.evaluate(i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.status ?? null, line);
+const dotStatus = (page, line) => page.evaluate(i => window.__proofLineMarks.myStatus(i), line);
 const issues = page => page.evaluate(() => window.__proofLineMarks.debugState().issues);
 const waitFor = (page, fn, arg, timeout = 9000) => page.waitForFunction(fn, arg, { timeout, polling: 200 });
-// Desktop: the dot focuses the line and its box is in the right rail. Phones: the Step 1 sheet.
-const markBox = (page, line) => page.locator(`.prw-right .plm-box[data-line="${line}"], .plm-menu`);
+// Stored marks remain supported; reader-facing marking controls are retired (ac-2vs).
 async function mark(page, line, label, reason) {
-  await page.locator(`.plm-dot[data-line="${line}"]`).click();
-  const menu = markBox(page, line);
-  await menu.waitFor({ state: 'visible' });
-  // Accord layout stage 3 (decision 8): in the Margin, Seen and Approve are under ⋯ More.
-  const button = menu.getByRole('button', { name: label }).first();
-  if (!(await button.isVisible()) && await menu.locator('.plm-more-btn').count()) await menu.locator('.plm-more-btn').click();
-  await button.click();
-  if (reason !== undefined) {
-    await menu.getByRole('textbox', { name: /Reason/ }).fill(reason);
-    await menu.locator('.plm-reason button[type="submit"]').click();
-  }
-  await page.waitForTimeout(150);
+  const status = /Agree/.test(String(label)) ? 'agreed' : /Reject/.test(String(label)) ? 'rejected' : /Approve/.test(String(label)) ? 'approved' : 'seen';
+  await seedLegacyMark(page, line, status, reason);
 }
 
 async function desktop(browser, base) {
@@ -149,48 +139,32 @@ async function desktop(browser, base) {
   const page = a.page;
   activePage = page;
 
-  await check(`${tag}: every line has a margin dot left of the text`, async () => {
-    const info = await page.evaluate(() => {
-      const text = document.querySelector('.ProseMirror').getBoundingClientRect();
-      const dots = [...document.querySelectorAll('.plm-dot')].map(d => d.getBoundingClientRect());
-      return { count: dots.length, maxRight: Math.max(...dots.map(r => r.right)), textLeft: text.left, minLeft: Math.min(...dots.map(r => r.left)) };
-    });
-    assert.equal(info.count, LINE_COUNT, `dots ${info.count}`);
-    assert.ok(info.maxRight <= info.textLeft + 1, `dot right ${info.maxRight} > text left ${info.textLeft}`);
-    assert.ok(info.minLeft >= 0, `dot off screen ${info.minLeft}`);
+  await check(`${tag}: ac-2vs: no mark circles or marking shortcuts remain`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await assertSinglePanel(page); await assertPassageActions(page); await assertMarkKeysInactive(page);
   });
   await check(`${tag}: Review names its scope and excludes unread lines`, async () => {
-    await waitFor(page, () => document.querySelector('.plm-dot[data-line="0"]')?.dataset.status === 'seen');
+    await waitFor(page, () => window.__proofLineMarks.myStatus(0) === 'seen');
     assert.equal(await page.locator('#share-banner .plm-issues-count').textContent(), '0 need you');
     assert.ok(await page.locator('[data-accord-review-toggle]').isVisible());
   });
-  await check(`${tag}: Seen on line 1 lowers the count`, async () => {
+  await check(`${tag}: a stored Seen fixture on line 1 lowers the internal count`, async () => {
     await mark(page, 0, /Seen/);
     assert.equal(await dotStatus(page, 0), 'seen');
     assert.equal(await issues(page), LINE_COUNT - 1);
   });
-  await check(`${tag}: Agree and Reject (with a reason) set the dot; Approve is hidden for a non-owner`, async () => {
-    await page.locator('.plm-dot[data-line="1"]').click();
-    await markBox(page, 1).waitFor({ state: 'visible' });
-    if (await markBox(page, 1).locator('.plm-more-btn').count()) await markBox(page, 1).locator('.plm-more-btn').click();
-    await markBox(page, 1).getByRole('button', { name: /Seen/ }).first().waitFor({ state: 'visible' });
-    const count = await markBox(page, 1).getByRole('button', { name: /Approve/ }).count();
-    assert.equal(count, 0, 'non-owner sees Approve');
-    await mark(page, 1, /Agree/);
-    await mark(page, 2, /Reject/, 'Needs a source');
-    assert.equal(await dotStatus(page, 1), 'agreed');
-    assert.equal(await dotStatus(page, 2), 'rejected');
-    assert.equal(await issues(page), LINE_COUNT - 2, 'rejected line stays an issue');
-    await page.locator('.plm-dot[data-line="2"]').click();
-    await markBox(page, 2).waitFor({ state: 'visible' });
-    await page.screenshot({ path: path.join(shots, `${tag}-1-menu.png`) });
-    // Everyone's marks (with the reason) follow the line's changes in the Margin.
-    assert.ok((await page.locator('.prw-right .amg-tail, .plm-menu').first().innerText()).includes('Needs a source'));
+  await check(`${tag}: ac-2vs: stored Agreed and Rejected marks retain their state without controls`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await seedLegacyMark(page, 1, 'agreed'); await seedLegacyMark(page, 2, 'rejected', 'Needs a source');
+    assert.equal(await dotStatus(page, 1), 'agreed'); assert.equal(await dotStatus(page, 2), 'rejected');
+    assert.equal(await issues(page), LINE_COUNT - 2, 'stored rejection stays an issue');
+    await assertRetiredMarks(page);
+    await page.screenshot({ path: path.join(shots, `${tag}-1-legacy-marks-hidden.png`) });
   });
   await check(`${tag}: marks survive a reload`, async () => {
     await page.reload();
-    await page.waitForFunction(() => window.__proofLineMarks?.debugState().loaded === true && document.querySelectorAll('.plm-dot').length > 0, null, { timeout: 20_000 });
-    await waitFor(page, () => document.querySelector('.plm-dot[data-line="1"]')?.dataset.status === 'agreed');
+    await page.waitForFunction(() => window.__proofLineMarks?.debugState().loaded === true, null, { timeout: 20_000 });
+    await waitFor(page, () => window.__proofLineMarks.myStatus(1) === 'agreed');
     assert.equal(await dotStatus(page, 0), 'seen');
     assert.equal(await dotStatus(page, 2), 'rejected');
   });
@@ -201,20 +175,22 @@ async function desktop(browser, base) {
   });
 
   const b = await openDoc(browser, base, slug, 'Bob', { viewport: { width: 1280, height: 900 } });
-  await check(`${tag}: a second person sees the first person's marks and joins the team by marking`, async () => {
-    await waitFor(b.page, () => document.querySelector('.plm-dot[data-line="1"] .plm-pips i')?.dataset.status === 'agreed');
-    await mark(b.page, 1, /Seen/);
-    await waitFor(page, () => [...document.querySelectorAll('.plm-dot[data-line="1"] .plm-pips i')].some(i => i.dataset.status === 'seen'));
+  await check(`${tag}: ac-2vs: a second person receives stored marks without drawing them`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await waitFor(b.page, () => window.__proofLineMarks.lineState(1)?.marks.get('guest:ada')?.mark.status === 'agreed');
+    await seedLegacyMark(b.page, 1, 'seen');
+    await waitFor(page, () => window.__proofLineMarks.lineState(1)?.marks.get('guest:bob')?.mark.status === 'seen');
     const team = await page.evaluate(() => window.__proofLineMarks.debugState().team);
     assert.deepEqual(team.map(t => t.toLowerCase()).sort(), ['guest:ada', 'guest:bob']);
+    await assertRetiredMarks(b.page);
   });
-  await check(`${tag}: an AI's mark through the agent API appears in the margin`, async () => {
+  await check(`${tag}: an AI's mark through the agent API remains in stored state`, async () => {
     const response = await fetch(`${base}/api/agent/${slug}/marks/line`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', ...clientHeaders, 'x-share-token': created.ownerSecret },
       body: JSON.stringify({ quote: 'The last paragraph', status: 'agreed', by: 'ai:claude' }),
     });
     assert.equal(response.status, 200, await response.text());
-    await waitFor(page, () => document.querySelector('.plm-dot[data-line="7"] .plm-pips i')?.dataset.status === 'agreed');
+    await waitFor(page, () => window.__proofLineMarks.lineState(7)?.marks.get('ai:claude')?.mark.status === 'agreed');
   });
   await check(`${tag}: editing a line resets the others' marks on it and gives the changer Agreed`, async () => {
     // Line 2 ("The second paragraph..."): Ada rejected it; Bob marks it Seen, then edits it directly.
@@ -227,9 +203,9 @@ async function desktop(browser, base) {
     // Ada's Rejected there is now out of date ("changed"). Bob changed the meaning of a line
     // another person had marked, so his own mark became Agreed (Mike's rule, 2026-09-19; it was
     // his Seen carried forward before).
-    await waitFor(page, () => document.querySelector('.plm-dot[data-line="2"]')?.dataset.status === 'changed', null, 12000);
-    await waitFor(b.page, () => document.querySelector('.plm-dot[data-line="2"]')?.dataset.status === 'agreed', null, 12000);
-    await waitFor(page, () => [...document.querySelectorAll('.plm-dot[data-line="2"] .plm-pips i')].some(i => i.dataset.status === 'agreed'), null, 12000);
+    await waitFor(page, () => window.__proofLineMarks.myStatus(2) === 'changed', null, 12000);
+    await waitFor(b.page, () => window.__proofLineMarks.myStatus(2) === 'agreed', null, 12000);
+    await waitFor(page, () => window.__proofLineMarks.lineState(2)?.marks.get('guest:bob')?.mark.status === 'agreed', null, 12000);
     await page.screenshot({ path: path.join(shots, `${tag}-2-changed.png`) });
   });
   await check(`${tag}: Next selects open passages in document order and preserves keyboard focus`, async () => {
@@ -244,11 +220,11 @@ async function desktop(browser, base) {
     await nextReview(page);
     await waitFor(page, i => window.__proofReadingWalk.focusIndex() === i, rows.find(line => line > expected) ?? rows[0]);
   });
-  await check(`${tag}: the owner can Approve`, async () => {
+  await check(`${tag}: an owner’s stored Approved mark still persists`, async () => {
     const o = await openDoc(browser, base, slug, 'Mike', { viewport: { width: 1280, height: 900 } }, `?token=${encodeURIComponent(created.ownerSecret)}`);
     await mark(o.page, 3, /Approve/);
     assert.equal(await dotStatus(o.page, 3), 'approved');
-    await waitFor(page, () => [...document.querySelectorAll('.plm-dot[data-line="3"] .plm-pips i')].some(i => i.dataset.status === 'approved'));
+    await waitFor(page, () => [...window.__proofLineMarks.lineState(3).marks.values()].some(e => e.mark.status === 'approved'));
     await o.context.close();
   });
   await check(`${tag}: marking every line by everyone reaches Aligned`, async () => {
@@ -284,7 +260,7 @@ async function phone(browser, base) {
   const toast = page.locator('.proof-share-welcome-toast button');
   if (await toast.count()) await toast.first().click().catch(() => {});
   await check(`${tag}: bar stays one row with the issue button`, async () => {
-    await waitFor(page, () => document.querySelector('.plm-dot[data-line="0"]')?.dataset.status === 'seen');
+    await waitFor(page, () => window.__proofLineMarks.myStatus(0) === 'seen');
     const h = await page.evaluate(() => document.getElementById('share-banner').getBoundingClientRect().height);
     assert.ok(h <= 60, `bar height ${h}`);
     const btn = page.locator('[data-accord-review-toggle]');
@@ -293,51 +269,25 @@ async function phone(browser, base) {
     const r = await btn.boundingBox();
     assert.ok(r.height >= 44 && r.width >= 44, `issue button ${r.width}x${r.height}`);
   });
-  await check(`${tag}: dots are on screen, touch-sized, and cause no sideways scroll`, async () => {
-    const info = await page.evaluate(() => ({
-      sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth,
-      dots: [...document.querySelectorAll('.plm-dot')].map(d => d.getBoundingClientRect().toJSON()),
-      textLeft: document.querySelector('.ProseMirror').getBoundingClientRect().left,
-    }));
-    assert.ok(info.sw <= info.cw + 1, `scrollWidth ${info.sw} > ${info.cw}`);
-    assert.equal(info.dots.length, LINE_COUNT);
-    for (const d of info.dots) {
-      assert.ok(d.left >= 0 && d.width >= 32, `dot ${JSON.stringify(d)}`);
-      assert.ok(d.right <= info.textLeft + 2, `dot covers text: ${d.right} > ${info.textLeft}`);
-    }
+  await check(`${tag}: ac-2vs: the phone has no mark circles or horizontal overflow`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await assertSinglePanel(page); await assertRetiredMarks(page);
   });
   await page.screenshot({ path: path.join(shots, `${tag}-1-load.png`) });
-  await check(`${tag}: tapping a dot opens a bottom sheet above the feedback chip; Agree sets the mark`, async () => {
-    await page.locator('.plm-dot[data-line="1"]').tap();
-    const sheet = page.locator('.prw-right.prw-sheet-open');
-    await sheet.waitFor({ state: 'visible' });
-    const r = await page.evaluate(() => ({ ...document.querySelector('.prw-right.prw-sheet-open').getBoundingClientRect().toJSON(), vh: innerHeight, vw: innerWidth }));
-    assert.ok(Math.abs(r.bottom - r.vh) <= 2 && r.width >= r.vw - 2, `sheet rect ${JSON.stringify(r)}`);
-    const chipOnTop = await page.evaluate(() => {
-      const chip = document.querySelector('.soma-feedback-root'); const sheet = document.querySelector('.prw-right.prw-sheet-open');
-      if (!chip || !sheet) return false;
-      const c = chip.getBoundingClientRect(); const s = sheet.getBoundingClientRect();
-      const x = Math.max(c.left, s.left) + 4, y = Math.max(c.top, s.top) + 4;
-      if (x > Math.min(c.right, s.right) || y > Math.min(c.bottom, s.bottom)) return false;
-      return chip.contains(document.elementFromPoint(x, y));
-    });
-    assert.equal(chipOnTop, false, 'feedback chip covers the sheet');
-    await page.screenshot({ path: path.join(shots, `${tag}-2-sheet.png`) });
-    const agree = sheet.getByRole('button', { name: /Agree/ });
-    const box = await agree.boundingBox();
-    assert.ok(box.height >= 44, `Agree button ${box.height}px tall`);
-    await agree.tap();
-    await waitFor(page, () => document.querySelector('.plm-dot[data-line="1"]')?.dataset.status === 'agreed');
-    assert.equal(await page.locator('#share-banner .plm-issues-count').innerText(), '0 need you');
+  await check(`${tag}: ac-2vs: a touch passage action opens a local draft`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await page.locator('.ProseMirror p').first().tap(); await assertPassageActions(page);
+    await page.locator('.accord-passage-actions .plm-suggest').tap();
+    await page.locator('.accord-draft textarea').waitFor({ state: 'visible' });
+    await page.locator('[data-draft-action="cancel"]').tap();
+    await assertMarkKeysInactive(page);
+    await page.screenshot({ path: path.join(shots, `${tag}-2-actions.png`) });
   });
-  await check(`${tag}: Reject asks for a reason on the phone`, async () => {
-    if (await page.locator('.prw-right.prw-sheet-open').count()) await page.locator('.prw-strip-grab').tap();
-    await page.locator('.plm-dot[data-line="4"]').tap();
-    const sheet = page.locator('.prw-right.prw-sheet-open');
-    await sheet.getByRole('button', { name: /Reject/ }).tap();
-    await sheet.getByRole('textbox', { name: /Reason/ }).fill('Not true for phones');
-    await sheet.locator('.plm-reason button[type="submit"]').tap();
-    await waitFor(page, () => document.querySelector('.plm-dot[data-line="4"]')?.dataset.status === 'rejected');
+  await check(`${tag}: ac-2vs: stored Rejected marks persist on the phone without controls`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await seedLegacyMark(page, 4, 'rejected', 'Not true for phones');
+    await waitFor(page, () => window.__proofLineMarks.myStatus(4) === 'rejected');
+    await assertRetiredMarks(page);
   });
   await check(`${tag}: the issue button goes to the next issue`, async () => {
     await seedReviewAsks(base, created, page, [6]);

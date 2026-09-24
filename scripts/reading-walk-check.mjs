@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { assertRetiredMarks, assertMarkKeysInactive, assertSinglePanel, assertPassageActions, assertPanelToggle, seedLegacyMark } from './left-panel-assertions.mjs';
 // Browser check for Proof Documents Step 1b: the three-column reading layout and the reading walk.
 // Authorship: Claude Opus 5 (worker reading-walk), 2026-09-18, in the style of line-marks-check.mjs.
 // Starts an isolated local server on the current dist/ build (run `npm run build` first), creates
@@ -114,7 +115,7 @@ async function openDoc(browser, base, slug, name, contextOptions = {}) {
 
 const walk = page => page.evaluate(() => window.__proofReadingWalk.debugState());
 const pendingIds = page => page.evaluate(() => (window.proof?.getAllMarks?.() ?? []).filter(m => m.data?.status === 'pending').map(m => m.id));
-const dotStatus = (page, line) => page.evaluate(i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.status ?? null, line);
+const dotStatus = (page, line) => page.evaluate(i => window.__proofLineMarks.myStatus(i), line);
 const waitFor = (page, fn, arg, timeout = 8000) => page.waitForFunction(fn, arg, { timeout, polling: 100 });
 const rect = (page, selector) => page.evaluate(s => document.querySelector(s)?.getBoundingClientRect().toJSON() ?? null, selector);
 async function gesture(page, dy, events = 1) {
@@ -137,21 +138,9 @@ async function desktop(browser, base, style, width) {
   const text = await rect(page, '.ProseMirror');
   await page.mouse.move(text.left + text.width / 2, 500);
 
-  await check(`${tag}: three columns; the text sits centred between the rails`, async () => {
-    const info = await page.evaluate(() => {
-      const r = s => document.querySelector(s)?.getBoundingClientRect().toJSON();
-      const vis = s => { const e = document.querySelector(s); return !!e && getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().width > 0; };
-      return { left: r('.prw-left'), right: r('.prw-right'), text: r('.ProseMirror'), leftVis: vis('.prw-left'), rightVis: vis('.prw-right'),
-        sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth };
-    });
-    assert.ok(info.leftVis && info.rightVis, 'a rail is hidden');
-    assert.ok(info.left.right <= info.text.left - 8, `left rail ${info.left.right} overlaps text ${info.text.left}`);
-    assert.ok(info.right.left >= info.text.right + 8, `right rail ${info.right.left} overlaps text ${info.text.right}`);
-    const gapMid = (info.left.right + info.right.left) / 2;
-    const textMid = (info.text.left + info.text.right) / 2;
-    assert.ok(Math.abs(gapMid - textMid) <= 40, `text centre ${textMid} vs column centre ${gapMid}`);
-    assert.ok(info.text.width >= 420 && info.text.width <= 780, `text width ${info.text.width}`);
-    assert.ok(info.sw <= info.cw + 1, 'page scrolls sideways');
+  await check(`${tag}: ac-2vs: one side panel leaves the prose clear`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await assertSinglePanel(page);
   });
   if (style === 'playmaker') {
     // Accord layout stage 3: the Marks panel is a whole-document list, so it docks under the
@@ -168,51 +157,20 @@ async function desktop(browser, base, style, width) {
       assert.ok(info.pRight <= info.tLeft, 'panel overlaps the text');
     });
   }
-  await check(`${tag}: on open the first line is the focus line, highlighted, with its mark box in the right rail`, async () => {
-    const state = await walk(page);
-    assert.equal(state.focus, 0);
-    const info = await page.evaluate(() => {
-      const f = document.querySelector('.prw-focus');
-      const h = document.querySelector('.ProseMirror h1');
-      return { f: f && !f.hidden ? f.getBoundingClientRect().toJSON() : null, h: h.getBoundingClientRect().toJSON(),
-        box: document.querySelector('.prw-right .plm-box')?.dataset.line ?? null,
-        boxRect: document.querySelector('.prw-right .plm-box')?.getBoundingClientRect().toJSON(),
-        popover: !!document.querySelector('.plm-menu') };
-    });
-    assert.ok(info.f, 'no focus highlight');
-    assert.ok(info.f.top <= info.h.top && info.f.bottom >= info.h.bottom, 'highlight does not cover the first line');
-    assert.equal(info.box, '0', 'mark box is not for line 1');
-    assert.ok(info.boxRect.left > info.h.right, 'box is not beside the text');
-    assert.equal(info.popover, false, 'a popover is open');
-    await page.screenshot({ path: path.join(shots, `${tag}-1-open.png`) });
+  await check(`${tag}: ac-2vs: the first selected passage has its action strip`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    assert.equal((await walk(page)).focus,0); await assertPassageActions(page); await assertRetiredMarks(page);
   });
   await check(`${tag}: dwelling on the first line marks it Seen`, async () => {
-    await waitFor(page, () => document.querySelector('.plm-dot[data-line="0"]')?.dataset.status === 'seen');
+    await waitFor(page, () => window.__proofLineMarks.myStatus(0) === 'seen');
   });
-  await check(`${tag}: J moves the focus; A agrees with the focus line`, async () => {
-    await page.keyboard.press('j');
-    await waitFor(page, () => window.__proofReadingWalk.debugState().focus === 1);
-    await page.keyboard.press('a');
-    await waitFor(page, () => document.querySelector('.plm-dot[data-line="1"]')?.dataset.status === 'agreed');
+  await check(`${tag}: ac-2vs: J moves selection and A/R do nothing`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await page.keyboard.press('j'); await waitFor(page,()=>window.__proofReadingWalk.debugState().focus===1); await assertMarkKeysInactive(page);
   });
-  await check(`${tag}: keys typed into an input do not mark or move`, async () => {
-    // (Typing into the document itself is checked at the end: it needs a press on the text,
-    // which starts writing — see scripts/mike-0921-check.mjs for every entry path.)
-    let state = await walk(page);
-    assert.equal(state.focus, 1);
-    assert.equal(await dotStatus(page, 1), 'agreed');
-    await page.keyboard.press('j'); // line 2
-    await page.keyboard.press('r');
-    const input = page.locator('.prw-right .plm-reason input:not(.plm-condition)');
-    await input.waitFor({ state: 'visible' });
-    assert.ok(await input.evaluate(e => e === document.activeElement), 'R did not focus the reason field');
-    await page.keyboard.type('Needs a source, ask Jake');
-    state = await walk(page);
-    assert.equal(state.focus, 2, 'typing the reason moved the focus');
-    assert.equal(await input.inputValue(), 'Needs a source, ask Jake');
-    await page.keyboard.press('Enter');
-    await waitFor(page, () => document.querySelector('.plm-dot[data-line="2"]')?.dataset.status === 'rejected');
-    await page.evaluate(() => document.activeElement?.blur());
+  await check(`${tag}: ac-2vs: draft input accepts letters without moving selection`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await selectPassage(page,2); await page.keyboard.press('s'); const input=page.getByRole('textbox',{name:'Proposed passage text'}); await input.fill('arjk are draft words'); assert.equal(await input.inputValue(),'arjk are draft words'); assert.equal((await walk(page)).focus,2); await page.locator('.accord-draft').getByRole('button',{name:'Cancel',exact:true}).click();
   });
   await check(`${tag}: scrolling at reading pace marks lines Seen after the dwell`, async () => {
     // line 2 -> 3 -> 4, pausing longer than line 3's reading time (Step B3b: its words at the
@@ -265,25 +223,13 @@ async function desktop(browser, base, style, width) {
     assert.ok(focusTop !== null && focusTop >= 0, 'the selected passage is not visible');
     assert.equal(Number(await page.locator('.anv-issue[aria-current="true"]').getAttribute('data-line')), after);
   });
-  await check(`${tag}: a margin dot focuses its line and keeps the box in the rail (no popover)`, async () => {
-    await page.evaluate(() => window.scrollTo(0, 0));
-    await page.waitForTimeout(150);
-    await page.locator('.plm-dot[data-line="3"]').click();
-    await waitFor(page, () => window.__proofReadingWalk.debugState().readingFocus === 3);
-    assert.equal(await page.locator('.plm-menu').count(), 0);
-    assert.equal(await page.locator('.prw-right .plm-box').getAttribute('data-line'), '3');
+  await check(`${tag}: ac-2vs: an amber dot opens that passage in Review`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await page.locator('.plm-needs-you').first().click(); assert.equal(await page.locator('#anv-tab-issues').getAttribute('aria-selected'),'true'); await assertRetiredMarks(page);
   });
-  await check(`${tag}: both rails collapse and the text re-centres`, async () => {
-    await page.locator('.prw-left .prw-collapse').click();
-    await page.locator('.prw-right .prw-collapse').click();
-    await page.waitForTimeout(200);
-    const info = await page.evaluate(() => ({ t: document.querySelector('.ProseMirror').getBoundingClientRect().toJSON(), w: innerWidth,
-      l: document.querySelector('.prw-left').getBoundingClientRect().width, r: document.querySelector('.prw-right').getBoundingClientRect().width }));
-    assert.ok(info.l < 60 && info.r < 60, `collapsed widths ${info.l}/${info.r}`);
-    assert.ok(Math.abs((info.t.left + info.t.right) / 2 - info.w / 2) < 40, 'text not centred');
-    await page.screenshot({ path: path.join(shots, `${tag}-4-collapsed.png`) });
-    await page.locator('.prw-left .prw-collapse').click();
-    await page.locator('.prw-right .prw-collapse').click();
+  await check(`${tag}: ac-2vs: collapsing the side panel returns width to the prose`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await assertPanelToggle(page);
   });
   await check(`${tag}: keys typed into the document (writing) do not mark or move`, async () => {
     await page.evaluate(() => window.scrollTo(0, 0));
@@ -320,34 +266,17 @@ async function phone(browser, base, style) {
     ...devices['iPhone 13'], viewport, screen: viewport, hasTouch: true, isMobile: true,
   });
   activePage = page;
-  await check(`${tag}: one column: rails hidden, no sideways scroll, focus line highlighted`, async () => {
-    const info = await page.evaluate(() => ({
-      sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth,
-      left: getComputedStyle(document.querySelector('.prw-left')).display, right: getComputedStyle(document.querySelector('.prw-right')).display,
-      text: document.querySelector('.ProseMirror').getBoundingClientRect().toJSON(),
-      focus: (() => { const f = document.querySelector('.prw-focus'); return f && !f.hidden ? f.getBoundingClientRect().toJSON() : null; })(),
-    }));
-    assert.ok(info.sw <= info.cw + 1, `scrollWidth ${info.sw}`);
-    assert.equal(info.left, 'none'); assert.equal(info.right, 'none');
-    assert.ok(info.text.width >= 280, `text width ${info.text.width}`);
-    assert.ok(info.focus, 'no focus highlight');
-    await page.screenshot({ path: path.join(shots, `${tag}-1-open.png`) });
+  await check(`${tag}: ac-2vs: the phone starts with its side panel closed`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await assertSinglePanel(page); assert.equal(await page.locator('.prw-left.prw-sheet-open').count(),0);
   });
-  await check(`${tag}: a dot opens the one Margin answer sheet`, async () => {
-    await page.locator('.plm-dot[data-line="1"]').tap();
-    await page.locator('.prw-right.prw-sheet-open').waitFor({ state: 'visible' });
-    await page.locator('.prw-strip-grab').tap();
+  await check(`${tag}: ac-2vs: an amber dot opens the left Review sheet`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await page.locator('.plm-needs-you').first().tap(); await page.locator('.prw-left.prw-sheet-open').waitFor({state:'visible'}); await page.locator('.prw-left .prw-collapse').tap();
   });
-  await check(`${tag}: the ⋯ menu opens "This line" as a bottom sheet with the mark box`, async () => {
-    await page.locator('#share-banner .share-pill-overflow').tap();
-    await page.getByRole('menuitem', { name: /This line/ }).tap();
-    const sheet = page.locator('.prw-right.prw-sheet-open');
-    await sheet.waitFor({ state: 'visible' });
-    const r = await rect(page, '.prw-right.prw-sheet-open');
-    assert.ok(Math.abs(r.bottom - 844) <= 2 && r.width >= 388, `sheet ${JSON.stringify(r)}`);
-    assert.ok(await sheet.locator('.plm-box').count() === 1, 'no mark box');
-    await page.screenshot({ path: path.join(shots, `${tag}-2-sheet.png`) });
-    await sheet.locator('.prw-collapse').tap();
+  await check(`${tag}: ac-2vs: more options opens the Side panel`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await page.locator('.prw-strip-more').tap(); await page.locator('.proof-share-overflow-menu').getByRole('menuitem',{name:/Side panel/}).tap(); await page.locator('.prw-left.prw-sheet-open').waitFor({state:'visible'}); await page.locator('.prw-left .prw-collapse').tap();
   });
   await check(`${tag}: phone scrolling keeps the selected passage and proposals pending`, async () => {
     await scrollAcceptsNothing(page);

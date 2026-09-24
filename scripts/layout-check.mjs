@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { assertRetiredMarks, assertMarkKeysInactive, assertSinglePanel, assertPassageActions, assertPanelToggle, seedLegacyMark } from './left-panel-assertions.mjs';
 // Browser check for the Accord layout redesign (Ren's proposal, Mike ruled 2026-09-21: "build the
 // layout that you proposed"). It grows one stage at a time; each stage's checks stay.
 //   Stage 1: the status bar under the page (Line N of M, "You marked up to line K", Issues left,
@@ -161,7 +162,7 @@ const bar = page => page.evaluate(() => {
     provisional: prov && !prov.hidden ? prov.textContent : '', position: getComputedStyle(b).position, innerHeight,
   };
 });
-const amber = page => page.evaluate(() => [...document.querySelectorAll('.plm-dot[data-needs-you="true"]')].map(d => Number(d.dataset.line)).sort((a, b) => a - b));
+const amber = page => page.evaluate(() => [...document.querySelectorAll('.plm-needs-you[data-needs-you="true"]')].map(d => Number(d.dataset.line)).sort((a, b) => a - b));
 
 async function desktop(browser, base, style) {
   const created = await createDoc(base, 'Ada');
@@ -170,22 +171,9 @@ async function desktop(browser, base, style) {
   activePage = page;
   if (peek) { await page.screenshot({ path: path.join(shots, `${tag}-peek.png`) }); await context.close(); return; }
 
-  await check(`${tag}: the status bar is fixed at the bottom of the page column, between the rails (mockup region)`, async () => {
-    const b = await bar(page);
-    assert.ok(b, 'no status bar');
-    assert.equal(b.position, 'fixed');
-    assert.ok(Math.abs(b.bottom - b.innerHeight) <= 1, `bar bottom ${b.bottom} vs window ${b.innerHeight}`);
-    assert.ok(b.height >= 24 && b.height <= 32, `bar height ${b.height} (proposal: 28)`);
-    const rails = await page.evaluate(() => ({
-      left: document.querySelector('.prw-left').getBoundingClientRect().right,
-      right: document.querySelector('.prw-right').getBoundingClientRect().left,
-      text: document.querySelector('.ProseMirror').getBoundingClientRect().toJSON(),
-    }));
-    assert.ok(b.left >= rails.left - 1 && b.left - rails.left <= 24, `bar starts at ${b.left}, the left rail ends at ${rails.left}`);
-    assert.ok(b.right <= rails.right + 1 && rails.right - b.right <= 24, `bar ends at ${b.right}, the right rail starts at ${rails.right}`);
-    assert.ok(b.left <= rails.text.left && b.right >= rails.text.right, 'the bar spans the text column');
-    assert.ok(b.modeRight !== null && b.right - b.modeRight <= 24, 'the state word is not at the right end of the bar');
-    await page.screenshot({ path: path.join(shots, `${tag}-statusbar.png`), clip: { x: 0, y: 840, width: 1440, height: 60 } });
+  await check(`${tag}: ac-2vs: the status bar ends at the edge of the page beside one panel`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await assertSinglePanel(page); const b = await bar(page); assert.equal(b.position, 'fixed'); assert.ok(Math.abs(b.bottom-b.innerHeight)<=1); assert.ok(Math.abs(b.right-1440)<=1);
   });
   await check(`${tag}: it says "Line N of M", "Issues left" and "Reading"; the rail head no longer holds the line or the mode chip`, async () => {
     const b = await bar(page);
@@ -219,11 +207,11 @@ async function desktop(browser, base, style) {
     await waitFor(page, () => document.querySelector('.pst-bar .pst-mode')?.textContent === 'Reading');
   });
 
-  await check(`${tag}: marking lines explicitly sets "You marked up to line K · just now" and the rule sits after line K`, async () => {
+  await check(`${tag}: stored marks set "You marked up to line K · just now" and the rule sits after line K`, async () => {
     assert.equal((await walk(page)).rule, null, 'a rule with no marks');
     for (const i of [L.S1, L.S2]) {
       await selectPassage(page, i);
-      await page.keyboard.press('a');
+      await seedLegacyMark(page, i, 'agreed');
       await waitFor(page, i => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i && m.status === 'agreed'), i);
     }
     await waitFor(page, k => document.querySelector('.pst-bar .pst-marked')?.textContent === `You marked up to line ${k} · just now`, L.S2 + 1);
@@ -256,13 +244,13 @@ async function desktop(browser, base, style) {
     const b = await bar(page);
     assert.equal(b.count, lines.length);
     assert.equal(b.issues, `${lines.length} Issues left`);
-    const colors = await page.evaluate(() => [...document.querySelectorAll('.plm-dot .plm-glyph')].map(g => getComputedStyle(g).backgroundColor));
+    const colors = await page.evaluate(() => [...document.querySelectorAll('.plm-needs-you')].map(g => getComputedStyle(g, '::after').backgroundColor));
     assert.equal(colors.filter(c => c === 'rgb(217, 140, 0)').length, lines.length, 'another dot is amber');
   });
   await check(`${tag}: answering an ask takes its amber dot away and the count follows`, async () => {
     await selectPassage(page, L.ASK);
     await page.keyboard.press('y');
-    await waitFor(page, i => !document.querySelector(`.plm-dot[data-line="${i}"][data-needs-you="true"]`), L.ASK);
+    await waitFor(page, i => !document.querySelector(`.plm-needs-you[data-line="${i}"][data-needs-you="true"]`), L.ASK);
     const lines = await amber(page);
     assert.deepEqual(lines, [L.CHANGE, L.COMMENT, L.ASK2]);
     await waitFor(page, n => Number(document.querySelector('.pst-issues')?.dataset.count) === n, lines.length);
@@ -297,30 +285,13 @@ async function phone(browser, base, style) {
   if (peek) { await page.screenshot({ path: path.join(shots, `${tag}-peek.png`) }); await context.close(); return; }
   // Stage 3 (decision 11): the status bar folds into the bottom strip; it shows again, one line,
   // only while the strip steps aside (the caret in the text).
-  await check(`${tag}: the status bar folds into the bottom strip (Line N of M in the strip, no second bar)`, async () => {
-    const b = await bar(page);
-    assert.ok(b, 'no status bar element');
-    assert.equal(await page.locator('.pst-bar').isVisible(), false, 'a second bar shows over the strip');
-    const strip = await page.locator('.prw-strip').boundingBox();
-    assert.ok(strip, 'no strip');
-    assert.ok(Math.abs(strip.y + strip.height - 844) <= 2, `strip bottom ${strip.y + strip.height}`);
-    assert.match(await page.locator('.prw-strip-where').innerText(), /^Line 1 of 25$/);
-    assert.equal(b.line, 'Line 1 of 25');
-    assert.match(b.issues, /^4 Issues left$/);
-    const chip = await page.locator('.soma-feedback-root').boundingBox().catch(() => null);
-    if (chip) assert.ok(chip.y + chip.height <= strip.y + 1, 'the feedback chip covers the strip');
-    await page.screenshot({ path: path.join(shots, `${tag}-statusbar.png`) });
+  await check(`${tag}: ac-2vs: the phone strip shows the title, Review and more options`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await page.locator('.prw-strip').waitFor({state:'visible'}); assert.match(await page.locator('.prw-strip-info').innerText(),/Waiting on Mike/); assert.equal(await page.locator('.pst-bar').isVisible(),false);
   });
-  await check(`${tag}: amber dots match the count; marking a line shows "Marked up to line K ↑" in the strip`, async () => {
-    assert.deepEqual(await amber(page), [L.ASK, L.CHANGE, L.COMMENT, L.ASK2]);
-    if (!(await page.locator('.prw-right.prw-sheet-open').count())) await page.locator('.prw-strip-where').tap();
-    await page.locator('.prw-right .plm-primary-row [data-status="agreed"]').tap();
-    await page.locator('.prw-strip-grab').tap();
-    await waitFor(page, () => document.querySelector('.prw-strip-marked')?.textContent === 'Marked up to line 1 ↑');
-    await waitFor(page, () => /line 1/.test(document.querySelector('.pst-bar .pst-marked')?.textContent ?? ''));
-    const fits = await page.evaluate(() => { const e = document.querySelector('.prw-strip'); return e.scrollWidth <= e.clientWidth + 1; });
-    assert.ok(fits, 'the strip overflows');
-    await page.screenshot({ path: path.join(shots, `${tag}-marked.png`) });
+  await check(`${tag}: ac-2vs: the phone keeps open-item dots and ignores A/R`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    assert.deepEqual(await amber(page), await page.evaluate(()=>[...window.__proofLineMarks.needsYouLines()].sort((a,b)=>a-b))); await assertMarkKeysInactive(page);
   });
   await check(`${tag}: a tap selects text while Reading; the bar stays on screen`, async () => {
     // A tap selects the passage. It does not put a caret in the text, so Reading stays Reading
@@ -399,8 +370,8 @@ async function desktop2(browser, base, style) {
     assert.equal(await page.locator('#share-banner .anv-people').isVisible(), true);
     // S2a's toolbar (title, Review, People, Share) plus S3's one labelled control for direct Editing.
     for (const label of c.controls) assert.match(label, /^(Review|People|Share|Waiting on Mike|Enter Editing|Leave Editing|Undo|Nothing to undo)/, `unexpected toolbar control: ${label}`);
-    const rails = await page.evaluate(() => ({ left: document.querySelector('.prw-left').getBoundingClientRect().top, right: document.querySelector('.prw-right').getBoundingClientRect().top }));
-    assert.ok(rails.left >= c.toolbar.bottom && rails.right >= c.toolbar.bottom, 'a rail sits under the toolbar');
+    const rails = await page.evaluate(() => ({ left: document.querySelector('.prw-left').getBoundingClientRect().top }));
+    assert.ok(rails.left >= c.toolbar.bottom, 'a rail sits under the toolbar');
     await page.screenshot({ path: path.join(shots, `${tag}-chrome.png`), clip: { x: 0, y: 0, width: 1440, height: 120 } });
   });
   await check(`${tag}: the Issues pill counts the viewer's own Issues: it equals the status bar and the amber dots`, async () => {
@@ -450,7 +421,7 @@ async function desktop2(browser, base, style) {
     await page.keyboard.press('Control+Alt+KeyV');
     await page.locator('.amb-menu[data-menu="view"]').waitFor();
     const view = (await menuItems(page)).map(i => i.label);
-    for (const label of ['Review panel', 'View agreed copy', 'Margin', 'Collapse all sections', 'Expand all sections', 'Show only decisions', 'Reading settings…', 'Familiar’s brief', 'Keyboard shortcuts']) assert.ok(view.includes(label), `View lacks ${label}: ${view}`);
+    for (const label of ['Side panel', 'View agreed copy', 'Collapse all sections', 'Expand all sections', 'Show only decisions', 'Reading settings…', 'Familiar’s brief', 'Keyboard shortcuts']) assert.ok(view.includes(label), `View lacks ${label}: ${view}`);
     await page.keyboard.press('Escape');
     await reading(page);
     await page.keyboard.press('Alt+Slash');
@@ -483,9 +454,9 @@ async function desktop2(browser, base, style) {
     await page.getByRole('button', { name: 'Leave Editing', exact: true }).click();
     assert.equal(await page.locator('.pst-mode').innerText(), 'Reading');
   });
-  await check(`${tag}: Edit Undo names and reverses the selected passage's agreement`, async () => {
+  await check(`${tag}: Edit Undo names and reverses a stored agreement fixture`, async () => {
     await selectPassage(page, L.S1 + 2);
-    await page.keyboard.press('a');
+    await seedLegacyMark(page, L.S1 + 2, 'agreed');
     await page.locator('#accord-menubar .amb-top[data-menu="edit"]').click();
     assert.equal((await menuItems(page))[0].label, 'Undo agreed line 5');
     await page.locator('.amb-menu .amb-item').first().click();
@@ -580,7 +551,7 @@ async function phone2(browser, base, style) {
     await page.screenshot({ path: path.join(shots, `${tag}-toolbar.png`), clip: { x: 0, y: 0, width: 390, height: 120 } });
   });
   await check(`${tag}: the ⋯ menu holds the menu bar's menus; Reading settings opens as a sheet`, async () => {
-    await page.getByRole('button', { name: /^More options/ }).tap();
+    await page.locator('#share-banner').getByRole('button', { name: /^More options/ }).tap();
     const menu = page.locator('.proof-share-overflow-menu');
     await menu.waitFor();
     const text = await menu.innerText();
@@ -602,18 +573,18 @@ async function phone2(browser, base, style) {
     await panel.getByRole('button', { name: 'Close reading settings' }).tap();
   });
   await check(`${tag}: the phone menu enters and leaves Editing through one labelled control`, async () => {
-    await page.getByRole('button', { name: /^More options/ }).tap();
+    await page.locator('#share-banner').getByRole('button', { name: /^More options/ }).tap();
     const menu = page.locator('.proof-share-overflow-menu');
     await menu.waitFor();
     await menu.locator('.apm-mode').getByRole('menuitem', { name: 'Enter Editing' }).tap();
     assert.equal(await page.locator('.pst-mode').innerText(), 'Editing');
-    await page.getByRole('button', { name: /^More options/ }).tap();
+    await page.locator('#share-banner').getByRole('button', { name: /^More options/ }).tap();
     await menu.waitFor();
     await menu.locator('.apm-mode').getByRole('menuitem', { name: 'Leave Editing' }).tap();
     assert.equal(await page.locator('.pst-mode').innerText(), 'Reading');
   });
   await check(`${tag}: ⋯ › Share… opens the Share dialog; it fits the phone`, async () => {
-    await page.getByRole('button', { name: /^More options/ }).tap();
+    await page.locator('#share-banner').getByRole('button', { name: /^More options/ }).tap();
     await page.locator('.proof-share-overflow-menu').getByRole('menuitem', { name: /Share…/ }).tap();
     const dialog = page.locator('#share-dialog');
     await dialog.waitFor({ state: 'visible' });
@@ -633,25 +604,6 @@ async function phone2(browser, base, style) {
 // bottom of the page column between them. Phone (mockup-phone.html, 390 x 844): the strip at the
 // bottom, 56 px, with the position, Agree, Reject and ⋯; the sheet under it holds Line · Room.
 // ---------------------------------------------------------------------------------------------
-const MOCKUP_DESKTOP = { toolbarBottom: 72, navRight: 240, marginLeft: 1100, statusHeight: 28 };
-const regions = page => page.evaluate(() => {
-  const r = s => { const n = document.querySelector(s); if (!n) return null; const b = n.getBoundingClientRect(); return { top: b.top, bottom: b.bottom, left: b.left, right: b.right, width: b.width, height: b.height }; };
-  return {
-    left: r('.prw-left'), right: r('.prw-right'), bar: r('.pst-bar'), text: r('.ProseMirror'), toolbar: r('#share-banner'),
-    navTabs: [...document.querySelectorAll('.prw-left .anv-tab')].map(t => t.firstChild?.textContent?.trim() ?? ''),
-    marginTabs: [...document.querySelectorAll('.prw-right .amg-tab')].map(t => t.querySelector('.amg-tab-label')?.textContent ?? t.textContent),
-    selectedNav: document.querySelector('.prw-left .anv-tab[aria-selected="true"]')?.dataset.tab ?? null,
-    selectedMargin: document.querySelector('.prw-right .amg-tab[aria-selected="true"]')?.dataset.tab ?? null,
-    innerWidth, innerHeight,
-  };
-});
-const near = (a, b, tol, what) => assert.ok(Math.abs(a - b) <= tol, `${what}: ${a} vs mockup ${b}`);
-async function openMore(page) {
-  const btn = page.locator('.prw-right .plm-box .plm-more-btn');
-  if ((await btn.getAttribute('aria-expanded')) !== 'true') await btn.click();
-  await page.locator('.prw-right .plm-box .plm-more').waitFor({ state: 'visible' });
-}
-
 // Polish pass (COS, 2026-09-21): everyone's marks on a line fold into "Marked by N" in the Line tab,
 // open by default only for a Reject or an open objection; a person's open / close is kept.
 async function seedTeamMarks(created) {
@@ -671,35 +623,16 @@ async function desktop3(browser, base, style) {
   const { context, page } = await openDoc(browser, base, created.slug, 'Ada', { viewport: { width: 1440, height: 900 } });
   activePage = page;
 
-  await check(`${tag}: three regions as in the mockup — Navigator 240 px left, Margin 340 px right, the page and its status bar between`, async () => {
-    const g = await regions(page);
-    near(g.left.top, MOCKUP_DESKTOP.toolbarBottom, 2, 'Navigator top');
-    near(g.right.top, MOCKUP_DESKTOP.toolbarBottom, 2, 'Margin top');
-    near(g.left.left, 0, 1, 'Navigator left');
-    near(g.left.right, MOCKUP_DESKTOP.navRight, 2, 'Navigator right');
-    near(g.right.left, MOCKUP_DESKTOP.marginLeft, 2, 'Margin left');
-    near(g.right.right, 1440, 1, 'Margin right');
-    near(g.left.bottom, 900, 1, 'Navigator bottom');
-    near(g.right.bottom, 900, 1, 'Margin bottom');
-    near(g.bar.left, g.left.right, 2, 'status bar left');
-    near(g.bar.right, g.right.left, 2, 'status bar right');
-    near(g.bar.height, MOCKUP_DESKTOP.statusHeight, 1, 'status bar height');
-    assert.ok(g.text.left >= g.left.right + 16 && g.text.right <= g.right.left - 16, 'the text runs under a side');
-    const mid = (g.left.right + g.right.left) / 2;
-    assert.ok(Math.abs((g.text.left + g.text.right) / 2 - mid) <= 40, 'the text is not centred between the sides');
-    assert.deepEqual(g.navTabs, ['Review', 'Outline', 'Since you']);
-    assert.deepEqual(g.marginTabs, ['Line 1', 'Room']);
-    assert.equal(g.selectedNav, 'issues', 'the Navigator opens on Issues (the mockup)');
-    assert.equal(g.selectedMargin, 'line');
-    assert.equal(await page.locator('.prw-left .prw-docs, .prw-left .prw-doc').count(), 0, 'the documents list is still in the Navigator');
-    await page.screenshot({ path: path.join(shots, `${tag}-regions.png`) });
+  await check(`${tag}: ac-2vs: one 320 px panel leaves the remaining width for the page`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await assertSinglePanel(page); assert.equal(await page.locator('.prw-left').evaluate(n=>n.getBoundingClientRect().width),320); await assertPassageActions(page);
   });
 
   await check(`${tag}: Issues lists the viewer's own Issues — the same lines as the amber dots and the pill — each with its kind and line`, async () => {
     const lines = await amber(page);
     const items = await page.evaluate(() => [...document.querySelectorAll('.prw-left .anv-issue')].map(b => ({ line: Number(b.dataset.line), title: b.querySelector('.anv-issue-title').textContent, kind: b.querySelector('.anv-issue-kind').textContent })));
     assert.deepEqual(items.map(i => i.line), lines);
-    assert.equal(await page.locator('.prw-left .anv-tab[data-tab="issues"] .anv-badge').textContent(), `${lines.length} need you`);
+    assert.equal(await page.locator('.prw-left .anv-tab[data-tab="issues"] .anv-badge').textContent(), String(lines.length));
     assert.equal((await chrome(page)).pillText, `${lines.length} need you`);
     assert.match(items[0].kind, new RegExp(`^Ask · line ${L.ASK + 1}$`));
     assert.match(items[1].kind, new RegExp(`^Change from \\w+ · line ${L.CHANGE + 1}$`));
@@ -707,7 +640,7 @@ async function desktop3(browser, base, style) {
     assert.match(items[0].title, /turn on the cloud backup/);
     await page.screenshot({ path: path.join(shots, `${tag}-issues.png`), clip: { x: 0, y: 60, width: 260, height: 420 } });
   });
-  await check(`${tag}: clicking an Issue moves the one cursor there — the bar, the status bar and the Line tab all name that line`, async () => {
+  await check(`${tag}: clicking an Issue moves the one cursor there — the status bar and passage actions name that line`, async () => {
     await page.locator(`.prw-left .anv-issue[data-line="${L.CHANGE}"]`).click();
     await waitFor(page, i => window.__proofReadingWalk.debugState().focus === i, L.CHANGE);
     const w = await walk(page);
@@ -715,32 +648,16 @@ async function desktop3(browser, base, style) {
     assert.equal(w.target, L.CHANGE);
     assert.equal(await page.evaluate(() => Number(document.querySelector('.prw-focus').dataset.line)), L.CHANGE);
     assert.equal((await bar(page)).line, `Line ${L.CHANGE + 1} of 25`);
-    assert.equal(await page.locator('.prw-right .amg-tab[data-tab="line"] .amg-tab-label').textContent(), `Line ${L.CHANGE + 1}`);
+    assert.equal(await page.locator('.accord-passage-actions').getAttribute('data-line'), String(L.CHANGE));
     assert.equal(await page.locator(`.prw-left .anv-issue[data-line="${L.CHANGE}"]`).getAttribute('aria-current'), 'true');
   });
-  await check(`${tag}: the margin has one answer group and Review has the proposal detail`, async () => {
-    const primary = page.locator('.prw-right .plm-primary-row');
-    assert.equal(await primary.count(), 1);
-    const labels = await primary.locator('button').evaluateAll(buttons => buttons.map(b => b.getAttribute('aria-label') || b.textContent.replace(/[✓✗]/g, '').trim()));
-    assert.match(labels[0], /Agree/);
-    assert.equal(labels[1], 'Suggest change');
-    assert.equal(labels[2], 'Discuss');
-    assert.match(labels[3], /Reject/);
-    assert.equal(labels[4], 'More marks for this line');
-    assert.equal(await page.locator('.prw-right .prw-card').count(), 0);
-    assert.deepEqual(await page.locator('.anv-detail .prw-card-actions button').allTextContents(), ['Accept', 'Reject', 'Reply']);
+  await check(`${tag}: ac-2vs: the passage has two actions and Review keeps proposal detail`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await assertRetiredMarks(page); await assertPassageActions(page); assert.equal(await page.locator('.anv-detail .prw-accept').count(),1);
   });
-  await check(`${tag}: ⋯ More holds Seen, Clear my mark, Flag uncertain, Offer another wording, Explain, Time-to-live and the tier`, async () => {
-    assert.equal(await page.locator('.prw-right .plm-box .plm-more').isVisible(), false, 'More is open before it is asked for');
-    await openMore(page);
-    const text = await page.locator('.prw-right .plm-box .plm-more').innerText();
-    for (const label of ['Seen', 'Flag uncertain', 'Offer another wording', 'Explain', 'Time-to-live', 'Make context']) assert.ok(text.includes(label), `More lacks ${label}: ${text}`);
-    await page.screenshot({ path: path.join(shots, `${tag}-more.png`), clip: { x: 1090, y: 60, width: 350, height: 640 } });
-    await page.locator('.prw-right .plm-box .plm-more .plm-choice[data-status="seen"]').click();
-    await waitFor(page, i => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i && m.status === 'seen'), L.CHANGE);
-    await openMore(page);
-    assert.ok((await page.locator('.prw-right .plm-box .plm-more').innerText()).includes('Clear my mark'));
-    await page.locator('.prw-right .plm-box .plm-more .plm-clear').click();
+  await check(`${tag}: ac-2vs: passage actions replace the retired More marking controls`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await assertRetiredMarks(page); await assertPassageActions(page);
   });
   await check(`${tag}: Review replies to the selected comment; Discuss opens a new thread on a plain line`, async () => {
     await page.locator(`.prw-left .anv-issue[data-line="${L.COMMENT}"]`).click();
@@ -777,110 +694,50 @@ async function desktop3(browser, base, style) {
     await waitFor(page, () => window.__proofReadingWalk.debugState().focus === 5);
     assert.equal(await page.locator('.prw-left .anv-row[data-heading="5"]').getAttribute('aria-current'), 'true');
   });
-  await check(`${tag}: Since you holds the Since-you list; no rail keeps the documents, the blind switch or the reading settings`, async () => {
+  await check(`${tag}: Since you keeps its report; Accords sit above the tabs and settings stay in their dialog`, async () => {
     await page.locator('.prw-left .anv-tab[data-tab="since"]').click();
     assert.equal(await page.locator('.prw-left .anv-pane[data-tab="since"]').isVisible(), true);
     assert.equal(await page.locator('.prw-left .anv-pane[data-tab="since"] .prw-since').count(), 1);
-    assert.equal(await page.locator('.prw-rail .plm-blind, .prw-rail .prw-rate, .prw-rail .plm-budget, .prw-rail .prw-docs').count(), 0);
+    assert.equal(await page.locator('.prw-rail .plm-blind, .prw-rail .prw-rate, .prw-rail .plm-budget').count(), 0);
+    assert.equal(await page.locator('.anv-accords').count(), 1);
     await page.locator('.prw-left .anv-tab[data-tab="issues"]').click();
   });
 
-  await check(`${tag}: hover leaves the Margin on the selected passage`, async () => {
+  await check(`${tag}: hover preserves the selected passage`, async () => {
     await selectPassage(page, L.S2 + 3); await hoverChangesNothing(page, L.S2 + 5);
   });
-  await check(`${tag}: a key after hover acts on the selected passage`, async () => {
-    await selectPassage(page, L.S2 + 3); await hoverChangesNothing(page, L.S2 + 5);
-    await page.keyboard.press('a');
-    await waitFor(page, i => window.__proofLineMarks.myStatus(i) === 'agreed', L.S2 + 3);
-    assert.equal((await walk(page)).cursor, L.S2 + 3);
+  await check(`${tag}: ac-2vs: A/R after hover leave marks unchanged`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await selectPassage(page,L.S2+3); await hoverChangesNothing(page,L.S2+5); await assertMarkKeysInactive(page);
   });
-  await check(`${tag}: Margin controls keep the selected passage after hover`, async () => {
-    await selectPassage(page, L.S2 + 3); await hoverChangesNothing(page, L.S2 + 5);
-    await page.locator('.prw-right .plm-more-btn').click();
-    assert.equal((await walk(page)).cursor, L.S2 + 3);
+  await check(`${tag}: ac-2vs: passage actions stay with the selected passage after hover`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await selectPassage(page,L.S2+3); await hoverChangesNothing(page,L.S2+5); await assertPassageActions(page);
   });
   await check(`${tag}: J selects the next visible passage after hover`, async () => {
     await selectPassage(page, L.S2 + 3); await hoverChangesNothing(page, L.S2 + 5);
     await page.keyboard.press('j'); assert.equal((await walk(page)).cursor, L.S2 + 4);
   });
 
-  await check(`${tag}: Room is the chat, full height; its badge counts unread @mentions; the tab never switches itself`, async () => {
-    await page.locator('.prw-right .amg-tab[data-tab="room"]').click();
-    const room = page.locator('.prw-right .amg-pane[data-tab="room"]');
-    await room.locator('.pch-input').waitFor({ state: 'visible' });
-    const r = await room.boundingBox();
-    assert.ok(r.y + r.height >= 898 && r.height >= 700, `the Room is not full height: ${JSON.stringify(r)}`);
-    assert.equal(await page.locator('.prw-right .amg-pane[data-tab="line"]').isVisible(), false);
-    await page.mouse.move(5, 450);
-    await page.keyboard.press('j');
-    await page.keyboard.press('j');
-    await page.waitForTimeout(200);
-    assert.equal((await regions(page)).selectedMargin, 'room', 'the tab switched itself when the cursor moved');
-    // The Line tab still names the line A and R hit.
-    const cursor = (await walk(page)).cursor;
-    assert.equal(await page.locator('.prw-right .amg-tab[data-tab="line"] .amg-tab-label').textContent(), `Line ${cursor + 1}`);
-    await page.screenshot({ path: path.join(shots, `${tag}-room.png`) });
-    await page.locator('.prw-right .amg-tab[data-tab="line"]').click();
+  await check(`${tag}: ac-2vs: Room stays selected when the passage changes`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await page.locator('#anv-tab-room').click(); await page.locator('#anv-pane-room .pch-input').waitFor({state:'visible'}); await selectPassage(page,L.S2); assert.equal(await page.locator('#anv-tab-room').getAttribute('aria-selected'),'true'); await page.locator('#anv-tab-issues').click();
   });
-  await check(`${tag}: both sides collapse, and the collapsed state and the chosen tabs are remembered on reload`, async () => {
-    await page.locator('.prw-left .anv-tab[data-tab="outline"]').click();
-    await page.locator('.prw-right .amg-tab[data-tab="room"]').click();
-    await page.locator('.prw-left .prw-collapse').click();
-    await page.locator('.prw-right .prw-collapse').click();
-    await waitFor(page, () => document.body.classList.contains('prw-left-collapsed') && document.body.classList.contains('prw-right-collapsed'));
-    let g = await regions(page);
-    assert.ok(g.left.width <= 48 && g.right.width <= 48, 'a collapsed side is still wide');
-    await page.reload();
-    await page.waitForFunction(() => window.__proofReadingWalk?.debugState().ready === true, null, { timeout: 20_000 });
-    await page.waitForTimeout(400);
-    assert.equal(await page.evaluate(() => document.body.classList.contains('prw-left-collapsed') && document.body.classList.contains('prw-right-collapsed')), true, 'the collapsed state was forgotten');
-    await page.locator('.prw-left .prw-collapse').click();
-    await page.locator('.prw-right .prw-collapse').click();
-    await page.waitForTimeout(200);
-    g = await regions(page);
-    assert.equal(g.selectedNav, 'outline', 'the Navigator tab was forgotten');
-    assert.equal(g.selectedMargin, 'room', 'the Margin tab was forgotten');
-    await page.locator('.prw-left .anv-tab[data-tab="issues"]').click();
-    await page.locator('.prw-right .amg-tab[data-tab="line"]').click();
+  await check(`${tag}: ac-2vs: the left panel and selected tab persist across reload`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await page.locator('#anv-tab-outline').click(); await page.locator('.prw-left .prw-collapse').click(); await page.reload(); await page.waitForFunction(()=>window.__proofReadingWalk?.debugState().ready); assert.equal(await page.evaluate(()=>document.body.classList.contains('prw-left-collapsed')),true); await page.locator('.prw-left .prw-collapse').click(); assert.equal(await page.locator('#anv-tab-outline').getAttribute('aria-selected'),'true'); await page.locator('#anv-tab-issues').click();
   });
-  await check(`${tag}: View › Navigator and View › Margin show and hide the sides`, async () => {
+  await check(`${tag}: View › Side panel shows and hides the left panel`, async () => {
     await page.locator('#accord-menubar .amb-top[data-menu="view"]').click();
-    await page.locator('.amb-menu .amb-item', { hasText: 'Review panel' }).click();
+    await page.locator('.amb-menu .amb-item', { hasText: 'Side panel' }).click();
     await waitFor(page, () => document.body.classList.contains('prw-left-collapsed'));
     await page.locator('#accord-menubar .amb-top[data-menu="view"]').click();
-    await page.locator('.amb-menu .amb-item', { hasText: 'Review panel' }).click();
+    await page.locator('.amb-menu .amb-item', { hasText: 'Side panel' }).click();
     await waitFor(page, () => !document.body.classList.contains('prw-left-collapsed'));
   });
-  await check(`${tag}: everyone's marks fold into "Marked by N" in the Line tab; open by default only for a Reject; a person's choice is kept`, async () => {
-    await seedTeamMarks(created);
-    await page.evaluate(i => window.__proofReadingWalk.focusLine(i), L.S1);
-    // The page polls for other people's marks; the viewer's own scroll-Seen may be a third mark.
-    await waitFor(page, () => /1 Agreed/.test(document.querySelector('.prw-right .plm-team-fold .plm-team-detail')?.textContent ?? ''), null, 15000);
-    let f = await teamFold(page, '.prw-right');
-    assert.equal(f.line, L.S1);
-    assert.equal(f.open, false, 'a line with no Reject opens its marks');
-    assert.equal(f.listShown, false, 'the list shows while folded');
-    assert.match(f.detail, /^1 Agreed · [12] Seen$/);
-    assert.match(f.label, /^Marked by [23]$/);
-    assert.equal(await page.locator('.prw-right .plm-team-fold > .plm-team').isVisible(), false);
-    await page.screenshot({ path: path.join(shots, `layout-polish-${style}-1440-marked-by-folded.png`), clip: { x: 1090, y: 60, width: 350, height: 640 } });
-    await page.locator('.prw-right .plm-team-sum').click();
-    f = await teamFold(page, '.prw-right');
-    assert.equal(f.open, true);
-    assert.ok(f.rows.some(r => /Agreed/.test(r)) && f.rows.some(r => /Seen/.test(r)), `who marked what: ${f.rows}`);
-    // Kept across a re-render (another line, then back).
-    await page.evaluate(i => window.__proofReadingWalk.focusLine(i), L.S2);
-    await waitFor(page, i => Number(document.querySelector('.prw-right .plm-team-fold')?.dataset.line) === i, L.S2);
-    f = await teamFold(page, '.prw-right');
-    assert.equal(f.open, true, 'a line with a Reject is folded');
-    assert.equal(f.auto, 'open');
-    assert.ok(f.rows.some(r => /Rejected: Say which list/.test(r)), `the Reject and its reason: ${f.rows}`);
-    await page.screenshot({ path: path.join(shots, `layout-polish-${style}-1440-marked-by-reject.png`), clip: { x: 1090, y: 60, width: 350, height: 640 } });
-    await page.evaluate(i => window.__proofReadingWalk.focusLine(i), L.S1);
-    await waitFor(page, i => Number(document.querySelector('.prw-right .plm-team-fold')?.dataset.line) === i, L.S1);
-    assert.equal((await teamFold(page, '.prw-right')).open, true, 'the person\'s open was not kept');
-    await page.locator('.prw-right .plm-team-sum').click();
-    assert.equal((await teamFold(page, '.prw-right')).open, false);
+  await check(`${tag}: ac-2vs: stored team marks do not render marking controls`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await seedTeamMarks(created); await page.evaluate(()=>window.__proofLineMarks.refresh()); await assertRetiredMarks(page);
   });
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.locator(`.prw-left .anv-issue[data-line="${L.ASK}"]`).click();
@@ -898,100 +755,42 @@ async function phone3(browser, base, style) {
   });
   activePage = page;
   const strip = page.locator('.prw-strip');
-  await check(`${tag}: the bottom strip is the position and ⋯; answers live in the sheet (mockup: 56 px at the bottom)`, async () => {
-    await strip.waitFor({ state: 'visible' });
-    const r = await strip.boundingBox();
-    assert.ok(Math.abs(r.y + r.height - 844) <= 2, `strip bottom ${r.y + r.height}`);
-    assert.ok(r.height >= 56 && r.height <= 80, `strip height ${r.height}`);
-    assert.equal(await page.locator('.prw-strip-where').innerText(), 'Line 1 of 25');
-    const buttons = await page.evaluate(() => [...document.querySelectorAll('.prw-strip-actions button')].map(b => b.textContent));
-    assert.deepEqual(buttons, ['⋯']);
-    const boxes = await page.evaluate(() => ['.prw-strip-more'].map(s => document.querySelector(s).getBoundingClientRect().height));
-    for (const h of boxes) assert.ok(h >= 44, `a strip button is too small to tap: ${h}`);
-    await page.screenshot({ path: path.join(shots, `${tag}-strip.png`) });
+  await check(`${tag}: ac-2vs: the phone strip shows title, Review and more options`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await page.locator('.prw-strip').waitFor({state:'visible'}); assert.match(await page.locator('.prw-strip-info').innerText(),/Waiting on Mike/); assert.equal(await page.locator('.prw-strip-review').isVisible(),true); await assertRetiredMarks(page);
   });
-  await check(`${tag}: a swipe up on the strip opens the Margin as a sheet — the strip on top, then Line · Room`, async () => {
-    const r = await strip.boundingBox();
-    const cdp = await context.newCDPSession(page);
-    const x = r.x + 60;
-    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y: r.y + 30 }] });
-    for (const dy of [10, 25, 45, 60]) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: r.y + 30 - dy }] });
-    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-    await page.locator('.prw-right.prw-sheet-open').waitFor({ state: 'visible' });
-    const sheet = await page.locator('.prw-right.prw-sheet-open').boundingBox();
-    const s2 = await strip.boundingBox();
-    assert.ok(Math.abs(sheet.y + sheet.height - 844) <= 2, 'the sheet is not at the bottom');
-    assert.ok(s2.y >= sheet.y - 1 && s2.y <= sheet.y + 20, 'the strip is not the top of the sheet');
-    const tabs = await page.evaluate(() => [...document.querySelectorAll('.prw-right.prw-sheet-open .amg-tab')].map(t => t.querySelector('.amg-tab-label').textContent));
-    assert.deepEqual(tabs, ['Line 1', 'Room']);
-    assert.ok(sheet.y > 844 * 0.2, 'the sheet covers the whole page');
-    await page.screenshot({ path: path.join(shots, `${tag}-sheet.png`) });
+  await check(`${tag}: ac-2vs: Review opens the left sheet with four tabs`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await page.locator('.prw-strip-review').tap(); await page.locator('.prw-left.prw-sheet-open').waitFor({state:'visible'}); assert.deepEqual(await page.locator('.anv-tab').evaluateAll(ns=>ns.map(n=>n.dataset.tab)),['issues','outline','since','room']);
   });
-  await check(`${tag}: the sheet's Room tab is the chat; a swipe down (or the grab bar) closes the sheet`, async () => {
-    await page.locator('.prw-right.prw-sheet-open .amg-tab[data-tab="room"]').tap();
-    await page.locator('.prw-right.prw-sheet-open .pch-input').waitFor({ state: 'visible' });
-    assert.equal(await page.evaluate(() => window.__proofChat.debugState().visible), true);
-    await page.screenshot({ path: path.join(shots, `${tag}-room.png`) });
-    await page.locator('.prw-right.prw-sheet-open .amg-tab[data-tab="line"]').tap();
-    await page.locator('.prw-strip-grab').tap();
-    await page.locator('.prw-right.prw-sheet-open').waitFor({ state: 'detached' }).catch(() => {});
-    assert.equal(await page.locator('.prw-right.prw-sheet-open').count(), 0);
-    const r = await strip.boundingBox();
-    assert.ok(Math.abs(r.y + r.height - 844) <= 2, 'the strip did not go back to the bottom');
+  await check(`${tag}: ac-2vs: the sheet’s Room tab hosts chat and its close control works`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await page.locator('#anv-tab-room').tap(); await page.locator('#anv-pane-room .pch-input').waitFor({state:'visible'}); assert.equal(await page.evaluate(()=>window.__proofChat.debugState().visible),true); await page.locator('.prw-left .prw-collapse').tap();
   });
-  await check(`${tag}: ⋯ in the strip opens the sheet with More showing (Seen, Flag uncertain, …) for the cursor's line`, async () => {
-    await page.evaluate(i => window.__proofReadingWalk.focusLine(i), L.S1);
-    await page.waitForTimeout(300);
-    await page.locator('.prw-strip-more').tap();
-    const more = page.locator('.prw-right.prw-sheet-open .plm-more');
-    await more.waitFor({ state: 'visible' });
-    assert.match(await more.innerText(), /Seen[\s\S]*Flag uncertain/);
-    assert.equal(await page.locator('.prw-right.prw-sheet-open .plm-box').getAttribute('data-line'), String(L.S1));
-    await page.screenshot({ path: path.join(shots, `${tag}-more.png`) });
-    await more.locator('.plm-choice[data-status="seen"]').tap();
-    await waitFor(page, i => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i && m.status === 'seen'), L.S1);
-    await page.locator('.prw-strip-grab').tap();
+  await check(`${tag}: ac-2vs: more options opens Room in the left sheet`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await page.locator('.prw-strip-more').tap(); await page.locator('.proof-share-overflow-menu').getByRole('menuitem',{name:/^Room/}).tap(); await page.locator('#anv-pane-room .pch-input').waitFor({state:'visible'}); await page.locator('.prw-left .prw-collapse').tap();
   });
-  await check(`${tag}: Agree in the sheet marks the cursor's line; "Marked up to line K ↑" takes you back there`, async () => {
-    if (!(await page.locator('.prw-right.prw-sheet-open').count())) await page.locator('.prw-strip-where').tap();
-    await page.locator('.prw-right .plm-primary-row [data-status="agreed"]').tap();
-    await page.locator('.prw-strip-grab').tap();
-    await waitFor(page, i => document.querySelector('.prw-strip-marked')?.textContent === `Marked up to line ${i + 1} ↑`, L.S1);
-    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight / 2));
-    await page.waitForTimeout(500);
-    await page.locator('.prw-strip-marked').tap();
-    await waitFor(page, i => window.__proofReadingWalk.debugState().cursor === i, L.S1);
+  await check(`${tag}: ac-2vs: the phone passage has touch actions and ignores A/R`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await selectPassage(page,L.S1); await assertMarkKeysInactive(page); await assertPassageActions(page);
   });
   await check(`${tag}: Review opens the bottom sheet; selecting a row keeps it open`, async () => {
     await page.locator('[data-accord-review-toggle]').tap();
     const nav = page.locator('.prw-left.prw-sheet-open');
     await nav.waitFor({ state: 'visible' });
     const tabs = await page.evaluate(() => [...document.querySelectorAll('.prw-left.prw-sheet-open .anv-tab')].map(t => t.firstChild.textContent.trim()));
-    assert.deepEqual(tabs, ['Review', 'Outline', 'Since you']);
+    assert.deepEqual(tabs, ['Review', 'Outline', 'Since you', 'Room']);
     await page.screenshot({ path: path.join(shots, `${tag}-navigator.png`) });
     await nav.locator(`.anv-issue[data-line="${L.CHANGE}"]`).tap();
     await waitFor(page, i => window.__proofReadingWalk.debugState().cursor === i, L.CHANGE);
     assert.equal(await page.locator('.prw-left.prw-sheet-open').count(), 1, 'the Review panel closed on selection');
     await page.locator('[data-accord-review-toggle]').tap();
-    assert.equal(await page.locator('.prw-strip-where').innerText(), `Line ${L.CHANGE + 1} of 25`);
+    assert.equal(await page.locator('.prw-strip').getAttribute('data-line'), String(L.CHANGE));
   });
-  await check(`${tag}: the sheet's Line tab folds everyone's marks into "Marked by N"; a Reject opens it; the row is touch-sized`, async () => {
-    await seedTeamMarks(created);
-    await page.evaluate(i => window.__proofReadingWalk.focusLine(i), L.S2);
-    await page.getByRole('button', { name: /^More options/ }).tap();
-    await page.locator('.proof-share-overflow-menu').getByRole('menuitem', { name: /This line/ }).tap();
-    await page.locator('.prw-right.prw-sheet-open').waitFor({ state: 'visible' });
-    await waitFor(page, () => document.querySelector('.prw-right.prw-sheet-open .plm-team-fold')?.dataset.auto === 'open', null, 15000);
-    const f = await teamFold(page, '.prw-right.prw-sheet-open');
-    assert.equal(f.line, L.S2);
-    assert.equal(f.open, true, 'the Reject did not open the fold');
-    const sum = await page.locator('.prw-right.prw-sheet-open .plm-team-sum').boundingBox();
-    assert.ok(sum.height >= 44, `the row is too small to tap: ${sum.height}`);
-    await page.locator('.prw-right.prw-sheet-open .plm-team-fold').scrollIntoViewIfNeeded();
-    await page.screenshot({ path: path.join(shots, `layout-polish-${style}-phone-390x844-marked-by.png`) });
-    await page.locator('.prw-right.prw-sheet-open .plm-team-sum').tap();
-    assert.equal((await teamFold(page, '.prw-right.prw-sheet-open')).open, false);
-    await page.locator('.prw-strip-grab').tap();
+  await check(`${tag}: ac-2vs: stored team marks remain hidden on the phone`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await seedTeamMarks(created); await page.evaluate(()=>window.__proofLineMarks.refresh()); await assertRetiredMarks(page); await assertPanelToggle(page);
   });
   await context.close();
 }

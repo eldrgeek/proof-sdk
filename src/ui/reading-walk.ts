@@ -48,13 +48,14 @@ import { setReadingAnchor } from '../editor/caret-anchor';
 import { SCROLL_CAMERA_POLICY, anchoredScroll, bandFractionFor, cameraScroll, deadZone, type CameraView } from '../shared/scroll-camera';
 import { TIER_POLICY } from '../shared/line-tiers';
 import { HIGHLIGHT_POLICY, MARKED_UP_TO_POLICY, formatAgo, issuesLeftText } from '../shared/layout-status';
-import { MARGIN_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY, parseRailState, type MarginTab, type RailState } from '../shared/layout-panels';
+import { ACCORDS_LIST_POLICY, PASSAGE_ACTIONS_POLICY, MARGIN_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY, parseRailState, type MarginTab, type RailState } from '../shared/layout-panels';
 import { NavigatorUI } from './navigator';
 import { personalCompletionText } from '../shared/participant-status';
 import { reviewStorageKey } from '../shared/review-list';
 import type { FoldingUI } from './folding';
 import './reading-walk.css';
 import './layout-panels.css';
+import { productIdentity } from '../shared/product-identity';
 
 /**
  * Editing first (Mike, 2026-09-19). While the person edits (src/editor/editing-guard.ts), the
@@ -82,13 +83,9 @@ export const TOUCH_FOCUS_POLICY = {
   hideWhileEditing: true,
 } as const;
 
-const STATUS_WORDS: Record<string, string> = {
-  unseen: 'Not marked yet', seen: 'Seen', agreed: 'Agreed', approved: 'Approved', rejected: 'Rejected',
-  skimmed: 'Skimmed', changed: 'Changed since you marked it', stale: 'Marked long ago',
-};
-
 export interface ReadingWalkHost {
   slug(): string | null;
+  title?(): string;
   suggestChange(line: number): boolean;
   canSuggest(): boolean;
   actor(): string;
@@ -183,6 +180,8 @@ export class ReadingWalkUI {
   private rightHeadEl: HTMLElement | null = null;
   /** Step B7: unread @mentions of the viewer in the chat (a badge on the rail toggle). */
   private chatUnread = 0;
+  private readonly passageActions = el('div', 'accord-passage-actions');
+  private readonly actionButtons = new Map<string, HTMLButtonElement>();
   private readonly focusEl = el('div', 'prw-focus');
   /**
    * The mode, shown as state in the status bar (Accord layout stage 1): "Reading" or, while an
@@ -286,7 +285,7 @@ export class ReadingWalkUI {
       focusLine: (index) => { this.host.lineMarks().revealLine(index); this.focusLine(index); if (isPhone()) this.closeSheets(); },
       openBrief: () => { if (isPhone()) this.openSheet('right'); else this.setCollapsed('right', false); this.proxy.briefEl.scrollIntoView({ block: 'nearest' }); },
     });
-    this.left.setAttribute('aria-label', 'Review panel');
+    this.left.setAttribute('aria-label', NAVIGATOR_POLICY.label);
     this.left.id = 'anv-panel';
     this.right.setAttribute('aria-label', 'Margin: this line, and the room');
     this.focusEl.setAttribute('aria-hidden', 'true');
@@ -299,9 +298,12 @@ export class ReadingWalkUI {
       cursor: () => this.cursorLine(),
       go: (index) => { this.host.lineMarks().revealLine(index); this.focusLine(index); },
       toggle: () => this.toggleRailFromMenu('left'),
-      tabChanged: (tab) => this.saveRailState({ leftTab: tab }),
+      documents: () => this.documentsList(),
+      accordsToggled: (expanded) => this.saveRailState({ accordsExpanded: expanded }),
+      tabChanged: (tab) => { this.saveRailState({ leftTab: tab }); this.roomShownListener?.(); },
     }, saved.leftTab, this.sinceHost);
     this.buildRails();
+    this.buildPassageActions();
   }
 
   // --------------------------------------------------------------------------
@@ -323,9 +325,16 @@ export class ReadingWalkUI {
       },
     });
     document.body.classList.add('prw-on');
+    document.body.classList.toggle('accord-single-panel', !MARGIN_POLICY.renderPanel);
+    document.body.classList.toggle('accord-fill-page', NAVIGATOR_POLICY.textFillsAvailableWidth);
+    document.body.style.setProperty('--accord-panel-width', `${NAVIGATOR_POLICY.widthPx}px`);
+    document.body.style.setProperty('--accord-actions-width', `${PASSAGE_ACTIONS_POLICY.gutterWidthPx}px`);
+    document.body.style.setProperty('--accord-actions-buttons-width', `${PASSAGE_ACTIONS_POLICY.gutterWidthPx - PASSAGE_ACTIONS_POLICY.markerLanePx - PASSAGE_ACTIONS_POLICY.gapPx}px`);
+    document.body.style.setProperty('--accord-docs-height', `${ACCORDS_LIST_POLICY.maxHeightPx}px`);
     this.applyRailState();
     document.head.append(this.styleEl);
-    document.body.append(this.left, this.right);
+    document.body.append(this.left);
+    if (MARGIN_POLICY.renderPanel) document.body.append(this.right);
     // Rail scrolling: a wheel over a rail scrolls that rail's lists only, never the page.
     this.railWheelCleanups.push(containRailWheel(this.left), containRailWheel(this.right));
     window.addEventListener('scroll', this.onScroll, { passive: true });
@@ -386,6 +395,8 @@ export class ReadingWalkUI {
     this.strip.remove();
     this.statusBar.remove();
     this.ruleEl.remove();
+    this.passageActions.remove();
+    document.body.classList.remove('accord-single-panel', 'accord-fill-page');
     if (this.agoTimer) clearInterval(this.agoTimer);
     this.agoTimer = null;
     document.body.classList.remove('prw-touch', 'prw-strip-on', 'pst-on', 'phl-context-dim', 'prw-margin-sheet');
@@ -417,7 +428,8 @@ export class ReadingWalkUI {
     // Accord layout stage 3: the outline tools live on the Navigator's Outline tab. `first` is the
     // one Undo on a phone: it sits at the top of the Margin's Line tab.
     if (options.first) {
-      if (node.parentElement !== this.lineTools) this.lineTools.prepend(node);
+      const tools = MARGIN_POLICY.renderLineTab ? this.lineTools : this.navigator.toolsEl;
+      if (node.parentElement !== tools) tools.prepend(node);
       return;
     }
     const tools = this.navigator.toolsEl;
@@ -539,6 +551,7 @@ export class ReadingWalkUI {
     const container = (view.dom.closest('#editor-container') as HTMLElement | null) ?? view.dom.parentElement;
     if (container && this.focusEl.parentElement !== container) container.append(this.focusEl);
     if (container && this.ruleEl.parentElement !== container) container.append(this.ruleEl);
+    if (container && this.passageActions.parentElement !== container) container.append(this.passageActions);
     if (!this.resizeObserver) {
       this.resizeObserver = new ResizeObserver(() => {
         this.restoreViewport(); this.measure(); this.queueRender();
@@ -702,6 +715,7 @@ export class ReadingWalkUI {
       event.preventDefault(); this.host.suggestChange(this.cursorLine()); return;
     }
     // Reading keys act only on the explicitly selected passage.
+    if (!MARGIN_POLICY.lineMarkKeys && /^[ar]$/i.test(key)) { event.preventDefault(); return; }
     if (key === 'a' || key === 'A') { event.preventDefault(); this.markFocus('agreed'); return; }
     if (key === 'r' || key === 'R') { event.preventDefault(); this.openReason(); return; }
     if (key === 'j' || key === 'J' || key === 'ArrowDown') { event.preventDefault(); this.next(); return; }
@@ -799,11 +813,18 @@ export class ReadingWalkUI {
   /** Line tiers: D on the focus line. */
   private flipFocusTier(): void {
     this.renderNow();
-    this.box?.flipTier?.();
+    const line = this.lines[this.cursorLine()];
+    const box = this.box ?? (line ? this.host.lineMarks().buildMarkBox(line) : null);
+    box?.flipTier?.();
   }
 
   /** Step B3: Y / N / T on the focus line's ask. */
   private answerFocus(choice: AskChoice): void {
+    if (!MARGIN_POLICY.renderLineTab) {
+      const ask = this.host.lineMarks().askForLine(this.cursorLine());
+      if (ask) this.view()?.dom.querySelector<HTMLButtonElement>(`.pask-inline[data-ask-id="${CSS.escape(ask.ask.id)}"] [data-choice="${choice}"]`)?.click();
+      return;
+    }
     if (ASK_POLICY.reasonRequired[choice]) {
       if (isPhone()) this.openSheet('right');
       else if (document.body.classList.contains('prw-right-collapsed')) this.setCollapsed('right', false);
@@ -1008,55 +1029,69 @@ export class ReadingWalkUI {
     document.body.style.setProperty('--prw-strip-h', `${TOUCH_FOCUS_POLICY.stripHeightPx}px`);
     this.strip.hidden = !show;
     if (!show) return;
-    // Mike, 2026-09-23 (usability brief): the strip opens the sheet; it has no duplicate answers.
     const index = this.cursorLine();
-    const line = this.lines[index];
-    const status = lm.myStatus(index);
-    const marked = lm.markedUpTo();
-    const sheetOpen = this.right.classList.contains('prw-sheet-open');
-    const sig = `${index}|${this.lines.length}|${line?.hash ?? ''}|${status}|${Boolean(lm.askForLine(index))}|${marked?.line ?? ''}|${sheetOpen}`;
-    // A mark updates the position strip without introducing another answer group.
+    const count = lm.reviewViews()['needs-you'].count;
+    const title = this.host.title?.() ?? productIdentity().documentNoun;
+    const sig = `${index}|${count}|${title}|${this.chatUnread}`;
     if (sig === this.stripSig) return;
     this.stripSig = sig;
     this.strip.dataset.line = String(index);
-    this.strip.dataset.status = status;
     this.strip.setAttribute('role', 'region');
-    this.strip.setAttribute('aria-label', `Current line ${index + 1}`);
-    const grab = el('button', 'prw-strip-grab');
-    grab.type = 'button';
-    grab.setAttribute('aria-label', sheetOpen ? 'Close the Margin' : 'Open the Margin (this line and the room)');
-    grab.setAttribute('aria-expanded', String(sheetOpen));
-    grab.onclick = () => { if (this.right.classList.contains('prw-sheet-open')) this.closeSheets(); else this.openSheet('right'); };
-    const info = el('div', 'prw-strip-info');
-    const where = el('button', 'prw-strip-where');
-    where.type = 'button';
-    where.append(el('b', undefined, `Line ${index + 1}`), ` of ${this.lines.length}`);
-    where.setAttribute('aria-label', `Line ${index + 1} of ${this.lines.length}: ${sheetOpen ? 'close' : 'open'} the Margin`);
-    where.onclick = grab.onclick;
-    info.append(where);
-    if (marked) {
-      const back = el('button', 'prw-strip-marked', `Marked up to line ${marked.line + 1} ↑`);
-      back.type = 'button';
-      back.setAttribute('aria-label', `Go to line ${marked.line + 1}, the last line you marked`);
-      back.onclick = () => this.gotoMarkedUpTo();
-      info.append(back);
-    } else {
-      const state = el('span', 'prw-strip-status', STATUS_WORDS[status] ?? status);
-      state.dataset.status = status;
-      info.append(state);
-    }
-    const buttons = el('div', 'prw-strip-actions');
-    const more = el('button', 'prw-strip-more', '⋯');
+    this.strip.setAttribute('aria-label', NAVIGATOR_POLICY.label);
+    const titleEl = el('span', 'prw-strip-info', title);
+    titleEl.title = title;
+    const review = el('button', 'prw-strip-review', `Review ${count}`);
+    review.type = 'button';
+    review.onclick = () => { this.navigator.select('issues'); this.toggleRailFromMenu('left'); };
+    const more = el('button', 'prw-strip-more', this.chatUnread > 0 ? `⋯ @${this.chatUnread}` : '⋯');
     more.type = 'button';
-    more.setAttribute('aria-label', `More marks for line ${index + 1}`);
-    // ⋯ More opens the Margin sheet on the Line tab with the line's More marks shown.
-    more.onclick = () => {
-      if (this.right.classList.contains('prw-sheet-open') && this.marginTab === 'line') { this.box?.toggleMore?.(); return; }
-      this.selectMarginTab('line');
-      this.openSheet('right', { more: true });
-    };
-    buttons.append(more);
-    this.strip.replaceChildren(grab, info, buttons);
+    more.setAttribute('aria-label', 'More options');
+    more.onclick = () => document.querySelector<HTMLButtonElement>('#share-banner [aria-label^="More options"]')?.click();
+    this.strip.replaceChildren(titleEl, review, more);
+  }
+
+  /** Selection-only controls in a reserved gutter: no document mutation or layout insertion. */
+  private buildPassageActions(): void {
+    this.passageActions.hidden = true;
+    this.passageActions.setAttribute('role', 'group');
+    this.passageActions.setAttribute('aria-label', 'Selected passage actions');
+    this.passageActions.dataset.placement = PASSAGE_ACTIONS_POLICY.placement;
+    for (const spec of PASSAGE_ACTIONS_POLICY.actions) {
+      const button = el('button', `plm-${spec.id}`, spec.label);
+      button.type = 'button';
+      button.title = `${spec.label} (${spec.key})`;
+      if (spec.id === 'suggest') button.dataset.accordSuggestChange = '';
+      button.setAttribute('aria-keyshortcuts', spec.key);
+      button.addEventListener('mousedown', event => event.preventDefault());
+      button.onclick = () => {
+        if (spec.id === 'suggest') { if (isPhone()) this.closeSheets(); this.host.suggestChange(this.cursorLine()); }
+        else this.startThreadHere();
+      };
+      this.actionButtons.set(spec.id, button);
+      this.passageActions.append(button);
+    }
+  }
+
+  private renderPassageActions(): void {
+    if (!PASSAGE_ACTIONS_POLICY.enabled) { this.passageActions.hidden = true; return; }
+    // A local draft owns the selection and its controls until the reader leaves it.
+    if (PASSAGE_ACTIONS_POLICY.freezeWhileDraftFocused && document.activeElement?.closest('.accord-draft')) return;
+    const view = this.view();
+    const line = this.lines[this.cursorLine()];
+    const container = this.passageActions.parentElement;
+    const node = view && line ? view.nodeDOM(line.pos) : null;
+    if (!view || !container || !(node instanceof HTMLElement) || node.getBoundingClientRect().height === 0 || isWriting()) {
+      this.passageActions.hidden = true; return;
+    }
+    const r = node.getBoundingClientRect();
+    const c = container.getBoundingClientRect();
+    const text = view.dom.getBoundingClientRect();
+    this.passageActions.hidden = false;
+    this.passageActions.dataset.line = String(this.cursorLine());
+    this.passageActions.style.top = `${Math.round(r.top - c.top)}px`;
+    this.passageActions.style.left = `${Math.round(text.right - c.left + PASSAGE_ACTIONS_POLICY.markerLanePx)}px`;
+    this.actionButtons.get('suggest')!.disabled = !this.host.canSuggest();
+    this.actionButtons.get('discuss')!.disabled = !this.host.lineMarks().canCommentHere();
   }
 
   // --------------------------------------------------------------------------
@@ -1107,6 +1142,7 @@ export class ReadingWalkUI {
   /** A margin dot on desktop: focus that line and put the keyboard in its box. */
   activateDot(index: number): boolean {
     if (!this.walk) return false;
+    if (!MARGIN_POLICY.renderLineTab) { this.openReviewItem(index); return true; }
     this.selectMarginTab('line');
     if (document.body.classList.contains('prw-right-collapsed')) this.setCollapsed('right', false);
     this.focusLine(index);
@@ -1444,7 +1480,9 @@ export class ReadingWalkUI {
     this.renderMe();
     const restoreDetailAnchor = Number(this.boxHost.dataset.line) === this.targetLine() ? this.navigator.holdDetailAnchor() : () => {};
     const railSig = `${this.boxSig}\n${this.changesSig}`;
-    this.renderBox();
+    if (MARGIN_POLICY.renderLineTab) this.renderBox();
+    else this.boxHost.dataset.line = String(this.targetLine()); // Keep Review's scroll anchor without rendering a Line box.
+    this.renderPassageActions();
     this.renderChanges();
     this.threads?.render();
     // The focus line changed, or its box or changes did: keep them in view at the rail's bottom.
@@ -1878,14 +1916,13 @@ export class ReadingWalkUI {
   // --------------------------------------------------------------------------
 
   private buildRails(): void {
-    // Accord layout stage 3 (decision 7): the Navigator (Outline · Issues · Since you) and its
-    // collapse button. The documents list moved to File › Open (stage 2).
+    // Mike, 2026-09-24, gfmd0z5p: Accords above Review · Outline · Since you · Room.
     const leftHead = el('div', 'prw-rail-head anv-head');
     const leftToggle = el('button', 'prw-collapse');
     leftToggle.type = 'button';
     leftToggle.onclick = () => this.toggleRail('left');
-    leftHead.append(this.navigator.tabsEl, leftToggle);
-    this.left.append(leftHead, ...Object.values(this.navigator.panes));
+    leftHead.append(el('strong', 'anv-heading-label', NAVIGATOR_POLICY.label), leftToggle);
+    this.left.append(leftHead, this.navigator.accordsEl, this.navigator.tabsEl, ...Object.values(this.navigator.panes));
 
     // Accord layout stage 3 (decision 6): the Margin, Line N and Room, no third tab.
     const rightHead = el('div', 'prw-rail-head amg-head');
@@ -1938,8 +1975,9 @@ export class ReadingWalkUI {
     // The line notice sits under the tabs, outside the scrolling body: it stays in view and
     // does not move when the pane scrolls or the line's box changes size (2026-09-21).
     this.linePane.append(this.provisionalEl, this.rightBody);
+    if (!MARGIN_POLICY.renderPanel) this.navigator.detailEl.prepend(this.provisionalEl);
     // The Room tab: the document chat, full height (it pushes nothing off screen).
-    this.roomPane.append(this.chatSlot);
+    (MARGIN_POLICY.renderPanel ? this.roomPane : this.navigator.panes.room).append(this.chatSlot);
     this.right.append(rightHead, this.linePane, this.roomPane);
     this.railFollow = new ScrollFollower({ scroller: this.rightBody, endTop: () => this.railEndTop(), name: 'rail' });
     this.rightBody.append(this.railFollow.pillElement);
@@ -1951,6 +1989,7 @@ export class ReadingWalkUI {
 
   /** The Margin's tab (the viewer's choice; it never switches itself). */
   selectMarginTab(tab: MarginTab, remember = true): void {
+    if (!MARGIN_POLICY.renderPanel) { this.navigator.select(tab === 'room' ? 'room' : 'issues', remember); return; }
     if (tab === this.marginTab && this.right.dataset.tab === tab) return;
     this.marginTab = tab;
     if (remember) this.saveRailState({ rightTab: tab });
@@ -1958,7 +1997,7 @@ export class ReadingWalkUI {
     this.renderNow();
   }
 
-  marginTabShown(): MarginTab { return this.marginTab; }
+  marginTabShown(): MarginTab { return MARGIN_POLICY.renderPanel ? this.marginTab : this.navigator.current() === 'room' ? 'room' : 'line'; }
 
   private applyMarginTab(): void {
     const line = this.marginTab === 'line';
@@ -1977,17 +2016,24 @@ export class ReadingWalkUI {
   /** The chat asks to hear when the Room tab may have come on screen (it marks @mentions read then). */
   onRoomShown(listener: () => void): void { this.roomShownListener = listener; }
 
-  /** The Room tab is on screen (desktop: the Margin open on Room; phones: the Margin sheet on Room). */
+  /** The Room tab is on screen in the sole side panel (or its phone sheet). */
   isRoomVisible(): boolean {
+    if (!MARGIN_POLICY.renderPanel) return this.navigator.current() === 'room' && this.railShown('left');
     if (this.marginTab !== 'room') return false;
     if (isPhone()) return this.right.classList.contains('prw-sheet-open');
     return !document.body.classList.contains('prw-right-collapsed');
   }
 
-  /** Opens the Margin on its Room tab (an explicit act: a speech bubble, the ⋯ menu's Room). */
+  /** Opens Room in the side panel after an explicit act: a speech bubble or the ⋯ menu's Room. */
   openRoom(): void {
+    if (!MARGIN_POLICY.renderPanel) {
+      if (MARGIN_POLICY.explicitChatOpensRoom) this.navigator.select('room');
+      if (isPhone()) { if (!this.railShown('left')) this.openSheet('left'); }
+      else if (!this.railShown('left')) this.setCollapsed('left', false);
+      this.roomShownListener?.(); return;
+    }
     if (MARGIN_POLICY.explicitChatOpensRoom) this.selectMarginTab('room');
-    if (isPhone()) { if (!this.right.classList.contains('prw-sheet-open')) this.openSheet('right'); }
+    if (isPhone()) { if (!this.left.classList.contains('prw-sheet-open')) this.openSheet(PHONE_STRIP_POLICY.sheetSide); }
     else if (document.body.classList.contains('prw-right-collapsed')) this.setCollapsed('right', false);
     this.roomShownListener?.();
   }
@@ -2160,11 +2206,12 @@ export class ReadingWalkUI {
   private applyRailState(): void {
     const saved = this.railState();
     this.navigator.select(saved.leftTab ?? NAVIGATOR_POLICY.defaultTab, false);
+    this.navigator.setAccordsExpanded(saved.accordsExpanded ?? ACCORDS_LIST_POLICY.defaultExpanded);
     // Default: both open when the window has room; the Navigator starts closed on narrower
     // desktops so the text keeps a readable width (NAVIGATOR_POLICY.closedBelowPx).
     const wide = window.innerWidth >= NAVIGATOR_POLICY.closedBelowPx;
     const leftCollapsed = saved.left ?? !wide;
-    const rightCollapsed = saved.right ?? false;
+    const rightCollapsed = !MARGIN_POLICY.renderPanel || (saved.right ?? false);
     document.body.classList.toggle('prw-left-collapsed', leftCollapsed);
     document.body.classList.toggle('prw-right-collapsed', rightCollapsed);
     if (isPhone() && saved.left === false && !this.left.classList.contains('prw-sheet-open')) this.openSheet('left');
@@ -2177,7 +2224,7 @@ export class ReadingWalkUI {
     if (side === 'left') this.navigator.setPanelOpen(!collapsed);
     document.body.classList.toggle(`prw-${side}-collapsed`, collapsed);
     this.updateToggleLabels();
-    if (side === 'right') this.roomShownListener?.();
+    this.roomShownListener?.();
     requestAnimationFrame(() => { this.measure(); this.queueRender(); });
   }
 
@@ -2192,12 +2239,12 @@ export class ReadingWalkUI {
       const btn = rail.querySelector('.prw-collapse') as HTMLButtonElement | null;
       if (!btn) continue;
       const collapsed = document.body.classList.contains(`prw-${side}-collapsed`);
-      const name = side === 'left' ? 'Review panel' : 'Margin';
+      const name = side === 'left' ? NAVIGATOR_POLICY.label : 'Margin';
       if (phone) { btn.textContent = '×'; btn.setAttribute('aria-label', `Close the ${name}`); btn.removeAttribute('aria-expanded'); continue; }
       btn.textContent = side === 'left' ? (collapsed ? '»' : '«') : (collapsed ? '«' : '»');
-      btn.setAttribute('aria-label', `${collapsed ? 'Show' : 'Hide'} the ${name}${side === 'right' && this.chatUnread > 0 ? ` (${this.chatUnread} unread chat ${this.chatUnread === 1 ? 'mention' : 'mentions'})` : ''}`);
+      btn.setAttribute('aria-label', `${collapsed ? 'Show' : 'Hide'} the ${name}${side === (MARGIN_POLICY.renderPanel ? 'right' : 'left') && this.chatUnread > 0 ? ` (${this.chatUnread} unread chat ${this.chatUnread === 1 ? 'mention' : 'mentions'})` : ''}`);
       // Collapsed, the Margin's toggle carries the Room's unread badge (its tab is out of sight).
-      if (side === 'right' && this.chatUnread > 0 && collapsed) {
+      if (side === (MARGIN_POLICY.renderPanel ? 'right' : 'left') && this.chatUnread > 0 && collapsed) {
         const badge = el('span', 'prw-badge', String(this.chatUnread));
         badge.setAttribute('aria-hidden', 'true');
         btn.append(badge);
@@ -2211,21 +2258,25 @@ export class ReadingWalkUI {
   setChatUnread(count: number): void {
     if (count === this.chatUnread) return;
     this.chatUnread = count;
+    this.navigator.setRoomUnread(count);
+    this.stripSig = "";
+    this.renderStrip();
     this.updateToggleLabels();
     this.renderMarginTabs();
   }
 
   /** Step B7: desktop — the right rail is open (not collapsed). */
-  isRightRailOpen(): boolean { return !document.body.classList.contains('prw-right-collapsed'); }
+  isRightRailOpen(): boolean { return MARGIN_POLICY.renderPanel ? !document.body.classList.contains('prw-right-collapsed') : this.isRoomVisible(); }
 
   /** Step B7: desktop — opens the right rail (the chat lives there). */
-  openRightRail(): void { if (!isPhone()) this.setCollapsed('right', false); }
+  openRightRail(): void { this.openRoom(); }
 
   /**
    * Phones: a rail opens as a bottom sheet. The Margin's sheet carries the bottom strip at its top
    * (proposal: "Swipe up on the strip opens a sheet with the same Line · Room tabs").
    */
   openSheet(side: 'left' | 'right', options: { more?: boolean } = {}): void {
+    if (!MARGIN_POLICY.renderPanel && side === 'right') side = PHONE_STRIP_POLICY.sheetSide;
     this.closeSheets();
     const rail = side === 'left' ? this.left : this.right;
     rail.classList.add('prw-sheet-open');
@@ -2236,7 +2287,7 @@ export class ReadingWalkUI {
     }
     this.updateToggleLabels();
     this.renderNow();
-    if (side === 'right') this.roomShownListener?.();
+    this.roomShownListener?.();
     if (options.more) this.box?.openMore?.();
     else (rail.querySelector('.prw-collapse') as HTMLButtonElement | null)?.focus({ preventScroll: true });
   }
@@ -2247,6 +2298,7 @@ export class ReadingWalkUI {
     this.right.classList.remove('prw-sheet-open');
     document.body.classList.remove('prw-margin-sheet');
     if (this.strip.parentElement !== document.body && this.started) document.body.append(this.strip);
+    this.roomShownListener?.();
   }
 
   /** Phones: a swipe up on the strip opens the Margin sheet; a swipe down closes it (PHONE_STRIP_POLICY). */
@@ -2261,8 +2313,8 @@ export class ReadingWalkUI {
       const touch = event.changedTouches[0];
       if (!start || !touch) return;
       const dy = touch.clientY - start.y;
-      if (dy <= -PHONE_STRIP_POLICY.swipePx && !this.right.classList.contains('prw-sheet-open')) this.openSheet('right');
-      else if (dy >= PHONE_STRIP_POLICY.swipePx && this.right.classList.contains('prw-sheet-open')) this.closeSheets();
+      if (dy <= -PHONE_STRIP_POLICY.swipePx && !this.left.classList.contains('prw-sheet-open')) this.openSheet(PHONE_STRIP_POLICY.sheetSide);
+      else if (dy >= PHONE_STRIP_POLICY.swipePx && this.left.classList.contains('prw-sheet-open')) this.closeSheets();
     }, { passive: true });
   }
 
@@ -2279,6 +2331,7 @@ export class ReadingWalkUI {
     } catch {
       this.docsMessage = 'Could not load the documents list.';
     }
+    this.navigator.renderDocuments();
   }
 
   // --------------------------------------------------------------------------
@@ -2293,7 +2346,7 @@ export class ReadingWalkUI {
       readingFocus: walk?.focus ?? -1,
       target: walk ? this.targetLine() : -1,
       cursor: walk ? this.cursorLine() : -1,
-      marginTab: this.marginTab,
+      marginTab: this.marginTabShown(),
       navigator: this.navigator.debugState(),
       replies: [],
       sheet: this.right.classList.contains('prw-sheet-open') ? 'margin' : this.left.classList.contains('prw-sheet-open') ? 'navigator' : null,

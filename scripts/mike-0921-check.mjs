@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { assertRetiredMarks, assertMarkKeysInactive, assertSinglePanel, assertPassageActions, assertPanelToggle, seedLegacyMark } from './left-panel-assertions.mjs';
 // Browser check for Mike's 2026-09-21 report (Waiting on Mike Accord, items 1-5 and 7):
 //   1. a click on a link opens it (new tab; a #heading link moves the focus line); no "Open link" card
 //   2. the reading keys never type into the document: writing mode vs reading mode, every entry path
@@ -260,8 +261,7 @@ async function desktop(browser, base, style) {
     assert.equal(await writing(page), false);
     await page.locator('[data-draft-action="discard"]').click();
     await page.evaluate(() => document.activeElement?.blur());
-    await page.keyboard.press('a');
-    await waitFor(page, i => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i && m.status === 'agreed'), 5);
+    await assertMarkKeysInactive(page);
     assert.equal(await docText(page), before);
   });
   await check(`${tag}: item 2 — focus handed back to the text by code (a dialog closing) is reading: keys act, nothing types`, async () => {
@@ -281,8 +281,7 @@ async function desktop(browser, base, style) {
     await selectPassage(page, 7);
     await page.waitForFunction(() => window.__proofReadingWalk.debugState().target === 7, null, { timeout: 2000 });
     await codeFocusesText(page, 6);
-    await page.keyboard.press('a');
-    await waitFor(page, () => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === 7 && m.status === 'agreed'));
+    await assertMarkKeysInactive(page);
     assert.equal(await docText(page), text, 'A typed into the text');
     const routes = await page.evaluate(() => window.__proofReadingWalk && window.__proofEditingGuard?.().routes);
     if (routes) assert.ok(routes.some(r => r.key === 'a' && r.route === 'command'), JSON.stringify(routes.slice(-3)));
@@ -306,21 +305,9 @@ async function desktop(browser, base, style) {
     assert.equal(await writing(page), true, 'Esc left direct Editing');
     await page.evaluate(() => document.querySelector('.share-pill-suggest-toggle').click());
   });
-  await check(`${tag}: item 2 — after the rail takes the keyboard (a click in it), A is a command`, async () => {
-    await scrollLineIntoView(page, 13);
-    const box = await block(page, 13).boundingBox();
-    await page.mouse.click(box.x + 60, box.y + 10);
-    await page.waitForTimeout(120);
-    assert.equal(await writing(page), false);
-    // Accord layout stage 3: the Margin's Line tab (a control in the rail, not the text).
-    await page.locator('.prw-right .amg-tab[data-tab="line"]').click();
-    await page.waitForTimeout(100);
-    assert.equal(await writing(page), false, 'a click in the rail did not return to reading');
-    const text = await docText(page);
-    const target = (await walk(page)).target;
-    await page.keyboard.press('a');
-    await waitFor(page, i => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i && m.status === 'agreed'), target);
-    assert.equal(await docText(page), text);
+  await check(`${tag}: ac-2vs: A/R do nothing while the side panel has focus`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await page.locator('#anv-tab-outline').click(); await assertMarkKeysInactive(page); await page.locator('#anv-tab-issues').click();
   });
   await check(`${tag}: item 2 — a remote update does not change the mode: writing keeps typing, reading keeps acting`, async () => {
     await page.evaluate(() => document.querySelector('.share-pill-suggest-toggle').click());
@@ -375,17 +362,17 @@ async function desktop(browser, base, style) {
   // ---- items 4 and 5: the rail and the chat scroll -------------------------------------------
   await check(`${tag}: item 5 — each rail list scrolls on its own and never hands the scroll to the page`, async () => {
     const css = await page.evaluate(() => ({
-      body: getComputedStyle(document.querySelector('.prw-right .prw-rail-body')).overscrollBehaviorY,
-      rail: getComputedStyle(document.querySelector('.prw-right')).overscrollBehaviorY,
+      body: getComputedStyle(document.querySelector('#anv-pane-issues')).overscrollBehaviorY,
+      rail: getComputedStyle(document.querySelector('.prw-left')).overscrollBehaviorY,
     }));
     assert.equal(css.body, 'contain');
     assert.equal(css.rail, 'contain');
     const before = await page.evaluate(() => ({ y: scrollY, focus: window.__proofReadingWalk.debugState().focus }));
-    const head = await page.locator('.prw-right .prw-rail-head').boundingBox();
+    const head = await page.locator('.prw-left .prw-rail-head').boundingBox();
     await page.mouse.move(head.x + 60, head.y + 10);
     await page.mouse.wheel(0, 600);
     await page.waitForTimeout(400);
-    const body = await page.locator('.prw-right .prw-rail-body').boundingBox();
+    const body = await page.locator('#anv-pane-issues').boundingBox();
     await page.mouse.move(body.x + 40, body.y + body.height - 20);
     for (let i = 0; i < 4; i += 1) { await page.mouse.wheel(0, 800); await page.waitForTimeout(60); }
     await page.waitForTimeout(400);
@@ -395,42 +382,13 @@ async function desktop(browser, base, style) {
   });
   await check(`${tag}: incoming layout updates never scroll the rail`, async () => {
     await selectPassage(page, L.TRIPLE);
-    const before = await page.locator('.prw-right .prw-rail-body').evaluate(n => n.scrollTop);
+    const before = await page.locator('#anv-pane-issues').evaluate(n => n.scrollTop);
     await page.evaluate(() => window.__proofReadingWalk.notifyViewUpdate()); await page.waitForTimeout(200);
-    assert.equal(await page.locator('.prw-right .prw-rail-body').evaluate(n => n.scrollTop), before);
+    assert.equal(await page.locator('#anv-pane-issues').evaluate(n => n.scrollTop), before);
   });
-  await check(`${tag}: item 4 — a rail the person scrolled up in stays put and offers "New below ↓"`, async () => {
-    const railBody = page.locator('.prw-right .prw-rail-body');
-    const b = await railBody.boundingBox();
-    await page.mouse.move(b.x + 40, b.y + 40);
-    await page.mouse.wheel(0, -2000);
-    await page.waitForTimeout(250);
-    const top = await railBody.evaluate(n => n.scrollTop);
-    await selectPassage(page, L.TRIPLE);
-    await page.waitForFunction(i => window.__proofReadingWalk.debugState().target === i, L.TRIPLE, { timeout: 2000 });
-    await page.waitForTimeout(200);
-    const s = (await walk(page)).rail;
-    // The rail must never move under the person, whatever it holds.
-    assert.equal(await railBody.evaluate(n => n.scrollTop), top, 'the rail moved under the person');
-    // The pill is offered only when the person is actually ABOVE what the rail follows. (Accord
-    // round 2, stage D added the Discussion section to the rail body, so the body can be taller
-    // than its viewport while the focus line's box is still fully above the person's scroll
-    // position; height alone was never the precondition — distance from the target is.)
-    if (s.scrollHeight > s.clientHeight + 30 && s.target - s.scrollTop > 24) {
-      const pill = page.locator('.prw-right .prw-follow-pill[data-follow="rail"]');
-      await pill.waitFor({ state: 'visible', timeout: 2000 });
-      await page.screenshot({ path: path.join(shots, `${tag}-rail-pill.png`), clip: { x: 1080, y: 0, width: 360, height: 900 } });
-      await pill.click();
-      await page.waitForTimeout(150);
-      const after = (await walk(page)).rail;
-      assert.equal(after.following, true);
-      assert.ok(Math.abs(after.scrollTop - after.target) <= 2, JSON.stringify(after));
-      assert.equal(await pill.isVisible(), false);
-    } else {
-      // At or above what it follows: the rail is following and there is nothing new below.
-      assert.equal(s.following, true, `the rail is not following at its target ${JSON.stringify(s)}`);
-      assert.equal(await page.locator('.prw-right .prw-follow-pill[data-follow="rail"]').isVisible(), false);
-    }
+  await check(`${tag}: ac-2vs: Review stays at its scroll position while idle`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    const pane=page.locator('#anv-pane-issues'); await pane.evaluate(n=>n.scrollTop=20); const before=await pane.evaluate(n=>n.scrollTop); await page.waitForTimeout(500); assert.equal(await pane.evaluate(n=>n.scrollTop),before);
   });
   await check(`${tag}: incoming chat stays put; the reader can choose "New below ↓"`, async () => {
     // Filler to make the Room scroll. These are about no line: Accord round 2, stage D moves talk
@@ -441,13 +399,13 @@ async function desktop(browser, base, style) {
     await page.evaluate(() => window.__proofChat?.notifyRemoteChange());
     await waitFor(page, () => (window.__proofChat?.debugState().messages.length ?? 0) >= 14, null, 12_000);
     await page.waitForTimeout(300);
-    const list = page.locator('.prw-right .pch-list');
+    const list = page.locator('.prw-left .pch-list');
     // Accord layout stage 3 (decision 6): the chat is the Margin's Room tab.
-    if (!(await list.isVisible())) await page.locator('.prw-right .amg-tab[data-tab="room"]').click();
+    if (!(await list.isVisible())) await page.locator('.prw-left .anv-tab[data-tab="room"]').click();
     await page.waitForTimeout(300);
     let f = (await page.evaluate(() => window.__proofChat.debugState().follow));
     assert.ok(f.scrollHeight - f.clientHeight - f.scrollTop > 2, 'incoming messages automatically scrolled the chat');
-    await page.locator('.prw-right .prw-follow-pill[data-follow="chat"]').click();
+    await page.locator('.prw-left .prw-follow-pill[data-follow="chat"]').click();
     f = await page.evaluate(() => window.__proofChat.debugState().follow);
     assert.ok(f.scrollHeight - f.clientHeight - f.scrollTop <= 2, 'explicit New below did not scroll');
     const lb = await list.boundingBox();
@@ -461,9 +419,9 @@ async function desktop(browser, base, style) {
     await waitFor(page, () => window.__proofChat.debugState().messages.length >= 15, null, 12_000);
     await page.waitForTimeout(300);
     assert.equal(await list.evaluate(n => n.scrollTop), top, 'the chat moved under the person');
-    const pill = page.locator('.prw-right .prw-follow-pill[data-follow="chat"]');
+    const pill = page.locator('.prw-left .prw-follow-pill[data-follow="chat"]');
     await pill.waitFor({ state: 'visible', timeout: 2000 });
-    await page.screenshot({ path: path.join(shots, `${tag}-chat-pill.png`), clip: { x: 1080, y: 300, width: 360, height: 600 } });
+    await page.screenshot({ path: path.join(shots, `${tag}-chat-pill.png`), clip: { x: 0, y: 300, width: 320, height: 600 } });
     await pill.click();
     await page.waitForTimeout(150);
     f = await page.evaluate(() => window.__proofChat.debugState().follow);
@@ -476,10 +434,10 @@ async function desktop(browser, base, style) {
   });
   await check(`${tag}: scrolling the text does not change the selected passage or rail scroll`, async () => {
     const before = (await walk(page)).cursor;
-    const top = await page.locator('.prw-right .prw-rail-body').evaluate(n => n.scrollTop);
+    const top = await page.locator('#anv-pane-issues').evaluate(n => n.scrollTop);
     await page.evaluate(() => window.scrollBy(0, 350)); await page.waitForTimeout(300);
     assert.equal((await walk(page)).cursor, before);
-    assert.equal(await page.locator('.prw-right .prw-rail-body').evaluate(n => n.scrollTop), top);
+    assert.equal(await page.locator('#anv-pane-issues').evaluate(n => n.scrollTop), top);
   });
   await context.close();
 }

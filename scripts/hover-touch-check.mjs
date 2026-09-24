@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { assertRetiredMarks, assertMarkKeysInactive, assertSinglePanel, assertPassageActions, assertPanelToggle, seedLegacyMark } from './left-panel-assertions.mjs';
 // Hover changes no target, selection, mode or layout. Closing Issues never folds text.
 // Touch controls mark the selected passage. Mike, 2026-09-23 (usability brief).
 // Starts an isolated local server on the current dist/ build (run `npm run build` first) in both
@@ -121,11 +122,9 @@ async function runDesktop(browser, base, tag) {
   await check(`${tag}: hover preserves the selected passage and every element box`, async () => {
     await selectPassage(page, 3); await hoverChangesNothing(page, 5);
   });
-  await check(`${tag}: A after hover marks the selected passage and never folds it`, async () => {
-    await selectPassage(page, 3); await hoverChangesNothing(page, 5); await page.keyboard.press('a');
-    await page.waitForFunction(() => window.__proofLineMarks.myStatus(3) === 'agreed');
-    assert.notEqual(await page.evaluate(() => window.__proofLineMarks.myStatus(5)), 'agreed');
-    await expandedStaysExpanded(page);
+  await check(`${tag}: ac-2vs: A/R after hover leave marks unchanged`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await selectPassage(page,3); await hoverChangesNothing(page,5); await assertMarkKeysInactive(page);
   });
   await check(`${tag}: while editing, the caret owns the focus (hover does not move it)`, async () => {
     await page.waitForFunction(() => window.__proofReadingWalk?.debugState().ready === true, null, { timeout: 10_000 });
@@ -163,12 +162,9 @@ async function runPhone(browser, base, tag) {
   activePage = page;
   const strip = page.locator('.prw-strip');
 
-  await check(`${tag}: the current-line strip is visible and names the reading line and its mark`, async () => {
-    await strip.waitFor({ state: 'visible', timeout: 4000 });
-    const state = await walk(page);
-    assert.equal(state.touch, true);
-    assert.equal(state.strip?.line, state.focus);
-    assert.match(await strip.innerText(), new RegExp(`Line ${state.focus + 1}`));
+  await check(`${tag}: ac-2vs: the phone strip offers Review without marking controls`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await page.locator('.prw-strip').waitFor({state:'visible'}); assert.equal(await page.locator('.prw-strip-review').isVisible(),true); await assertRetiredMarks(page);
   });
 
   await check(`${tag}: the strip does not cover the current line`, async () => {
@@ -183,29 +179,15 @@ async function runPhone(browser, base, tag) {
     await page.screenshot({ path: path.join(shots, `${tag}-strip.png`) });
   });
 
-  await check(`${tag}: Agree in the sheet marks the selected passage and leaves it visible`, async () => {
-    await selectPassage(page, 3);
-    if (!(await page.locator('.prw-right.prw-sheet-open').count())) await page.locator('.prw-strip-where').tap();
-    await page.locator('.prw-right .plm-primary-row [data-status="agreed"]').tap();
-    await page.locator('.prw-strip-grab').tap();
-    await page.waitForFunction(() => window.__proofLineMarks.myStatus(3) === 'agreed');
-    await expandedStaysExpanded(page);
-    await selectPassage(page, 3);
+  await check(`${tag}: ac-2vs: selected passages have touch actions and A/R do nothing`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await selectPassage(page,3); await assertPassageActions(page); await assertMarkKeysInactive(page);
   });
 
   // Accord layout stage 3 (decision 11): ⋯ opens the Margin sheet on the Line tab with More showing.
-  await check(`${tag}: ⋯ opens the Margin sheet with the line's More marks`, async () => {
-    await page.evaluate(() => document.activeElement?.blur());
-    await page.waitForTimeout(200);
-    await page.locator('.prw-strip-more').tap();
-    const sheet = page.locator('.prw-right.prw-sheet-open');
-    await sheet.waitFor({ state: 'visible', timeout: 3000 });
-    await sheet.locator('.plm-more').waitFor({ state: 'visible', timeout: 3000 });
-    const focus = (await walk(page)).target;
-    assert.equal(await sheet.locator('.plm-box').getAttribute('data-line'), String(focus));
-    await page.screenshot({ path: path.join(shots, `${tag}-more-sheet.png`) });
-    await page.locator('.prw-strip-grab').tap();
-    await page.waitForFunction(() => !document.querySelector('.prw-right.prw-sheet-open'), null, { timeout: 2000 });
+  await check(`${tag}: ac-2vs: more options opens the left Side panel`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await page.locator('.prw-strip-more').tap(); await page.locator('.proof-share-overflow-menu').getByRole('menuitem',{name:/Side panel/}).tap(); await page.locator('.prw-left.prw-sheet-open').waitFor({state:'visible'}); await page.locator('.prw-left .prw-collapse').tap();
   });
 
   await check(`${tag}: a tap selects the passage while Reading, and the strip stays`, async () => {

@@ -1,7 +1,8 @@
 /** Review, Outline and Since you beside the full document.
  * Mike, 2026-09-23 (usability brief). Existing selectors keep their machine names.
  */
-import { NAVIGATOR_POLICY, needsYouLabel, outlineRows, type NavigatorTab } from '../shared/layout-panels';
+import { ACCORDS_LIST_POLICY, NAVIGATOR_POLICY, needsYouLabel, outlineRows, type NavigatorTab } from '../shared/layout-panels';
+import { productIdentity } from '../shared/product-identity';
 import { REVIEW_LIST_POLICY, reviewCountLabel, reconcileReview, emptyReviewSession,
   clearCompleted, nextReviewRow, anchoredReviewScroll, type ReviewScope } from '../shared/review-list';
 import type { LineMarksUI } from './line-marks';
@@ -17,6 +18,8 @@ export interface NavigatorHost {
   /** The tab changed (the host remembers it). */
   tabChanged(tab: NavigatorTab): void;
   toggle?(): void;
+  documents(): { docs: Array<{ slug: string; title: string; current: boolean; count: number }> | null; message: string };
+  accordsToggled(expanded: boolean): void;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -27,11 +30,16 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, t
 }
 
 export class NavigatorUI {
+  readonly accordsEl = el('details', 'anv-accords');
+  private readonly documentsEl = el('div', 'anv-documents');
+  private documentsSig = '';
+  private readonly roomBadge = el('span', 'amg-badge');
   readonly tabsEl = el('div', 'anv-tabs');
   readonly panes: Record<NavigatorTab, HTMLElement> = {
     outline: el('div', 'anv-pane prw-rail-body'),
     issues: el('div', 'anv-pane prw-rail-body'),
     since: el('div', 'anv-pane prw-rail-body'),
+    room: el('div', 'anv-pane anv-room'),
   };
   /** Fold all / Unfold all / level buttons and the other outline tools sit at the top of Outline. */
   readonly detailEl = el('section', 'anv-detail');
@@ -58,7 +66,14 @@ export class NavigatorUI {
   constructor(private readonly host: NavigatorHost, initial: NavigatorTab | undefined, sinceHost: HTMLElement) {
     this.tab = initial ?? NAVIGATOR_POLICY.defaultTab;
     this.tabsEl.setAttribute('role', 'tablist');
-    this.tabsEl.setAttribute('aria-label', 'Review panel');
+    this.tabsEl.setAttribute('aria-label', NAVIGATOR_POLICY.label);
+    const heading = el('summary', undefined, productIdentity().documentNounPlural);
+    this.accordsEl.append(heading, this.documentsEl);
+    this.accordsEl.open = ACCORDS_LIST_POLICY.defaultExpanded;
+    this.accordsEl.hidden = !ACCORDS_LIST_POLICY.enabled;
+    this.accordsEl.addEventListener('toggle', () => {
+      if (ACCORDS_LIST_POLICY.persistExpanded) this.host.accordsToggled(this.accordsEl.open);
+    });
     for (const spec of NAVIGATOR_POLICY.tabs) {
       const b = el('button', 'anv-tab', spec.label);
       b.type = 'button';
@@ -67,6 +82,7 @@ export class NavigatorUI {
       b.setAttribute('role', 'tab');
       b.setAttribute('aria-controls', `anv-pane-${spec.id}`);
       if (spec.id === 'issues') { this.badge.setAttribute('aria-hidden', 'true'); b.append(this.badge); }
+      if (spec.id === 'room') { this.roomBadge.hidden = true; this.roomBadge.setAttribute('aria-hidden', 'true'); b.append(this.roomBadge); }
       b.onclick = () => this.select(spec.id);
       b.onkeydown = (event) => this.onTabKey(event);
       this.buttons.set(spec.id, b);
@@ -113,6 +129,36 @@ export class NavigatorUI {
   }
 
   current(): NavigatorTab { return this.tab; }
+
+  setAccordsExpanded(expanded: boolean): void { this.accordsEl.open = expanded; }
+
+  setRoomUnread(count: number): void {
+    this.roomBadge.textContent = count > 0 ? String(count) : '';
+    this.roomBadge.hidden = count <= 0;
+    this.buttons.get('room')?.setAttribute('aria-label', count > 0 ? `Room (${count} unread chat mentions)` : 'Room');
+  }
+
+  renderDocuments(): void {
+    const list = this.host.documents();
+    const noun = productIdentity().documentNounPlural;
+    const sig = JSON.stringify([list, noun]);
+    if (sig === this.documentsSig) return;
+    this.documentsSig = sig;
+    const rows = el('ul', 'prw-docs');
+    for (const doc of list.docs ?? []) {
+      const row = el('li');
+      const link = el('a', 'prw-doc');
+      link.href = `/d/${encodeURIComponent(doc.slug)}`;
+      link.append(el('span', 'prw-doc-title', doc.title));
+      if (doc.current) { link.setAttribute('aria-current', 'page'); link.append(el('small', 'prw-doc-current', 'open now')); }
+      const count = el('span', 'prw-doc-count', String(doc.count));
+      count.dataset.kind = doc.count > 0 ? 'issues' : 'none';
+      link.append(count);
+      row.append(link); rows.append(row);
+    }
+    const all = el('a', 'prw-all', `All ${noun}`); all.href = '/';
+    this.documentsEl.replaceChildren(list.docs?.length ? rows : el('p', 'prw-empty', list.message), all);
+  }
 
   select(tab: NavigatorTab, remember = true): void {
     if (tab === this.tab) return;
@@ -165,6 +211,7 @@ export class NavigatorUI {
   }
 
   render(force = false): void {
+    this.renderDocuments();
     const lm = this.host.lineMarks();
     if (this.reader !== lm.me()) { this.reader = lm.me(); this.sessions = { 'needs-you': emptyReviewSession(), 'all-open': emptyReviewSession() }; }
     const views = lm.reviewViews();
@@ -175,7 +222,7 @@ export class NavigatorUI {
     this.count.dataset.viewerCount = String(views['needs-you'].count);
     this.count.dataset.teamCount = String(views['all-open'].count);
     this.reviewButton.setAttribute('aria-label', `Review (${label})`);
-    this.badge.textContent = label;
+    this.badge.textContent = String(open.count);
     this.buttons.get('issues')?.setAttribute('aria-label', `Review (${label})`);
     this.sinceEmpty.hidden = Boolean(this.panes.since.querySelector('.prw-since:not([hidden])'));
     for (const button of this.scopeTools.querySelectorAll<HTMLElement>('[data-accord-review-scope]')) {

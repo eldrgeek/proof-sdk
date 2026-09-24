@@ -10,6 +10,10 @@ import { openView, type OpenKind } from './open-view';
 /** The Margin (decision 6): two tabs only, the line and the room. */
 export type MarginTab = 'line' | 'room';
 export const MARGIN_POLICY = {
+  /** Mike, 2026-09-24, Accord gfmd0z5p: retire the right panel and its Line tab on every screen. */
+  renderPanel: false,
+  renderLineTab: false,
+  lineMarkKeys: false,
   tabs: ['line', 'room'] as readonly MarginTab[],
   /** The tab a first visit opens on. The tab never switches itself (proposal: "The tab does not switch itself"). */
   defaultTab: 'line' as MarginTab,
@@ -81,17 +85,22 @@ export function markedByFold(statuses: readonly string[], hasOpenObjection: bool
 }
 
 /** Review, Outline and Since you. Mike, 2026-09-23 (usability brief). The issues id stays compatible. */
-export type NavigatorTab = 'outline' | 'issues' | 'since';
+export type NavigatorTab = 'outline' | 'issues' | 'since' | 'room';
 export const NAVIGATOR_POLICY = {
+  /** Mike, 2026-09-24, Accord gfmd0z5p: one side panel, including the existing Room. */
+  label: 'Side panel',
   tabs: [
     { id: 'issues', label: 'Review' },
     { id: 'outline', label: 'Outline' },
     { id: 'since', label: 'Since you' },
+    { id: 'room', label: 'Room' },
   ] as ReadonlyArray<{ id: NavigatorTab; label: string }>,
   /** The panel opens on Review. */
   defaultTab: 'issues' as NavigatorTab,
-  /** Width on desktop (px), per the mockup. */
-  widthPx: 240,
+  /** Mike, 2026-09-24, Accord gfmd0z5p: 320 px fits titles and four tabs without squeezing the page. */
+  widthPx: 320,
+  /** Mike, 2026-09-24, Accord gfmd0z5p: closing the panel gives its width back to the text. */
+  textFillsAvailableWidth: true,
   /** Closed by default under this width (proposal: "It closes by default under 1100 px"). */
   closedBelowPx: 1100,
   /** Outline rows indent this much per heading level below the top one (px). */
@@ -100,8 +109,35 @@ export const NAVIGATOR_POLICY = {
   titleChars: 80,
 } as const;
 
+/** Mike, 2026-09-24, Accord gfmd0z5p: the library returns above the tabs; disclosure is view-only. */
+export const ACCORDS_LIST_POLICY = {
+  enabled: true,
+  defaultExpanded: true,
+  persistExpanded: true,
+  maxHeightPx: 200,
+} as const;
+
+/** Mike, 2026-09-24, Accord gfmd0z5p: keep S/T beside the selected passage, clear of its words. */
+export const PASSAGE_ACTIONS_POLICY = {
+  enabled: true,
+  placement: 'right-gutter',
+  gutterWidthPx: 176,
+  /** Keep the existing comment/proposal counters in their own 56 px lane. */
+  markerLanePx: 64,
+  gapPx: 8,
+  actions: [{ id: 'suggest', label: 'Suggest change', key: 'S' }, { id: 'discuss', label: 'Discuss', key: 'T' }],
+  follow: 'selection',
+  freezeWhileDraftFocused: true,
+} as const;
+
+/** Mike, 2026-09-24, Accord gfmd0z5p: stored line marks remain, but only open-item dots are drawn. */
+export const GUTTER_POLICY = { showLineMarks: false, showNeedsYou: true } as const;
+
 /** The phone (decision 11): one column, a bottom strip, the Margin as a sheet. */
 export const PHONE_STRIP_POLICY = {
+  /** Mike, 2026-09-24, Accord gfmd0z5p: title, Review count and more; the only sheet is the Navigator. */
+  contents: ['title', 'review', 'more'],
+  sheetSide: 'left',
   /** The strip's height (px), per the proposal. */
   heightPx: 56,
   /** The status bar folds into the strip: it shows only while the strip steps aside (the caret in the text). */
@@ -206,7 +242,7 @@ export function outlineRows(
 }
 
 /** The remembered rail state: open or closed, and the tab each rail shows. */
-export interface RailState { left?: boolean; right?: boolean; leftTab?: NavigatorTab; rightTab?: MarginTab }
+export interface RailState { left?: boolean; right?: boolean; leftTab?: NavigatorTab; rightTab?: MarginTab; accordsExpanded?: boolean }
 
 export function parseRailState(raw: string | null): RailState {
   try {
@@ -214,6 +250,7 @@ export function parseRailState(raw: string | null): RailState {
     const out: RailState = {};
     if (typeof value.left === 'boolean') out.left = value.left;
     if (typeof value.right === 'boolean') out.right = value.right;
+    if (typeof value.accordsExpanded === 'boolean') out.accordsExpanded = value.accordsExpanded;
     if (NAVIGATOR_POLICY.tabs.some(t => t.id === value.leftTab)) out.leftTab = value.leftTab as NavigatorTab;
     if (MARGIN_POLICY.tabs.includes(value.rightTab as MarginTab)) out.rightTab = value.rightTab as MarginTab;
     return out;

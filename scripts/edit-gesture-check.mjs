@@ -146,8 +146,8 @@ async function run(browser, base, style, phone) {
   const originalState = await state(page);
   const open = async () => {
     await page.evaluate(i => window.__proofReadingWalk.focusLine(i), TARGET_LINE);
-    // S is the keyboard entry; phone uses Suggest change in the passage sheet.
-    if (phone) { await page.locator(`.plm-dot[data-line="${TARGET_LINE}"]`).click(); await page.locator('[data-accord-suggest-change]').click(); }
+    // S is the keyboard entry; phone uses Suggest change beside the passage.
+    if (phone) { await page.locator('.accord-passage-actions [data-accord-suggest-change]').click(); }
     else { await page.evaluate(() => document.activeElement?.blur()); await page.keyboard.press('s'); }
     await page.locator('.accord-draft textarea').waitFor();
   };

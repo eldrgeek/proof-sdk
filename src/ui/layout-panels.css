@@ -234,3 +234,52 @@ body.prw-on.prw-right-collapsed { --prw-right: var(--prw-collapsed); }
 .amg-thread-new-actions { display: flex; gap: 6px; }
 .amg-thread-new-actions button { font-size: 12px; padding: 3px 10px; border: 1px solid var(--proof-rule, #d1d5db); border-radius: 6px; background: transparent; cursor: pointer; }
 .amg-thread-send { background: #2563eb !important; color: #fff; border-color: #2563eb !important; }
+
+/* Mike, 2026-09-24, gfmd0z5p: one side panel. Sizes come from layout-panels.ts. */
+body.prw-on.accord-single-panel { --prw-left: var(--accord-panel-width); --prw-right: 0px; }
+body.prw-on.accord-single-panel.prw-left-collapsed { --prw-left: var(--prw-collapsed); }
+body.prw-on.accord-fill-page #editor-container { max-width: none; width: 100%; }
+body.prw-on.accord-single-panel #app #editor,
+body.prw-on.accord-single-panel[data-review-style="playmaker"] #app #editor { padding-right: var(--accord-actions-width) !important; }
+.anv-heading-label { flex: 1; padding: 8px 12px; }
+.anv-tabs { flex: 0 0 auto; border-bottom: 1px solid var(--acc-line); }
+.anv-tab { flex: 1; justify-content: center; padding: 10px 4px; gap: 3px; }
+/* Keep the full Review count in the toolbar and accessible tab label. The tab badge is compact. */
+.anv-tab .anv-badge { max-width: 32px; overflow: hidden; padding: 0 4px; }
+.anv-accords { flex: 0 0 auto; border-bottom: 1px solid var(--acc-line); }
+.anv-accords[hidden] { display: none; }
+.anv-accords summary { padding: 8px 12px; cursor: pointer; font-weight: 600; }
+.anv-documents { max-height: var(--accord-docs-height); overflow: auto; padding: 0 8px 8px; overscroll-behavior: contain; }
+.anv-documents .prw-empty { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
+.anv-documents .prw-doc-title { white-space: normal; overflow-wrap: anywhere; }
+.prw-doc-current { flex-shrink: 0; font-size: 11px; font-weight: 400; }
+.anv-documents .prw-all { display: block; padding: 7px 8px; }
+.anv-room { display: flex; flex-direction: column; overflow: hidden; padding: 0 !important; }
+.anv-room .prw-chat { display: flex; flex: 1; min-height: 0; max-height: none; border-top: none; padding: 8px; }
+.anv-room .pch-head { display: none; }
+.anv-room .pch { flex: 1; min-height: 0; }
+.accord-passage-actions { position: absolute; z-index: 23; display: flex; flex-direction: column; gap: 4px; width: var(--accord-actions-buttons-width); }
+.accord-passage-actions[hidden] { display: none; }
+.accord-passage-actions button { min-height: 44px; padding: 5px; background: #fff; color: #234b81; border: 1px solid #b7c5dc; border-radius: 6px; font: 12px/1.3 system-ui, sans-serif; cursor: pointer; }
+.accord-passage-actions button:disabled { opacity: .5; cursor: default; }
+.accord-passage-actions button:focus-visible, .anv-accords summary:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+.plm-needs-you { position: absolute; pointer-events: auto; z-index: 22; width: 28px; height: 28px; border: none; background: transparent; cursor: pointer; }
+.plm-needs-you::after { content: ''; display: block; width: 8px; height: 8px; margin: auto; border-radius: 50%; background: var(--acc-need, #d98c00); }
+.plm-needs-you:focus-visible { outline: 2px solid #2563eb; border-radius: 4px; }
+@media (min-width: 701px) {
+  body.prw-left-collapsed .anv-accords, body.prw-left-collapsed .anv-heading-label { display: none; }
+  body.prw-on.accord-single-panel .anv-head .prw-collapse { margin: 4px 6px; }
+}
+@media (max-width: 700px) {
+  body.prw-on .prw-rail.prw-sheet-open .anv-room:not([hidden]) { display: flex !important; }
+  .prw-sheet-open .anv-tab { padding: 0 5px; font-size: 12px; }
+  .anv-accords summary, .anv-documents .prw-doc, .anv-documents .prw-all { min-height: 44px; box-sizing: border-box; }
+  .anv-documents { max-height: min(var(--accord-docs-height), 20dvh); }
+  .prw-strip .prw-strip-info { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+  .prw-strip > button { min-height: 44px; flex-shrink: 0; border: 1px solid #d1d5db; border-radius: 6px; background: #fff; }
+  .plm-needs-you { width: 36px; height: 36px; }
+}
+.anv-room .pch-list { flex: 1; min-height: 0; max-height: none; }
+.anv-room .pch-composer { flex-shrink: 0; }
+/* The feedback chip remains at the left foot; keep the moved Room composer above it. */
+@media (min-width: 701px) { .anv-room .prw-chat { padding-bottom: 72px; } }

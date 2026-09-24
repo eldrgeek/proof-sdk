@@ -162,7 +162,7 @@ async function phone(browser, base, name, viewport) {
   // Marks is a PlayMaker-style panel; the Proof style lists comments in its own popover.
   if (style === 'playmaker') await check(`${tag}: overflow menu opens Review as a bottom sheet with a close button`, async () => {
     await page.getByRole('button', { name: 'More options', exact: true }).click();
-    await page.getByRole('menuitem', { name: /Review panel/ }).click();
+    await page.getByRole('menuitem', { name: /Side panel/ }).click();
     await page.locator('.prw-left.prw-sheet-open').waitFor({ state: 'visible', timeout: 5000 });
     const r = await page.evaluate(() => ({ ...document.querySelector('.prw-left.prw-sheet-open').getBoundingClientRect().toJSON(), vh: innerHeight, vw: innerWidth }));
     assert.ok(Math.abs(r.bottom - r.vh) <= 2 && r.width >= r.vw - 2, `panel rect ${JSON.stringify(r)}`);

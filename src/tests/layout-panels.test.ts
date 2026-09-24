@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import type { ProofIssue } from '../shared/line-marks';
 import { needsYouLines } from '../shared/layout-status';
 import {
-  passageMarkers, stableReviewOrder, resolveSettledIndex, MARGIN_POLICY, MARKED_BY_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY,
+  ACCORDS_LIST_POLICY, PASSAGE_ACTIONS_POLICY, GUTTER_POLICY, passageMarkers, stableReviewOrder, resolveSettledIndex, MARGIN_POLICY, MARKED_BY_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY,
   markedByFold, needsYouItems, needsYouLabel, outlineRows, parseRailState,
 } from '../shared/layout-panels';
 
@@ -28,16 +28,32 @@ const ask = (line: number, openFor: string[], by = 'ai:cos'): ProofIssue => ({
 const suggestion = (line: number, by: string | null): ProofIssue => ({ type: 'suggestion', markId: `s${line}`, pos: line * 10 + 2, kind: 'replace', by, excerpt: '' });
 const comment = (line: number, by: string | null): ProofIssue => ({ type: 'comment', markId: `c${line}`, pos: line * 10 + 3, kind: 'comment', by, excerpt: '' });
 
-test('policy: two Margin tabs, three Navigator tabs, Agree and Reject primary, selection owns the target', () => {
-  assert.deepEqual(MARGIN_POLICY.tabs, ['line', 'room']);
-  assert.deepEqual(NAVIGATOR_POLICY.tabs.map(t => t.label), ['Review', 'Outline', 'Since you']);
+test('policy: one side panel, Room moves left and line marking controls retire', () => {
+  assert.equal(MARGIN_POLICY.renderPanel, false);
+  assert.equal(MARGIN_POLICY.renderLineTab, false);
+  assert.equal(MARGIN_POLICY.lineMarkKeys, false);
+  assert.equal(MARGIN_POLICY.explicitChatOpensRoom, true);
+  assert.equal(MARGIN_POLICY.roomBadge, 'mentions');
+  assert.equal(NAVIGATOR_POLICY.label, 'Side panel');
+  assert.equal(NAVIGATOR_POLICY.textFillsAvailableWidth, true);
+  assert.deepEqual(NAVIGATOR_POLICY.tabs.map(t => t.label), ['Review', 'Outline', 'Since you', 'Room']);
   assert.deepEqual(MARGIN_POLICY.primaryActions, ['Agree', 'Suggest change', 'Discuss', 'Reject']);
   assert.deepEqual(MARGIN_POLICY.primaryMarks, ['agreed', 'rejected']);
   for (const item of ['approved', 'seen', 'clear', 'uncertain', 'alternative', 'explain', 'ttl', 'tier']) assert.ok(MARGIN_POLICY.moreItems.includes(item), item);
-  assert.equal(NAVIGATOR_POLICY.widthPx, 240);
+  assert.equal(NAVIGATOR_POLICY.widthPx, 320);
   assert.equal(MARGIN_POLICY.widthPx, 340);
   assert.equal(NAVIGATOR_POLICY.closedBelowPx, 1100);
   assert.equal(PHONE_STRIP_POLICY.heightPx, 56);
+  assert.deepEqual(PHONE_STRIP_POLICY.contents, ['title', 'review', 'more']);
+  assert.equal(PHONE_STRIP_POLICY.sheetSide, 'left');
+  assert.deepEqual(GUTTER_POLICY, { showLineMarks: false, showNeedsYou: true });
+  assert.deepEqual(ACCORDS_LIST_POLICY, { enabled: true, defaultExpanded: true, persistExpanded: true, maxHeightPx: 200 });
+  assert.equal(PASSAGE_ACTIONS_POLICY.enabled, true);
+  assert.equal(PASSAGE_ACTIONS_POLICY.follow, 'selection');
+  assert.equal(PASSAGE_ACTIONS_POLICY.placement, 'right-gutter');
+  assert.equal(PASSAGE_ACTIONS_POLICY.freezeWhileDraftFocused, true);
+  assert.ok(PASSAGE_ACTIONS_POLICY.gutterWidthPx - PASSAGE_ACTIONS_POLICY.markerLanePx - PASSAGE_ACTIONS_POLICY.gapPx >= 100);
+  assert.deepEqual(PASSAGE_ACTIONS_POLICY.actions.map(a => [a.label, a.key]), [['Suggest change', 'S'], ['Discuss', 'T']]);
 });
 
 test('Issues list: the same lines as the amber dots, with their kinds, in document order', () => {
@@ -89,6 +105,9 @@ test('rail state: open / closed and each rail\'s tab are remembered; junk is dro
   assert.deepEqual(parseRailState('{"leftTab":"documents","rightTab":"third","left":"yes"}'), {});
   assert.deepEqual(parseRailState('not json'), {});
   assert.deepEqual(parseRailState(null), {});
+  assert.deepEqual(parseRailState('{"leftTab":"room","accordsExpanded":false}'), { leftTab: 'room', accordsExpanded: false });
+  assert.deepEqual(parseRailState('{"accordsExpanded":true}'), { accordsExpanded: true });
+  for (const raw of ['null', '[]', '12', '{"accordsExpanded":"false"}']) assert.deepEqual(parseRailState(raw), {});
 });
 
 test('markedByFold: "Marked by N" folds; open only for a current Reject or an open objection', () => {

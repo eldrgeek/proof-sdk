@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { assertRetiredMarks, assertMarkKeysInactive, seedLegacyMark } from './left-panel-assertions.mjs';
 // Review beside the full document; counts, scopes, completion and the explicit agreed copy.
 // Mike, 2026-09-23 (usability brief). Local fixtures only.
 import assert from 'node:assert/strict';
@@ -235,9 +236,10 @@ async function main() {
       assert.ok(afterK <= afterJ, `K did not move back (${afterJ} -> ${afterK})`);
       const textAfter = await mike.page.evaluate(() => window.__proofLineMarks.lineList().map(l => l.text).join('\n'));
       assert.equal(textAfter, textBefore, 'a reading key typed into the document');
-      // A agrees on the focus line, from the keyboard, in the list.
+      // ac-2vs: A/R no longer create marks. Seed a legacy fixture for the following stored-state checks.
       const focus = await mike.page.evaluate(() => window.__proofReadingWalk.focusIndex());
-      await mike.page.keyboard.press('a');
+      await assertMarkKeysInactive(mike.page);
+      await seedLegacyMark(mike.page, focus, 'agreed');
       await waitFor(mike.page, line => {
         const entry = window.__proofLineMarks.lineState(line)?.marks?.get(window.__proofLineMarks.me().toLowerCase());
         return Boolean(entry && ['agreed', 'approved'].includes(entry.mark.status));

@@ -129,7 +129,7 @@ import { HIGHLIGHT_POLICY, issueNeedsViewer, markedUpTo, type MarkedUpTo } from 
 import type { OpenView } from '../shared/open-view';
 import { reviewSurface } from '../shared/review-list';
 import { participantStatus, agreedCopyOffer } from '../shared/participant-status';
-import { MARGIN_POLICY, MARKED_BY_POLICY, markedByFold, passageMarkers, type NeedsYouItem } from '../shared/layout-panels';
+import { GUTTER_POLICY, MARGIN_POLICY, MARKED_BY_POLICY, markedByFold, passageMarkers, type NeedsYouItem } from '../shared/layout-panels';
 import { ISSUES_PILL_POLICY, NEXT_ISSUE_POLICY, issuesPillText, issuesPillTitle } from '../shared/layout-chrome';
 import './line-marks.css';
 
@@ -410,7 +410,7 @@ export class LineMarksUI {
     this.alignedEl.onclick = () => { if (this.snapshot) void this.openLedger(this.snapshot.id); };
     this.bannerEl.append(this.countEl, this.nextBtn, this.alignedEl);
     this.gutter.className = 'plm-gutter';
-    this.gutter.setAttribute('aria-label', 'Line marks');
+    this.gutter.setAttribute('aria-label', GUTTER_POLICY.showLineMarks ? 'Line marks' : 'Passage review items');
     this.gutter.addEventListener('click', this.onGutterClick);
     this.budgetEl.className = 'plm-budget';
     this.renderBanner();
@@ -1462,7 +1462,6 @@ export class LineMarksUI {
       const rect = dom.getBoundingClientRect();
       if (rect.height === 0) continue;
       const key = `${line.hash}:${line.occurrence}`;
-      used.add(key);
       // Step B7: a speech bubble with the number of chat messages that point at this line.
       const chatCount = chatCounts.get(line.index) ?? 0;
       if (chatCount > 0) {
@@ -1504,6 +1503,24 @@ export class LineMarksUI {
         button.onclick = () => this.host.openReviewItem?.(line.index);
       }
       let dot = existing.get(key);
+      if (!GUTTER_POLICY.showLineMarks) {
+        if (!GUTTER_POLICY.showNeedsYou || !this.needsYouSet.has(line.index)) continue;
+        used.add(key);
+        if (!dot) {
+          dot = document.createElement('button');
+          dot.type = 'button'; dot.className = 'plm-needs-you'; dot.dataset.key = key;
+          this.gutter.append(dot);
+        }
+        dot.dataset.line = String(line.index);
+        dot.dataset.needsYou = 'true';
+        dot.setAttribute('aria-label', `Line ${line.index + 1} needs you: open Review`);
+        dot.title = 'Open this passage in Review';
+        dot.style.top = `${Math.round(rect.top - containerRect.top)}px`;
+        dot.style.left = `${Math.round(Math.max(0, leftEdge))}px`;
+        dot.onclick = () => this.host.openReviewItem?.(line.index);
+        continue;
+      }
+      used.add(key);
       if (!dot) {
         dot = document.createElement('button');
         dot.type = 'button';

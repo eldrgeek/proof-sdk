@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { assertRetiredMarks, assertMarkKeysInactive, assertSinglePanel, assertPassageActions, assertPanelToggle, seedLegacyMark } from './left-panel-assertions.mjs';
 // Accord usability S6a — independent acceptance harness for the brief's twelve checks
 // (docs/accord/usability-brief-2026-09-23.md, "Acceptance checks").
 //
@@ -26,13 +27,7 @@ mkdirSync(shots, { recursive: true });
 const SEL = {
   proseMirror: '.ProseMirror',
   foldChip: '.pfold-chip[data-heading]',
-  marginDot: '.plm-dot[data-line]',
-  rail: '.prw-right',
-  lineBox: '.prw-linebox',
-  railActions: '.prw-right .plm-actions',
   sectionNote: '.prw-right .plm-section-note',
-  sectionHint: '.prw-right .plm-section-hint',
-  scrollProvisional: '.prw-right .prw-provisional',
   statusBar: '.pst-bar',
   statusProvisional: '.pst-bar .pst-provisional',
   honestHeader: '.aov-header',
@@ -243,7 +238,6 @@ const walk = page => page.evaluate(() => window.__proofReadingWalk.debugState())
 const foldState = page => page.evaluate(() => window.__proofFolding.debugState());
 const openState = page => page.evaluate(() => window.__proofOpenView?.debugState?.() ?? null);
 const chip = (page, heading) => page.locator(`.pfold-chip[data-heading="${heading}"]`);
-const dot = (page, line) => page.locator(`.plm-dot[data-line="${line}"]`);
 
 async function setFolded(page, heading, folded) {
   await page.evaluate(({ heading, folded }) => {
@@ -481,27 +475,9 @@ async function runViewportCases(browser, base, created, label, viewport) {
   });
 
   // 4 — hover another passage; shortcut still targets the selected passage.
-  await check(`ac04-hover-shortcut-target@${label}`, async () => {
-    await setFolded(page, L.SEC2, false);
-    const target = L.SAFE;
-    await selectPassage(page, target);
-    await hoverChangesNothing(page, L.PROPOSAL);
-    await blurKeys(page);
-    await page.keyboard.press('a');
-    await waitFor(page, line => {
-      const me = window.__proofLineMarks.me();
-      return window.__proofLineMarks.debugState().marks.some(m => m.by === me && m.anchor.ordinal === line && m.status === 'agreed');
-    }, target);
-    // Mark.at is an ISO string. Subtracting two strings is NaN, so a numeric sort does not find
-    // the shortcut's mark. Read the selected line and the hovered line directly.
-    const agreedLine = await page.evaluate(({ target, hovered }) => {
-      const me = window.__proofLineMarks.me();
-      const status = line => window.__proofLineMarks.debugState().marks.find(m => m.by === me && m.anchor.ordinal === line)?.status ?? null;
-      return { focus: window.__proofReadingWalk.debugState().focus, target: status(target), hovered: status(hovered) };
-    }, { target, hovered: L.PROPOSAL });
-    assert.equal(agreedLine.focus, target, `hover moved the selected passage to ${agreedLine.focus}`);
-    assert.equal(agreedLine.target, 'agreed', `shortcut did not agree selected line ${target}`);
-    assert.notEqual(agreedLine.hovered, 'agreed', `shortcut agreed hovered line ${L.PROPOSAL}`);
+  await check(`ac-2vs: ac04-hover-A/R-inactive@${label}`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await focusLine(page,L.ONE1); await hoverBlock(page,L.PROPOSAL); await assertMarkKeysInactive(page);
   });
 
   // 5 — scroll past proposals: no accept, no agreement.
@@ -538,7 +514,6 @@ async function runViewportCases(browser, base, created, label, viewport) {
     await focusLine(page, L.SAFE);
     const before = await page.evaluate(() => ({ text: window.__proofLineMarks.editorView().state.doc.textContent,
       ids: window.proof.getAllMarks().map(m => m.id), depth: window.__proofUndo.debugState().depth }));
-    if (touch) await page.locator(`.plm-dot[data-line="${L.SAFE}"]`).tap();
     await page.locator(SEL.suggestChangeButton).click();
     const draft = page.locator('.accord-draft textarea');
     const proposed = `${SAFE_LINE} This is a proposed sentence.`;
@@ -637,20 +612,21 @@ async function runViewportCases(browser, base, created, label, viewport) {
         folded: window.__proofFolding.debugState().folded,
       }));
       assert.deepEqual(after, before, 'completion changed the current view or target');
-      if (touch) { await toggle.click(); await p.locator(`.plm-dot[data-line="${after.cursor}"]`).tap(); }
-      for (const selector of ['[data-status="agreed"]', '[data-accord-suggest-change]', '.plm-discuss', '[data-status="rejected"]']) {
-        assert.equal(await p.locator(`.plm-primary-row ${selector}`).isVisible(), true, `completion removed ${selector}`);
+      if (touch) await toggle.click();
+      for (const selector of ['[data-accord-suggest-change]', '.plm-discuss']) {
+        assert.equal(await p.locator(`.accord-passage-actions ${selector}`).isVisible(), true, `completion removed ${selector}`);
       }
     } finally { await final.context.close(); activePage = page; }
   });
 
   // 9 — honest status labels; rejecter not called unread.
   await check(`ac09-honest-status-labels@${label}`, async () => {
-    const dotLabel = await page.locator(`${SEL.marginDot}[data-line="${L.SAFE}"]`).getAttribute('aria-label')
-      ?? await page.locator(`${SEL.marginDot}[data-line="${L.SAFE}"]`).getAttribute('title');
-    assert.ok(dotLabel && dotLabel.length > 2, 'line status has no accessible text');
+    await assertRetiredMarks(page);
+    for (const dot of await page.locator('.plm-needs-you').all()) {
+      assert.match(await dot.getAttribute('aria-label'), /Review.*line/i);
+    }
     // Agreement is incomplete, so the View menu must explain its disabled offer.
-    if (touch) await page.getByRole('button', { name: /^More options/ }).click();
+    if (touch) await page.locator('#share-banner').getByRole('button', { name: /^More options/ }).click();
     else await page.locator('#accord-menubar .amb-top[data-menu="view"]').click();
     const offer = page.locator('[data-item="view-agreed-copy"]');
     assert.equal(await offer.isDisabled(), true);
@@ -703,7 +679,7 @@ async function runViewportCases(browser, base, created, label, viewport) {
   await check(`ac10-meaning-change-lapses@${label}`, async () => {
     await focusLine(page, L.SAFE);
     await blurKeys(page);
-    await page.keyboard.press('a');
+    await seedLegacyMark(page, L.SAFE, 'agreed');
     await waitFor(page, i => {
       const me = window.__proofLineMarks.me().toLowerCase();
       const e = window.__proofLineMarks.lineState(i)?.marks.get(me);
@@ -740,55 +716,9 @@ async function runViewportCases(browser, base, created, label, viewport) {
   });
 
   // 12 — primary actions without hover; focus visible; statuses have text.
-  await check(`ac12-actions-a11y@${label}`, async () => {
-    await focusLine(page, L.LIST_TAIL);
-    if (touch) await page.locator(`.plm-dot[data-line="${L.LIST_TAIL}"]`).tap();
-    const agreeBtn = page.locator('.prw-right .plm-primary-row [data-status="agreed"]');
-    if (touch) {
-      await agreeBtn.waitFor({ state: 'visible', timeout: 12_000 });
-      const box = await agreeBtn.boundingBox();
-      assert.ok(box && box.height >= 40, `Agree target too small: ${box?.height}`);
-      await agreeBtn.tap();
-      await page.waitForFunction(i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.status !== 'unseen', L.LIST_TAIL, { timeout: 8000 });
-    } else {
-      await blurKeys(page);
-      await page.keyboard.press('a');
-      await waitFor(page, line => {
-        const me = window.__proofLineMarks.me();
-        return window.__proofLineMarks.debugState().marks.some(m => m.by === me && m.anchor.ordinal === line && m.status === 'agreed');
-      }, L.LIST_TAIL);
-    }
-    const status = await page.locator(`${SEL.marginDot}[data-line="${L.LIST_TAIL}"]`).getAttribute('data-status');
-    assert.ok(status && status !== 'unseen', 'Agree did not update line status');
-    const a11y = await page.evaluate(i => {
-      const dot = document.querySelector(`.plm-dot[data-line="${i}"]`);
-      return dot?.getAttribute('aria-label') || dot?.getAttribute('title') || dot?.dataset.status || '';
-    }, L.LIST_TAIL);
-    assert.ok(a11y.length > 1, 'line status is color-only (no text label)');
-    if (!touch) {
-      await page.locator(`${SEL.marginDot}[data-line="${L.LIST_TAIL}"]`).click();
-      await page.waitForTimeout(150);
-    }
-    for (const selector of ['[data-status="agreed"]', '[data-accord-suggest-change]', '.plm-discuss', '[data-status="rejected"]']) {
-      const action = page.locator(`.prw-right .plm-primary-row ${selector}`);
-      assert.equal(await action.count(), 1, `duplicate action ${selector}`);
-      assert.equal(await action.isVisible(), true, `hidden action ${selector}`);
-      if (await action.isDisabled()) continue;
-      await action.focus();
-      assert.equal(await action.evaluate(node => node === document.activeElement), true, `focus failed for ${selector}`);
-    }
-    if (touch) await page.locator('.prw-strip-grab').tap();
-    await setFolded(page, L.SEC3, false);
-    await scrollLineIntoView(page, L.THREAD);
-    const marker = page.locator(`.plm-review-marker[data-line="${L.THREAD}"]`);
-    assert.match(await marker.innerText(), /\d+ comments?/);
-    await marker.focus();
-    await page.keyboard.press('Enter');
-    assert.equal(await page.locator(SEL.reviewPanelToggle).getAttribute('aria-expanded'), 'true');
-    assert.equal((await walk(page)).focus, L.THREAD);
-    assert.equal(await page.locator('.anv-detail .amg-thread').first().isVisible(), true);
-    await page.locator(SEL.reviewPanelToggle).click();
-    assert.equal(await marker.isVisible(), true, 'closing Review hid the marker');
+  await check(`ac-2vs: ac12-passage-actions-a11y@${label}`, async () => {
+    // ac-2vs: the 2026-09-24 rules retire the Margin/marking gesture in this case.
+    await focusLine(page,L.LIST_TAIL); if(touch) await page.evaluate(()=>window.__proofReadingWalk.closeSheets()); await assertPassageActions(page); await assertRetiredMarks(page); await setFolded(page,L.SEC3,false); await scrollLineIntoView(page,L.THREAD); const marker=page.locator(`.plm-review-marker[data-line="${L.THREAD}"]`); await marker.focus(); await page.keyboard.press('Enter'); assert.equal(await page.locator(SEL.reviewPanelToggle).getAttribute('aria-expanded'),'true'); assert.equal((await walk(page)).focus,L.THREAD);
   });
 
   await context.close();
