@@ -13,8 +13,6 @@ import './proxy-marks.css';
 
 export interface ProxyMarksHost {
   lineMarks(): LineMarksUI;
-  /** Ratify is an explicit action: commit the reading walk's provisional (scroll) accepts first. */
-  beforeRatify?(): void;
   /** Moves the focus line (a line in the covered list was clicked). */
   focusLine?(lineIndex: number): void;
   /** Phones: open the right rail's sheet (where the brief sits). */
@@ -274,7 +272,6 @@ export class ProxyMarksUI {
     this.message = '';
     this.render();
     try {
-      this.host.beforeRatify?.();
       const result = await this.host.lineMarks().ratifyAll();
       if (result.ok && result.id) {
         this.lastRatify = { id: result.id, count: result.count, familiar: this.host.lineMarks().familiarBinding()?.familiar ?? familiar };

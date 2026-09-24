@@ -1,17 +1,12 @@
 #!/usr/bin/env node
-// Browser check for hover focus, touch focus and closed-Issue folding (Mike, 2026-09-19):
-// - Desktop: resting the mouse on a line makes it the focus line within 300 ms; the rail box shows
-//   it; hover writes no mark and does not scroll; passing the mouse across lines does not thrash;
-//   keys act on the hovered line; while editing, the caret owns the focus.
-// - Phone: a "current line" strip is docked at the bottom, shows the line's own mark, does not
-//   cover the line; Agree marks the current line; More… opens the line's sheet.
-// - Closing an Issue folds the line for that viewer; a click opens it; something new on the line
-//   reopens it; "Unfold closed" / "Fold closed"; a passively read line never folds.
-// Authorship: Claude Opus 5 (worker proof-hover), 2026-09-19, in the style of editing-first-check.mjs.
+// Hover changes no target, selection, mode or layout. Closing Issues never folds text.
+// Touch controls mark the selected passage. Mike, 2026-09-23 (usability brief).
 // Starts an isolated local server on the current dist/ build (run `npm run build` first) in both
 // review styles at 1440 and on a 390x844 phone. Screenshots go to .preview/ (or --shots <dir>).
 // Usage: node scripts/hover-touch-check.mjs [--style playmaker|proof] [--shots dir]
 import assert from 'node:assert/strict';
+import { selectPassage, hoverChangesNothing, expandedStaysExpanded } from './usability-s1-assertions.mjs';
+
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
@@ -105,7 +100,6 @@ async function openDoc(browser, base, slug, name, contextOptions = {}) {
 }
 
 const walk = page => page.evaluate(() => window.__proofReadingWalk.debugState());
-const folded = page => page.evaluate(() => window.__proofClosedFold.debugState().folded.map(f => f.index));
 const myMarkOn = (page, i) => page.evaluate(i => window.__proofLineMarks.debugState().marks
   .find(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i) ?? null, i);
 const block = (page, i) => page.locator('.ProseMirror > *').nth(i);
@@ -124,110 +118,15 @@ async function runDesktop(browser, base, tag) {
   await page.evaluate(() => document.activeElement?.blur());
   await page.waitForTimeout(400);
 
-  await check(`${tag}: hovering a line makes it the focus within 300 ms; the rail box shows it`, async () => {
-    const before = await page.evaluate(() => window.scrollY);
-    await hoverLine(page, 5);
-    const start = Date.now();
-    await page.waitForFunction(() => window.__proofReadingWalk.debugState().target === 5, null, { timeout: 1000, polling: 20 });
-    const took = Date.now() - start;
-    assert.ok(took <= 300, `took ${took} ms`);
-    await page.waitForFunction(() => document.querySelector('.prw-linebox .plm-box')?.getAttribute('data-line') === '5', null, { timeout: 300 });
-    assert.equal(await page.evaluate(() => window.scrollY), before, 'hover scrolled the page');
-    assert.equal((await walk(page)).focus, 0, 'hover moved the reading position');
-    await page.screenshot({ path: path.join(shots, `${tag}-hover.png`) });
+  await check(`${tag}: hover preserves the selected passage and every element box`, async () => {
+    await selectPassage(page, 3); await hoverChangesNothing(page, 5);
   });
-
-  await check(`${tag}: hover is not reading (no mark on the hovered line after its dwell)`, async () => {
-    await page.waitForTimeout(1500);
-    assert.equal(await myMarkOn(page, 5), null);
-    assert.ok(!(await walk(page)).seenWrites.includes(5), 'the hovered line was written Seen');
+  await check(`${tag}: A after hover marks the selected passage and never folds it`, async () => {
+    await selectPassage(page, 3); await hoverChangesNothing(page, 5); await page.keyboard.press('a');
+    await page.waitForFunction(() => window.__proofLineMarks.myStatus(3) === 'agreed');
+    assert.notEqual(await page.evaluate(() => window.__proofLineMarks.myStatus(5)), 'agreed');
+    await expandedStaysExpanded(page);
   });
-
-  await check(`${tag}: passing the mouse across lines does not thrash (one focus change, at the resting line)`, async () => {
-    const before = (await walk(page)).hoverWrites;
-    const first = await block(page, 7).boundingBox();
-    const last = await block(page, 12).boundingBox();
-    await page.mouse.move(first.x + 50, first.y + 5);
-    for (let y = first.y + 5; y <= last.y + last.height / 2; y += 12) { await page.mouse.move(first.x + 50, y); await page.waitForTimeout(8); }
-    await page.waitForFunction(() => window.__proofReadingWalk.debugState().target === 12, null, { timeout: 1000, polling: 20 });
-    const after = (await walk(page)).hoverWrites;
-    assert.ok(after - before <= 2, `${after - before} focus changes`);
-  });
-
-  await check(`${tag}: moving off the text keeps the focus`, async () => {
-    await page.mouse.move(1430, 450, { steps: 3 });
-    await page.waitForTimeout(400);
-    assert.equal((await walk(page)).target, 12);
-  });
-
-  const isFolded = (i) => page.evaluate(i => Boolean(document.querySelector(`.ProseMirror .pclose-folded[data-pclose-line="${i}"]`)), i);
-  const scrollAwayAndBack = async (i) => {
-    await page.evaluate(() => window.scrollTo(0, 2600));
-    await page.waitForFunction(i => document.querySelector(`.ProseMirror .pclose-folded[data-pclose-line="${i}"]`), i, { timeout: 4000 });
-    await page.evaluate(() => window.scrollTo(0, 0));
-    await page.waitForTimeout(400);
-  };
-
-  await check(`${tag}: A on the hovered line agrees it; it never folds while in view, and folds for me once scrolled away`, async () => {
-    await hoverLine(page, 6);
-    await page.waitForFunction(() => window.__proofReadingWalk.debugState().target === 6, null, { timeout: 1000 });
-    await page.keyboard.press('a');
-    await page.waitForFunction(i => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i && m.status === 'agreed'), 6, { timeout: 4000 });
-    await page.waitForTimeout(1600);
-    assert.equal(await isFolded(6), false, 'folded under the reader while it is the focus line');
-    await hoverLine(page, 3);
-    await page.waitForTimeout(1000);
-    assert.equal(await isFolded(6), false, 'folded while in view');
-    await scrollAwayAndBack(6);
-    assert.equal(await isFolded(6), true, 'did not stay folded when scrolled back');
-    const summary = await page.locator('.ProseMirror .pclose-folded[data-pclose-line="6"]').getAttribute('data-pclose-summary');
-    assert.match(summary, /^✓ agreed — Paragraph 6 is plain text/);
-    const h = (await block(page, 6).boundingBox()).height;
-    assert.ok(h < 40, `folded height ${h}`);
-    await page.screenshot({ path: path.join(shots, `${tag}-closed-folded.png`) });
-  });
-
-  await check(`${tag}: a passively read line never folds`, async () => {
-    const seen = (await walk(page)).seenWrites;
-    assert.ok(seen.length > 0, 'nothing was read passively');
-    const f = await folded(page);
-    for (const line of seen) assert.ok(!f.includes(line), `passively read line ${line} folded`);
-  });
-
-  await check(`${tag}: a click on a folded line opens it (no caret, no scroll)`, async () => {
-    const before = await page.evaluate(() => window.scrollY);
-    const row = page.locator('.ProseMirror .pclose-folded[data-pclose-line="6"]');
-    const box = await row.boundingBox();
-    await page.mouse.click(box.x + 30, box.y + box.height / 2);
-    await page.waitForTimeout(250);
-    assert.equal(await row.count(), 0, 'still folded');
-    assert.equal(await page.evaluate(() => Boolean(document.activeElement?.closest?.('.ProseMirror'))), false, 'the click placed a caret');
-    assert.equal(await page.evaluate(() => window.scrollY), before);
-  });
-
-  await check(`${tag}: Fold closed folds opened lines again; Unfold closed opens them all`, async () => {
-    // Accord layout stage 3: these outline tools live on the Navigator's Outline tab.
-    await page.locator('.prw-left .anv-tab[data-tab="outline"]').click();
-    await page.locator('.prw-left .pclose-refold').click();
-    await page.waitForFunction(() => document.querySelector('.ProseMirror .pclose-folded[data-pclose-line="6"]'), null, { timeout: 2000 });
-    await page.locator('.prw-left .pclose-unfold').click();
-    await page.waitForFunction(() => !document.querySelector('.ProseMirror .pclose-folded'), null, { timeout: 2000 });
-    await page.locator('.prw-left .pclose-refold').click();
-    await page.waitForFunction(() => document.querySelector('.ProseMirror .pclose-folded[data-pclose-line="6"]'), null, { timeout: 2000 });
-  });
-
-  await check(`${tag}: something new on a folded line reopens it`, async () => {
-    await page.evaluate(() => document.activeElement?.blur());
-    await hoverLine(page, 8);
-    await page.waitForFunction(() => window.__proofReadingWalk.debugState().target === 8, null, { timeout: 1000 });
-    await page.keyboard.press('a');
-    await hoverLine(page, 3);
-    await page.waitForTimeout(1500);
-    await scrollAwayAndBack(8);
-    await created.post('/marks/suggest-replace', { quote: 'Paragraph 8 is plain', content: 'Paragraph 8 is simple', by: 'ai:check' });
-    await page.waitForFunction(() => !document.querySelector('.ProseMirror .pclose-folded[data-pclose-line="8"]'), null, { timeout: 8000 });
-  });
-
   await check(`${tag}: while editing, the caret owns the focus (hover does not move it)`, async () => {
     await page.waitForFunction(() => window.__proofReadingWalk?.debugState().ready === true, null, { timeout: 10_000 });
     // A click while Reading only selects. Direct Editing is the labelled control.
@@ -243,18 +142,16 @@ async function runDesktop(browser, base, tag) {
     await page.keyboard.type('x');
     await page.waitForFunction(() => window.__proofReadingWalk.debugState().target === 14, null, { timeout: 2000 });
     await hoverLine(page, 16);
-    await page.waitForTimeout(400);
+    await page.waitForTimeout(4500);
     assert.equal((await walk(page)).target, 14);
+    assert.equal(await page.evaluate(() => window.__proofEditingGuard().writing), true);
     await page.evaluate(() => document.querySelector('.share-pill-suggest-toggle').click());
   });
-  await check(`${tag}: folds are per viewer and survive a reload`, async () => {
+  await check(`${tag}: closed-Issue records never collapse text after reload`, async () => {
     await page.reload();
-    await page.waitForFunction(() => window.__proofLineMarks?.debugState().loaded === true, null, { timeout: 15_000 });
-    await page.waitForFunction(() => document.querySelector('.ProseMirror .pclose-folded[data-pclose-line="6"]'), null, { timeout: 6000 });
-    const other = await openDoc(browser, base, created.slug, 'Bea', { viewport: { width: 1440, height: 900 } });
-    await other.page.waitForTimeout(1500);
-    assert.equal(await other.page.locator('.ProseMirror .pclose-folded').count(), 0, 'another viewer sees folds');
-    await other.context.close();
+    await page.waitForFunction(() => window.__proofLineMarks?.debugState().loaded);
+    await page.waitForTimeout(1600);
+    assert.equal(await page.locator('.pclose-folded, .pclose-controls').count(), 0);
   });
 
   await context.close();
@@ -286,24 +183,12 @@ async function runPhone(browser, base, tag) {
     await page.screenshot({ path: path.join(shots, `${tag}-strip.png`) });
   });
 
-  await check(`${tag}: Agree in the strip marks the current line (and it then folds for me)`, async () => {
-    const focus = (await walk(page)).focus;
+  await check(`${tag}: Agree in the strip marks the selected passage and leaves it visible`, async () => {
+    await selectPassage(page, 3);
     await page.locator('.prw-strip-agree').tap();
-    await page.waitForFunction(i => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i && m.status === 'agreed'), focus, { timeout: 4000 });
-    await page.waitForFunction(() => document.querySelector('.prw-strip')?.dataset.status === 'agreed', null, { timeout: 4000 });
-    // It folds once scrolled out of view (never under the reader's eyes).
-    await page.waitForTimeout(1500);
-    assert.equal(await page.locator(`.ProseMirror .pclose-folded[data-pclose-line="${focus}"]`).count(), 0, 'folded in view');
-    const y = await page.evaluate(() => window.scrollY);
-    await page.evaluate(() => window.scrollBy(0, 2000));
-    await page.waitForFunction(i => document.querySelector(`.ProseMirror .pclose-folded[data-pclose-line="${i}"]`), focus, { timeout: 4000 });
-    await page.evaluate(y => window.scrollTo(0, y), y);
-    await page.waitForTimeout(400);
-    await page.screenshot({ path: path.join(shots, `${tag}-agreed-folded.png`) });
-    const row = page.locator(`.ProseMirror .pclose-folded[data-pclose-line="${focus}"]`);
-    await row.tap();
-    await page.waitForTimeout(300);
-    assert.equal(await row.count(), 0, 'a tap did not open the folded line');
+    await page.waitForFunction(() => window.__proofLineMarks.myStatus(3) === 'agreed');
+    await expandedStaysExpanded(page);
+    await selectPassage(page, 3);
   });
 
   // Accord layout stage 3 (decision 11): ⋯ opens the Margin sheet on the Line tab with More showing.

@@ -21,9 +21,7 @@ function mark(by: string, status: LineMark['status'] = 'seen'): LineMark {
   return { id: `m-${by}`, by, status, at: '2026-09-19T10:00:00Z', anchor: { hash: 'h', occurrence: 0, ordinal: 0, kind: 'paragraph', excerpt: 'x' } };
 }
 
-test('policy: scrolling past another\'s statement gives Agreed; one\'s own gives Seen', () => {
-  assert.equal(STATEMENT_POLICY.dwellOnOthersStatement, 'agreed');
-  assert.equal(STATEMENT_POLICY.dwellOnOwnStatement, 'seen');
+test('policy: scrolling past another\'s statement gives Seen; one\'s own gives Seen', () => {
   assert.equal(STATEMENT_POLICY.editorMarkOnEdit, 'agreed');
   assert.ok(PASSIVE_VIAS.has('dwell'), 'a dwell Agreed stays a passive mark (the ringer list watches it)');
 });
@@ -40,20 +38,19 @@ test('isOthersStatement: another author, or another person\'s current mark', () 
   assert.equal(isOthersStatement({ me, state: { marks: read }, purpose: 'edit' }), true, 'editing: a line others have marked');
   const seen = new Map([['ai:claude', { mark: { ...mark('ai:claude', 'seen'), via: 'click' as const }, current: true }]]);
   assert.equal(isOthersStatement({ me, state: { marks: seen } }), false, 'a Seen is not a claim');
-  const marks = seen;
   const stale = new Map([['ai:claude', { mark: mark('ai:claude'), current: false }]]);
   assert.equal(isOthersStatement({ me, state: { marks: stale }, purpose: 'edit' }), false, 'a stale mark is not a claim on the current text');
   const mine = new Map([['human:mike@example.com', { mark: mark('human:mike@example.com'), current: true }]]);
   assert.equal(isOthersStatement({ me, state: { marks: mine } }), false, 'only my own mark');
 });
 
-test('dwellMarkFor: never downgrades; raises a dwell Seen on another\'s statement to Agreed', () => {
-  assert.equal(dwellMarkFor(true, null), 'agreed');
+test('dwellMarkFor: never downgrades; never upgrades Seen to Agreed', () => {
+  assert.equal(dwellMarkFor(true, null), 'seen');
   assert.equal(dwellMarkFor(false, null), 'seen');
-  assert.equal(dwellMarkFor(true, { status: 'unseen' }), 'agreed');
-  assert.equal(dwellMarkFor(true, { status: 'skimmed', via: 'dwell' }), 'agreed');
-  assert.equal(dwellMarkFor(true, { status: 'changed' }), 'agreed');
-  assert.equal(dwellMarkFor(true, { status: 'seen', via: 'dwell' }), 'agreed', 'upgrade a scroll Seen');
+  assert.equal(dwellMarkFor(true, { status: 'unseen' }), 'seen');
+  assert.equal(dwellMarkFor(true, { status: 'skimmed', via: 'dwell' }), 'seen');
+  assert.equal(dwellMarkFor(true, { status: 'changed' }), 'seen');
+  assert.equal(dwellMarkFor(true, { status: 'seen', via: 'dwell' }), null, 'reading never upgrades Seen to agreement');
   assert.equal(dwellMarkFor(true, { status: 'seen', via: 'click' }), null, 'an explicit Seen is the reader\'s choice');
   assert.equal(dwellMarkFor(true, { status: 'rejected', via: 'click' }), null, 'never overwrite a Reject');
   assert.equal(dwellMarkFor(true, { status: 'agreed', via: 'dwell' }), null);

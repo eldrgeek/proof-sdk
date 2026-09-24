@@ -2,6 +2,8 @@
  * Proof Documents Step 1 — the line-marks UI.
  * Mike, 2026-09-23 (usability brief): the pencil opens a local Suggest change draft.
  * Clicking passage text selects it; it never begins direct Editing.
+ * Line marks target the selected passage. Explicit section agreement captures text identities,
+ * and it is offered only when every line of the section is visible.
  *
  * Authorship: spec by Mike Wolf (2026-09-18); built by Claude Opus 5 (worker proof-line-marks).
  *
@@ -39,9 +41,8 @@ import {
   type ReviewMarkLike,
 } from '../shared/line-marks';
 import { classifyLineChange } from '../shared/line-change';
-import { CLOSED_FOLD_POLICY, type ClosureKind } from '../shared/closed-fold';
 import type { SinceYouReport } from '../shared/alignment';
-import { FOLDING, planSectionMark } from '../shared/folding';
+import { FOLDING, planSectionMark, resolveSectionScope, type SectionAgreementOffer, type SectionScope } from '../shared/folding';
 import { UndoStack, conflictRefusal, describeLineMark, type UndoOutcome } from '../shared/undo';
 import { ANYONE, askIssueInputs, askTeamActors, evaluateAsks, type AskChoice, type AskView, type ProofAsk } from '../shared/asks';
 import { askViewKey, setAskDecorations, type AskDecorationSpec } from '../editor/plugins/ask-view';
@@ -142,12 +143,17 @@ export interface LineMarksHost {
   focusLine?(lineIndex: number): boolean;
   /** Step 1b: every editor view update (cursor, marks, text), after this UI has handled it. */
   viewUpdated?(): void;
-  /** Step B2: a folded heading's marking scope (every line of its section), or null. */
-  markScope?(lineIndex: number): { lines: number[]; heading: string } | null;
+  /** Text identities listed by the explicit section agreement action. */
+  sectionScope?(lineIndex: number): SectionScope | null;
+  /**
+   * Agree is present only when `allVisible`. Otherwise the button expands the collapsed
+   * sections inside this one. `scope` is captured at render time. Mike, 2026-09-23 (usability brief).
+   */
+  sectionAgreement?(lineIndex: number): (SectionAgreementOffer & { scope: SectionScope | null }) | null;
+  /** Expands the collapsed sections inside this heading so the reader can see every line. */
+  showSectionLines?(lineIndex: number): void;
   /** Step B2: unfold whatever hides a line. Returns true when something unfolded. */
   revealLine?(lineIndex: number): boolean;
-  /** Step B3: the viewer is answering the ask on this line (the reading walk's explicit action). */
-  onAskAnswered?(lineIndex: number): void;
   /** Step B4d: the line a shift-click range starts from (the reading walk's focus line). */
   anchorLine?(): number;
   /** Step B4c: the sitting budget was used when the reader asked for the next issue. */
@@ -166,8 +172,8 @@ export interface LineMarksHost {
   /** Editing first: true while the editor is in Suggesting mode (edits become suggestions). */
   isSuggesting?(): boolean;
   /**
-   * Accord round 2 stage A: the margin's pencil. Puts the caret in the line and starts editing.
-   * Option+click still works as the shortcut; this is the affordance it never had.
+   * The margin pencil. Opens a local Suggest change draft on this line.
+   * Mike, 2026-09-23 (usability brief). It does not begin direct Editing.
    */
   startEditingLine?(lineIndex: number): boolean;
   /** The line the cursor is on (the pencil shows there only). */
@@ -177,8 +183,6 @@ export interface LineMarksHost {
 export interface MarkBoxOptions {
   /** Called after the viewer chose a mark (the popover closes itself; the rail stays). */
   onChosen?(status: StatusChoice): void;
-  /** Called with the chosen status before it is written (the reading walk commits scroll-accepts). */
-  onExplicit?(status: StatusChoice | 'tier'): void;
   /**
    * Accord layout stage 3 (decision 8): 'margin' is the Margin's Line tab — the quote, Agree and
    * Reject as the two primary buttons, and ⋯ More holding Approve, Seen, Clear my mark, Flag
@@ -541,11 +545,6 @@ export class LineMarksUI {
   private async writeMark(line: DocLine, status: StatusChoice, reason?: string, via: MarkVia = 'click'): Promise<boolean> {
     const slug = this.host.slug();
     if (!slug) return false;
-    // Closed Issues fold (src/shared/closed-fold.ts): an explicit Agree / Approve / Reject closes the line for me.
-    if (CLOSED_FOLD_POLICY.closingStatuses.includes(status) && via !== 'edit' && via !== 'correct'
-      && (CLOSED_FOLD_POLICY.passiveReadsFold || !PASSIVE_VIAS.has(via))) {
-      this.noteClosure(line.index, status as ClosureKind);
-    }
     // The one Undo (Mike, 2026-09-19): every deliberate mark is undoable. Passive reads (dwell,
     // a section sweep, a Familiar's proxy) and marks carried over an edit are not actions.
     if (!PASSIVE_VIAS.has(via) && via !== 'edit' && via !== 'correct') this.recordMarkUndo(line, status, reason, via);
@@ -917,52 +916,6 @@ export class LineMarksUI {
     return this.writeMark(line, status, reason, via);
   }
 
-  /**
-   * Step B3b: the reading walk passed these lines faster than their reading time. Each line the
-   * viewer has no mark on becomes "skimmed", in one request. A skim never replaces a mark, not
-   * even an out-of-date one (that one still says "changed since you marked it", and the
-   * changer's own mark still follows their edit).
-   */
-  async markSkimmed(indices: number[]): Promise<boolean> {
-    const slug = this.host.slug();
-    if (!slug || !this.canMark || !this.loaded) return false;
-    const by = this.me();
-    const me = actorKey(by);
-    const lines = [...new Set(indices)].map(index => this.lines[index]).filter((line): line is DocLine => Boolean(line))
-      .filter(line => this.myStatus(line.index) === 'unseen' && !this.states[line.index]?.marks.has(me))
-      .slice(0, FOLDING.maxBatchLines);
-    if (lines.length === 0) return true;
-    const entries = lines.map(line => {
-      const own = [...(this.states[line.index]?.marks.values() ?? [])].filter(e => actorKey(e.mark.by) === me);
-      return { line, anchor: anchorForLine(line), replaceIds: own.map(e => e.mark.id).filter(id => !id.startsWith('local-')) };
-    });
-    const replaced = new Set(entries.flatMap(entry => entry.replaceIds));
-    const at = new Date().toISOString();
-    this.serverMarks = this.serverMarks.filter(mark => !replaced.has(mark.id));
-    entries.forEach((entry, i) => this.serverMarks.push({ id: `local-skim-${Date.now()}-${i}`, by, status: 'skimmed', reason: null, at, anchor: entry.anchor, via: 'dwell' }));
-    this.recompute();
-    this.skimWrites += entries.length;
-    this.writesInFlight += 1;
-    try {
-      const response = await fetch(`${this.host.apiBase()}/documents/${encodeURIComponent(slug)}/line-marks`, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { ...this.host.authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ by, status: 'skimmed', via: 'dwell', lines: entries.map(entry => ({ anchor: entry.anchor, replaceIds: entry.replaceIds })) }),
-      });
-      return response.ok;
-    } catch {
-      return false;
-    } finally {
-      this.writesInFlight -= 1;
-      this.fetchSeq += 1;
-      void this.refresh();
-    }
-  }
-
-  /** Test hook: lines this page has marked skimmed. */
-  private skimWrites = 0;
-
   // --------------------------------------------------------------------------
   // Step B3c: "Since you" and the aligned snapshot
   // --------------------------------------------------------------------------
@@ -1066,10 +1019,8 @@ export class LineMarksUI {
     const slug = this.host.slug();
     const view = this.askViews.find(v => v.ask.id === askId);
     if (!slug || !view || view.lineIndex === null || !this.canMark) return false;
-    this.host.onAskAnswered?.(view.lineIndex);
     const line = this.lines[view.lineIndex] ?? null;
     if (!line) return false;
-    if (choice !== 'not_yet') this.noteClosure(view.lineIndex, 'answered');
     const by = this.me();
     const anchor = anchorForLine(line);
     // Optimistic: the answer shows at once.
@@ -1427,7 +1378,9 @@ export class LineMarksUI {
     details.dataset.line = String(index);
     details.dataset.count = String(fold.count);
     details.dataset.auto = fold.open ? 'open' : 'closed';
-    details.open = this.teamFoldChoice.get(index) ?? fold.open;
+    // A click is a choice and stays. The first render is not a choice, so a later Reject still opens it.
+    const chosen = this.teamFoldChoice.get(index);
+    details.open = chosen === undefined ? fold.open : chosen;
     const summary = document.createElement('summary');
     summary.className = 'plm-team-sum';
     const label = document.createElement('span');
@@ -1701,7 +1654,7 @@ export class LineMarksUI {
     const tierView = this.tierEval?.views[line.index];
     const setTier = (tier: LineTier): boolean => {
       if (!this.canMark) return false;
-      options.onExplicit?.('tier');
+
       const fresh = this.lines[line.index] ?? line;
       void this.setTiers([fresh.index], tier);
       return true;
@@ -1847,36 +1800,38 @@ export class LineMarksUI {
       place(skim);
     }
 
-    // Step B2: on a folded heading a mark applies to every line of the section (policy).
-    const scope = this.host.markScope?.(line.index) ?? null;
-    if (scope) {
-      const note = document.createElement('p');
-      note.className = 'plm-section-note';
-      note.textContent = `Folded section: Seen, Agree${this.canApprove || !LINE_MARK_POLICY.approveRequiresOwner ? ' and Approve' : ''} apply to all ${scope.lines.length} lines in it.`;
-      place(note);
+    const agreement = this.host.sectionAgreement?.(line.index) ?? null;
+    if (agreement) {
+      const sectionAgree = document.createElement('button');
+      sectionAgree.type = 'button';
+      sectionAgree.className = 'plm-section-note';
+      const armAgree = (scope: SectionScope, count: number) => {
+        sectionAgree.textContent = `Agree with this section (${count} lines)`;
+        sectionAgree.disabled = !this.canMark;
+        sectionAgree.onclick = () => { void this.writeSectionMark(scope, 'agreed'); };
+      };
+      if (agreement.allVisible && agreement.scope) {
+        armAgree(agreement.scope, agreement.lineCount);
+      } else {
+        sectionAgree.textContent = `Show all ${agreement.lineCount} lines to agree with this section`;
+        sectionAgree.disabled = false;
+        sectionAgree.onclick = () => {
+          this.host.showSectionLines?.(line.index);
+          const next = this.host.sectionAgreement?.(line.index);
+          // The rail rebuilds this box on the fold change. The phone sheet does not, so this
+          // same button becomes Agree once every line is visible.
+          if (next?.allVisible && next.scope) armAgree(next.scope, next.lineCount);
+        };
+      }
+      place(sectionAgree);
     }
-    const sectionHint = document.createElement('p');
-    sectionHint.className = 'plm-section-hint';
-    sectionHint.hidden = true;
-    sectionHint.setAttribute('role', 'status');
-    sectionHint.textContent = 'Reject needs a specific line. Unfold the section and reject the line.';
-    const unfold = document.createElement('button');
-    unfold.type = 'button';
-    unfold.textContent = 'Unfold';
-    unfold.onclick = () => { this.host.revealLine?.(line.index + 1); };
-    sectionHint.append(unfold);
-
     const choose = (status: StatusChoice, reason?: string, via: MarkVia = 'click'): boolean => {
       if (!this.canMark) return false;
-      if (scope && status === 'rejected' && !FOLDING.allowSectionReject) { sectionHint.hidden = false; return false; }
-      options.onExplicit?.(status);
+
       options.onChosen?.(status);
-      // onExplicit may have committed accepts on this line, which re-extracts the lines.
-      const fresh = this.lines[line.index] ?? line;
-      if (scope && status !== 'unseen' && status !== 'rejected') {
-        void this.writeSectionMark(scope, status);
-        return true;
-      }
+      // Resolve the original passage by identity if remote edits moved it.
+      const fresh = this.lines.find(now => now.hash === line.hash && now.occurrence === line.occurrence && now.text === line.text);
+      if (!fresh) return false;
       void this.writeMark(fresh, status, reason, via);
       return true;
     };
@@ -1957,7 +1912,7 @@ export class LineMarksUI {
             : 'Sign in to add “I’d agree if…”: only a verified person can later clear it. Clear that field to reject this line.';
           return;
         }
-        options.onExplicit?.('rejected');
+
         options.onChosen?.('rejected');
         void this.createObjection(coverage, reason, condition);
         return;
@@ -1975,7 +1930,6 @@ export class LineMarksUI {
     conditionInput.addEventListener('keydown', escClose);
     const openReason = () => {
       if (!this.canMark) return;
-      if (scope && !FOLDING.allowSectionReject) { sectionHint.hidden = false; return; }
       reasonRow.hidden = false;
       reasonInput.focus({ preventScroll: true });
     };
@@ -1992,7 +1946,7 @@ export class LineMarksUI {
       btn.dataset.status = choice;
       btn.setAttribute('aria-pressed', String(current === choice));
       const primary = margin && MARGIN_POLICY.primaryMarks.includes(choice);
-      const g = document.createElement('span'); g.className = 'plm-choice-glyph'; g.textContent = STATUS_GLYPH[choice];
+      const g = document.createElement('span'); g.className = 'plm-choice-glyph'; g.textContent = STATUS_GLYPH[choice]; g.setAttribute('aria-hidden', 'true');
       const l = document.createElement('span');
       l.textContent = primary
         ? (choice === 'agreed' ? (current === 'agreed' ? 'Agreed' : 'Agree') : (current === 'rejected' ? 'Rejected' : 'Reject'))
@@ -2022,7 +1976,6 @@ export class LineMarksUI {
       clear.disabled = !this.canMark;
       clear.onclick = () => {
         options.onChosen?.('unseen');
-        if (scope && FOLDING.sectionClearAllowed) { void this.writeSectionMark(scope, 'unseen'); return; }
         void this.writeMark(line, 'unseen');
       };
       (margin ? moreMarks : actions).append(clear);
@@ -2047,9 +2000,9 @@ export class LineMarksUI {
       more.append(moreMarks, ...flagMore);
       if (extras.querySelector('.plm-extras-links')?.childElementCount || extras.querySelector('form')) more.append(extras);
       if (tierRow) more.append(tierRow);
-      root.append(actions, more, reasonRow, sectionHint, thread);
+      root.append(actions, more, reasonRow, thread);
     } else {
-      root.append(actions, reasonRow, sectionHint);
+      root.append(actions, reasonRow);
     }
 
     // Everyone's marks on this line.
@@ -2467,15 +2420,15 @@ export class LineMarksUI {
   }
 
   /**
-   * Step B2: the viewer marks a whole folded section in one request (the batch form of the
+   * Mike, 2026-09-23 (usability brief): the viewer explicitly marks a captured section in one request (the batch form of the
    * line-marks route), then gets a one-step Undo that restores each line's earlier mark.
    */
-  async writeSectionMark(scope: { lines: number[]; heading: string }, status: StatusChoice): Promise<boolean> {
+  async writeSectionMark(scope: SectionScope, status: StatusChoice): Promise<boolean> {
     const slug = this.host.slug();
     if (!slug || !this.canMark || status === 'rejected') return false;
     const by = this.me();
     const me = actorKey(by);
-    const indices = scope.lines.filter(index => this.lines[index]);
+    const indices = resolveSectionScope(scope, this.lines);
     let apply: number[];
     if (status === 'unseen') {
       apply = indices.filter(index => this.states[index]?.marks.has(me));
@@ -2600,32 +2553,6 @@ export class LineMarksUI {
 
   /** Pending suggestions (ids) whose start sits on this line. */
   // --------------------------------------------------------------------------
-  // Closed Issues fold (src/shared/closed-fold.ts, src/ui/closed-fold.ts)
-  // --------------------------------------------------------------------------
-
-  private readonly closureListeners = new Set<(index: number, kind: ClosureKind) => void>();
-  private closuresMuted = 0;
-
-  /** Runs `fn` without recording closures (committing scroll-accepts: passive, never folds). */
-  withoutClosures<T>(fn: () => T): T {
-    this.closuresMuted += 1;
-    try { return fn(); } finally { this.closuresMuted -= 1; }
-  }
-
-  /** Called when the viewer explicitly closes their Issue on a line. */
-  onClosure(listener: (index: number, kind: ClosureKind) => void): () => void {
-    this.closureListeners.add(listener);
-    return () => { this.closureListeners.delete(listener); };
-  }
-
-  /** The viewer explicitly closed their Issue on `index` (any control: rail, sheet, key, editor). */
-  noteClosure(index: number, kind: ClosureKind): void {
-    if (this.closuresMuted > 0 || index < 0 || !this.lines[index]) return;
-    for (const listener of this.closureListeners) {
-      try { listener(index, kind); } catch (error) { console.warn('[plm] closure listener failed', error); }
-    }
-  }
-
   /**
    * What is open for the viewer on a line: open suggestions and comments (with their reply
    * counts), asks still owed by the viewer, and open objections. A change here reopens a folded line.
@@ -2787,11 +2714,9 @@ export class LineMarksUI {
   }
 
   async clearObjection(id: string, reason?: string): Promise<boolean> {
-    const lines = this.objectionViews.find(v => v.objection.id === id)?.lineIndices ?? [];
     const result = await this.postAid(`/objections/${encodeURIComponent(id)}/clear`, reason ? { reason } : {});
     if (result.ok) {
       this.aidWrites += 1;
-      for (const index of lines) if (index !== null) this.noteClosure(index, 'objection-cleared');
       // Undo: the objector keeps objecting after all (the /keep route is the inverse).
       this.pushUndo('objection', 'cleared your objection',
         async () => { const ok = await this.withoutUndo(() => this.keepObjection(id)); return ok ? { ok: true } : { ok: false, reason: 'Could not put the objection back.' }; },
@@ -2986,7 +2911,6 @@ export class LineMarksUI {
     this.serverPicks = [...this.serverPicks.filter(p => !(actorKey(p.by) === actorKey(by) && p.lineHash === line.hash)),
       { by, choice: option.id, lineHash: line.hash, at: new Date().toISOString() }];
     this.recompute();
-    this.noteClosure(index, 'picked');
     const before = pickOf(set, by);
     const result = await this.postAid('/alternatives/pick', { anchor: anchorForLine(line), choice: option.id });
     if (result.ok) {
@@ -3822,7 +3746,7 @@ export class LineMarksUI {
         decoSig: this.extrasDecoSig,
         decorations: this.view ? (proofExtrasViewKey.getState(this.view.state)?.find().length ?? 0) : null,
       },
-      skimWrites: this.skimWrites,
+      skimWrites: 0,
       snapshot: this.snapshot,
       carried: this.states.flatMap(state => [...state.marks.values()].filter(e => e.carried).map(e => ({ line: state.line.index, by: e.mark.by, from: e.carriedFrom ?? null }))),
       askIssues: this.summary?.counts.askIssues ?? -1,

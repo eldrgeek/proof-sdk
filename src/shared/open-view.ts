@@ -36,10 +36,16 @@
 import {
   actorKey,
   countsAsSeen,
-  type DocLine,
   type LineState,
   type ProofIssue,
 } from './line-marks.js';
+import {
+  participantStatus,
+  statusHeader,
+  type DocumentStatus,
+  type HeaderClause,
+  type StatusObjection,
+} from './participant-status.js';
 // NOTE: layout-status imports this module back (needsYouLines delegates to openView). Only
 // `issueNeedsViewer` is used, and only at call time — a hoisted function declaration, so the
 // import cycle is safe in either load order. Never reference a `const` from layout-status here.
@@ -372,46 +378,82 @@ export function openLayout(lineCount: number, itemLines: readonly number[], expa
 // The Accord view's honest header
 // ============================================================================
 
-/** Statuses that mean the person has agreed to the line as it now reads. */
-const AGREEING = new Set(['agreed', 'approved']);
-
 export interface AccordReader {
   actor: string;
-  /** They have agreed to every line of the document as it now reads. */
+  /** They have agreed to every line of the document as it now reads. Approved is not agreement. */
   agreed: boolean;
+  /** Every passage is Approved: the owner's ruling, named apart from agreement. */
+  approved: boolean;
   /**
-   * The first line they have no agreement on — "has not read from line N on" (1-based for people,
-   * 0-based here). Null when they have agreed to everything.
+   * The first passage that is not a current Agreed or Approved mark (0-based). Null when every
+   * passage is one of those two. This is the agreement gap. Where their reading stops is
+   * `readingStopsAt`.
    */
   fromLine: number | null;
-  /** They have agreed to nothing at all. */
+  /** The first unseen passage (0-based). Null when no passage is unseen. */
+  readingStopsAt: number | null;
+  /** No passage is Seen, Agreed, Rejected, Approved or lapsed. */
   nothing: boolean;
+  /** Passages they rejected (0-based). The header links these. Empty when they rejected none. */
+  rejectedLines: number[];
+  /** Passages where they agreed to an earlier version (0-based). */
+  lapsedLines: number[];
 }
 
 export interface AccordHeader {
   /** "Agreed by you and Izzy. Eric has not read from line 40 on." Empty when `settled`. */
   text: string;
-  /** Everyone who has agreed to the whole document, viewer first. */
+  /** Everyone who has agreed to the whole document, viewer first. Approved is not in this list. */
   agreed: string[];
-  /** Everyone who has not, with the line they stop at. */
+  /** Everyone who has Approved every passage, viewer first. Not the same list as `agreed`. */
+  approved: string[];
+  /** Everyone who has not agreed, with where they stop and what they rejected. */
   behind: AccordReader[];
   /**
-   * Everyone has agreed to every line. The header goes away and what is left is a clean document
-   * (brief 3 and 7: "when it is zero for EVERYONE, the header goes too").
+   * Everyone has agreed to every line. Approved does not settle the header. The header goes away
+   * and what is left is a clean document (brief 3 and 7: "when it is zero for EVERYONE, the
+   * header goes too").
    */
   settled: boolean;
   /** Per person, for a caller that wants to draw its own thing. */
   readers: AccordReader[];
   /** The viewer's own row, so the zero moment can ask whether THEY have agreed. */
   viewerRow: AccordReader | null;
+  /** The one computation this header was drawn from (src/shared/participant-status.ts). */
+  status: DocumentStatus;
+  /**
+   * The sentences in `text`, split so a surface can link `lines`. A participant clause with a
+   * rejection never says "has not read".
+   */
+  clauses: HeaderClause[];
+}
+
+/** An empty header, for a page that has not loaded a document yet. */
+export function emptyAccordHeader(): AccordHeader {
+  return {
+    text: '',
+    agreed: [],
+    approved: [],
+    behind: [],
+    settled: false,
+    readers: [],
+    viewerRow: null,
+    status: { aligned: false, agreed: false, participants: [] },
+    clauses: [],
+  };
 }
 
 /**
- * The honest header. It must never imply the document is settled when it is not, so it is derived
- * from the same per-person mark state the margin draws, never from a count.
+ * The honest header. It reads `participantStatus` (src/shared/participant-status.ts) and does not
+ * decide a state of its own.
  *
- * A line only counts as agreed when that person's mark on it is CURRENT — a mark carried over a
- * cosmetic edit counts, a lapsed one does not (that is the point of the lapse rule).
+ * Mike, 2026-09-23 (usability brief): the header never says someone "has not read it" when they
+ * have a Rejected mark. It says how many lines they rejected. `clauses[].lines` and
+ * `rejectedLines` are the passages a link points at. Seen is never listed under "Agreed by".
+ * Approved is "Approved by", and it does not settle the header.
+ *
+ * A line only counts as agreed when that person's mark on it is current Agreed — a mark carried
+ * over a cosmetic edit counts, a lapsed one does not (that is the point of the lapse rule).
  */
 export function accordHeader(input: {
   states: readonly LineState[];
@@ -419,49 +461,33 @@ export function accordHeader(input: {
   viewer: string;
   /** How to name an actor to a person. The viewer is always "you". */
   name: (actor: string) => string;
+  /** Open objections, so a Rejected mark that was stored as Seen still counts as Rejected. */
+  objections?: readonly StatusObjection[];
 }): AccordHeader {
+  const status = participantStatus({ states: input.states, team: input.team, objections: input.objections });
+  const header = statusHeader(status, input.viewer, input.name);
   const me = actorKey(input.viewer);
-  const readers: AccordReader[] = input.team.map(actor => {
-    const key = actorKey(actor);
-    let fromLine: number | null = null;
-    let any = false;
-    for (const state of input.states) {
-      const entry = state.marks.get(key);
-      const ok = Boolean(entry && entry.current && !entry.lapsed && !entry.mark.hidden && AGREEING.has(entry.mark.status));
-      if (ok) any = true;
-      else if (fromLine === null) fromLine = state.line.index;
-    }
-    return { actor, agreed: fromLine === null && input.states.length > 0, fromLine, nothing: !any };
-  });
-
-  const agreed = readers.filter(r => r.agreed).map(r => r.actor).sort((a, b) => (actorKey(a) === me ? -1 : actorKey(b) === me ? 1 : 0));
-  const behind = readers.filter(r => !r.agreed);
-  const settled = behind.length === 0 && readers.length > 0;
-  const viewerRow = readers.find(reader => actorKey(reader.actor) === me) ?? null;
-  if (settled) return { text: '', agreed, behind, settled, readers, viewerRow };
-
-  const label = (actor: string) => (actorKey(actor) === me ? 'you' : input.name(actor));
-  const parts: string[] = [];
-  if (agreed.length) parts.push(`Agreed by ${joinWords(agreed.map(label))}.`);
-  for (const reader of behind) {
-    const who = label(reader.actor);
-    const has = actorKey(reader.actor) === me ? 'have' : 'has';
-    parts.push(reader.nothing
-      ? `${sentenceCase(who)} ${has} not read it.`
-      : `${sentenceCase(who)} ${has} not read from line ${(reader.fromLine ?? 0) + 1} on.`);
-  }
-  if (parts.length === 0) parts.push('Nobody has agreed to this yet.');
-  return { text: parts.join(' '), agreed, behind, settled, readers, viewerRow };
-}
-
-function joinWords(words: readonly string[]): string {
-  if (words.length <= 1) return words[0] ?? '';
-  if (words.length === 2) return `${words[0]} and ${words[1]}`;
-  return `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`;
-}
-
-function sentenceCase(word: string): string {
-  return word === 'you' ? 'You' : word;
+  const readers: AccordReader[] = header.readers.map(reader => ({
+    actor: reader.actor,
+    agreed: reader.agreed,
+    approved: reader.approved,
+    fromLine: reader.fromLine,
+    readingStopsAt: reader.readingStopsAt,
+    nothing: reader.nothing,
+    rejectedLines: reader.rejectedLines,
+    lapsedLines: reader.lapsedLines,
+  }));
+  return {
+    text: header.text,
+    agreed: header.agreedActors,
+    approved: header.approvedActors,
+    behind: readers.filter(reader => !reader.agreed),
+    settled: header.settled,
+    readers,
+    viewerRow: readers.find(reader => actorKey(reader.actor) === me) ?? null,
+    status,
+    clauses: header.clauses,
+  };
 }
 
 // ============================================================================

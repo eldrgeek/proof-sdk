@@ -13,7 +13,7 @@
     "build": "vite build && node scripts/finalize-web-build.mjs",
     "serve": "tsx server/index.ts",
     "library": "tsx server/library/cli.ts",
-    "test": "npm run test:agents-sync && npm run test:proof-sdk && npm run test:server-routes-share && npm run test:library && npm run test:soma-feedback && npm run test:client-errors && npm run test:agent-keys && npm run test:line-marks && npm run test:reading-walk && npm run test:scroll-camera && npm run test:folding && npm run test:asks && npm run test:identity && npm run test:honest && npm run test:aids && npm run test:bundles && npm run test:do && npm run test:chat && npm run test:editing-first && npm run test:edit-session && npm run test:orphans && npm run test:proxy && npm run test:tiers && npm run test:dialect && npm run test:closed-fold && npm run test:caret && npm run test:team && npm run test:cross-invite && npm run test:remap && npm run test:ux-consistency && npm run test:mike-0921 && npm run test:layout && npm run test:threads && npm run test:open-view",
+    "test": "npm run test:agents-sync && npm run test:proof-sdk && npm run test:server-routes-share && npm run test:library && npm run test:soma-feedback && npm run test:client-errors && npm run test:agent-keys && npm run test:line-marks && npm run test:reading-walk && npm run test:scroll-camera && npm run test:folding && npm run test:asks && npm run test:identity && npm run test:honest && npm run test:aids && npm run test:bundles && npm run test:do && npm run test:chat && npm run test:editing-first && npm run test:edit-session && npm run test:orphans && npm run test:proxy && npm run test:tiers && npm run test:dialect && npm run test:caret && npm run test:team && npm run test:cross-invite && npm run test:remap && npm run test:ux-consistency && npm run test:mike-0921 && npm run test:layout && npm run test:threads && npm run test:open-view && npm run test:participant-status && npm run test:usability-impact",
     "test:agents-sync": "tsx src/tests/agents-claude-sync.test.ts",
     "test:proof-sdk": "tsx src/tests/proof-sdk-agent-bridge-client.test.ts",
     "test:server-routes-share": "tsx src/tests/server-routes-and-share.test.ts",
@@ -41,7 +41,6 @@
     "test:proxy": "tsx src/tests/proxy-marks.test.ts",
     "test:tiers": "tsx src/tests/line-tiers.test.ts",
     "test:dialect": "tsx src/tests/proof-dialect.test.ts && tsx src/tests/proof-dialect-server.test.ts",
-    "test:closed-fold": "tsx src/tests/closed-fold.test.ts",
     "test:caret": "tsx src/tests/caret-stability.test.ts",
     "test:team": "tsx src/tests/document-team.test.ts && tsx src/tests/document-team-soma.test.ts",
     "test:cross-invite": "tsx src/tests/cross-invitation.test.ts",
@@ -49,7 +48,10 @@
     "test:mike-0921": "tsx src/tests/mike-0921.test.ts && tsx src/tests/markdown-link-click.test.ts",
     "test:layout": "tsx src/tests/layout-status.test.ts && tsx src/tests/layout-chrome.test.ts && tsx src/tests/layout-panels.test.ts",
     "test:threads": "tsx src/tests/threads.test.ts",
-    "test:open-view": "tsx src/tests/open-view.test.ts"
+    "test:open-view": "tsx src/tests/open-view.test.ts",
+    "test:participant-status": "tsx src/tests/participant-status.test.ts",
+    "test:usability-impact": "tsx src/tests/usability-impact-report.test.ts",
+    "check:usability-s1": "node scripts/usability-s1-check.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.879.0",

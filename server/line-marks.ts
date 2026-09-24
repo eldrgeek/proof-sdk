@@ -66,6 +66,11 @@ import {
   type ExtrasEvaluation,
 } from './proof-extras-eval.js';
 import { BLIND_POLICY } from '../src/shared/blind.js';
+import {
+  participantStatus,
+  type DocumentStatus,
+  type StatusObjection,
+} from '../src/shared/participant-status.js';
 import { getProofSettings } from './proof-extras-store.js';
 import { buildDoReport } from './do-report.js';
 import { doTeamActors } from '../src/shared/do.js';
@@ -253,6 +258,15 @@ export interface IssueReport extends IssueSummary {
   /** Raw evaluation, for the per-viewer blind view (not serialized). */
   extras?: ExtrasEvaluation;
   docLines?: DocLine[];
+  /**
+   * Per-participant status from src/shared/participant-status.ts. /state publishes this.
+   * Computed on the decayed line states, before any blind redaction.
+   */
+  participantStatus: DocumentStatus;
+  /** Mark ids decayed before this report. The blind recompute copies the flag. Not serialized. */
+  decayedMarkIds: string[];
+  /** Open objections fed to the status computation. Not serialized on its own. */
+  statusObjections: StatusObjection[];
 }
 
 export async function buildIssueReport(slug: string, markdown: string, rawMarks: unknown, options: {
@@ -303,11 +317,22 @@ export async function buildIssueReport(slug: string, markdown: string, rawMarks:
   }));
   const owners = documentOwnerActors(slug);
   const carried: IssueReport['carried'] = [];
+  const decayedMarkIds: string[] = [];
   for (const state of states) {
     for (const entry of state.marks.values()) {
       if (entry.carried) carried.push({ markId: entry.mark.id, by: entry.mark.by, status: entry.mark.status, lineIndex: state.line.index, from: entry.carriedFrom ?? null, to: state.line.text.slice(0, 200) });
+      if (entry.decayed) decayedMarkIds.push(entry.mark.id);
     }
   }
+  // Mike, 2026-09-23 (usability brief): /state reads the one participant-status computation.
+  // `states` here is the array evaluateExtras decayed. computeIssues builds its own and does not.
+  const statusObjections: StatusObjection[] = aids.objectionViews.filter(view => view.open).map(view => ({
+    by: view.objection.by,
+    reason: view.objection.reason,
+    condition: view.objection.condition,
+    lineIndices: view.lineIndices,
+  }));
+  const status = participantStatus({ states, team, objections: statusObjections });
   return {
     ...summary,
     carried,
@@ -334,6 +359,9 @@ export async function buildIssueReport(slug: string, markdown: string, rawMarks:
     evaluatedAt: new Date(now).toISOString(),
     extras,
     docLines: lines,
+    participantStatus: status,
+    decayedMarkIds,
+    statusObjections,
     lines: lines.map(line => ({
       index: line.index,
       kind: line.kind,
@@ -344,6 +372,27 @@ export async function buildIssueReport(slug: string, markdown: string, rawMarks:
       text: line.text.slice(0, 200),
     })),
   };
+}
+
+/**
+ * The status /state publishes. When `revealed` is set, blind redaction has replaced the marks,
+ * so the computation runs again on what this caller is allowed to see. A hidden mark is not a
+ * Rejected mark and is not described as one.
+ */
+export function viewerParticipantStatus(report: IssueReport, lineMarks: LineMark[], revealed: ReadonlySet<number> | null): DocumentStatus {
+  if (!revealed || !report.docLines) return report.participantStatus;
+  const states = buildLineStates(report.docLines, lineMarks);
+  const decayed = new Set(report.decayedMarkIds);
+  for (const state of states) {
+    for (const entry of state.marks.values()) {
+      if (!entry.mark.hidden && decayed.has(entry.mark.id)) entry.decayed = true;
+    }
+  }
+  const objections = report.statusObjections.filter(objection => {
+    const live = objection.lineIndices.filter((index): index is number => index !== null);
+    return live.length > 0 && live.every(index => revealed.has(index));
+  });
+  return participantStatus({ states, team: report.team, objections });
 }
 
 function cleanActor(value: unknown): string | null {

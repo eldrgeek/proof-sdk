@@ -1,32 +1,27 @@
 /**
  * The reading layout and reading walk.
- * Mike, 2026-09-23 (usability brief): clicking selects a passage; S and Suggest change open
- * a local draft. Only explicit submission publishes. Direct Editing uses a labelled control.
- * The older walk and hover rules below are replaced by the parallel S1 stage.
+ * Mike, 2026-09-23 (usability brief): a click selects a passage. S and Suggest change open
+ * a local draft. Only Propose change or Cmd/Ctrl+Enter publishes. Direct Editing is the
+ * labelled control. Hover changes nothing. Scrolling records Seen only. It never commits a
+ * proposal and it never changes the selected passage.
  *
  * Authorship: requirements by Mike Wolf ("Reading and marking", 2026-09-18) with the COS's
  * decisions for the gaps; built by Claude Opus 5 (worker reading-walk), 2026-09-18.
  *
- * Layout (desktop): a left rail with the team's documents, the document in a readable centre
- * column, and a right rail that holds the focus line's mark box, the changes on that line, and
- * (PlayMaker style) the Marks panel. Both rails collapse. Phones (<= 700 px): one column; the
- * rails open as bottom sheets from the ⋯ menu, and a margin dot opens Step 1's mark sheet.
+ * Layout (desktop): a left rail, the document in a readable centre column, and a right rail
+ * that holds the selected passage's mark box and the changes on that line. Both rails collapse.
+ * Phones (<= 700 px): one column; the rails open as bottom sheets from the ⋯ menu, and a margin
+ * dot opens Step 1's mark sheet.
  *
- * The walk (state in src/shared/reading-walk.ts): the focus line is the line under the reading
- * line (where the first line sits when the page is at the top). Scrolling moves it; a line the
- * reader dwelt on is marked Seen; a line with pending marks holds the page while each scroll
- * gesture steps to the next mark; scrolling past a suggestion accepts it provisionally (only in
- * this browser tab and its session storage) until an explicit action commits it.
- * Keys, only while nobody is typing: A agree, R reject (reason field), J / ↓ next, K / ↑ back.
- * Step B3: on a line that carries an ask, Y answers Yes, N No and T Not yet (N and T open the
- * reason field first). Answering an ask is an explicit action (it commits scroll-accepts above).
+ * The selected passage is where A, R, S and the Margin act. Scrolling moves the reading position
+ * used to record Seen. It does not move the selected passage. A heading mark covers the heading only.
+ * Keys run only while nobody is typing and letter shortcuts are on: A agree, R reject, J / ↓ next,
+ * K / ↑ back, S opens a draft, E explains. Direct Editing and draft fields never run letter commands.
  *
  * Accord layout stage 3 (Ren's proposal, Mike ruled 2026-09-21; decisions 4, 6, 7, 8, 11;
  * policies in src/shared/layout-panels.ts): the left rail is the Navigator (Outline · Issues ·
- * Since you, src/ui/navigator.ts), the right rail is the Margin (Line N · Room). The reading focus
- * and the focus line are one cursor (walk.focus); hovering another line previews it in the Margin
- * and a key or a Margin click commits the preview. Phones: a bottom strip (Line N of M, Agree,
- * Reject, ⋯) and the Margin as a sheet under it.
+ * Since you, src/ui/navigator.ts), the right rail is the Margin (Line N · Room).
+ * Phones: a bottom strip (Line N of M, Agree, Reject, ⋯) and the Margin as a sheet under it.
  */
 import type { Mark, CommentData, ReplaceData } from '../formats/marks';
 import { getActorName, getMarkColor } from '../formats/marks';
@@ -35,11 +30,11 @@ import { UNCERTAIN_POLICY, WHY_POLICY } from '../shared/review-aids';
 import { BUNDLE_POLICY, describeBundle, type BundleView } from '../shared/bundles';
 import { EXPLAIN_POLICY } from '../shared/explain';
 import { ASK_POLICY, type AskChoice } from '../shared/asks';
-import { GestureGate, READING_WALK, ReadingWalk, countWords, dwellMsFor, type WalkLine, type WalkMark, type WalkSnapshot } from '../shared/reading-walk';
+import { READING_WALK, ReadingWalk, countWords, dwellMsFor, type WalkLine, type WalkMark, type WalkSnapshot } from '../shared/reading-walk';
 import type { SinceItem, SinceYouReport, RingerItem } from '../shared/alignment';
 import type { LineMarksUI, MarkBox } from './line-marks';
 import { isOpenReviewMark, type PlayMakerReview, type ReviewAction } from './playmaker-review';
-import { editingGuardDebug, editingRemainingMs, installEditingGuard, isEditing, isReadingOwned, isWriting, onEditingActivity, onWritingChange } from '../editor/editing-guard';
+import { editingGuardDebug, editingRemainingMs, installEditingGuard, isEditing, isInputComposing, isReadingOwned, isWriting, letterShortcutsEnabled, onEditingActivity, onWritingChange, setLetterShortcutsEnabled } from '../editor/editing-guard';
 import { EDIT_SESSION_POLICY, postedNoticeText } from '../shared/edit-session';
 import { READING_MODE_POLICY } from '../shared/reading-keys';
 // Accord round 2, stage D: the discussion on a line lives in the document, in the Line tab.
@@ -49,10 +44,11 @@ import { ProxyMarksUI } from './proxy-marks';
 import { ReadingSettingsUI } from './reading-settings';
 import { SETTINGS_POLICY } from '../shared/layout-chrome';
 import { ScrollFollower, containRailWheel } from './rail-follow';
-import { SCROLL_CAMERA_POLICY, bandFractionFor, cameraScroll, deadZone, type CameraView } from '../shared/scroll-camera';
+import { setReadingAnchor } from '../editor/caret-anchor';
+import { SCROLL_CAMERA_POLICY, anchoredScroll, bandFractionFor, cameraScroll, deadZone, type CameraView } from '../shared/scroll-camera';
 import { TIER_POLICY } from '../shared/line-tiers';
-import { HIGHLIGHT_POLICY, MARKED_UP_TO_POLICY, STATUS_BAR_POLICY, formatAgo, issuesLeftText } from '../shared/layout-status';
-import { CURSOR_POLICY, MARGIN_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY, parseRailState, type MarginTab, type RailState } from '../shared/layout-panels';
+import { HIGHLIGHT_POLICY, MARKED_UP_TO_POLICY, formatAgo, issuesLeftText } from '../shared/layout-status';
+import { MARGIN_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY, parseRailState, type MarginTab, type RailState } from '../shared/layout-panels';
 import { NavigatorUI } from './navigator';
 import type { FoldingUI } from './folding';
 import './reading-walk.css';
@@ -66,32 +62,7 @@ import './layout-panels.css';
 export const READING_EDIT_POLICY = {
   /** The focus line follows the caret while the person edits. */
   focusFollowsCaret: true,
-  /**
-   * A click in the text on a comment or suggestion counts as an explicit reading action (it
-   * commits the scroll-accepts above it). Off: a click in the text is for editing only.
-   */
-  textClickIsExplicitAction: false,
-} as const;
 
-/**
- * Hover focus (Mike, 2026-09-19): "Hovering over a line puts its decision mark in the chat; having
- * to click is extra work." On a desktop pointer, resting the mouse on a line for `delayMs` previews
- * it in the Margin's Line tab (Accord layout stage 3, CURSOR_POLICY): the cursor, the blue bar and
- * the status bar stay put, and the first key (A, R, …) or click in the Margin moves the cursor to
- * the previewed line and acts there, so no extra click is needed. Hover is not reading: the walk's
- * reading position, dwell (Seen / Agreed) and scroll are untouched. While the person edits, the
- * caret owns the cursor.
- */
-export const HOVER_FOCUS_POLICY = {
-  enabled: true,
-  /** Rest this long on a line before it becomes the focus (passing the mouse across does not thrash). */
-  delayMs: 150,
-  /** Pointers that hover precisely (a mouse or trackpad). */
-  query: '(hover: hover) and (pointer: fine)',
-  /** A pointer event closer than this to the last one is not a move (synthetic events after scroll or layout). */
-  minMovePx: 3,
-  /** A move of the reading position (scroll, J / K, Next issue, a jump) hands the focus back to it. */
-  walkMoveClearsHover: true,
 } as const;
 
 /**
@@ -128,11 +99,12 @@ export interface ReadingWalkHost {
   playmaker(): PlayMakerReview | null;
   /** Current review style ('proof' | 'playmaker'). */
   reviewStyle(): string;
+  directEditing?(): boolean;
   /** Step B2: lines inside folded sections (the walk steps over them). */
   hiddenLines?(): ReadonlySet<number>;
   /** Step B2: the visible line that stands for a hidden one (its folded heading). */
   visibleLineFor?(lineIndex: number): number;
-  /** The focus line changed (closed-Issue folding waits until the reader leaves a line). */
+  /** The selected passage changed; dependent displays may update without moving focus. */
   focusChanged?(lineIndex: number): void;
   /** Accord layout stage 3: the folding owner, for the Navigator's Outline. */
   folding?(): FoldingUI | null;
@@ -142,8 +114,6 @@ const PHONE_QUERY = '(max-width: 700px)';
 const RAIL_STATE_KEY = 'proof:reading-rails';
 /** Step B3b: the reader's reading rate (words per second), per browser. */
 const RATE_KEY = 'proof:reading-rate';
-/** Step B3b: skims are batched: one request per this long of scrolling. */
-const SKIM_FLUSH_MS = 400;
 
 function savedRate(): number {
   try {
@@ -202,9 +172,6 @@ export class ReadingWalkUI {
   private sinceReport: SinceYouReport | null = null;
   private sinceLoaded = false;
   private sinceOpen = true;
-  private skimQueue: number[] = [];
-  private skimTimer: ReturnType<typeof setTimeout> | null = null;
-  private readonly skimmedLines: number[] = [];
   private readonly boxHost = el('section', 'prw-linebox');
   private readonly changesHost = el('section', 'prw-changes');
   /** Accord stage D: the threads anchored to the line the Margin shows. */
@@ -229,7 +196,7 @@ export class ReadingWalkUI {
   private readonly suggestBtn = el('button', 'prw-edit-done', 'Suggest change');
   /**
    * Accord layout stage 1: the status bar fixed under the page (Line N of M · You marked up to
-   * line K · Issues left · scroll-accepts to save · Reading / Writing), and the "You marked up to
+   * line K · Issues left · Reading / Writing), and the "You marked up to
    * here" rule inside the page after the viewer's last explicit mark.
    */
   private readonly statusBar = el('div', 'pst-bar');
@@ -245,7 +212,6 @@ export class ReadingWalkUI {
   private railFollow: ScrollFollower | null = null;
   private readonly railWheelCleanups: Array<() => void> = [];
   private readonly styleEl = el('style');
-  private readonly gate = new GestureGate();
   private box: MarkBox | null = null;
   private boxSig = '';
   private changesSig = '';
@@ -258,9 +224,8 @@ export class ReadingWalkUI {
   private tickTimer: ReturnType<typeof setTimeout> | null = null;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private renderQueued = false;
-  private seenQueue: number[] = [];
+  private seenQueue: string[] = [];
   private seenBusy = false;
-  private touchY: number | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private unsubscribe: (() => void) | null = null;
   private unsubscribeEditing: (() => void) | null = null;
@@ -287,12 +252,6 @@ export class ReadingWalkUI {
   private bundleErrorId: string | null = null;
   private readonly bundleDecisions: Array<{ id: string; action: string; ok: boolean; error?: string }> = [];
 
-  /** Hover focus: the line the mouse rests on (null: the reading line is the focus). */
-  private hoverLine: number | null = null;
-  private hoverCandidate: number | null = null;
-  private hoverTimer: ReturnType<typeof setTimeout> | null = null;
-  private lastPointer: { x: number; y: number } | null = null;
-  private lastWalkFocus = -1;
   /** Touch focus: the strip docked at the bottom. */
   private readonly strip = el('div', 'prw-strip');
   private stripSig = '';
@@ -317,9 +276,6 @@ export class ReadingWalkUI {
   private marginTab: MarginTab = MARGIN_POLICY.defaultTab;
   private tailSig = '';
   private lineTabSig = '';
-  /** Test hook: preview commits (the line the preview moved the cursor to, and what did it). */
-  private readonly previewCommits: Array<{ line: number; via: 'key' | 'margin' }> = [];
-
   /** Familiar proxy marks: My Familiar (header), the brief (top of the rail), the phone pill. */
   readonly proxy: ProxyMarksUI;
   /** Accord layout stage 2 (decision 10): reading speed and This sitting live in View › Reading settings. */
@@ -328,8 +284,6 @@ export class ReadingWalkUI {
   constructor(private readonly host: ReadingWalkHost) {
     this.proxy = new ProxyMarksUI({
       lineMarks: () => this.host.lineMarks(),
-      // Ratify is an explicit action: the provisional (scroll) accepts are committed first.
-      beforeRatify: () => { const ids = this.walk?.commitAll() ?? []; if (ids.length) this.commit(ids); },
       focusLine: (index) => { this.host.lineMarks().revealLine(index); this.focusLine(index); if (isPhone()) this.closeSheets(); },
       openBrief: () => { if (isPhone()) this.openSheet('right'); else this.setCollapsed('right', false); this.proxy.briefEl.scrollIntoView({ block: 'nearest' }); },
     });
@@ -356,6 +310,17 @@ export class ReadingWalkUI {
   start(): void {
     if (this.started) return;
     this.started = true;
+    setReadingAnchor({
+      position: () => this.lines[this.cursorLine()]?.pos ?? null,
+      mapped: pos => {
+        // lineAtPos falls through to the last line when its list is still the pre-edit one.
+        // Follow the mapped position only when it still lands inside the selected passage.
+        const lines = this.host.lineMarks().lineList();
+        const line = lines.find(candidate => pos >= candidate.pos && pos < candidate.pos + candidate.nodeSize);
+        if (line && `${line.hash}:${line.occurrence}` === this.selectedKey) this.selectPassage(line.index);
+        this.rememberViewport();
+      },
+    });
     document.body.classList.add('prw-on');
     this.applyRailState();
     document.head.append(this.styleEl);
@@ -363,27 +328,17 @@ export class ReadingWalkUI {
     // Rail scrolling: a wheel over a rail scrolls that rail's lists only, never the page.
     this.railWheelCleanups.push(containRailWheel(this.left), containRailWheel(this.right));
     window.addEventListener('scroll', this.onScroll, { passive: true });
-    window.addEventListener('wheel', this.onWheel, { passive: false });
-    window.addEventListener('touchstart', this.onTouchStart, { passive: true });
-    window.addEventListener('touchmove', this.onTouchMove, { passive: false });
-    window.addEventListener('touchend', this.onTouchEnd, { passive: true });
     window.addEventListener('resize', this.onResize);
     document.addEventListener('keydown', this.onKeyDown);
     document.addEventListener('click', this.onDocClick, true);
     document.addEventListener('visibilitychange', this.onVisibility);
-    document.addEventListener('pointermove', this.onPointerMove, { passive: true });
-    document.addEventListener('pointerdown', this.onPointerDownHover, true);
     document.addEventListener('focusin', this.onFocusChange);
     document.addEventListener('focusout', this.onFocusChange);
-    // One cursor: a click (or a field taking focus) in the Margin commits a hover preview first.
-    document.addEventListener('click', this.onMarginPointer, true);
-    document.addEventListener('focusin', this.onMarginPointer, true);
     window.addEventListener('proof:follow-in-page-link', this.onInPageLink as EventListener);
     document.body.append(this.strip, this.statusBar);
     document.body.classList.add('pst-on');
     // Accord layout stage 1: highlights the proposal removed come back only by policy.
     document.body.classList.toggle('phl-context-dim', HIGHLIGHT_POLICY.contextDimming);
-    document.body.classList.toggle('phl-hover-band', HIGHLIGHT_POLICY.hoverBand);
     this.agoTimer = setInterval(() => { this.statusSig = ''; this.renderStatusBar(); }, MARKED_UP_TO_POLICY.refreshMs);
     try { window.matchMedia(PHONE_QUERY).addEventListener('change', this.onResize); } catch { /* old browsers */ }
     try { window.matchMedia(TOUCH_FOCUS_POLICY.query).addEventListener('change', this.onResize); } catch { /* old browsers */ }
@@ -408,7 +363,7 @@ export class ReadingWalkUI {
     this.renderMode();
     this.unsubscribeEditing = onEditingActivity(() => {
       // The press that places the caret lands before focus moves: check on the next frame.
-      requestAnimationFrame(() => { if (isEditing()) { this.rebaseAfterEdit = true; this.clearHover(); this.queueFollowCaret(); } });
+      requestAnimationFrame(() => { if (isWriting()) { this.rebaseAfterEdit = true; this.queueFollowCaret(); } });
     });
     this.sync();
     void this.loadDocuments();
@@ -417,30 +372,22 @@ export class ReadingWalkUI {
   stop(): void {
     if (!this.started) return;
     this.started = false;
+    setReadingAnchor(null);
     document.body.classList.remove('prw-on', 'prw-left-collapsed', 'prw-right-collapsed');
     window.removeEventListener('scroll', this.onScroll);
-    window.removeEventListener('wheel', this.onWheel);
-    window.removeEventListener('touchstart', this.onTouchStart);
-    window.removeEventListener('touchmove', this.onTouchMove);
-    window.removeEventListener('touchend', this.onTouchEnd);
     window.removeEventListener('resize', this.onResize);
     document.removeEventListener('keydown', this.onKeyDown);
     document.removeEventListener('click', this.onDocClick, true);
     document.removeEventListener('visibilitychange', this.onVisibility);
-    document.removeEventListener('pointermove', this.onPointerMove);
-    document.removeEventListener('pointerdown', this.onPointerDownHover, true);
     document.removeEventListener('focusin', this.onFocusChange);
     document.removeEventListener('focusout', this.onFocusChange);
-    document.removeEventListener('click', this.onMarginPointer, true);
-    document.removeEventListener('focusin', this.onMarginPointer, true);
     window.removeEventListener('proof:follow-in-page-link', this.onInPageLink as EventListener);
-    if (this.hoverTimer) clearTimeout(this.hoverTimer);
     this.strip.remove();
     this.statusBar.remove();
     this.ruleEl.remove();
     if (this.agoTimer) clearInterval(this.agoTimer);
     this.agoTimer = null;
-    document.body.classList.remove('prw-touch', 'prw-strip-on', 'pst-on', 'phl-context-dim', 'phl-hover-band', 'prw-margin-sheet');
+    document.body.classList.remove('prw-touch', 'prw-strip-on', 'pst-on', 'phl-context-dim', 'prw-margin-sheet');
     this.unsubscribe?.();
     this.proxy.stop();
     this.unsubscribeEditing?.();
@@ -507,6 +454,8 @@ export class ReadingWalkUI {
   private sync(): void {
     const lm = this.host.lineMarks();
     this.lines = lm.lineList();
+    const selected = this.lines.findIndex(line => `${line.hash}:${line.occurrence}` === this.selectedKey);
+    this.selectPassage(selected >= 0 ? selected : Math.min(this.selectedIndex, Math.max(0, this.lines.length - 1)));
     // Step B4e: a bundle's refusal message goes once that bundle is decided or gone.
     if (this.bundleErrorId && !lm.bundleList().some(v => v.bundle.id === this.bundleErrorId && v.status === 'open')) {
       if (this.lastError) this.lastError = '';
@@ -523,7 +472,7 @@ export class ReadingWalkUI {
       marks: [] as WalkMark[],
       ...(hidden.has(line.index) ? { hidden: true } : {}),
       ...(flagged.has(line.index) ? { dwellFactor: UNCERTAIN_POLICY.dwellFactor } : {}),
-      // Line tiers: J / K step over context lines that are not Issues for this reader.
+      // Tier metadata never removes a visible passage from J / K navigation.
       ...(lm.tierSkippable(line.index) ? { skipStep: true } : {}),
     }));
     for (const mark of pending) {
@@ -541,6 +490,7 @@ export class ReadingWalkUI {
     } else {
       this.walk.setLines(walkLines, now);
     }
+    if (this.walk.isHidden(this.cursorLine())) this.selectPassage(this.host.visibleLineFor?.(this.cursorLine()) ?? 0);
     // Step B2: the focus line was folded away: it moves up to the folded heading.
     if (this.walk.isHidden(this.walk.focus)) {
       const visible = this.host.visibleLineFor?.(this.walk.focus) ?? this.walk.nextVisible(-1) ?? 0;
@@ -574,7 +524,9 @@ export class ReadingWalkUI {
     const view = this.view();
     if (!walk || !view || !this.started || !isWriting() || !isEditing()) return;
     const line = this.host.lineMarks().lineAtPos(view.state.selection.head);
-    if (line < 0 || line === walk.focus || walk.isHidden(line)) return;
+    if (line < 0 || walk.isHidden(line)) return;
+    this.selectPassage(line);
+    if (line === walk.focus) return;
     this.measure();
     walk.moveTo(line, performance.now(), 'jump', this.heights);
     this.afterChange();
@@ -587,9 +539,38 @@ export class ReadingWalkUI {
     if (container && this.focusEl.parentElement !== container) container.append(this.focusEl);
     if (container && this.ruleEl.parentElement !== container) container.append(this.ruleEl);
     if (!this.resizeObserver) {
-      this.resizeObserver = new ResizeObserver(() => { this.measure(); this.queueRender(); });
+      this.resizeObserver = new ResizeObserver(() => {
+        this.restoreViewport(); this.measure(); this.queueRender();
+      });
       this.resizeObserver.observe(view.dom);
+      this.resizeObserver.observe(document.body);
     }
+  }
+
+  private viewportAnchor: { key: string; top: number; scrollY: number } | null = null;
+  private passageTop(): number | null {
+    const line = this.lines[this.cursorLine()];
+    const node = line && this.view()?.nodeDOM(line.pos);
+    if (!(node instanceof HTMLElement) || !node.isConnected) return null;
+    const rect = node.getBoundingClientRect();
+    return rect.height > 0 ? rect.top : null;
+  }
+  private rememberViewport(): void {
+    const top = this.passageTop();
+    this.viewportAnchor = top !== null && this.selectedKey
+      ? { key: this.selectedKey, top, scrollY: window.scrollY } : null;
+  }
+  private restoreViewport(): void {
+    const before = this.viewportAnchor;
+    const top = this.passageTop();
+    if (before && before.key === this.selectedKey && top !== null && !isWriting()) {
+      const target = anchoredScroll(before, { top, scrollY: window.scrollY }, document.documentElement.scrollHeight - window.innerHeight);
+      if (Math.abs(target - window.scrollY) >= 1) {
+        this.cameraAt = target;
+        window.scrollTo({ top: target, behavior: 'instant' });
+      }
+    }
+    this.rememberViewport();
   }
 
   /** Caches each line's top (document coordinates) and height. */
@@ -672,17 +653,6 @@ export class ReadingWalkUI {
     return found;
   }
 
-  /**
-   * Holds the page so `index` sits on the reading line — the barrier snap. It does NOT move the
-   * reading line: the camera owns that, and a barrier is the page refusing to go further, not a
-   * cursor move.
-   */
-  private pinLine(index: number): void {
-    const top = this.tops[index];
-    if (top === undefined) return;
-    window.scrollTo({ top: Math.max(0, top - this.readingY()), behavior: 'instant' as ScrollBehavior });
-  }
-
   // --------------------------------------------------------------------------
   // Input
   // --------------------------------------------------------------------------
@@ -691,7 +661,7 @@ export class ReadingWalkUI {
     const walk = this.walk;
     if (!walk || this.tops.length === 0) return;
     // Editing first: while the person edits, scrolling moves nothing and snaps nothing.
-    if (isEditing()) { this.rebaseAfterEdit = true; this.queueRender(); return; }
+    if (isWriting()) { this.rebaseAfterEdit = true; this.queueRender(); return; }
     // Stage B: the camera's own scroll is not the person scrolling. It has already put the cursor
     // where it belongs, so this event reads nothing and moves nothing.
     if (this.cameraAt !== null) {
@@ -709,14 +679,6 @@ export class ReadingWalkUI {
       if (target !== walk.focus) { walk.moveTo(target, performance.now(), 'jump', this.heights); this.afterChange(); }
       return;
     }
-    if (target > walk.focus) {
-      // A line with marks not yet stepped holds the page (scrollbar, keys, touch inertia).
-      const barrier = walk.barrier(walk.focus);
-      if (barrier !== null && barrier < target) {
-        target = barrier;
-        this.pinLine(barrier);
-      }
-    }
     if (target !== walk.focus) {
       walk.moveTo(target, performance.now(), 'scroll', this.heights);
       this.afterChange();
@@ -725,76 +687,12 @@ export class ReadingWalkUI {
     }
   };
 
-  private startMode = (direction: 1 | -1): 'step' | 'native' => {
-    const walk = this.walk;
-    if (!walk) return 'native';
-    if (direction > 0 && walk.canStepForward()) return 'step';
-    if (direction < 0 && walk.canStepBack()) return 'step';
-    return 'native';
-  };
-
-  private isDocumentTarget(target: EventTarget | null): boolean {
-    const node = target as HTMLElement | null;
-    if (!node || node === document.body || node === document.documentElement) return true;
-    if (typeof node.closest !== 'function') return false;
-    return Boolean(node.closest('#app')) && !node.closest('.plm-menu, .mark-popover, .pm-review-dialog');
-  }
-
-  private onWheel = (event: WheelEvent): void => {
-    const walk = this.walk;
-    if (!walk || event.ctrlKey || !this.isDocumentTarget(event.target)) return;
-    const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? window.innerHeight : 1;
-    const dy = event.deltaY * unit;
-    if (Math.abs(dy) < Math.abs(event.deltaX * unit)) return;
-    this.handleDelta(dy, event.timeStamp || performance.now(), () => event.preventDefault());
-  };
-
-  private handleDelta(dy: number, at: number, prevent: () => void): void {
-    const walk = this.walk!;
-    // Editing first: native scrolling while the person edits (no stepping, no barrier).
-    if (isEditing()) { this.gate.reset(); return; }
-    const result = this.gate.feed(dy, at, this.startMode);
-    if (result.prevent) prevent();
-    if (result.step === 1) { walk.stepForward(); this.afterChange(true); return; }
-    if (result.step === -1) { walk.stepBack(); this.afterChange(true); return; }
-    if (this.gate.mode === 'native' && dy > 0) {
-      const barrier = walk.barrier(walk.focus);
-      if (barrier === null) return;
-      const max = this.tops[barrier] - this.readingY();
-      if (window.scrollY + dy > max + 1) {
-        prevent();
-        this.gate.block();
-        if (window.scrollY < max) this.pinLine(barrier);
-        if (barrier !== walk.focus) {
-          walk.moveTo(barrier, performance.now(), 'scroll', this.heights);
-          this.afterChange();
-        }
-      }
-    }
-  }
-
-  private onTouchStart = (event: TouchEvent): void => {
-    this.touchY = event.touches.length === 1 && this.isDocumentTarget(event.target) ? event.touches[0].clientY : null;
-    this.gate.reset();
-  };
-
-  private onTouchMove = (event: TouchEvent): void => {
-    if (this.touchY === null || !this.walk || event.touches.length !== 1) return;
-    const y = event.touches[0].clientY;
-    const dy = this.touchY - y;
-    this.touchY = y;
-    this.handleDelta(dy, performance.now(), () => { if (event.cancelable) event.preventDefault(); });
-  };
-
-  private onTouchEnd = (): void => {
-    this.touchY = null;
-  };
-
   private onKeyDown = (event: KeyboardEvent): void => {
     // The editing guard prevents a reading key's default when the text holds the keyboard without
     // the person writing (so it never types): that key is still ours to run.
     if (!this.walk || (event.defaultPrevented && !isReadingOwned(event)) || event.metaKey || event.ctrlKey || event.altKey) return;
-    if (isWriting() || isTypingTarget(event.target)) return;
+    if (isWriting() || isTypingTarget(event.target) || event.isComposing || event.keyCode === 229 || isInputComposing()) return;
+    if (/^[a-z]$/i.test(event.key) && (!letterShortcutsEnabled() || this.host.directEditing?.())) return;
     const target = event.target as HTMLElement | null;
     if (target?.closest?.('[role="dialog"], .pm-review-dialog, .mark-popover, .plm-menu, .proof-share-overflow-menu, [role="menu"]')) return;
     const key = event.key;
@@ -802,22 +700,19 @@ export class ReadingWalkUI {
     if (key.toLowerCase() === 's') {
       event.preventDefault(); this.host.suggestChange(this.cursorLine()); return;
     }
-    // One cursor (Accord layout stage 3): a mark key on a previewed line commits the preview first,
-    // so the key acts on the line the Margin shows (CURSOR_POLICY.keyCommitsPreview).
-    if (key === 'a' || key === 'A') { event.preventDefault(); this.commitPreview('key'); this.markFocus('agreed'); return; }
-    if (key === 'r' || key === 'R') { event.preventDefault(); this.commitPreview('key'); this.openReason(); return; }
-    if (key === 'j' || key === 'J' || key === 'ArrowDown') { event.preventDefault(); this.clearHover(); this.next(); return; }
-    if (key === 'k' || key === 'K' || key === 'ArrowUp') { event.preventDefault(); this.clearHover(); this.previous(); return; }
+    // Reading keys act only on the explicitly selected passage.
+    if (key === 'a' || key === 'A') { event.preventDefault(); this.markFocus('agreed'); return; }
+    if (key === 'r' || key === 'R') { event.preventDefault(); this.openReason(); return; }
+    if (key === 'j' || key === 'J' || key === 'ArrowDown') { event.preventDefault(); this.next(); return; }
+    if (key === 'k' || key === 'K' || key === 'ArrowUp') { event.preventDefault(); this.previous(); return; }
     // Line tiers: D flips the focus line between decision and context (an explicit action).
-    if (key.toLowerCase() === TIER_POLICY.flipKey) { event.preventDefault(); this.commitPreview('key'); this.flipFocusTier(); return; }
+    if (key.toLowerCase() === TIER_POLICY.flipKey) { event.preventDefault(); this.flipFocusTier(); return; }
     // Step B4f: E asks the AI collaborators to explain the focus line (never a rejection).
-    if (key.toLowerCase() === EXPLAIN_POLICY.key) { event.preventDefault(); this.commitPreview('key'); this.explainFocus(); return; }
+    if (key.toLowerCase() === EXPLAIN_POLICY.key) { event.preventDefault(); this.explainFocus(); return; }
     // Step B4f: 1-9 pick among the focus line's competing wordings (1 is the original).
     const focus = this.targetLine();
     if (/^[1-9]$/.test(key) && this.host.lineMarks().altSetFor(focus)) {
       event.preventDefault();
-      this.commitPreview('key');
-      this.explicit(focus);
       void this.host.lineMarks().pickAlternative(focus, key);
       return;
     }
@@ -825,7 +720,6 @@ export class ReadingWalkUI {
     const choice = (Object.keys(ASK_POLICY.keys) as AskChoice[]).find(c => ASK_POLICY.keys[c] === key.toLowerCase());
     if (choice && this.host.lineMarks().askForLine(focus)) {
       event.preventDefault();
-      this.commitPreview('key');
       this.answerFocus(choice);
       return;
     }
@@ -834,7 +728,6 @@ export class ReadingWalkUI {
     // carries an ask (THREAD_POLICY.askAnswerWins); on every other line T was doing nothing.
     if (key.toLowerCase() === THREAD_POLICY.key) {
       event.preventDefault();
-      this.commitPreview('key');
       this.startThreadHere();
       return;
     }
@@ -898,44 +791,6 @@ export class ReadingWalkUI {
   /** Test hook: the Line tab's discussion panel. */
   threadsPanel(): ThreadsPanel | null { return this.threads; }
 
-  /**
-   * One cursor: the previewed line becomes the cursor (a jump: no scroll, nothing read on the way).
-   * `render` false: the caller is inside a click on the Margin, whose box already shows this line;
-   * re-rendering now would replace the button being clicked before its click runs.
-   */
-  private commitPreview(via: 'key' | 'margin', render = true): boolean {
-    const walk = this.walk;
-    const line = this.hoverLine;
-    if (!walk || line === null) return false;
-    if ((via === 'key' && !CURSOR_POLICY.keyCommitsPreview) || (via === 'margin' && !CURSOR_POLICY.marginClickCommitsPreview)) return false;
-    if (this.hoverTimer) clearTimeout(this.hoverTimer);
-    this.hoverTimer = null;
-    this.hoverCandidate = null;
-    this.hoverLine = null;
-    this.previewCommits.push({ line, via });
-    if (line === walk.focus || line >= walk.lineCount || walk.isHidden(line)) { if (render) this.renderNow(); return false; }
-    this.measure();
-    walk.moveTo(line, performance.now(), 'jump', this.heights);
-    // The walk moved on purpose: afterChange must not treat it as a move that clears a hover.
-    this.lastWalkFocus = walk.focus;
-    for (const event of walk.drain()) {
-      if (event.type === 'seen') this.enqueueSeen(event.line);
-      else if (event.type === 'skimmed') this.enqueueSkim(event.line);
-    }
-    this.scheduleTick();
-    this.scheduleSave();
-    if (render) this.renderNow(); else this.queueRender();
-    return true;
-  }
-
-  /** A click inside the Margin while a line is previewed commits the preview (capture phase, before the click runs). */
-  private onMarginPointer = (event: Event): void => {
-    if (this.hoverLine === null) return;
-    const target = event.target as Node | null;
-    if (!target || !this.linePane.contains(target)) return;
-    this.commitPreview('margin', false);
-  };
-
   /** Line tiers: D on the focus line. */
   private flipFocusTier(): void {
     this.renderNow();
@@ -981,6 +836,9 @@ export class ReadingWalkUI {
   }
 
   /** Step B4d: the cursor (shift-click ranges in the margin start here; the chat's 📍 points here). */
+  letterShortcutsEnabled(): boolean { return letterShortcutsEnabled(); }
+  toggleLetterShortcuts(): void { setLetterShortcutsEnabled(!letterShortcutsEnabled()); }
+
   focusIndex(): number { return this.cursorLine(); }
 
   /** Step B4c: Next issue hit the sitting budget: show the rail's "This sitting" status. */
@@ -1029,33 +887,19 @@ export class ReadingWalkUI {
   /** Re-reads the documents list (File › Open does before it shows it). */
   reloadDocuments(): Promise<void> { return this.loadDocuments(); }
 
-  /** Step B3: the viewer answered the ask on `line` (from any control): an explicit action. */
-  askAnswered(line: number): void {
-    if (!ASK_POLICY.answerIsExplicitReadingAction) return;
-    this.explicit(line);
-  }
-
-  /** A click on a review mark in the text is an explicit action on its line. */
+  /** A click selects the passage. It does not start Editing, and a draft keeps the click. */
   private onDocClick = (event: MouseEvent): void => {
-    const clicked = event.target as HTMLElement | null;
-    if (!isWriting() && this.walk && clicked?.closest('.ProseMirror')
-      && !clicked.closest('.accord-draft, button, input, textarea, a[href]')) {
-      const point = this.view()?.posAtCoords({ left: event.clientX, top: event.clientY });
-      const index = point ? this.host.lineMarks().lineAtPos(point.pos) : -1;
-      if (index >= 0) {
-        this.clearHover();
-        this.walk.moveTo(index, performance.now(), 'jump', this.heights);
-        this.afterChange();
-      }
-    }
-    if (!READING_EDIT_POLICY.textClickIsExplicitAction) return;
+    if (isWriting()) return;
+    const view = this.view();
     const target = event.target as HTMLElement | null;
-    const markEl = target?.closest?.('.ProseMirror [data-mark-id]') as HTMLElement | null;
-    if (!markEl || !this.walk) return;
-    const id = markEl.getAttribute('data-mark-id');
-    const mark = this.pendingMarks().find(m => m.id === id);
-    if (!mark) return;
-    this.explicit(this.host.lineMarks().lineAtPos(mark.range!.from));
+    if (!view || !this.walk || !target || !view.dom.contains(target) || target.closest('button, input, textarea, a[href], .accord-draft')) return;
+    const pos = view.posAtCoords({ left: event.clientX, top: event.clientY });
+    if (!pos) return;
+    const line = this.host.lineMarks().lineAtPos(pos.inside >= 0 ? pos.inside + 1 : pos.pos);
+    if (line < 0) return;
+    this.selectPassage(line);
+    this.walk.moveTo(line, performance.now(), 'jump');
+    this.afterChange();
   };
 
   /** A `#heading` link in the text was clicked: its heading becomes the focus line (a jump). */
@@ -1082,127 +926,32 @@ export class ReadingWalkUI {
   // Hover focus (desktop) and touch focus (phones, tablets)
   // --------------------------------------------------------------------------
 
-  private hoverCapable(): boolean {
-    if (!HOVER_FOCUS_POLICY.enabled || !CURSOR_POLICY.hoverPreviews) return false;
-    try { return window.matchMedia(HOVER_FOCUS_POLICY.query).matches; } catch { return false; }
-  }
-
   private touchMode(): boolean {
     if (!TOUCH_FOCUS_POLICY.enabled) return false;
     try { return window.matchMedia(TOUCH_FOCUS_POLICY.query).matches; } catch { return false; }
   }
 
   /**
-   * One cursor (Accord layout stage 3, decision 4): the reading focus and the focus line are one
-   * line. Scrolling moves it, a click sets it (the caret's line, a dot, a list item), J / K move it.
-   * The blue bar, the status bar and the reading position name it.
+   * The selected passage is one line. A click sets it, and J / K move it. Scrolling records Seen
+   * and does not move it. Mike, 2026-09-23 (usability brief).
    */
-  cursorLine(): number { return this.walk?.focus ?? 0; }
-
-  /**
-   * The line the Margin shows: the cursor, or the line the mouse rests on (a hover preview,
-   * CURSOR_POLICY). A key or a click in the Margin commits a preview before it acts, so what the
-   * Margin shows is what A and R hit. While writing, the caret's line (the cursor) owns it.
-   */
-  targetLine(): number {
-    const walk = this.walk;
-    if (!walk) return 0;
-    const hover = this.hoverLine;
-    // While writing, the caret's line owns the focus: the keys type there.
-    if (hover === null || isWriting() || isEditing() || hover >= walk.lineCount || walk.isHidden(hover)) return walk.focus;
-    return hover;
+  private selectedIndex = 0;
+  private selectedKey: string | null = null;
+  cursorLine(): number { return this.selectedIndex; }
+  private selectPassage(index: number): void {
+    const previousIndex = this.selectedIndex;
+    const previousKey = this.selectedKey;
+    this.selectedIndex = index;
+    const line = this.lines[index];
+    this.selectedKey = line ? `${line.hash}:${line.occurrence}` : null;
+    if (this.selectedKey !== previousKey) this.rememberViewport();
+    // Listeners (the chat) follow the selected passage even when no render follows.
+    if (index !== previousIndex || this.selectedKey !== previousKey) this.host.focusChanged?.(index);
   }
 
-  private clearHover(): void {
-    if (this.hoverTimer) clearTimeout(this.hoverTimer);
-    this.hoverTimer = null;
-    this.hoverCandidate = null;
-    if (this.hoverLine === null) return;
-    this.hoverLine = null;
-    this.queueRender();
-  }
+  /** The selected passage. Hover never changes it. Mike, 2026-09-23 (usability brief). */
+  targetLine(): number { return this.cursorLine(); }
 
-  private onPointerMove = (event: PointerEvent): void => {
-    if (!this.walk || event.pointerType !== 'mouse' || !this.hoverCapable()) return;
-    // A scroll, or the page changing under a still mouse, makes the browser send a pointer event
-    // at (about) the same place: not a hover. Only a real move counts.
-    const last = this.lastPointer;
-    if (last && Math.abs(last.x - event.clientX) < HOVER_FOCUS_POLICY.minMovePx && Math.abs(last.y - event.clientY) < HOVER_FOCUS_POLICY.minMovePx) return;
-    this.lastPointer = { x: event.clientX, y: event.clientY };
-    // Read what is under the pointer now: a click can scroll the page before a later frame.
-    this.hoverAt(event.clientX, event.clientY);
-  };
-
-  /** A press is an explicit act: a hover still waiting for its delay is dropped. */
-  private onPointerDownHover = (): void => {
-    if (this.hoverTimer) clearTimeout(this.hoverTimer);
-    this.hoverTimer = null;
-    this.hoverCandidate = null;
-  };
-
-  /** The line under a viewport point: the text, its margin dot, or a folded closed line; else null. */
-  private lineAtPoint(x: number, y: number): number | null {
-    const hit = document.elementFromPoint(x, y) as HTMLElement | null;
-    if (!hit) return null;
-    const dot = hit.closest?.('.plm-dot[data-line]') as HTMLElement | null;
-    if (dot) return Number(dot.dataset.line);
-    const folded = hit.closest?.('.ProseMirror .pclose-folded[data-pclose-line]') as HTMLElement | null;
-    if (folded) return Number(folded.dataset.pcloseLine);
-    const view = this.view();
-    if (!view || !view.dom.contains(hit)) return null;
-    const pos = view.posAtCoords({ left: x, top: y });
-    if (!pos) return null;
-    const line = this.host.lineMarks().lineAtPos(pos.inside >= 0 ? pos.inside + 1 : pos.pos);
-    return line >= 0 ? line : null;
-  }
-
-  private hoverAt(x: number, y: number): void {
-    const walk = this.walk;
-    if (!walk) return;
-    if (isEditing()) { this.clearHover(); return; }
-    // Typing a reason or a reply in the rail: the focus stays on that line.
-    const active = document.activeElement as HTMLElement | null;
-    if (active && ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName) && this.right.contains(active)) return;
-    const line = this.lineAtPoint(x, y);
-    this.hoverLog.push({ x: Math.round(x), y: Math.round(y), line }); if (this.hoverLog.length > 8) this.hoverLog.shift();
-    // Off the text: the preview stays (the mouse can travel to the Margin), except over the chrome
-    // or the Navigator, where it ends (CURSOR_POLICY.endPreviewOver).
-    if (line === null || !Number.isFinite(line)) {
-      if (this.hoverTimer) clearTimeout(this.hoverTimer);
-      this.hoverTimer = null;
-      this.hoverCandidate = null;
-      const over = document.elementFromPoint(x, y) as HTMLElement | null;
-      if (this.hoverLine !== null && over?.closest?.(CURSOR_POLICY.endPreviewOver.join(', '))) this.clearHover();
-      return;
-    }
-    if (line === this.hoverCandidate) return;
-    this.hoverCandidate = line;
-    if (this.hoverTimer) clearTimeout(this.hoverTimer);
-    this.hoverTimer = null;
-    if (line === this.targetLine()) return;
-    this.hoverTimer = setTimeout(() => {
-      this.hoverTimer = null;
-      if (!this.walk || isEditing() || this.hoverCandidate !== line) return;
-      if (isWriting()) return;
-      this.setHoverFocus(line);
-    }, HOVER_FOCUS_POLICY.delayMs);
-  }
-
-  /**
-   * A hover preview: the Margin shows `line` without moving the cursor, reading, or scrolling.
-   * A key or a click in the Margin commits it (commitPreview).
-   */
-  setHoverFocus(line: number): void {
-    const walk = this.walk;
-    if (!walk || line < 0 || line >= walk.lineCount || walk.isHidden(line)) return;
-    this.hoverLine = line === walk.focus ? null : line;
-    this.hoverWrites += 1;
-    this.renderNow();
-  }
-
-  /** Test hook: hover focus changes, and the last points hover looked at. */
-  private hoverWrites = 0;
-  private readonly hoverLog: Array<{ x: number; y: number; line: number | null }> = [];
 
   private onFocusChange = (): void => { this.renderMode(); this.queueRender(); };
 
@@ -1260,6 +1009,8 @@ export class ReadingWalkUI {
     const marked = lm.markedUpTo();
     const sheetOpen = this.right.classList.contains('prw-sheet-open');
     const sig = `${index}|${this.lines.length}|${line?.hash ?? ''}|${status}|${Boolean(lm.askForLine(index))}|${marked?.line ?? ''}|${sheetOpen}`;
+    // A focused Agree must not freeze the strip: the tap writes the mark, and the strip has to
+    // show "Marked up to line K ↑". An input would be kept; the strip has none. Mike, 2026-09-23.
     if (sig === this.stripSig) return;
     this.stripSig = sig;
     this.strip.dataset.line = String(index);
@@ -1313,28 +1064,30 @@ export class ReadingWalkUI {
   // Actions
   // --------------------------------------------------------------------------
 
-  /** J / ↓: the next mark on this line, else the next line. */
+  /** J / ↓: the next visible passage. */
   next(): void {
     const walk = this.walk;
     if (!walk) return;
-    if (walk.stepForward()) { this.afterChange(true); return; }
-    // Step B2: a folded section is one step. Line tiers: skippable context lines are passed over.
-    const to = walk.nextStop(1) ?? walk.nextVisible(1);
+    // A collapsed section is one stop: its heading.
+    const to = walk.nextVisible(1, this.cursorLine());
     if (to === null) return;
     walk.moveTo(to, performance.now(), 'scroll', this.heights);
+    this.selectPassage(walk.focus);
     this.cameraTo(walk.focus);
+    this.rememberViewport();
     this.afterChange();
   }
 
-  /** K / ↑: back one mark on this line, else the previous line. */
+  /** K / ↑: the previous visible passage. */
   previous(): void {
     const walk = this.walk;
     if (!walk) return;
-    if (walk.stepBack()) { this.afterChange(true); return; }
-    const to = walk.nextStop(-1) ?? walk.nextVisible(-1);
+    const to = walk.nextVisible(-1, this.cursorLine());
     if (to === null) return;
     walk.moveTo(to, performance.now(), 'scroll', this.heights);
+    this.selectPassage(walk.focus);
     this.cameraTo(walk.focus);
+    this.rememberViewport();
     this.afterChange();
   }
 
@@ -1345,7 +1098,9 @@ export class ReadingWalkUI {
     if (walk.isHidden(index)) index = this.host.visibleLineFor?.(index) ?? index;
     this.measure();
     walk.moveTo(index, performance.now(), 'jump', this.heights);
+    this.selectPassage(index);
     this.cameraTo(index);
+    this.rememberViewport();
     this.afterChange();
     return true;
   }
@@ -1374,87 +1129,13 @@ export class ReadingWalkUI {
     this.box?.openReason();
   }
 
-  /** An explicit action on `line`: commit the provisional accepts at or above it. */
-  private explicit(line: number): void {
-    const walk = this.walk;
-    if (!walk || line < 0) return;
-    const ids = walk.explicitAction(line);
-    this.commit(ids);
-  }
-
-  private commit(ids: string[]): void {
-    if (ids.length === 0) { this.renderNow(); return; }
-    const walk = this.walk!;
-    // Step B4e: scroll-accepted bundle members commit only while their bundle still matches.
-    const lm = this.host.lineMarks();
-    const stale = new Set<string>();
-    for (const id of ids) {
-      const bundle = lm.bundleForMark(id);
-      if (bundle && bundle.stale.length) for (const member of bundle.bundle.members) stale.add(member.markId);
-    }
-    if (stale.size) {
-      for (const id of ids) if (stale.has(id)) walk.dropProvisional(id);
-      ids = ids.filter(id => !stale.has(id));
-      this.lastError = 'A bundle changed since it was made: its changes were not accepted. Review them one by one.';
-      if (ids.length === 0) { this.afterChange(); return; }
-    }
-    try {
-      // Scroll-accepts are passive: committing them never folds their lines (closed-fold policy).
-      lm.withoutClosures(() => this.host.decide(ids, 'accept'));
-      this.lastError = '';
-      this.commits.push({ ids: ids.slice(), ok: true });
-    } catch (error) {
-      // A batch accept is all or nothing. A change that was edited after it was proposed can never
-      // be accepted as it stands: putting it back as "accepted by scrolling" left the same notice
-      // and the same button, so the next click did nothing (Mike, 2026-09-21). Drop those from the
-      // scroll-accepts (they stay open for an explicit decision), save the rest, and say so.
-      const failed = (error as { failedIds?: string[] })?.failedIds ?? [];
-      const rest = ids.filter(id => !failed.includes(id));
-      this.commits.push({ ids: ids.slice(), ok: false, error: error instanceof Error ? error.message : String(error) });
-      if (failed.length && rest.length) {
-        try {
-          lm.withoutClosures(() => this.host.decide(rest, 'accept'));
-          this.commits.push({ ids: rest.slice(), ok: true });
-        } catch (retry) {
-          walk.restoreProvisional(rest);
-          this.lastError = retry instanceof Error ? retry.message : 'Could not save the accepts.';
-          this.afterChange();
-          return;
-        }
-      } else if (!failed.length) {
-        walk.restoreProvisional(ids);
-        this.lastError = error instanceof Error ? error.message : 'Could not save the accepts.';
-        this.afterChange();
-        return;
-      }
-      const lines = failed.map(id => this.lineOfMark(id)).filter(n => n >= 0).map(n => n + 1);
-      const where = lines.length ? ` (line ${[...new Set(lines)].join(', ')})` : '';
-      this.lastError = `${failed.length === 1 ? '1 change was' : `${failed.length} changes were`} edited after being proposed, so ${failed.length === 1 ? 'it' : 'they'} could not be accepted as ${failed.length === 1 ? 'it stands' : 'they stand'}${where}. ${failed.length === 1 ? 'It is' : 'They are'} still open: accept or reject ${failed.length === 1 ? 'it' : 'them'} there.`;
-    }
-    this.afterChange();
-  }
-
-  /** Test hook: every commit of scroll-accepts (the ids, and whether the accept bridge took them). */
-  private readonly commits: Array<{ ids: string[]; ok: boolean; error?: string }> = [];
-
-  private lineOfMark(id: string): number {
-    const mark = this.pendingMarks().find(m => m.id === id);
-    return mark?.range ? this.host.lineMarks().lineAtPos(mark.range.from) : -1;
-  }
-
   private decide(mark: Mark, action: ReviewAction, text?: string): void {
     const walk = this.walk;
     if (!walk) return;
-    const line = this.host.lineMarks().lineAtPos(mark.range?.from ?? -1);
-    // Explicit on this line: first commit the provisional accepts at or above it.
-    const ids = walk.explicitAction(line).filter(id => id !== mark.id);
     try {
-      if (ids.length) this.host.lineMarks().withoutClosures(() => this.host.decide(ids, 'accept'));
       this.host.decide([mark.id], action, text);
-      if (action === 'accept' || action === 'reject') walk.decided(mark.id);
       this.lastError = '';
     } catch (error) {
-      walk.restoreProvisional(ids);
       this.lastError = error instanceof Error ? error.message : 'Could not save the decision.';
     }
     this.afterChange();
@@ -1464,21 +1145,15 @@ export class ReadingWalkUI {
   // After every change
   // --------------------------------------------------------------------------
 
-  private afterChange(stepped = false): void {
+  private afterChange(): void {
     const walk = this.walk;
     if (!walk) return;
-    if (walk.focus !== this.lastWalkFocus) {
-      if (this.lastWalkFocus !== -1 && HOVER_FOCUS_POLICY.walkMoveClearsHover) this.clearHover();
-      this.lastWalkFocus = walk.focus;
-    }
     for (const event of walk.drain()) {
-      if (event.type === 'seen') this.enqueueSeen(event.line);
-      else if (event.type === 'skimmed') this.enqueueSkim(event.line);
+      if (event.type === 'seen') this.enqueueSeen(event.key);
     }
     this.scheduleTick();
     this.scheduleSave();
     this.renderNow();
-    if (stepped) this.revealCurrentMark();
   }
 
   private scheduleTick(): void {
@@ -1498,8 +1173,8 @@ export class ReadingWalkUI {
     }, wait + 5);
   }
 
-  private enqueueSeen(line: number): void {
-    this.seenQueue.push(line);
+  private enqueueSeen(key: string): void {
+    this.seenQueue.push(key);
     void this.drainSeen();
   }
 
@@ -1509,33 +1184,20 @@ export class ReadingWalkUI {
     try {
       const lm = this.host.lineMarks();
       while (this.seenQueue.length) {
-        const line = this.seenQueue.shift()!;
+        const key = this.seenQueue.shift()!;
         if (!lm.isLoaded()) continue;
-        // Never downgrade a mark. A skimmed line read properly now becomes Seen, or Agreed when
-        // it is another's statement (STATEMENT_POLICY, Mike 2026-09-19: scrolling past another's
-        // statement is acceptance and agreement; still a passive mark for the ringer list).
+        const passage = lm.lineList().find(line => `${line.hash}:${line.occurrence}` === key);
+        if (!passage) continue;
+        const line = passage.index;
+        // Seen never replaces a decision, and delayed writes still refer to the text read.
         const status = lm.dwellStatusFor(line);
         if (!status || status === 'skimmed') continue;
         this.seenWrites.push(line);
-        await lm.setLineStatus(line, status as 'seen' | 'agreed', undefined, 'dwell');
+        await lm.setLineStatus(line, 'seen', undefined, 'dwell');
       }
     } finally {
       this.seenBusy = false;
     }
-  }
-
-  /** Step B3b: lines scrolled past too fast, written together (one request per SKIM_FLUSH_MS). */
-  private enqueueSkim(line: number): void {
-    this.skimQueue.push(line);
-    if (this.skimTimer) return;
-    this.skimTimer = setTimeout(() => {
-      this.skimTimer = null;
-      const lines = this.skimQueue.splice(0);
-      const lm = this.host.lineMarks();
-      if (!lm.isLoaded() || lines.length === 0) return;
-      this.skimmedLines.push(...lines);
-      void lm.markSkimmed(lines);
-    }, SKIM_FLUSH_MS);
   }
 
   /** Step B3b: the reader chose a reading rate (words per second; 0 = no length rule). */
@@ -1694,7 +1356,7 @@ export class ReadingWalkUI {
       this.saveTimer = null;
       const key = this.sessionKey();
       if (!key || !this.walk) return;
-      try { sessionStorage.setItem(key, JSON.stringify(this.walk.snapshot())); } catch { /* optional */ }
+      try { sessionStorage.setItem(key, JSON.stringify({ ...this.walk.snapshot(), focus: this.cursorLine() })); } catch { /* optional */ }
     }, 200);
   }
 
@@ -1708,6 +1370,7 @@ export class ReadingWalkUI {
     if (this.walk.isHidden(this.walk.focus)) {
       this.walk.moveTo(this.host.visibleLineFor?.(this.walk.focus) ?? 0, performance.now(), 'jump');
     }
+    this.selectPassage(this.walk.focus);
     if (this.walk.focus > 0) this.cameraTo(this.walk.focus);
   }
 
@@ -1724,9 +1387,46 @@ export class ReadingWalkUI {
     });
   }
 
+  /**
+   * A button in the margin, named so a rebuild can focus the same control again. A remote
+   * comment redraws the box; the reader's focus stays on the control they were on.
+   * Mike, 2026-09-23 (usability brief): nothing moves unless the reader does it.
+   */
+  private marginControlKey(active: HTMLElement): string | null {
+    if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) return null;
+    const status = active.dataset.status;
+    if (status && active.classList.contains('plm-choice')) {
+      const where = active.closest('.plm-more-marks') ? 'more' : active.closest('.plm-actions') ? 'primary' : 'other';
+      return `choice:${where}:${status}`;
+    }
+    const label = active.getAttribute('aria-label');
+    return label ? `label:${label}` : null;
+  }
+
+  /** Puts focus back on the control a margin rebuild replaced. */
+  private restoreMarginControl(key: string): void {
+    let next: HTMLElement | null = null;
+    if (key.startsWith('choice:')) {
+      const [, where, status] = key.split(':');
+      const sel = `.plm-choice[data-status="${status}"]`;
+      if (where === 'more') next = this.right.querySelector(`.plm-more-marks ${sel}`);
+      else if (where === 'primary') next = this.right.querySelector(`.plm-actions:not(.plm-more-marks) ${sel}`);
+      else next = this.right.querySelector(sel);
+    } else if (key.startsWith('label:')) {
+      const label = key.slice('label:'.length);
+      next = [...this.right.querySelectorAll<HTMLElement>('[aria-label]')].find(el => el.getAttribute('aria-label') === label) ?? null;
+    }
+    if (next && document.activeElement !== next) next.focus({ preventScroll: true });
+  }
+
   private renderNow(): void {
     const walk = this.walk;
     if (!walk || !this.started) return;
+    const active = document.activeElement;
+    const held = active instanceof HTMLElement
+      && (this.boxHost.contains(active) || this.tailHost.contains(active) || this.changesHost.contains(active))
+      ? active : null;
+    const heldKey = held ? this.marginControlKey(held) : null;
     this.dockPanel();
     this.renderFocus();
     this.renderDynamicStyle();
@@ -1744,9 +1444,10 @@ export class ReadingWalkUI {
     this.renderRule();
     this.renderMarginTabs();
     this.renderTail();
-    this.renderPreviewDot();
     this.navigator.render();
     this.host.focusChanged?.(this.cursorLine());
+    this.restoreViewport();
+    if (heldKey && held && !held.isConnected) this.restoreMarginControl(heldKey);
   }
 
   /**
@@ -1770,7 +1471,7 @@ export class ReadingWalkUI {
   private renderFocus(): void {
     const walk = this.walk!;
     const view = this.view();
-    // One cursor: the blue bar is the cursor's; a hover preview never moves it (the text never changes on hover).
+    // The blue bar belongs to the selected passage.
     const focus = this.cursorLine();
     const line = this.lines[focus];
     const container = this.focusEl.parentElement;
@@ -1796,14 +1497,7 @@ export class ReadingWalkUI {
   private renderDynamicStyle(): void {
     const walk = this.walk!;
     const rules: string[] = [];
-    // Accord layout stage 1: scroll-accepted changes render as ordinary insert / delete (the status
-    // bar and the rail list them with Save); HIGHLIGHT_POLICY.provisionalDashed brings the old look back.
-    for (const id of HIGHLIGHT_POLICY.provisionalDashed ? walk.provisionalIds() : []) {
-      const sel = `html body .ProseMirror [data-mark-id="${CSS.escape(id)}"]`;
-      rules.push(`${sel}.mark-delete{display:none!important}`);
-      rules.push(`${sel}.mark-insert{background:rgba(22,163,74,.08)!important;color:inherit!important;text-decoration:none!important;border-bottom:2px dashed #16a34a!important}`);
-    }
-    const current = walk.currentMark();
+    const current = walk.marksOn(this.cursorLine())[0];
     if (current) {
       rules.push(`html body .ProseMirror [data-mark-id="${CSS.escape(current.id)}"]{outline:2px solid #2563eb!important;outline-offset:1px;border-radius:2px}`);
     }
@@ -1865,25 +1559,12 @@ export class ReadingWalkUI {
   }
 
   private renderStatus(): void {
-    const walk = this.walk!;
-    const n = walk.provisionalCount;
-    this.provisionalEl.hidden = n === 0 && !this.lastError;
-    const sig = `${n}|${this.lastError}`;
+    this.provisionalEl.hidden = !this.lastError;
+    const sig = this.lastError;
     if (this.provisionalEl.dataset.sig === sig) return;
     this.provisionalEl.dataset.sig = sig;
     this.provisionalEl.replaceChildren();
-    if (n > 0) {
-      const one = n === 1;
-      const text = el('p', 'prw-provisional-text',
-        `You scrolled past ${n} ${one ? 'change' : 'changes'}, so ${one ? 'it counts' : 'they count'} as accepted by scrolling. ${one ? 'It is' : 'They are'} not saved yet: scroll back up to take ${one ? 'it' : 'them'} back, or save now.`);
-      const commit = el('button', 'prw-commit', `Save ${n} accepted ${one ? 'change' : 'changes'}`);
-      commit.type = 'button';
-      // The press must not move the keyboard (or the rail) before the release: the click is the act.
-      commit.addEventListener('mousedown', event => event.preventDefault());
-      commit.onclick = () => this.commit(this.walk?.commitAll() ?? []);
-      this.provisionalEl.append(text, commit);
-    }
-    this.provisionalEl.dataset.state = n > 0 ? 'pending' : 'error';
+    this.provisionalEl.dataset.state = 'error';
     if (this.lastError) {
       const err = el('p', 'prw-error', this.lastError);
       err.setAttribute('role', 'alert');
@@ -1906,13 +1587,15 @@ export class ReadingWalkUI {
     const marks = state ? [...state.marks.values()].map(e => `${e.mark.id}:${e.mark.status}:${e.current}:${e.mark.reason ?? ''}`).join(',') : '';
     const sig = `${focus}|${line.hash}|${line.occurrence}|${marks}|${summary?.team.join(',') ?? ''}|${lm.isLoaded()}|${lm.askSignature(focus)}|${lm.aidsSignature(focus)}`;
     if (sig === this.boxSig && this.box) return;
-    // Keep the box while the reader types a reason for this same line.
+    // Keep the box while the reader types in it. A focused button must not freeze the box:
+    // Seen, Confirm, and Clear are drawn from the mark that the click just wrote.
     const active = document.activeElement;
-    if (this.box && this.boxHost.contains(active) && (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement)) return;
+    const typing = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement;
+    if (typing && this.box && (this.boxHost.contains(active) || this.tailHost.contains(active)) && Number(this.boxHost.dataset.line) === focus) return;
     this.boxSig = sig;
+    this.boxHost.dataset.line = String(focus);
     // Accord layout stage 3 (decision 8): the Margin's layout — the quote, Agree and Reject, ⋯ More.
     const box = lm.buildMarkBox(line, {
-      onExplicit: () => this.explicit(focus),
       layout: 'margin',
     });
     const hasAsk = Boolean(lm.askForLine(focus));
@@ -1933,33 +1616,26 @@ export class ReadingWalkUI {
   private renderChanges(): void {
     const walk = this.walk!;
     const focus = this.targetLine();
-    // Hover focus: another line's changes show without the walk's stepping (that is the reading line's).
-    const onFocus = focus === walk.focus;
     const all = new Map(this.pendingMarks().map(mark => [mark.id, mark]));
     // Accord round 2 stage C (a loose end from stage D): "Changes on this line" carries only
     // PROPOSALS. A comment is a thread and it shows once, in Discussion; before this it showed
     // twice on any line that had one, which made the same unsettled thing look like two.
-    // The walk itself still steps every review mark (scroll-accept is unchanged): this is what the
-    // Margin draws, not what the reader passes.
     const onLine = walk.marksOn(focus).filter(item => (all.get(item.id)?.kind ?? 'comment') !== 'comment');
-    const current = onFocus ? walk.currentMark() : null;
     const lm = this.host.lineMarks();
-    const sig = JSON.stringify([focus, onFocus, onLine.map(m => [m.id, walk.isPassed(m.id), walk.isProvisional(m.id)]), current?.id,
+    const sig = JSON.stringify([focus, onLine.map(m => m.id),
       onLine.map(m => { const mk = all.get(m.id); return mk ? [mk.at, mk.data] : null; }),
       onLine.map(m => lm.notesForMark(m.id).map(n => n.why)),
       onLine.map(m => { const b = lm.bundleForMark(m.id); return b ? [b.bundle.id, b.pending.length, b.stale.join(','), b.status] : null; }),
       this.bundleDecisions.length, this.lastError]);
     if (sig === this.changesSig) return;
+    const changesFocus = document.activeElement;
+    if ((changesFocus instanceof HTMLInputElement || changesFocus instanceof HTMLTextAreaElement) && this.changesHost.contains(changesFocus)) return;
     this.changesSig = sig;
     this.changesHost.replaceChildren();
     this.changesHost.hidden = onLine.length === 0;
     if (onLine.length === 0) return;
-    // The step counter counts the proposals shown, not every review mark the walk steps.
-    const passedHere = onLine.filter(item => walk.isPassed(item.id)).length;
-    const index = onFocus ? Math.min(passedHere, onLine.length) : -1;
     const head = el('div', 'prw-changes-head');
-    head.append(el('strong', undefined, `Changes on this line`),
-      el('span', 'prw-step', !onFocus ? `${onLine.length}` : index < onLine.length ? `${index + 1} of ${onLine.length}` : `all ${onLine.length} passed`));
+    head.append(el('strong', undefined, 'Changes on this line'), el('span', 'prw-step', String(onLine.length)));
     this.changesHost.append(head);
     // Step B4e: a bundle on this line shows as one card (title, why, every passage, one decision).
     const shownBundles = new Set<string>();
@@ -1969,15 +1645,6 @@ export class ReadingWalkUI {
       shownBundles.add(bundle.bundle.id);
       this.changesHost.append(this.bundleCard(bundle, all));
     }
-    if (onFocus) {
-      const nav = el('div', 'prw-step-nav');
-      const back = el('button', undefined, '‹ Back'); back.type = 'button'; back.disabled = !walk.canStepBack();
-      back.onclick = () => this.previous();
-      const fwd = el('button', undefined, index < onLine.length ? 'Next ›' : 'Next line ›'); fwd.type = 'button';
-      fwd.onclick = () => this.next();
-      nav.append(back, fwd);
-      this.changesHost.append(nav);
-    }
     for (const item of onLine) {
       const mark = all.get(item.id);
       if (!mark) continue;
@@ -1985,15 +1652,11 @@ export class ReadingWalkUI {
       const bundle = lm.bundleForMark(item.id);
       if (bundle && bundle.stale.length === 0) continue;
       this.changesHost.append(this.changeCard(mark, {
-        current: current?.id === mark.id,
-        provisional: walk.isProvisional(mark.id),
-        passed: walk.isPassed(mark.id),
+        current: false,
+        passed: false,
       }));
     }
-    if (onFocus) {
-      const hint = el('p', 'prw-hint', 'Scroll down to step through the changes; scrolling past a change accepts it until you scroll back up.');
-      this.changesHost.append(hint);
-    }
+    this.changesHost.append(el('p', 'prw-hint', 'Accept or Reject decides a proposal. Scrolling only records reading.'));
   }
 
   /** Step B4e: one card for a review bundle (title, why, every passage with its result, one decision). */
@@ -2088,25 +1751,17 @@ export class ReadingWalkUI {
         : 'Nothing in this bundle can be accepted now.';
       this.bundleDecisions.push({ id, action, ok: false, error: this.lastError });
       this.bundleErrorId = id;
-      for (const markId of view.bundle.members.map(m => m.markId)) walk.dropProvisional(markId);
       this.changesSig = '';
       this.afterChange();
       return false;
     }
     const ids = view.pending;
-    const first = this.pendingMarks().find(m => ids.includes(m.id));
-    const line = first ? lm.lineAtPos(first.range!.from) : walk.focus;
-    // An explicit action: first commit the provisional accepts at or above it (not this bundle's).
-    const earlier = walk.explicitAction(Math.max(line, walk.focus)).filter(markId => !ids.includes(markId));
     try {
-      if (earlier.length) lm.withoutClosures(() => this.host.decide(earlier, 'accept'));
       this.host.decide(ids, action);
-      for (const markId of ids) walk.decided(markId);
       this.lastError = '';
       this.bundleDecisions.push({ id, action, ok: true });
       void lm.recordBundleDecision(id, action === 'accept' ? 'accepted' : 'rejected');
     } catch (error) {
-      walk.restoreProvisional(earlier);
       this.lastError = error instanceof Error ? error.message : 'Could not save the bundle.';
       this.bundleDecisions.push({ id, action, ok: false, error: this.lastError });
     }
@@ -2115,12 +1770,11 @@ export class ReadingWalkUI {
     return true;
   }
 
-  private changeCard(mark: Mark, flags: { current: boolean; provisional: boolean; passed: boolean }): HTMLElement {
+  private changeCard(mark: Mark, flags: { current: boolean; passed: boolean }): HTMLElement {
     const card = el('article', 'prw-card');
     card.dataset.markId = mark.id;
     card.dataset.kind = mark.kind;
     if (flags.current) card.dataset.current = 'true';
-    if (flags.provisional) card.dataset.provisional = 'true';
     card.style.setProperty('--review-author', getMarkColor(mark.by));
     const who = el('div', 'prw-card-who');
     who.append(el('strong', undefined, getActorName(mark.by)), el('span', undefined, mark.kind === 'comment' ? 'Comment' : 'Suggestion'));
@@ -2158,13 +1812,6 @@ export class ReadingWalkUI {
         card.append(ask);
       }
     }
-    if (flags.provisional) {
-      const note = el('p', 'prw-card-note', 'Accepted by scrolling, not saved yet');
-      const undo = el('button', 'prw-link', 'Undo'); undo.type = 'button';
-      undo.onclick = () => { this.walk?.dropProvisional(mark.id); this.afterChange(); };
-      note.append(' ', undo);
-      card.append(note);
-    }
     const actions = el('div', 'prw-card-actions');
     const button = (label: string, action: () => void, cls = '') => {
       const b = el('button', cls, label); b.type = 'button'; b.onclick = action; actions.append(b); return b;
@@ -2185,16 +1832,6 @@ export class ReadingWalkUI {
     });
     card.append(actions);
     return card;
-  }
-
-  /** After a step, keep the current mark visible without leaving the line. */
-  private revealCurrentMark(): void {
-    const current = this.walk?.currentMark();
-    if (!current) return;
-    const target = document.querySelector(`.ProseMirror [data-mark-id="${CSS.escape(current.id)}"]`) as HTMLElement | null;
-    if (!target) return;
-    const r = target.getBoundingClientRect();
-    if (r.bottom > window.innerHeight - 24) window.scrollBy({ top: r.bottom - window.innerHeight + 48, behavior: 'instant' as ScrollBehavior });
   }
 
   // --------------------------------------------------------------------------
@@ -2259,7 +1896,7 @@ export class ReadingWalkUI {
     // marks, a reply box, then who the viewer's marks name.
     this.threads = this.buildThreads();
     this.rightBody.append(this.lineTools, this.suggestBtn, this.boxHost, this.changesHost, this.threads.element, this.tailHost, this.replyHost, this.meRow);
-    // The scroll-accepts notice sits under the tabs, outside the scrolling body: it stays in view and
+    // The line notice sits under the tabs, outside the scrolling body: it stays in view and
     // does not move when the pane scrolls or the line's box changes size (2026-09-21).
     this.linePane.append(this.provisionalEl, this.rightBody);
     // The Room tab: the document chat, full height (it pushes nothing off screen).
@@ -2303,7 +1940,6 @@ export class ReadingWalkUI {
       if (comment) {
         this.decide(comment, 'reply', text);
       } else {
-        this.explicit(line);
         const id = lm.commentLine(line, text);
         if (!id) { this.lastError = 'Could not place your reply on this line.'; this.renderNow(); return; }
         this.replies.push({ line, id });
@@ -2360,12 +1996,12 @@ export class ReadingWalkUI {
     this.roomShownListener?.();
   }
 
-  /** The Line tab's label names the line A and R hit ("Line 41"; "Line 44 · preview" while hovering). */
+  /** The Line tab's label names the line A and R hit ("Line 41"). */
   private renderMarginTabs(): void {
     const walk = this.walk;
     if (!walk) return;
     const shown = this.targetLine();
-    const preview = shown !== walk.focus;
+    const preview = false;
     const sig = `${shown}|${preview}|${this.chatUnread}`;
     if (sig === this.lineTabSig) return;
     this.lineTabSig = sig;
@@ -2374,24 +2010,10 @@ export class ReadingWalkUI {
     this.lineTabBtn.dataset.line = String(shown);
     this.lineTabBtn.dataset.preview = String(preview);
     this.right.dataset.preview = String(preview);
-    this.lineTabBtn.title = preview
-      ? `Previewing line ${shown + 1} (the mouse is on it). A key or a click here moves the cursor to it; the cursor is on line ${walk.focus + 1}.`
-      : `Line ${shown + 1}: the cursor's line. A and R act on it.`;
+    this.lineTabBtn.title = `Line ${shown + 1}: A and R act on this selected passage.`;
     this.roomBadge.textContent = this.chatUnread > 0 ? String(this.chatUnread) : '';
     this.roomBadge.hidden = this.chatUnread <= 0;
     this.roomTabBtn.setAttribute('aria-label', this.chatUnread > 0 ? `Room (${this.chatUnread} unread chat ${this.chatUnread === 1 ? 'mention' : 'mentions'})` : 'Room');
-  }
-
-  /** The small margin preview: a ring on the previewed line's dot (the text never changes on hover). */
-  private renderPreviewDot(): void {
-    const walk = this.walk;
-    const preview = walk && this.hoverLine !== null && this.hoverLine !== walk.focus ? this.hoverLine : null;
-    for (const dot of document.querySelectorAll<HTMLElement>('.plm-dot[data-preview="true"]')) {
-      if (preview === null || Number(dot.dataset.line) !== preview) delete dot.dataset.preview;
-    }
-    if (preview === null || !CURSOR_POLICY.ringPreviewDot) return;
-    const dot = document.querySelector<HTMLElement>(`.plm-dot[data-line="${preview}"]`);
-    if (dot) dot.dataset.preview = 'true';
   }
 
   /** After the line's changes: the Familiar's note (folded) and everyone's marks on the line. */
@@ -2437,10 +2059,9 @@ export class ReadingWalkUI {
     const target = this.cursorLine();
     const marked = lm.isLoaded() ? lm.markedUpTo() : null;
     const needs = lm.isLoaded() ? lm.needsYouLines().length : null;
-    const provisional = STATUS_BAR_POLICY.listProvisional ? walk.provisionalCount : 0;
     const ago = marked ? formatAgo(marked.at, Date.now()) : '';
-    const sig = JSON.stringify([target, walk.lineCount, marked?.line ?? null, ago, needs, provisional]);
-    if (sig === this.statusSig) return;
+    const sig = JSON.stringify([target, walk.lineCount, marked?.line ?? null, ago, needs]);
+    if (sig === this.statusSig || this.sbMarked.contains(document.activeElement)) return;
     this.statusSig = sig;
     this.statusBar.dataset.line = String(target);
     const strong = el('b', undefined, `Line ${target + 1}`);
@@ -2464,17 +2085,7 @@ export class ReadingWalkUI {
     this.sbIssues.textContent = needs === null ? '…' : issuesLeftText(needs);
     this.sbIssues.dataset.count = needs === null ? '' : String(needs);
     this.sbIssues.title = 'Lines that need you: an ask to answer or a change to decide. Each has an amber dot in the margin.';
-    this.sbProvisional.hidden = provisional === 0;
-    this.sbProvisional.replaceChildren();
-    if (provisional > 0) {
-      const one = provisional === 1;
-      const save = el('button', 'pst-save', 'Save');
-      save.type = 'button';
-      save.setAttribute('aria-label', `Save ${provisional} accepted ${one ? 'change' : 'changes'}`);
-      save.addEventListener('mousedown', event => event.preventDefault());
-      save.onclick = () => this.commit(this.walk?.commitAll() ?? []);
-      this.sbProvisional.append(el('span', 'pst-sep'), el('span', undefined, `${provisional} accepted by scrolling, not saved `), save);
-    }
+    this.sbProvisional.hidden = true;
   }
 
   /** "line K" in the status bar: the last line the viewer marked becomes the focus line (a jump). */
@@ -2533,7 +2144,7 @@ export class ReadingWalkUI {
     select.onchange = () => this.setReadingRate(Number(select.value));
     const need = el('span', 'prw-rate-need');
     this.rateEl.append(label, select, need);
-    this.rateEl.title = 'A line counts as Seen once it has been the focus line for its reading time: its words at this speed (at least 0.25 s, at most 6 s). Lines you scroll past faster are marked skimmed, not Seen.';
+    this.rateEl.title = 'A line counts as Seen once it has been the focus line for its reading time: its words at this speed (at least 0.25 s, at most 6 s). Lines you scroll past faster stay unmarked.';
   }
 
   /** Remembered per browser: each rail open or closed, and the tab each shows (layout-panels.ts). */
@@ -2672,27 +2283,22 @@ export class ReadingWalkUI {
     const walk = this.walk;
     return {
       ready: Boolean(walk && this.tops.length),
-      focus: walk?.focus ?? -1,
+      focus: walk ? this.cursorLine() : -1,
+      readingFocus: walk?.focus ?? -1,
       target: walk ? this.targetLine() : -1,
       cursor: walk ? this.cursorLine() : -1,
-      preview: walk && this.hoverLine !== null && this.hoverLine !== walk.focus ? this.hoverLine : null,
-      previewCommits: this.previewCommits.map(c => ({ ...c })),
       marginTab: this.marginTab,
       navigator: this.navigator.debugState(),
       replies: this.replies.map(r => ({ ...r })),
       sheet: this.right.classList.contains('prw-sheet-open') ? 'margin' : this.left.classList.contains('prw-sheet-open') ? 'navigator' : null,
-      hover: this.hoverLine,
-      hoverWrites: this.hoverWrites,
-      hoverLog: [...this.hoverLog],
       touch: this.touchMode(),
       strip: this.strip.hidden ? null : { line: Number(this.strip.dataset.line), status: this.strip.dataset.status ?? '' },
       lines: walk?.lineCount ?? 0,
-      step: walk?.stepIndex() ?? 0,
-      current: walk?.currentMark()?.id ?? null,
-      marksOnFocus: walk?.marksOn(walk.focus).map(m => m.id) ?? [],
-      provisional: walk?.provisionalIds() ?? [],
+      step: 0,
+      current: walk?.marksOn(this.cursorLine())[0]?.id ?? null,
+      marksOnFocus: walk?.marksOn(this.cursorLine()).map(m => m.id) ?? [],
       seenWrites: [...this.seenWrites],
-      skimmed: [...this.skimmedLines],
+      skimmed: [],
       rate: walk?.readingRate ?? null,
       dwellMs: walk ? walk.dwellFor(walk.focus) : null,
       flagged: [...this.host.lineMarks().flaggedLineSet()],
@@ -2708,14 +2314,13 @@ export class ReadingWalkUI {
       heights: [...this.heights],
       constants: READING_WALK,
       error: this.lastError,
-      commits: this.commits.map(c => ({ ...c, ids: [...c.ids] })),
       writing: isWriting(),
       mode: this.modeEl.dataset.mode ?? null,
       modeText: this.modeEl.textContent ?? '',
       editing: isWriting(),
       notice: this.sbNotice.hidden ? '' : (this.sbNotice.textContent ?? ''),
       doneVisible: !this.suggestBtn.hidden,
-      statusBar: { line: this.sbLine.textContent, marked: this.sbMarked.textContent, issues: this.sbIssues.dataset.count === '' ? null : Number(this.sbIssues.dataset.count), provisional: this.sbProvisional.hidden ? 0 : (this.walk?.provisionalCount ?? 0) },
+      statusBar: { line: this.sbLine.textContent, marked: this.sbMarked.textContent, issues: this.sbIssues.dataset.count === '' ? null : Number(this.sbIssues.dataset.count), provisional: 0 },
       rule: this.ruleEl.hidden ? null : Number(this.ruleEl.dataset.line),
       rail: this.railFollow?.debugState() ?? null,
     };

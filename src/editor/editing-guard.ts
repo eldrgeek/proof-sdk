@@ -2,9 +2,21 @@
  * Review selects passages; only the labelled Editing control enables direct typing.
  * Mike, 2026-09-23 (usability brief). Hover, scroll and blur never change this mode.
  * A local draft is a field, so its keys cannot become reading commands.
+ * Letter shortcuts are optional and never run during typing or composition.
  */
 import { routeKey, type KeyTarget } from '../shared/reading-keys';
 export const EDITING_GUARD_POLICY = { graceMs: 4000 } as const;
+
+const LETTER_SHORTCUTS_KEY = 'proof:letter-shortcuts';
+export function letterShortcutsEnabled(): boolean {
+  try { return localStorage.getItem(LETTER_SHORTCUTS_KEY) !== 'off'; } catch { return true; }
+}
+export function setLetterShortcutsEnabled(on: boolean): void {
+  try { localStorage.setItem(LETTER_SHORTCUTS_KEY, on ? 'on' : 'off'); } catch { /* optional */ }
+}
+let composing = false;
+export function isInputComposing(): boolean { return composing; }
+
 let directEditing = false;
 let installed = false;
 let lastActivity = Number.NEGATIVE_INFINITY;
@@ -61,10 +73,15 @@ export function editingGuardDebug() {
 export function installEditingGuard(): void {
   if (installed || typeof document === 'undefined') return;
   installed = true;
+  document.addEventListener('compositionstart', () => { composing = true; }, true);
+  document.addEventListener('compositionend', () => { composing = false; }, true);
   document.addEventListener('keydown', (event: KeyboardEvent) => {
     const target = keyTargetOf(event.target);
-    const route = routeKey({ key: event.key, ctrlKey: event.ctrlKey, metaKey: event.metaKey,
-      altKey: event.altKey, isComposing: event.isComposing, target, writing: directEditing });
+    const route = routeKey({
+      key: event.key, ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey,
+      isComposing: composing || event.isComposing || event.keyCode === 229,
+      target, writing: directEditing, letterShortcuts: letterShortcutsEnabled(),
+    });
     routeLog.push({ key: event.key, route, target, writing: directEditing });
     if (routeLog.length > 40) routeLog.shift();
     if (target === 'editor') {
@@ -82,5 +99,8 @@ export function installEditingGuard(): void {
   setDirectEditing(directEditing);
 }
 export function resetEditingGuardForTests(): void {
-  directEditing = false; lastActivity = Number.NEGATIVE_INFINITY; routeLog.length = 0;
+  directEditing = false;
+  composing = false;
+  lastActivity = Number.NEGATIVE_INFINITY;
+  routeLog.length = 0;
 }

@@ -41,7 +41,7 @@ We launch in the second quarter.
 
 The budget is fixed at ten thousand.
 
-Background: the team is five people in two cities.
+Background: the team is five poeple in two cities.
 
 Last line of the plan.`;
 
@@ -184,7 +184,7 @@ try {
 
   await test('a tag follows its line over a cosmetic edit; a meaning change drops it (the default tier returns)', async () => {
     const records = [tag('t1', 'Background', 'context', MIKE, 1), tag('t2', 'second quarter', 'context', MIKE, 2)];
-    const edited = await serverLines.computeServerLines(doc.replace('five people in two cities', 'five people in two cities!').replace('second quarter', 'fourth quarter'));
+    const edited = await serverLines.computeServerLines(doc.replace('five poeple in two cities', 'five people in two cities').replace('second quarter', 'fourth quarter'));
     const evaluation = tiers.evaluateTiers({ lines: edited, records });
     const bg = edited.find(l => l.text.includes('Background'))!;
     const launch = edited.find(l => l.text.includes('fourth quarter'))!;
@@ -194,14 +194,14 @@ try {
     assert.equal(evaluation.views[launch.index].tagged, false);
   });
 
-  await test('reading walk: J / K stop only on lines that are not skippable context lines (falls back when none is left)', () => {
+  await test('reading walk: J / K visit all visible passages, including covered context', () => {
     const walk = new walkMod.ReadingWalk([
       { key: 'a', marks: [] }, { key: 'b', marks: [], skipStep: true }, { key: 'c', marks: [], skipStep: true }, { key: 'd', marks: [] }, { key: 'e', marks: [], skipStep: true },
     ], 0);
-    assert.equal(walk.nextStop(1), 3);
+    assert.equal(walk.nextStop(1), 1);
     walk.moveTo(3, 1000, 'jump');
-    assert.equal(walk.nextStop(-1), 0);
-    assert.equal(walk.nextStop(1), null, 'nothing left: the caller falls back to nextVisible');
+    assert.equal(walk.nextStop(-1), 2);
+    assert.equal(walk.nextStop(1), 4, 'visible context passages remain reachable');
     assert.equal(walk.nextVisible(1), 4);
   });
 

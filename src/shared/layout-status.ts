@@ -1,4 +1,6 @@
 /**
+ * Reading progress is never agreement; there is no hover target or provisional acceptance.
+ * Mike, 2026-09-23 (usability brief).
  * Accord layout, stage 1 (Ren's proposal, Mike ruled 2026-09-21: "build the layout that you
  * proposed"): the status bar under the page, the "You marked up to here" rule, and two highlight
  * states only. Pure: the reading walk (src/ui/reading-walk.ts) and the margin
@@ -18,12 +20,8 @@ import { openView } from './open-view';
  * the proposal lists is off; each flag brings one back.
  */
 export const HIGHLIGHT_POLICY = {
-  /** A separate look for the line under the mouse (off: the one "you are here" look for every source). */
-  hoverBand: false,
   /** Context lines drawn dimmer with a faint rule (off: the tier lives in the line's box and the dot's label). */
   contextDimming: false,
-  /** A dashed underline on scroll-accepted changes with their old words hidden (off: ordinary insert / delete). */
-  provisionalDashed: false,
   /** A ◆ beside decision lines in the margin (off: the tier lives in the line's box and the dot's label). */
   decisionDiamond: false,
 } as const;
@@ -77,8 +75,6 @@ export const STATUS_BAR_POLICY = {
   modeIsSwitch: false,
   /** Height on desktop (px), per the proposal. */
   heightPx: 28,
-  /** Scroll-accepted changes not saved yet are listed in the bar with a Save button. */
-  listProvisional: true,
 } as const;
 
 function sameActor(a: string, b: string): boolean {

@@ -5,7 +5,7 @@
  * One button, one keystroke, one ordered per-person stack (src/shared/undo.ts). It covers every
  * action a person takes in the document that is not typing: line marks, section marks, ask
  * answers, accepting or rejecting a change, resolving a comment, picking a wording, tier flips,
- * folds, clearing an objection or a flag, ratifying a Familiar's proxy, committing scroll-accepts.
+ * folds, clearing an objection or a flag, ratifying a Familiar's proxy.
  *
  * Typing keeps its own undo (ProseMirror / Yjs), because that is what a writer expects from
  * Cmd+Z mid-sentence. The two are ordered by recency: Cmd/Ctrl+Z reverses whichever happened

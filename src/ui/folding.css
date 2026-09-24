@@ -52,6 +52,3 @@ body.pfold-on .ProseMirror > :is(h1, h2, h3, h4, h5, h6) { padding-right: 72px; 
 
 /* A folded heading: a dashed rule under it says "there is more here". */
 .ProseMirror .pfold-folded-heading { border-bottom: 1px dashed #c3c8d0; padding-bottom: 2px; }
-
-/* Item 4 (Mike, 2026-09-19): hovering a folded section peeks it open; the chip says it is a peek. */
-.pfold-chip[data-peek="true"] { outline: 2px dashed #60a5fa; outline-offset: 1px; }

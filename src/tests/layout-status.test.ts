@@ -28,7 +28,7 @@ const mark = (line: number, at: string, via: LineMark['via'], by = ME, status: L
 });
 
 test('policy: two highlight states only, and Reading / Writing is not a switch', () => {
-  assert.deepEqual(HIGHLIGHT_POLICY, { hoverBand: false, contextDimming: false, provisionalDashed: false, decisionDiamond: false });
+  assert.deepEqual(HIGHLIGHT_POLICY, { contextDimming: false, decisionDiamond: false });
   assert.equal(STATUS_BAR_POLICY.modeIsSwitch, false);
   assert.equal(STATUS_BAR_POLICY.heightPx, 28);
   assert.equal(MARKED_UP_TO_POLICY.basis, 'latest');

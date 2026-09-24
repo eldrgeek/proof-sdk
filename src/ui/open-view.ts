@@ -24,6 +24,7 @@ import {
   OPEN_VIEW_POLICY,
   ZERO_POLICY,
   accordHeader,
+  emptyAccordHeader,
   openLayout,
   openView,
   zeroMoment,
@@ -98,7 +99,7 @@ export class OpenViewUI {
   /** Runs the reader expanded by clicking their rule (explicit beats automatic). */
   private expanded = new Set<number>();
   private lastOpen: OpenView = { items: [], lines: [], count: 0 };
-  private lastHeader: AccordHeader = { text: '', agreed: [], behind: [], settled: false, readers: [], viewerRow: null };
+  private lastHeader: AccordHeader = emptyAccordHeader();
   private unsubscribe: (() => void) | null = null;
   private renderSig = '';
   /** Test hook: every view change, newest last. */
@@ -228,7 +229,7 @@ export class OpenViewUI {
     const summary = lm.issueSummary();
     const lines = lm.lineList();
     if (!summary || !lm.isLoaded()) {
-      return { open: { items: [], lines: [], count: 0 }, header: { text: '', agreed: [], behind: [], settled: false, readers: [], viewerRow: null } };
+      return { open: { items: [], lines: [], count: 0 }, header: emptyAccordHeader() };
     }
     const open = openView({
       issues: summary.issues,
@@ -245,6 +246,9 @@ export class OpenViewUI {
       team: summary.team,
       viewer: lm.me(),
       name: actor => lm.displayName(actor),
+      objections: summary.issues.flatMap(issue => (issue.type === 'objection'
+        ? [{ by: issue.by, reason: issue.reason, condition: issue.condition, lineIndices: issue.lineIndices }]
+        : [])),
     });
     return { open, header };
   }
@@ -332,7 +336,7 @@ export class OpenViewUI {
     this.zeroText.hidden = !zero.forViewer;
     this.zeroText.dataset.scope = zero.forEveryone ? 'everyone' : zero.forViewer ? 'you' : '';
     // When it is zero for EVERYONE the header goes too, and what is left is a clean document.
-    this.headerText.textContent = header.text;
+    this.paintHeader(header);
     // The honest header belongs to the ACCORD VIEW, and to the zero moment — not to every load.
     // It is a band above the text, so showing and hiding it moves the document; on a default load
     // it appeared and disappeared while the reader typed, and the page moved under them by 18 px.
@@ -353,6 +357,39 @@ export class OpenViewUI {
     this.settledLabel.textContent = n ? `${n} settled ${n === 1 ? 'row' : 'rows'}` : '';
     this.headerEl.hidden = this.zeroText.hidden && this.headerText.hidden && this.tools.hidden && this.emptyText.hidden;
     this.headerEl.dataset.view = zero.view;
+  }
+
+  /**
+   * The header string stays `header.text` (tests read that). A clause that names rejected or
+   * lapsed lines is a link to the first of them; `data-lines` lists the rest, 0-based.
+   */
+  private paintHeader(header: AccordHeader): void {
+    this.headerText.replaceChildren();
+    if (header.clauses.length === 0) {
+      this.headerText.textContent = header.text;
+      return;
+    }
+    header.clauses.forEach((clause, index) => {
+      if (index > 0) this.headerText.append(' ');
+      if (clause.lines.length === 0) {
+        this.headerText.append(clause.text);
+        return;
+      }
+      const link = document.createElement('a');
+      link.className = 'aov-header-link';
+      link.href = `#line-${clause.lines[0] + 1}`;
+      link.dataset.lines = clause.lines.join(',');
+      link.textContent = clause.text;
+      link.addEventListener('click', (event) => {
+        event.preventDefault();
+        const line = clause.lines[0];
+        this.host.lineMarks().revealLine(line);
+        const walk = (window as unknown as { __proofReadingWalk?: { focusLine?: (index: number) => boolean } }).__proofReadingWalk;
+        if (walk?.focusLine) walk.focusLine(line);
+        else document.querySelector<HTMLElement>(`.plm-dot[data-line="${line}"]`)?.scrollIntoView({ block: 'center' });
+      });
+      this.headerText.append(link);
+    });
   }
 
   // --------------------------------------------------------------------------

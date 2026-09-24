@@ -10,24 +10,21 @@
  * change resets it, as before. When in doubt the answer is "substantive": a wrong reset costs a
  * re-read, a wrong carry lets a real change past a reader unseen.
  *
- * Rule: Mike, 2026-09-23 (usability brief). Carry-over is computed at read time from
- * stored anchor text; no stored mark is changed.
- *
  * Cosmetic means one of:
- *   - whitespace, letter case, typographic look-alikes or a final period changed;
- *     other punctuation changes and all symbol/emoji changes require review (S5 round 3);
- *   - listed spelling corrections: the same words in the same order, each changed word
- *     a lower-case misspelling -> correction pair in COMMON_MISSPELLINGS. The reverse
- *     direction and every unlisted word change are substantive, including regional variants.
+ *   - whitespace, letter case or punctuation changed, and nothing else;
+ *   - small spelling fixes: the same words in the same order, each changed word within
+ *     LINE_CHANGE_POLICY.maxEditsPerToken character edits (a swap of two neighbours is one edit),
+ *     all edits together at most LINE_CHANGE_POLICY.maxLineEditRatio of the line.
  * Always substantive: a number, amount or percentage changed; a word added, removed or moved;
  * a negation or other meaning-carrying word changed (LINE_CHANGE_POLICY.meaningWords); a
- * capitalised word that does not start a sentence changed (usually a name); a sentence gains
- * or loses ? or !.
+ * capitalised word that does not start a sentence changed (usually a name).
  */
 
-import { COMMON_MISSPELLINGS } from './common-misspellings.js';
-
 export const LINE_CHANGE_POLICY = {
+  /** Largest per-word edit (Damerau: insert, delete, substitute or swap neighbours) that is a spelling fix. */
+  maxEditsPerToken: 2,
+  /** All edits together at most this share of the line's letters and digits. */
+  maxLineEditRatio: 0.1,
   /**
    * Words whose change always matters, even by one letter ("not" -> "now", "and" -> "any").
    * Compared lower-case with apostrophes removed.
@@ -48,7 +45,7 @@ export type LineChangeKind = 'same' | 'cosmetic' | 'substantive';
 
 export interface LineChange {
   kind: LineChangeKind;
-  /** One short phrase for people and logs ("spelling: recieve -> receive", "number changed"). */
+  /** One short phrase for people and logs ("spelling: teh -> the", "number changed"). */
   why: string;
   /** Cosmetic spelling fixes, old -> new, for the "what changed" view. */
   fixes?: Array<{ from: string; to: string }>;
@@ -121,64 +118,17 @@ export function editDistance(a: string, b: string, cap = Number.POSITIVE_INFINIT
   return prev[cols - 1];
 }
 
-/** Preserve symbols, emoji modifiers, variation selectors, joiners and emoji tag characters. */
-function symbols(text: string): string {
-  return (text.match(/[\p{S}\p{Extended_Pictographic}\p{Emoji_Modifier}\u200d\ufe0e\ufe0f\u20e3\u{e0020}-\u{e007f}]/gu) ?? []).join('');
-}
-
-/** Normalize only typographic equivalents. An in-word single hyphen stays a hyphen. */
-function typography(text: string): string {
-  return text.replace(/[‘’]/gu, "'").replace(/[“”]/gu, '"')
-    .replace(/\.\.\./gu, '…')
-    .replace(/--|[–—]|(?<=\s)-(?=\s)/gu, ' — ');
-}
-
-/** Punctuation keeps its position among letter/number runs, even when a spelling is corrected. */
-function punctuation(text: string): string {
-  // A lone final period is optional, including before closing quotation marks or brackets.
-  // Interior periods and ellipses remain significant; numeric changes are checked separately.
-  const withoutFinalPeriod = text.replace(/\.(?=["')\]}]*$)/u, '');
-  const marks: Array<[number, string]> = [];
-  let run = 0;
-  for (const match of withoutFinalPeriod.matchAll(/[\p{L}\p{M}\p{N}]+|\p{P}/gu)) {
-    if (/^\p{P}/u.test(match[0])) marks.push([run, match[0]]);
-    else run += 1;
-  }
-  return JSON.stringify(marks);
-}
-
-/** Keep ? and ! at their word index in one scan, without repeatedly tokenizing prefixes. */
-function sentenceForce(text: string): string {
-  const marks: Array<[number, string]> = [];
-  let wordIndex = 0;
-  for (const match of text.matchAll(/\p{L}[\p{L}\p{M}'’\-]*|[.!?]+/gu)) {
-    if (/^[.!?]/u.test(match[0])) {
-      if (/[!?]/u.test(match[0])) marks.push([wordIndex, match[0].replace(/\./gu, '')]);
-    } else wordIndex += 1;
-  }
-  return JSON.stringify(marks);
-}
-
 const bare = (word: string) => word.replace(/['’]/gu, '');
 
 /**
  * Classifies the change from `before` to `after` (the text of one line, any whitespace).
- * Deterministic; spelling carry-over is directional, from listed misspelling to correction.
+ * Deterministic and symmetric in what it calls cosmetic.
  */
 export function classifyLineChange(before: string, after: string): LineChange {
   const a = normalize(before);
   const b = normalize(after);
   if (a === b) return { kind: 'same', why: 'unchanged' };
   if (!a || !b) return { kind: 'substantive', why: a ? 'line emptied' : 'line added' };
-
-  if (symbols(a) !== symbols(b)) {
-    return { kind: 'substantive', why: 'a symbol changed' };
-  }
-  const typedA = typography(a);
-  const typedB = typography(b);
-  if (sentenceForce(typedA) !== sentenceForce(typedB)) {
-    return { kind: 'substantive', why: 'question or exclamation changed' };
-  }
 
   // Numbers first: "$10" -> "$100", "1.5" -> "15" and "10%" -> "10" all matter.
   const numsA = numbers(a);
@@ -187,12 +137,8 @@ export function classifyLineChange(before: string, after: string): LineChange {
     return { kind: 'substantive', why: 'a number changed' };
   }
 
-  if (punctuation(typedA) !== punctuation(typedB)) {
-    return { kind: 'substantive', why: 'punctuation changed' };
-  }
-
-  const wa = words(typedA);
-  const wb = words(typedB);
+  const wa = words(a);
+  const wb = words(b);
   // Case and punctuation only: the same words in the same order, ignoring case.
   if (wa.length === wb.length && wa.every((t, i) => t.lower === wb[i].lower)) {
     return { kind: 'cosmetic', why: 'case, punctuation or spacing only' };
@@ -205,8 +151,11 @@ export function classifyLineChange(before: string, after: string): LineChange {
   const sortedB = wb.map(t => t.lower).sort().join(' ');
   if (sortedA === sortedB) return { kind: 'substantive', why: 'words moved' };
 
+  const lettersInLine = Math.max(a.replace(/[^\p{L}\p{N}]/gu, '').length, b.replace(/[^\p{L}\p{N}]/gu, '').length);
+  const budget = lettersInLine * LINE_CHANGE_POLICY.maxLineEditRatio;
   const oldSet = new Set(wa.map(t => t.lower));
   const newSet = new Set(wb.map(t => t.lower));
+  let total = 0;
   const fixes: Array<{ from: string; to: string }> = [];
   for (let i = 0; i < wa.length; i += 1) {
     const x = wa[i];
@@ -221,11 +170,22 @@ export function classifyLineChange(before: string, after: string): LineChange {
     }
     // A word swapped with another word of the line is a move, not a spelling fix.
     if (oldSet.has(y.lower) && newSet.has(x.lower)) return { kind: 'substantive', why: 'words moved' };
-    if (COMMON_MISSPELLINGS.get(x.lower) !== y.lower) {
+    const distance = editDistance(x.lower, y.lower, LINE_CHANGE_POLICY.maxEditsPerToken);
+    if (distance > LINE_CHANGE_POLICY.maxEditsPerToken) {
       return { kind: 'substantive', why: `word changed: ${x.text} -> ${y.text}` };
     }
+    // Words of one or two letters are function words ("is" -> "it", "a" -> "I"): any change matters.
+    if (Math.max(x.lower.length, y.lower.length) <= 2) {
+      return { kind: 'substantive', why: `short word changed: ${x.text} -> ${y.text}` };
+    }
+    // A short word is mostly its letters: "cat" -> "dog" would pass two edits on one letter each.
+    if (distance >= Math.max(x.lower.length, y.lower.length)) {
+      return { kind: 'substantive', why: `word changed: ${x.text} -> ${y.text}` };
+    }
+    total += distance;
     fixes.push({ from: x.text, to: y.text });
   }
+  if (total > budget) return { kind: 'substantive', why: `too many letters changed (${total} of ${lettersInLine})` };
   return { kind: 'cosmetic', why: `spelling: ${fixes.map(f => `${f.from} -> ${f.to}`).join(', ')}`, fixes };
 }
 

@@ -2,7 +2,7 @@
 // Authorship: Mike Wolf (rulings), built by Claude Opus 5 (worker accord-scroll), 2026-09-22.
 import assert from 'node:assert/strict';
 import {
-  SCROLL_CAMERA_POLICY, bandFractionFor, cameraReadingY, cameraScroll, cameraWouldMove, deadZone,
+  SCROLL_CAMERA_POLICY, anchoredScroll, bandFractionFor, cameraReadingY, cameraScroll, cameraWouldMove, deadZone,
   type CameraView,
 } from '../shared/scroll-camera';
 
@@ -129,6 +129,13 @@ test('the offset is always a whole number inside the document', () => {
 
 test('the camera never animates', () => {
   assert.equal(SCROLL_CAMERA_POLICY.behavior, 'instant');
+});
+
+test('layout anchoring compensates additions and removals but permits manual scrolling', () => {
+  assert.equal(anchoredScroll({ top: 250, scrollY: 500 }, { top: 350, scrollY: 500 }, 3000), 600);
+  assert.equal(anchoredScroll({ top: 250, scrollY: 500 }, { top: 150, scrollY: 500 }, 3000), 400);
+  assert.equal(anchoredScroll({ top: 250, scrollY: 500 }, { top: 150, scrollY: 600 }, 3000), 600);
+  assert.equal(anchoredScroll({ top: 250, scrollY: 500 }, { top: 200, scrollY: 600 }, 3000), 650);
 });
 
 console.log(`\n${passed} scroll camera tests passed`);

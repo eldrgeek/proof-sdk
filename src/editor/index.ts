@@ -15,7 +15,6 @@ import { LineMarksUI } from '../ui/line-marks';
 import { ReadingWalkUI } from '../ui/reading-walk';
 import { ChatUI } from '../ui/chat';
 import { FoldingUI } from '../ui/folding';
-import { ClosedFoldUI } from '../ui/closed-fold';
 import { UndoUI } from '../ui/undo';
 import { MenuBar, buildMenuItems, type MenuItemSpec, type MenuSpec } from '../ui/menu-bar';
 import { OpenViewUI } from '../ui/open-view';
@@ -31,7 +30,6 @@ import { askViewPlugin } from './plugins/ask-view';
 import { doViewPlugin } from './plugins/do-view';
 import { proofExtrasViewPlugin } from './plugins/proof-extras-view';
 import { tierViewPlugin } from './plugins/tier-view';
-import { closedFoldViewPlugin } from './plugins/closed-fold-view';
 import { getReviewStyle, setReviewStyle, REVIEW_STYLE_POLICY } from './review-style';
 import { isEditing, isWriting, setDirectEditing } from './editing-guard';
 import { ReviewDecisionHistory, reconnectNativeUndoManager } from './review-decision-history';
@@ -1174,7 +1172,6 @@ class ProofEditorImpl implements ProofEditor {
   private folding: FoldingUI | null = null;
   /** Accord round 2 stage C: the Open / Accord toggle, the honest header and the zero moment. */
   private openViewUI: OpenViewUI | null = null;
-  private closedFold: ClosedFoldUI | null = null;
   /** The one Undo (Mike, 2026-09-19): the rail button and Cmd/Ctrl+Z. */
   private undoUI: UndoUI | null = null;
   /** Accord layout stage 2: the menu bar, the toolbar's Undo slot, Edit › Find. */
@@ -1366,7 +1363,6 @@ class ProofEditorImpl implements ProofEditor {
       // Line tiers: context lines quieter, "Show only decisions" folds them (view-only decorations)
       .use(tierViewPlugin)
       // Closed Issues fold for the person who closed them (view-only decorations)
-      .use(closedFoldViewPlugin)
       .use(marksSyncPlugin((actionMarks, view, actionMetadata) => {
         this.handleMarksChange(actionMarks, view, actionMetadata);
       }))
@@ -3996,7 +3992,6 @@ class ProofEditorImpl implements ProofEditor {
     const walk = this.readingWalk;
     const folding = this.folding;
     const sections = folding?.sectionList() ?? [];
-    const levels = [...new Set(sections.map(section => section.level))].sort((a, b) => a - b);
     const pending = getReviewStyle() === 'proof' && canEdit ? this.getAnchoredPendingSuggestions().length : 0;
     const style = getReviewStyle();
     const find = (id: string) => MENU_BAR_POLICY.menus.find(menu => menu.id === id)!;
@@ -4042,16 +4037,14 @@ class ProofEditorImpl implements ProofEditor {
           );
         }
         if (folding && sections.length > 0) {
-          items.push({ id: 'view-fold-all', label: 'Fold all sections', keywords: 'outline collapse', separatorBefore: true, run: () => folding.foldAll() });
-          items.push({ id: 'view-unfold-all', label: 'Unfold all sections', keywords: 'outline expand', run: () => folding.unfoldAll() });
-          for (const level of levels.slice(0, 3)) {
-            items.push({ id: `view-fold-${level}`, label: `Fold to headings level ${level}`, detail: `H${level}`, keywords: 'outline level', run: () => folding.foldLevel(level) });
-          }
+          items.push({ id: 'view-fold-all', label: 'Collapse all sections', keywords: 'outline collapse', separatorBefore: true, run: () => folding.foldAll() });
+          items.push({ id: 'view-unfold-all', label: 'Expand all sections', keywords: 'outline expand', run: () => folding.unfoldAll() });
         }
         if (lm) {
           items.push({ id: 'view-only-decisions', label: 'Show only decisions', kind: 'checkbox', checked: lm.onlyDecisionsOn(), enabled: lm.tiersTagged(), separatorBefore: true, keywords: 'tiers context fold', run: () => lm.setOnlyDecisions(!lm.onlyDecisionsOn()) });
         }
         if (walk) {
+          items.push({ id: 'view-letter-shortcuts', label: 'Letter shortcuts', kind: 'checkbox', checked: walk.letterShortcutsEnabled(), run: () => walk.toggleLetterShortcuts() });
           items.push({ id: 'view-reading-settings', label: 'Reading settings…', keywords: 'reading speed sitting budget words per second', separatorBefore: !lm, run: () => walk.openReadingSettings() });
           const proxy = walk.proxy;
           items.push({ id: 'view-brief', label: 'Familiar’s brief', kind: 'checkbox', checked: proxy.isBriefOpen(), enabled: proxy.hasBrief(), keywords: 'proxy familiar ratify', run: () => {
@@ -4128,9 +4121,10 @@ class ProofEditorImpl implements ProofEditor {
         cursorLine: () => this.readingWalk?.focusIndex() ?? -1,
         focusLine: (lineIndex) => this.readingWalk?.focusLine(lineIndex) ?? false,
         viewUpdated: () => { this.readingWalk?.notifyViewUpdate(); this.folding?.queueRender(); },
-        markScope: (lineIndex) => this.folding?.markScope(lineIndex) ?? null,
+        sectionScope: (lineIndex) => this.folding?.sectionScope(lineIndex) ?? null,
+        sectionAgreement: (lineIndex) => this.folding?.sectionAgreement(lineIndex) ?? null,
+        showSectionLines: (lineIndex) => { this.folding?.showSectionLines(lineIndex); },
         revealLine: (lineIndex) => this.folding?.reveal(lineIndex) ?? false,
-        onAskAnswered: (lineIndex) => this.readingWalk?.askAnswered(lineIndex),
         // Step B4d: shift-click ranges start at the reading walk's focus line.
         anchorLine: () => this.readingWalk?.focusIndex() ?? 0,
         // Step B4c: the sitting budget was used (the rail shows it; phones get the sheet).
@@ -4195,6 +4189,7 @@ class ProofEditorImpl implements ProofEditor {
         },
         playmaker: () => this.playmakerReview,
         reviewStyle: () => getReviewStyle(),
+        directEditing: () => !this.isSuggestionsEnabled(),
         folding: () => this.folding,
         // Step B2 folded sections, plus line tiers' "Show only decisions" (folded context lines).
         hiddenLines: () => {
@@ -4203,10 +4198,7 @@ class ProofEditorImpl implements ProofEditor {
           return hidden;
         },
         focusChanged: (lineIndex) => {
-          this.closedFold?.setFocusLine(lineIndex);
-          // Item 4: a section with no Issues closes itself once the reader's focus leaves it.
-          this.folding?.setFocusLine(lineIndex);
-          // Rail scrolling (2026-09-21): the chat shows its newest message when the focus line moves.
+          // Explicit selection updates the chat context without scrolling it.
           this.chat?.onFocusLine(lineIndex);
         },
         visibleLineFor: (lineIndex) => {
@@ -4236,10 +4228,6 @@ class ProofEditorImpl implements ProofEditor {
       this.openViewUI.start();
       this.mountOpenView();
       walkUi.mountTool(this.folding.controlsEl);
-      // Closed Issues fold for the viewer who closed them ("Unfold closed" in the rail).
-      this.closedFold = new ClosedFoldUI({ slug: () => shareClient.getSlug(), lineMarks: () => lineMarks, onApplied: () => walkUi.onFoldChange() });
-      (window as unknown as { __proofClosedFold?: ClosedFoldUI }).__proofClosedFold = this.closedFold;
-      walkUi.mountTool(this.closedFold.controlsEl);
       // The one Undo: at the top of the right rail, above the outline controls.
       this.undoUI = new UndoUI({ stack: () => lineMarks.undoStack(), lastTextEditAt: () => this.lastLocalTextEditAt });
       (window as unknown as { __proofUndo?: UndoUI }).__proofUndo = this.undoUI;
@@ -4318,7 +4306,6 @@ class ProofEditorImpl implements ProofEditor {
     }
     this.lineMarks.start();
     this.folding?.start();
-    this.closedFold?.start();
     this.undoUI?.start();
     this.clarifyUI?.start();
     this.editGesture?.start();
@@ -4504,19 +4491,6 @@ class ProofEditorImpl implements ProofEditor {
   private performReviewDecision(ids: string[], action: ReviewAction, text?: string): void {
     const history = this.getReviewDecisionHistory();
     if (!this.editor) throw new Error('The editor is still loading.');
-    // Closed Issues fold: an accept, reject or resolve closes the viewer's Issue on each line.
-    const closureLines: Array<[number, 'accepted' | 'suggestion-rejected' | 'resolved']> = [];
-    if (action === 'accept' || action === 'reject' || action === 'resolve') {
-      const kind = action === 'accept' ? 'accepted' : action === 'reject' ? 'suggestion-rejected' : 'resolved';
-      this.editor.action(ctx => {
-        const byId = new Map(getMarks(ctx.get(editorViewCtx).state).map(mark => [mark.id, mark]));
-        for (const id of ids) {
-          const from = byId.get(id)?.range?.from;
-          const line = typeof from === 'number' ? this.lineMarks?.lineAtPos(from) ?? -1 : -1;
-          if (line >= 0 && !closureLines.some(([l]) => l === line)) closureLines.push([line, kind]);
-        }
-      });
-    }
     this.editor.action(ctx => {
       const view = ctx.get(editorViewCtx);
       const parser = ctx.get(parserCtx);
@@ -4552,7 +4526,6 @@ class ProofEditorImpl implements ProofEditor {
         this.scheduleShareSuggestionReviewDisplay(view);
       }
     });
-    for (const [line, kind] of closureLines) this.lineMarks?.noteClosure(line, kind);
     this.recordDecisionUndo(ids, action);
   }
 
@@ -6691,7 +6664,10 @@ class ProofEditorImpl implements ProofEditor {
 
       // Caret stability (2026-09-19): a change the person did not make keeps their line in place.
       const interceptedDispatch = (view as any).dispatch as (tr: any) => void;
-      (view as any).dispatch = (tr: any) => anchorCaretAround(view, tr, interceptedDispatch);
+      (view as any).dispatch = (tr: any) => anchorCaretAround(view, tr, next => {
+        this.folding?.mapTransaction(next);
+        interceptedDispatch(next);
+      });
 
       console.log('[setupSuggestionsInterceptor] Suggestions interceptor installed');
     });

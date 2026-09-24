@@ -25,6 +25,7 @@ const route = (key: string, target: KeyTarget, writing: boolean, mods: { ctrlKey
 
 test('policy: the rule Mike reads is the rule the code follows', () => {
   assert.equal(READING_MODE_POLICY.hideCaretWhileReading, true);
+  assert.equal(READING_MODE_POLICY.showModeChip, true);
   for (const key of ['a', 'A', 'r', 'y', 'n', 't', 'd', 'e', 'j', 'k', '1', '9', 'ArrowUp', 'ArrowDown']) {
     assert.equal(isReadingCommandKey(key), true, key);
   }
@@ -135,6 +136,17 @@ test('rail follow policy: following within a small slack of the end; the pill na
   assert.ok(RAIL_FOLLOW_POLICY.slackPx > 0 && RAIL_FOLLOW_POLICY.slackPx <= 40);
   assert.equal(RAIL_FOLLOW_POLICY.pillLabel, 'New below ↓');
   assert.equal(RAIL_FOLLOW_POLICY.containWheel, true);
+});
+
+
+test('letter shortcuts can be disabled without enabling text changes or losing named keys', () => {
+  for (const key of ['a', 'R', 'j', 'E']) {
+    assert.equal(routeKey({ key, target: 'other', writing: false, letterShortcuts: false }), 'pass');
+    assert.equal(routeKey({ key, target: 'editor', writing: false, letterShortcuts: false }), 'swallow');
+    assert.equal(routeKey({ key, target: 'field', writing: false, letterShortcuts: true }), 'type');
+    assert.notEqual(routeKey({ key, target: 'other', writing: false, isComposing: true }), 'command');
+  }
+  assert.equal(routeKey({ key: 'ArrowDown', target: 'other', writing: false, letterShortcuts: false }), 'command');
 });
 
 console.log(`\nmike-0921 tests: ${passed} passed`);

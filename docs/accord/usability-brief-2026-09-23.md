@@ -57,7 +57,7 @@ No stored value, field name or API value is renamed.
 - In the ordinary review flow, nobody types straight into the document text. A click or a tap selects one passage. A passage is the unit the marks already anchor to: a paragraph, a list item or a heading. The blue highlight shows exactly that unit. Selecting a phrase inside a passage still works, so a reader can discuss a phrase.
 - **Suggest change** opens an inline draft below the passage, prefilled with its text. The shared document is not written while the reader drafts. The key S opens the draft for the selected passage. (E is already taken: it starts an Explain thread.)
 - **Propose change**, or Cmd/Ctrl+Enter, writes one proposal in one transaction. The proposal is attributed to its author, and one Undo removes it.
-- Esc, a click elsewhere, scrolling, hovering, leaving the page and reloading all keep the draft. The passage then shows "Draft · Resume · Discard". Drafts are stored in the browser, per document, per passage text and per reader.
+- Esc, a click elsewhere, scrolling, hovering, leaving the page and reloading all keep the draft. The passage then shows "Draft · Resume · Discard". Drafts are stored in the browser, per document and per reader. Each draft keeps the passage text it started from, and is re-attached on load by the same search that follows a lapsed mark to the text it became. So a teammate's typo fix does not orphan it. A draft that cannot be re-attached is listed with its text and a Copy control. A draft is never dropped silently (agy's review, 2026-09-23).
 - **Cancel** discards the draft.
 - Direct editing stays for the people the existing permission rules let edit. It is the existing Editing mode. It is entered and left through one clearly labelled control, and the status bar names it while it is on. Letter shortcuts are off while it is on. `EDIT_SESSION_POLICY.convertDirectEditsToProposals` stays false.
 - Suggesting mode, as a way of typing tracked changes into the text, leaves the ordinary review flow. Suggestions already in documents keep working and are read as proposals, with no migration. The agent HTTP routes are unchanged.
@@ -77,8 +77,10 @@ No stored value, field name or API value is renamed.
 - On a desktop the Review list is one side panel with three tabs: Review, Outline and Since you. On a phone the same list is the existing bottom sheet. The Review button opens and closes the panel, and the panel's open or closed state is remembered per reader.
 - The list has a scope switch: "Needs you" or "All open". The count always names its scope, for example "3 need you" or "12 open". Both scopes use the one definition of Open in `src/shared/open-view.ts`.
 - Selecting an item opens the sections that contain it, selects its passage, keeps the passage in view without animation, and shows its proposal or discussion in the panel. That panel is the one place an item's detail appears.
-- Completing an item marks it done in place. It stays until Next, Clear completed, or the panel closes. New items raise the badge and are added to the end, without reordering around the current item and without moving focus.
+- The list is in document order, and Next follows that order. Completing an item marks it done in place. It stays until Next, Clear completed, or the panel closes. A new item raises the badge and takes its place in document order, marked new. The list keeps the current item where it is on screen, the same way the page does, and focus does not move (agy's review, 2026-09-23).
 - Each selected passage has one set of answer controls: Agree, Suggest change, Discuss, and Reject (which keeps its reason and its resolution condition). The duplicate answer controls in the rail, the margin and the reading-walk boxes go.
+- A passage that has a discussion or a proposal shows a marker in the margin, with a count in text, whether or not the panel is open. Clicking the marker selects the passage and opens the panel on that item. So a reader with the panel closed can still see that a discussion exists and open it (agy's review, 2026-09-23).
+- Since you keeps its current rules (`computeSinceYou` in `src/shared/alignment.ts`). This work only moves it into the panel.
 
 ### 7. Status (settles the brief's section 6)
 
@@ -88,21 +90,16 @@ No stored value, field name or API value is renamed.
 - When the agreement requirement is met, the page offers **View agreed copy**, which is the existing Accord view. It names the revision and the people who agreed. A later substantive change reopens the affected agreement and keeps the earlier record.
 - Accepting a proposal changes the text under the existing authority rules. It never records anyone else's agreement.
 
-### 8. The change classifier (settles the brief's section 6, last paragraph)
+### 8. The change classifier (settles the brief's section 6, last paragraph) — as built in S5
 
-Today `safe → unsafe` and `paid → unpaid` count as spelling fixes in any line of about 20 letters or more, so an agreement carries across a change of meaning. The rule after this work:
+Today `safe → unsafe` and `paid → unpaid` count as spelling fixes in any line of about 20 letters or more, so an agreement carries across a change of meaning. This section first set a stricter distance rule. Codex showed that rule still let `fund → find` through, and agy found symbol and punctuation holes. So the rule that shipped in S5 (merged, ac-evq) is:
 
-- A changed word counts as a spelling fix only when all of these hold:
-  - the change is one edit: an insert, a delete, a substitution, or a swap of two neighbouring letters;
-  - the first letter is unchanged;
-  - both words are at least four letters long;
-  - neither word is the other with a negating or opposing affix added or removed. The prefixes are un, in, im, il, ir, non, dis, mis, a, anti, counter and de. The suffixes are -less and -n't.
-- The existing rules stay: a changed number, a meaning word, a name, and a moved word are all substantive.
-- A sentence that gains or loses "?" or "!" is substantive.
-- The tests must cover `safe → unsafe`, `paid → unpaid`, `legal → illegal`, `able → unable`, `increase → decrease`, `hire → fire`, `accept → except`, `male → female`, a changed amount, `shall → may`, and "We ship Friday." → "We ship Friday?". All of these must be substantive.
-- The tests must also cover whitespace, case at a sentence start, `recieve → receive`, `seperate → separate` and `accomodate → accommodate`. All of these must stay cosmetic.
+- A changed word carries an agreement only when the pair (old → new, lower-case) is on a fixed, directional list of 232 common misspellings (`src/shared/common-misspellings.ts`). The list holds only misspellings that are not themselves English words. Every other word change lapses the agreement, including `fund → find`, `causal → casual`, `form → from`, `same → some`, and regional variants such as `colour → color`.
+- A changed number, a meaning word, a name, and a moved word lapse the agreement, as before.
+- Adding or removing `?` or `!` lapses the agreement. So does any changed symbol or emoji.
+- Among punctuation changes, only whitespace, typographic look-alikes (straight and curly quotes, dash styles, `...` and `…`) and a sentence-final period carry. A comma, colon, semicolon, parenthesis or quote mark added or removed lapses the agreement.
 
-Whether a mark carries over is computed at read time from the stored anchor text. So stored mark rows are never changed. Under the stricter rule, a few marks that carried before will show as "agreed to an earlier version". That is the correction the brief asks for, and it rewrites no past consent. Before deploying, the reviewer counts, on a copy of the live database, how many marks change state.
+Whether a mark carries over is computed at read time from the stored anchor text. So stored mark rows are never changed. Under the stricter rule, some marks that carried before will show as "agreed to an earlier version". That is the correction the brief asks for, and it rewrites no past consent. Before deploying, the reviewer counts, on a copy of the live database, how many marks change state.
 
 ### 9. Not in this pass
 
@@ -121,16 +118,22 @@ Whether a mark carries over is computed at read time from the stored anchor text
 
 ## The work as beads
 
+Mike, later on 2026-09-23: "We also have Grok, Cursor, agy, others." So the plan runs four vendors in parallel instead of one queue. S3 no longer waits for S1, because it replaces every edit door anyway. S4 is split: its logic (S4a) starts now, and its interface wiring (S4b) waits for S2 and S3. An acceptance harness written by a different model (S6a) checks all the builders.
+
 | Stage | Bead | What | Who | Depends on |
 |---|---|---|---|---|
-| S0 | ac-069 | Integration branch, baseline, this review, guidance | reviewer (Claude) | — |
-| S1 | ac-zhv | Nothing changes the view unless the reader does it: folding, fold scope, hover, viewport, scroll never commits | Codex | S0 |
-| S2 | ac-q3j | One Review list beside the full document | Codex | S1 |
-| S3 | ac-nkn | Proposals are drafts until the reader presses Propose | Codex | S2 |
-| S4 | ac-54j | One status model, honestly labelled | Codex | S3 |
-| S5 | ac-evq | A spelling fix never carries agreement across a change of meaning | Codex | S0 |
-| S6 | ac-o3l | Acceptance walkthrough on desktop and phone, validation report | reviewer | S4, S5 |
-| S7 | ac-c9t | Deploy, live check, changelog | reviewer | S6 |
+| S0 | ac-069 | Integration branch, baseline, this review, guidance (done) | Claude (reviewer) | — |
+| S1 | ac-zhv | Nothing changes the view unless the reader does it: folding, fold scope, hover, viewport, scroll never commits | Codex (gpt-6-astra, high) | S0 |
+| S2 | ac-q3j | One Review list beside the full document | next free builder | S1 |
+| S3 | ac-nkn | Proposals are drafts until the reader presses Propose | Codex (gpt-6-astra, high) | S0 (built beside S1, merged after it) |
+| S4a | ac-p4x | The status model: pure module, server, header | Grok (grok-4.7) | S0 |
+| S4b | ac-54j | The status model wired into the interface | next free builder | S2, S3, S4a |
+| S5 | ac-evq | A spelling fix never carries agreement across a change of meaning | Codex (gpt-6-astra, medium) | S0 |
+| S6a | ac-3g7 | An independent acceptance harness for the brief's twelve checks | Cursor (composer-2.5) | S0 |
+| S6 | ac-o3l | Acceptance walkthrough on desktop and phone, validation report | Claude (reviewer) | S4b, S5, S6a |
+| S7 | ac-c9t | Deploy, live check, changelog | Claude (reviewer) | S6 |
+
+Before a stage merges, agy (Gemini 3.1 Pro) reviews its diff against this document, and the reviewer runs the suites and the browser checks. Grok works as seat `grok-builder`, registered for this job.
 
 The bead ids are in the store (`~/Projects/_estate/bin/bead --repo proof-sdk list`).
 

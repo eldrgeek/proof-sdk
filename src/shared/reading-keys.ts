@@ -1,8 +1,11 @@
 /**
  * Review keys act on the selected passage. S opens a local draft; E stays Explain.
+ * Hover and scrolling never end Writing. Letter shortcuts are optional and never run
+ * during typing or composition.
  * Mike, 2026-09-23 (usability brief). Direct Editing and draft fields never run letter commands.
  */
 export const READING_MODE_POLICY = {
+  /** No caret blinks in the text while reading. */
   hideCaretWhileReading: true,
   showModeChip: true,
 } as const;
@@ -38,6 +41,7 @@ export interface KeyRouteInput {
   target: KeyTarget;
   /** The person is writing (see the module header). */
   writing: boolean;
+  letterShortcuts?: boolean;
 }
 
 /**
@@ -72,8 +76,8 @@ export function routeKey(input: KeyRouteInput): KeyRoute {
   }
   if (target === 'field') return 'type';
   if (input.writing) return target === 'editor' ? 'type' : 'pass';
+  if (input.letterShortcuts === false && /^[a-z]$/i.test(key)) return target === 'editor' ? 'swallow' : 'pass';
   if (target === 'editor') {
-    if (input.writing) return 'type';
     if (isReadingCommandKey(key)) return 'command';
     if (key === 'Tab') return 'pass'; // Tab moves between controls while reading
     if (isTextChangingKey(key)) return 'swallow';

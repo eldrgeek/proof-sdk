@@ -7,6 +7,8 @@
 // Exit code 0 only if every check passes.
 // Usage: node scripts/reading-walk-check.mjs [--style playmaker|proof] [--width 1440] [--shots dir]
 import assert from 'node:assert/strict';
+import { selectPassage, scrollAcceptsNothing, explicitAcceptUndo } from './usability-s1-assertions.mjs';
+
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
@@ -215,98 +217,40 @@ async function desktop(browser, base, style, width) {
     // line 2 -> 3 -> 4, pausing longer than line 3's reading time (Step B3b: its words at the
     // reader's rate, from debugState().dwellMs).
     await gesture(page, await lineDelta(page, 2));
-    await waitFor(page, () => window.__proofReadingWalk.debugState().focus === 3);
+    await waitFor(page, () => window.__proofReadingWalk.debugState().readingFocus === 3);
     const need = (await walk(page)).dwellMs;
     assert.ok(need > 1000, `a 20-word line should need more than 1 s at 4 words/s (dwellMs ${need})`);
     await page.waitForTimeout(need + 200);
     await gesture(page, await lineDelta(page, 3));
-    await waitFor(page, () => window.__proofReadingWalk.debugState().focus === 4);
+    await waitFor(page, () => window.__proofReadingWalk.debugState().readingFocus === 4);
     await waitFor(page, () => window.__proofReadingWalk.debugState().seenWrites.includes(3));
     assert.equal(await dotStatus(page, 3), 'seen');
     await page.waitForTimeout(400);
   });
-  await check(`${tag}: a fling marks nothing, and stops at the first line with changes`, async () => {
-    await page.mouse.wheel(0, 2500);
-    await waitFor(page, () => window.__proofReadingWalk.debugState().focus >= 10);
-    await page.waitForTimeout(500);
-    const state = await walk(page);
-    assert.equal(state.focus, TRIPLE, `focus ${state.focus}: the fling ran past the changes`);
-    for (let line = 5; line < TRIPLE; line += 1) {
-      assert.ok(!state.seenWrites.includes(line), `line ${line} was marked Seen by a fling`);
-      // Step B3b: a line the fling passed is skimmed (a hollow dot), never Seen.
-      assert.equal(await dotStatus(page, line), 'skimmed', `line ${line}`);
-    }
+  await check(`${tag}: a fling does not select or accept a proposal`, async () => {
+    await scrollAcceptsNothing(page);
   });
   const bob = await openDoc(browser, base, created.slug, 'Bob', { viewport: { width: 1280, height: 900 } });
-  await check(`${tag}: each scroll gesture steps to the next change while the page stays on the line`, async () => {
-    const before = await page.evaluate(() => window.scrollY);
-    let state = await walk(page);
-    assert.equal(state.marksOnFocus.length, 3);
-    assert.equal(state.current, state.marksOnFocus[0]);
-    await page.screenshot({ path: path.join(shots, `${tag}-2-stepping.png`) });
-    // A trackpad-like gesture: 20 events with inertia is still one step.
-    await gesture(page, 30, 20);
-    state = await walk(page);
-    assert.equal(state.current, state.marksOnFocus[1], 'first gesture did not step exactly once');
-    assert.equal(state.provisional.length, 1);
-    await gesture(page, 120);
-    await gesture(page, 120);
-    state = await walk(page);
-    assert.equal(state.focus, TRIPLE, 'focus left the line while stepping');
-    assert.equal(state.current, null);
-    assert.equal(state.provisional.length, 3);
-    const after = await page.evaluate(() => window.scrollY);
-    assert.ok(Math.abs(after - before) <= 2, `page moved while stepping (${before} -> ${after})`);
-    const rail = await page.locator('.prw-right .prw-provisional').innerText();
-    assert.ok(/scrolled past 3 changes, so they count as accepted by scrolling/.test(rail), rail);
-    // Accord layout stage 1: a scroll-accept renders as an ordinary insert / delete (Docs style);
-    // the status bar under the page lists it with Save (the old look hid the old words).
-    const hidden = await page.evaluate(() => [...document.querySelectorAll('.ProseMirror .mark-delete')].filter(e => getComputedStyle(e).display === 'none').length);
-    assert.equal(hidden, 0, `provisionally accepted old words were hidden (${hidden})`);
-    assert.match(await page.locator('.pst-bar .pst-provisional').innerText(), /3 accepted by scrolling, not saved/);
-    await page.screenshot({ path: path.join(shots, `${tag}-3-provisional.png`) });
+  await check(`${tag}: J steps between visible passages even when proposals are present`, async () => {
+    await selectPassage(page, TRIPLE);
+    const before = await pendingIds(page);
+    await page.keyboard.press('j');
+    assert.equal((await walk(page)).cursor, TRIPLE + 1);
+    assert.deepEqual(await pendingIds(page), before);
   });
-  await check(`${tag}: a provisional accept is not written: the other reader still sees the changes pending`, async () => {
-    assert.equal((await pendingIds(bob.page)).length, 4);
-    assert.equal((await pendingIds(page)).length, 4);
+  await check(`${tag}: the other reader still sees pending proposals after scrolling`, async () => {
+    await scrollAcceptsNothing(page);
+    assert.deepEqual(await pendingIds(bob.page), await pendingIds(page));
   });
-  await check(`${tag}: scrolling back up above the line reverts the provisional accepts`, async () => {
-    await gesture(page, 120); // leaves the line (native scroll)
-    await waitFor(page, () => window.__proofReadingWalk.debugState().focus > 11);
-    assert.equal((await walk(page)).provisional.length, 3, 'moving on removed the accepts');
-    await gesture(page, -400);
-    await waitFor(page, () => window.__proofReadingWalk.debugState().focus < 11);
-    const state = await walk(page);
-    assert.equal(state.provisional.length, 0);
-    const hidden = await page.evaluate(() => [...document.querySelectorAll('.ProseMirror .mark-delete')].filter(e => getComputedStyle(e).display === 'none').length);
-    assert.equal(hidden, 0, 'old words still hidden after revert');
+
+  await check(`${tag}: a later explicit Agree accepts no earlier proposal`, async () => {
+    await selectPassage(page, DELTA + 1);
+    const before = await pendingIds(page);
+    await page.keyboard.press('a'); await page.waitForTimeout(400);
+    assert.deepEqual(await pendingIds(page), before);
   });
-  await check(`${tag}: provisional accepts commit on a later explicit A; only then does the other reader see them`, async () => {
-    // Walk down with J: through the three changes, past the delta change, to the line after it.
-    for (let i = 0; i < 30; i += 1) {
-      const s = await walk(page);
-      if (s.focus > DELTA) break;
-      await page.keyboard.press('j');
-      await page.waitForTimeout(40);
-    }
-    let state = await walk(page);
-    assert.equal(state.focus, DELTA + 1);
-    assert.equal(state.provisional.length, 4);
-    assert.equal((await pendingIds(bob.page)).length, 4, 'the other reader saw an accept before commit');
-    await page.keyboard.press('a');
-    await waitFor(page, () => (window.proof?.getAllMarks?.() ?? []).filter(m => m.data?.status === 'pending').length === 0);
-    state = await walk(page);
-    assert.equal(state.provisional.length, 0);
-    await waitFor(bob.page, () => (window.proof?.getAllMarks?.() ?? []).filter(m => m.data?.status === 'pending').length === 0, null, 12000);
-    await waitFor(bob.page, () => document.querySelector('.ProseMirror')?.innerText.includes('ALPHA word'), null, 12000);
-    await waitFor(page, i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.status === 'agreed', DELTA + 1);
-  });
-  await check(`${tag}: explicit accepts are never undone by scrolling back up`, async () => {
-    await page.evaluate(() => window.scrollTo(0, 0));
-    await waitFor(page, () => window.__proofReadingWalk.debugState().focus === 0);
-    await page.waitForTimeout(300);
-    assert.equal((await pendingIds(page)).length, 0);
-    assert.ok((await page.locator('.ProseMirror').innerText()).includes('DELTA word'));
+  await check(`${tag}: explicit Accept survives scrolling and one Undo restores the proposal`, async () => {
+    await explicitAcceptUndo(page, TRIPLE);
   });
   await check(`${tag}: Next issue moves the focus line`, async () => {
     await page.keyboard.press('j'); await page.keyboard.press('j');
@@ -323,7 +267,7 @@ async function desktop(browser, base, style, width) {
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.waitForTimeout(150);
     await page.locator('.plm-dot[data-line="3"]').click();
-    await waitFor(page, () => window.__proofReadingWalk.debugState().focus === 3);
+    await waitFor(page, () => window.__proofReadingWalk.debugState().readingFocus === 3);
     assert.equal(await page.locator('.plm-menu').count(), 0);
     assert.equal(await page.locator('.prw-right .plm-box').getAttribute('data-line'), '3');
   });
@@ -403,9 +347,8 @@ async function phone(browser, base, style) {
     await page.screenshot({ path: path.join(shots, `${tag}-2-sheet.png`) });
     await sheet.locator('.prw-collapse').tap();
   });
-  await check(`${tag}: scrolling moves the focus and stops at the line with changes`, async () => {
-    await page.evaluate(() => window.scrollBy(0, 4000));
-    await waitFor(page, () => window.__proofReadingWalk.debugState().focus === 11);
+  await check(`${tag}: phone scrolling keeps the selected passage and proposals pending`, async () => {
+    await scrollAcceptsNothing(page);
   });
   await context.close();
 }
