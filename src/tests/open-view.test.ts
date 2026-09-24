@@ -19,6 +19,7 @@ import {
 } from '../shared/open-view';
 import { needsYouLines } from '../shared/layout-status';
 import { needsYouItems } from '../shared/layout-panels';
+import { participantStatus, personalCompletionText } from '../shared/participant-status';
 import {
   LINE_MARK_POLICY,
   anchorForLine,
@@ -154,6 +155,33 @@ function invariant(label: string, issues: ProofIssue[], lines: DocLine[], states
   const withoutThreads = openView({ issues, viewer: ME, lineAtPos, lineCount: lines.length }).lines;
   assert.deepEqual(viaStatus, withoutThreads, `${label}: needsYouLines drifted from openView`);
   assert.deepEqual(viaPanels, withoutThreads, `${label}: needsYouItems drifted from openView`);
+
+  // The header and the status module are one computation. A later surface that publishes the
+  // same object (the server's /state participantStatus) cannot disagree with the header.
+  const team = [ME, ERIC, IZZY];
+  const status = participantStatus({ states, team });
+  const h = accordHeader({ states, team, viewer: ME, name: actor => actor });
+  assert.deepEqual(h.status, status, `${label}: the header did not read the shared status`);
+  assert.deepEqual(h.agreed, status.participants.filter(person => person.agreed).map(person => person.actor));
+  for (const person of status.participants) {
+    const who = person.actor === ME ? 'You' : person.actor;
+    if (!person.agreed) assert.ok(!h.agreed.includes(person.actor), `${label}: ${who} shown as agreed`);
+    if (person.approved) {
+      assert.ok(h.approved.includes(person.actor), `${label}: Approved missing for ${who}`);
+      assert.ok(!h.agreed.includes(person.actor), `${label}: Approved shown as agreement`);
+    } else {
+      assert.ok(!h.approved.includes(person.actor), `${label}: ${who} listed as Approved`);
+    }
+    if (person.counts.rejected > 0) {
+      const clause = h.clauses.find(item => item.actor === person.actor);
+      assert.ok(clause, `${label}: no header clause for rejecter ${who}`);
+      assert.match(clause?.text ?? '', new RegExp(`rejected ${person.counts.rejected} line`));
+      assert.doesNotMatch(clause?.text ?? '', /has not read/, `${label}: ${who} rejected text and was called unread`);
+    }
+    if (person.counts.seen > 0 && !person.agreed) {
+      assert.ok(!h.text.startsWith(`Agreed by ${who === 'You' ? 'you' : who}`), `${label}: Seen shown as agreement`);
+    }
+  }
 }
 
 test('the Issues pill, the amber dots and the Open list cannot disagree (1000 random documents, both policy settings)', () => {
@@ -170,6 +198,10 @@ test('the Issues pill, the amber dots and the Open list cannot disagree (1000 ra
         for (const line of lines) {
           if (random() < 0.4) marks.push(mark(line, ME, random() < 0.5 ? 'agreed' : 'seen'));
           if (random() < 0.3) marks.push(mark(line, ERIC, 'agreed'));
+          // A later Rejected or Approved mark wins the line, so the shared status is exercised.
+          if (random() < 0.2) marks.push({ ...mark(line, ERIC, 'rejected', '2026-09-23T11:00:00.000Z'), reason: 'no' });
+          if (random() < 0.08) marks.push(mark(line, IZZY, 'approved', '2026-09-23T11:30:00.000Z'));
+          if (random() < 0.15) marks.push(mark(line, ME, 'seen', '2026-09-23T11:45:00.000Z'));
         }
         const states = buildLineStates(lines, marks);
         invariant(`seed ${seed} unread=${unread}`, issues, lines, states, []);
@@ -408,7 +440,64 @@ test('the honest header never counts a lapsed agreement as agreement', () => {
   const h = header(buildLineStates(after, marks), [ME]);
   assert.equal(h.settled, false, 'the document must not read as settled when the meaning moved under the agreement');
   assert.equal(h.viewerRow?.fromLine, 1);
-  assert.equal(h.text, 'You have not read from line 2 on.');
+  assert.equal(h.text, 'You agreed to an earlier version of line 2.');
+  assert.doesNotMatch(h.text, /has not read/);
+});
+
+test('a Rejected mark is never described as not having read the text', () => {
+  const lines = makeLines(['One line of real words here.', 'Two lines of real words here.', 'Three lines of real words.']);
+  const marks = [
+    mark(lines[0], ME, 'agreed'),
+    mark(lines[1], ME, 'agreed'),
+    mark(lines[2], ME, 'agreed'),
+    { ...mark(lines[0], ERIC, 'rejected'), reason: 'The date is wrong' },
+    { ...mark(lines[2], ERIC, 'rejected'), reason: 'The price is wrong' },
+  ];
+  const states = buildLineStates(lines, marks);
+  const status = participantStatus({ states, team: [ME, ERIC] });
+  const h = header(states, [ME, ERIC]);
+  assert.deepEqual(h.status, status);
+  assert.equal(h.text, 'Agreed by you. Eric rejected 2 lines.');
+  assert.deepEqual(h.clauses.find(clause => clause.actor === ERIC)?.lines, [0, 2]);
+  assert.equal(status.participants[1].rejections[0].reason, 'The date is wrong');
+  assert.equal(status.aligned, false);
+  assert.equal(status.agreed, false);
+});
+
+test('Seen is never shown as agreement, and Approved is the owner ruling apart from it', () => {
+  const lines = makeLines(['One line of real words here.', 'Two lines of real words here.']);
+  const seen = lines.map(line => mark(line, ERIC, 'seen'));
+  const approved = lines.map(line => mark(line, ME, 'approved'));
+  const states = buildLineStates(lines, [...seen, ...approved]);
+  const status = participantStatus({ states, team: [ME, ERIC] });
+  const h = header(states, [ME, ERIC]);
+  assert.equal(status.aligned, true, 'everyone has seen the text and nobody rejects it');
+  assert.equal(status.agreed, false, 'Seen and Approved are not agreement');
+  assert.equal(h.settled, false);
+  assert.deepEqual(h.agreed, []);
+  assert.deepEqual(h.approved, [ME]);
+  assert.equal(h.text, 'Approved by you. Eric has seen it and has not agreed.');
+  assert.doesNotMatch(h.text, /Agreed by/);
+  assert.doesNotMatch(h.text, /has not read/);
+});
+
+test('finishing a personal review waits for the others and does not claim team agreement', () => {
+  const lines = makeLines(['One line of real words here.', 'Two lines of real words here.']);
+  const marks = [
+    ...lines.map(line => mark(line, ME, 'agreed')),
+    mark(lines[0], ERIC, 'seen'),
+    mark(lines[0], IZZY, 'agreed'),
+  ];
+  const status = participantStatus({ states: buildLineStates(lines, marks), team: [ME, ERIC, IZZY] });
+  const text = personalCompletionText({ status, viewer: ME, name: actor => ({ [ERIC]: 'Alex', [IZZY]: 'Jo' }[actor] ?? actor) });
+  assert.equal(text, 'You have finished reviewing. Waiting for Alex and Jo.');
+  assert.doesNotMatch(text ?? '', /agree/i);
+  const done = lines.flatMap(line => [mark(line, ME, 'agreed'), mark(line, ERIC, 'agreed'), mark(line, IZZY, 'agreed')]);
+  const all = participantStatus({ states: buildLineStates(lines, done), team: [ME, ERIC, IZZY] });
+  assert.equal(all.agreed, true);
+  const finished = personalCompletionText({ status: all, viewer: ME, name: actor => actor });
+  assert.equal(finished, 'You have finished reviewing.');
+  assert.doesNotMatch(finished ?? '', /team|everyone|agreed/i);
 });
 
 test('the honest header counts a mark carried over a cosmetic edit', () => {

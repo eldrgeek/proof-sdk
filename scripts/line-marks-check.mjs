@@ -18,7 +18,8 @@ import { fileURLToPath } from 'node:url';
 import { chromium, devices } from 'playwright';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const shots = path.join(root, '.preview');
+const shotsArg = process.argv.indexOf('--shots');
+const shots = shotsArg > 0 ? process.argv[shotsArg + 1] : path.join(root, '.preview');
 mkdirSync(shots, { recursive: true });
 const styleArg = process.argv.indexOf('--style');
 const style = styleArg > 0 ? process.argv[styleArg + 1] : 'playmaker';
