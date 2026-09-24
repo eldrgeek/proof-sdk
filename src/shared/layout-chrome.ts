@@ -103,10 +103,10 @@ export const SETTINGS_POLICY = {
   budgetReachedOpensSettings: true,
 } as const;
 
-/** "12 Issues" / "1 Issue" / "Aligned" (the team has nothing open) / "0 Issues" (nothing needs you). */
-export function issuesPillText(viewerCount: number, teamCount: number): string {
+/** Issue counts never claim alignment. Mike, 2026-09-23 (usability brief). */
+export function issuesPillText(viewerCount: number, _teamCount: number): string {
   if (viewerCount > 0) return `${viewerCount} ${viewerCount === 1 ? 'Issue' : 'Issues'}`;
-  return teamCount === 0 ? 'Aligned' : '0 Issues';
+  return '0 Issues';
 }
 
 /** The pill's tooltip lead: the viewer's count, then the team's. */

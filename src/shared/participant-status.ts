@@ -2,7 +2,7 @@
  * Accord participant status — one computation for every surface.
  *
  * Mike, 2026-09-23 (usability brief): one module computes each participant's state per passage
- * and per document. The server's /state, the honest header, and (later) the status bar, the
+ * and per document. The server's /state, the honest header, the status bar, the
  * Review count, People and the agreed-copy gate all read this file. They do not each decide.
  *
  * The words are the spec's words. Stored mark values are not renamed.
@@ -387,4 +387,22 @@ export function personalCompletionText(input: {
   const waiting = input.status.participants.filter(person => actorKey(person.actor) !== viewerKey && !person.finishedOwnReview);
   if (waiting.length === 0) return 'You have finished reviewing.';
   return `You have finished reviewing. Waiting for ${joinWords(waiting.map(person => input.name(person.actor)))}.`;
+}
+
+/** People uses every state with a count when the document contains mixed states. */
+export function participantStatusText(person: ParticipantStatus): string {
+  if (person.approved) return 'Approved';
+  if (person.agreed && person.counts.approved === 0) return 'Agreed';
+  const order: ParticipantState[] = ['rejected', 'lapsed', 'approved', 'agreed', 'seen', 'unseen'];
+  return order.filter(state => person.counts[state] > 0).map(state => {
+    const word = state === 'unseen' ? 'not read yet' : PARTICIPANT_STATUS_POLICY.words[state];
+    return `${word} ${person.counts[state]}`;
+  }).join(' · ') || 'not read yet';
+}
+
+/** The agreed-copy offer names the wording revision and every participant whose agreement counts. */
+export function agreedCopyOffer(status: DocumentStatus, revision: string, name: (actor: string) => string): { enabled: boolean; detail: string } {
+  if (status.agreed) return { enabled: true, detail: `Wording revision ${revision} · Agreed by ${joinWords(status.participants.map(p => name(p.actor)))}` };
+  const waiting = status.participants.filter(p => !p.agreed).map(p => name(p.actor));
+  return { enabled: false, detail: waiting.length ? `Not yet agreed: waiting for ${joinWords(waiting)}` : 'Not yet agreed: no reviewed passages' };
 }

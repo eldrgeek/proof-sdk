@@ -333,10 +333,10 @@ async function phone(browser, base, style) {
     assert.ok(info.focus, 'no focus highlight');
     await page.screenshot({ path: path.join(shots, `${tag}-1-open.png`) });
   });
-  await check(`${tag}: a dot still opens the Step 1 bottom sheet`, async () => {
+  await check(`${tag}: a dot opens the one Margin answer sheet`, async () => {
     await page.locator('.plm-dot[data-line="1"]').tap();
-    await page.locator('.plm-menu.plm-sheet').waitFor({ state: 'visible' });
-    await page.locator('.plm-menu .plm-close').tap();
+    await page.locator('.prw-right.prw-sheet-open').waitFor({ state: 'visible' });
+    await page.locator('.prw-strip-grab').tap();
   });
   await check(`${tag}: the ⋯ menu opens "This line" as a bottom sheet with the mark box`, async () => {
     await page.locator('#share-banner .share-pill-overflow').tap();

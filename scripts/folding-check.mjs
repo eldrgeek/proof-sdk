@@ -389,13 +389,13 @@ async function phone(browser, base, style) {
     await waitFor(page, () => document.querySelector('.pfold-chip[data-heading="9"]')?.dataset.folded === 'true');
     assert.ok(await isHiddenLine(page, 10));
     await page.locator(`.plm-dot[data-line="${L.BETA}"]`).tap();
-    const sheet = page.locator('.plm-menu.plm-sheet');
+    const sheet = page.locator('.prw-right.prw-sheet-open');
     await sheet.waitFor({ state: 'visible' });
     const section = sheet.locator('.plm-section-note');
     assert.equal(await section.innerText(), 'Show all 5 lines to agree with this section');
     await page.screenshot({ path: path.join(shots, `${tag}-2-sheet.png`) });
     await section.tap();
-    await page.waitForFunction(() => document.querySelector('.plm-menu.plm-sheet .plm-section-note')?.textContent === 'Agree with this section (5 lines)');
+    await page.waitForFunction(() => document.querySelector('.prw-right.prw-sheet-open .plm-section-note')?.textContent === 'Agree with this section (5 lines)');
     await sheet.locator('.plm-section-note').tap();
     await waitFor(page, () => window.__proofLineMarks.debugState().marks.filter(m => m.by === 'guest:Pat' && m.status === 'agreed' && !m.id.startsWith('local-')).length >= 5);
     await page.screenshot({ path: path.join(shots, `${tag}-3-marked.png`) });

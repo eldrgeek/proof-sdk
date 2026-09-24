@@ -139,15 +139,6 @@ body.prw-on.prw-right-collapsed { --prw-right: var(--prw-collapsed); }
 .amg-tail[hidden] { display: none; }
 .plm-familiar-fold > summary { cursor: pointer; color: var(--acc-mute, #6b7280); font-size: 12.5px; margin: 6px 0; }
 .plm-familiar-fold[open] > summary { margin-bottom: 4px; }
-.amg-reply { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; }
-.amg-reply[hidden] { display: none; }
-.amg-reply-input {
-  flex: 1; min-width: 0; min-height: 36px; padding: 8px 10px; border: 1px solid var(--acc-line, #e3e6ea); border-radius: 8px;
-  font: 13px/1.3 system-ui, sans-serif; color: var(--acc-ink, #1c1f24);
-}
-.amg-reply-input:focus { outline: 2px solid var(--acc-here, #2f6fed); outline-offset: -1px; }
-.amg-reply-send { min-height: 36px; padding: 0 12px; border: 1px solid var(--acc-ink, #1c1f24); border-radius: 8px; background: var(--acc-ink, #1c1f24); color: #fff; font: 600 12.5px system-ui, sans-serif; cursor: pointer; }
-.amg-resolve-note { flex-basis: 100%; margin: 4px 0 0; color: var(--acc-mute, #6b7280); font-size: 12.5px; }
 .amg-me { margin-top: 14px; padding-top: 8px; border-top: 1px solid #ecebe6; display: grid; gap: 6px; }
 .amg-me .prw-me { white-space: normal; }
 .amg-tools:empty { display: none; }
@@ -175,8 +166,6 @@ body.prw-on.prw-right-collapsed { --prw-right: var(--prw-collapsed); }
   .prw-strip-where b { font-weight: 600; }
   .prw-strip-marked { display: block; padding: 0; border: none; background: none; color: #333; font: 12.5px/1.25 system-ui, sans-serif; text-align: left; }
   .prw-strip-actions button { min-height: 44px; border-radius: 8px; }
-  .prw-strip-actions .prw-strip-agree { min-width: 84px; background: #f0faf3; border-color: #9ccfb0; color: #177245; }
-  .prw-strip-actions .prw-strip-reject { min-width: 84px; background: #fdf2f1; border-color: #e4a9a3; color: #b3261e; }
   .prw-strip-actions .prw-strip-more { min-width: 48px; color: var(--acc-mute, #6b7280); font-weight: 400; font-size: 18px; }
   /* The status bar folds into the strip: it shows only while the strip steps aside (the caret in the text). */
   body.prw-strip-on .pst-bar { display: none; }
@@ -190,10 +179,7 @@ body.prw-on.prw-right-collapsed { --prw-right: var(--prw-collapsed); }
   .prw-sheet-open .plm-box-margin .plm-primary-row .plm-choice.plm-primary, .prw-sheet-open .plm-more-btn { min-height: 48px; }
   .prw-sheet-open .anv-issue, .prw-sheet-open .anv-heading { min-height: 44px; font-size: 14px; }
   .prw-sheet-open .anv-fold { height: 32px; min-width: 48px; }
-  .prw-sheet-open .amg-reply-input, .prw-sheet-open .amg-reply-send { min-height: 44px; font-size: 16px; }
-  /* The strip already carries the line, Agree, Reject and ⋯: the sheet's Line tab starts with the thread. */
-  body.prw-margin-sheet .prw-right.prw-sheet-open .plm-box-margin .plm-quote,
-  body.prw-margin-sheet .prw-right.prw-sheet-open .plm-box-margin .plm-primary-row,
+  /* Mike, 2026-09-23 (usability brief): the sheet carries the one answer group. */
   body.prw-margin-sheet .prw-right.prw-sheet-open .prw-keys { display: none; }
   /* Sheets size to their content (the rail has only a max height): panes grow, not shrink to zero. */
   .prw-sheet-open .anv-pane, .prw-sheet-open .amg-pane { flex: 1 1 auto; }
@@ -214,8 +200,6 @@ body.prw-on.prw-right-collapsed { --prw-right: var(--prw-collapsed); }
 .amg-threads[hidden] { display: none; }
 .amg-threads-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .amg-threads-head strong { font-size: 13px; }
-.amg-thread-start { font-size: 12px; padding: 3px 8px; border: 1px solid var(--proof-rule, #d1d5db); border-radius: 6px; background: transparent; cursor: pointer; }
-.amg-thread-start:disabled { opacity: .5; cursor: default; }
 .amg-threads-list { display: flex; flex-direction: column; gap: 8px; }
 
 .amg-thread { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--proof-rule, #e5e7eb); border-radius: 8px; font-size: 13px; }

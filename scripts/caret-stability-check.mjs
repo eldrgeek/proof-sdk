@@ -307,8 +307,8 @@ const jitter = () => 60 + Math.floor(Math.random() * 61);
 async function runDraft(page, created, tag, phone) {
   await page.evaluate(i => { window.__caretTarget = i; window.__proofReadingWalk.focusLine(i); }, TARGET_LINE);
   if (phone) {
-    await page.waitForFunction(i => document.querySelector('.plm-edit-pencil')?.dataset.line === String(i), TARGET_LINE, { timeout: 5000 });
-    await page.locator('.plm-edit-pencil').click();
+    await page.locator(`.plm-dot[data-line="${TARGET_LINE}"]`).click();
+    await page.locator('[data-accord-suggest-change]').click();
   }
   else {
     await page.evaluate(() => document.activeElement?.blur());

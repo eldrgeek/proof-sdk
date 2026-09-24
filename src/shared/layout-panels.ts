@@ -4,6 +4,7 @@
  * Mike, 2026-09-23 (usability brief).
  */
 import { actorKey, type ProofIssue } from './line-marks';
+import type { ThreadView } from './threads';
 import { openView, type OpenKind } from './open-view';
 
 /** The Margin (decision 6): two tabs only, the line and the room. */
@@ -18,17 +19,12 @@ export const MARGIN_POLICY = {
   roomBadge: 'mentions' as const,
   /** Width on desktop (px), per the mockup. */
   widthPx: 340,
-  /**
-   * Decision 8: Agree and Reject are the two primary mark buttons; everything else a line can take
-   * is under ⋯ More (in this order). "Seen" stays for a person who wants it explicit: scrolling
-   * marks Seen on its own.
-   */
+  /** One answer group in the desktop margin or phone sheet. Other capabilities live in More. */
+  primaryActions: ['Agree', 'Suggest change', 'Discuss', 'Reject'] as const,
   primaryMarks: ['agreed', 'rejected'] as readonly string[],
   moreItems: ['approved', 'seen', 'clear', 'uncertain', 'alternative', 'explain', 'ttl', 'tier'] as readonly string[],
   /** The Familiar's note on the line folds to its headline ("Familiar says (1)"). */
   familiarFolds: true,
-  /** "Reply on this line…": a reply to the line's newest open comment, else a new comment on the whole line. */
-  replyToNewestComment: true,
 } as const;
 
 /**
@@ -253,4 +249,24 @@ export function resolveSettledIndex(
   if (at < 0) return null;
   const index = lines[at].index;
   return typeof index === 'number' ? index : at;
+}
+
+/** Persistent, keyboard reachable margin markers include resolved history and count each object once. */
+export function passageMarkers(threads: readonly ThreadView[]): Map<number, { text: string; ids: string[] }> {
+  const byLine = new Map<number, Map<string, ThreadView>>();
+  for (const view of threads) {
+    const lines = view.lineIndices.length ? view.lineIndices : view.lineIndex === null ? [] : [view.lineIndex];
+    for (const line of lines) {
+      if (!byLine.has(line)) byLine.set(line, new Map());
+      byLine.get(line)!.set(view.thread.id, view);
+    }
+  }
+  return new Map([...byLine].map(([line, entries]) => {
+    const values = [...entries.values()];
+    const proposals = values.filter(v => v.thread.kind === 'proposal').length;
+    const comments = values.filter(v => v.thread.kind === 'discussion').reduce((n, v) => n + 1 + v.thread.replies.length, 0);
+    const text = [comments ? `${comments} ${comments === 1 ? 'comment' : 'comments'}` : '',
+      proposals ? `${proposals} ${proposals === 1 ? 'proposal' : 'proposals'}` : ''].filter(Boolean).join(' · ');
+    return [line, { text, ids: [...entries.keys()] }];
+  }));
 }

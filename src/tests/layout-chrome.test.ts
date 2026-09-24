@@ -42,7 +42,7 @@ test('issuesPillText: the viewer count, "Aligned" only when the team has nothing
   assert.equal(issuesPillText(12, 30), '12 Issues');
   assert.equal(issuesPillText(1, 30), '1 Issue');
   assert.equal(issuesPillText(0, 30), '0 Issues');
-  assert.equal(issuesPillText(0, 0), 'Aligned');
+  assert.equal(issuesPillText(0, 0), '0 Issues');
   assert.equal(issuesPillTitle(2, 9), '2 lines need you (the amber dots); the team has 9 open Issues.');
   assert.equal(issuesPillTitle(0, 0), 'Nothing needs you; the team has nothing open.');
 });

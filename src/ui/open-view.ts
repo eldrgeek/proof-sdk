@@ -3,7 +3,7 @@
  * Completion never changes the view or removes controls.
  * Mike, 2026-09-23 (usability brief).
  */
-import { accordHeader, emptyAccordHeader, openView, zeroMoment, type AccordHeader, type AccordView, type OpenView } from '../shared/open-view';
+import { accordHeader, emptyAccordHeader, zeroMoment, type AccordHeader, type AccordView, type OpenView } from '../shared/open-view';
 import type { LineMarksUI } from './line-marks';
 import type { FoldingUI } from './folding';
 import './open-view.css';
@@ -21,6 +21,7 @@ export class OpenViewUI {
   private view: AccordView = 'open';
   private chosen = false;
   private started = false;
+  private headerSignature = '';
   private lastOpen: OpenView = { items: [], lines: [], count: 0 };
   private lastHeader: AccordHeader = emptyAccordHeader();
   private unsubscribe: (() => void) | null = null;
@@ -44,6 +45,7 @@ export class OpenViewUI {
   }
   current(): AccordView { return this.view; }
   setView(view: AccordView): void {
+    if (view === 'accord' && !this.host.lineMarks().agreedCopyOffer().enabled) return;
     this.view = view;
     this.chosen = true;
     this.changes.push(view);
@@ -53,21 +55,12 @@ export class OpenViewUI {
   private compute(): { open: OpenView; header: AccordHeader } {
     const lm = this.host.lineMarks();
     const summary = lm.issueSummary();
-    const lines = lm.lineList();
     if (!summary || !lm.isLoaded()) {
       return { open: { items: [], lines: [], count: 0 }, header: emptyAccordHeader() };
     }
-    const open = openView({
-      issues: summary.issues,
-      viewer: lm.me(),
-      aliases: lm.viewerAliases(),
-      lineAtPos: pos => lm.lineAtPos(pos),
-      threads: lm.allThreads(),
-      team: summary.team,
-      states: lm.lineStates(),
-      lineCount: lines.length,
-    });
+    const open = lm.reviewViews()['needs-you'];
     const header = accordHeader({
+      status: lm.participantStatus(),
       states: lm.lineStates(),
       team: summary.team,
       viewer: lm.me(),
@@ -87,8 +80,14 @@ export class OpenViewUI {
     const clean = this.chosen && this.view === 'accord';
     document.body.classList.add('aov-on');
     document.body.classList.toggle('aov-in-accord', clean);
-    this.paintHeader(header);
-    this.headerText.hidden = !clean || header.settled || !header.text;
+    const offer = this.host.lineMarks().agreedCopyOffer();
+    const signature = JSON.stringify([header.clauses, clean, offer.detail]);
+    if (signature !== this.headerSignature) {
+      this.headerSignature = signature;
+      this.paintHeader(header);
+      if (clean && offer.enabled) this.headerText.textContent = offer.detail;
+    }
+    this.headerText.hidden = clean ? !this.headerText.textContent : header.settled || !header.text;
     this.headerEl.hidden = this.headerText.hidden;
     this.headerEl.dataset.view = this.view;
   }

@@ -1,7 +1,7 @@
 /**
  * Remote updates preserve focused controls; resolving stays expanded until explicit navigation.
  * Mike, 2026-09-23 (usability brief).
- * Accord round 2, stage D — the discussion on a line, in the Margin's Line tab.
+ * The selected passage discussion lives only in Review; Discuss opens the composer.
  *
  * Mike, 2026-09-22: discussion happens in the document, not in the chat. This is where it shows:
  * under the line's marks and its changes, the threads anchored to the line the cursor is on. Every
@@ -37,12 +37,14 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, t
 }
 
 export interface ThreadsHost {
-  /** The line the Margin is showing. */
+  /** The selected passage in Review. */
   focusLine(): number;
   /** The document's lines, for the subject of a new thread. */
   lineText(index: number): string;
   /** The threads on that line now. */
   threadsOnLine(index: number): ThreadView[];
+  proposalCardElsewhere?(view: ThreadView): boolean;
+  proposalDecisionElsewhere?(view: ThreadView): boolean;
   /**
    * The lines the person has selected, in document order (empty when nothing is selected). A
    * selection the cursor has moved away from does not count, unless `force` (the selection bar's
@@ -61,11 +63,11 @@ export interface ThreadsHost {
   close(id: string, status: ThreadStatus): Promise<boolean>;
   reopen(id: string): Promise<boolean>;
   reply(id: string, text: string): boolean;
-  /** Re-renders the Margin (after a write). */
+  /** Re-renders Review (after a write). */
   refresh(): void;
 }
 
-/** The Line tab's discussion section. */
+/** The Review panel’s discussion section. */
 export class ThreadsPanel {
   readonly element = el('section', 'amg-threads');
   private readonly head = el('div', 'amg-threads-head');
@@ -74,7 +76,6 @@ export class ThreadsPanel {
   private readonly composerText = el('textarea', 'amg-thread-text-input');
   private readonly composerSubject = el('p', 'amg-thread-subject');
   private readonly composerAsks = el('fieldset', 'amg-thread-asks');
-  private readonly startButton = el('button', 'amg-thread-start');
   private asks: ThreadAsks = defaultAsksFor('discussion');
   private composerLines: number[] = [];
   private composerSelection: string | null = null;
@@ -87,11 +88,7 @@ export class ThreadsPanel {
   constructor(private readonly host: ThreadsHost) {
     this.list.addEventListener('focusout', () => queueMicrotask(() => this.render()));
     this.element.hidden = true;
-    this.startButton.type = 'button';
-    this.startButton.textContent = 'Start a thread';
-    this.startButton.title = 'T — starts a thread on the selection, or on this line';
-    this.startButton.onclick = () => this.openComposer();
-    this.head.append(el('strong', undefined, 'Discussion'), this.startButton);
+    this.head.append(el('strong', undefined, 'Discussion'));
     this.buildComposer();
     this.element.append(this.head, this.composer, this.list);
   }
@@ -203,14 +200,14 @@ export class ThreadsPanel {
     const threadTyping = threadFocus instanceof HTMLInputElement || threadFocus instanceof HTMLTextAreaElement;
     if (sig === this.sig || (!force && !lineChanged && threadTyping && this.list.contains(threadFocus))) return;
     this.sig = sig;
-    this.element.hidden = views.length === 0 && this.composer.hidden;
-    (this.head.querySelector('strong') as HTMLElement).textContent = views.length
-      ? `Discussion (${views.length})`
+    const shown = views.filter(view => !this.host.proposalCardElsewhere?.(view));
+    this.element.hidden = shown.length === 0 && this.composer.hidden;
+    (this.head.querySelector('strong') as HTMLElement).textContent = shown.length
+      ? `Discussion (${shown.length})`
       : 'Discussion';
-    this.startButton.disabled = !this.host.canComment();
     // Mike, 2026-09-23 (usability brief): resolution stays expanded until the reader leaves.
     this.list.replaceChildren();
-    for (const view of views) {
+    for (const view of shown) {
       const folded = !this.shownOpen.has(view.thread.id) && view.thread.status !== 'open' && threadFoldsFor(view, me) && !this.unfolded.has(view.thread.id);
       this.list.append(folded ? this.foldedMark(view) : this.card(view));
     }
@@ -307,7 +304,7 @@ export class ThreadsPanel {
         this.host.refresh();
       };
       card.append(replyForm);
-      if (canResolveThread(view, me, { isOwner: this.host.isOwner(), team: this.host.team() })) {
+      if (!this.host.proposalDecisionElsewhere?.(view) && canResolveThread(view, me, { isOwner: this.host.isOwner(), team: this.host.team() })) {
         for (const resolution of resolutionsFor(thread)) {
           const button = el('button', 'amg-thread-resolve', resolution.label);
           button.type = 'button';

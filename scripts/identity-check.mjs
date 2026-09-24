@@ -275,7 +275,7 @@ async function run(browser, style) {
       await pg.page.screenshot({ path: path.join(shots, `${ptag}-2-guest.png`) });
       await pg.page.evaluate(() => window.__proofReadingWalk.closeSheets());
       await pg.page.locator('.plm-dot[data-line="4"]').tap();
-      const sheet = pg.page.locator('.plm-menu.plm-sheet');
+      const sheet = pg.page.locator('.prw-right.prw-sheet-open');
       await sheet.waitFor({ state: 'visible' });
       await sheet.getByRole('button', { name: /Agree/ }).tap();
       await waitFor(pg.page, () => document.querySelector('.plm-dot[data-line="4"]')?.dataset.status === 'agreed');

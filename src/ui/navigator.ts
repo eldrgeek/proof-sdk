@@ -2,7 +2,7 @@
  * Mike, 2026-09-23 (usability brief). Existing selectors keep their machine names.
  */
 import { NAVIGATOR_POLICY, needsYouLabel, outlineRows, type NavigatorTab } from '../shared/layout-panels';
-import { REVIEW_LIST_POLICY, reviewViews, reviewCountLabel, reconcileReview, emptyReviewSession,
+import { REVIEW_LIST_POLICY, reviewCountLabel, reconcileReview, emptyReviewSession,
   clearCompleted, nextReviewRow, anchoredReviewScroll, type ReviewScope } from '../shared/review-list';
 import type { LineMarksUI } from './line-marks';
 import type { FoldingUI } from './folding';
@@ -34,6 +34,7 @@ export class NavigatorUI {
     since: el('div', 'anv-pane prw-rail-body'),
   };
   /** Fold all / Unfold all / level buttons and the other outline tools sit at the top of Outline. */
+  readonly detailEl = el('section', 'anv-detail');
   readonly toolsEl = el('div', 'anv-tools');
   private readonly outlineList = el('ul', 'anv-outline');
   private readonly issuesList = el('ul', 'anv-issues');
@@ -104,7 +105,8 @@ export class NavigatorUI {
     this.nextBtn.type = 'button';
     this.nextBtn.onclick = () => this.next();
     this.scopeTools.append(this.nextBtn, this.clearSettledBtn);
-    this.panes.issues.append(this.scopeTools, this.issuesEmpty, this.issuesList);
+    this.detailEl.setAttribute('aria-label', 'Selected passage discussion and proposals');
+    this.panes.issues.append(this.scopeTools, this.detailEl, this.issuesEmpty, this.issuesList);
     this.panes.since.append(this.sinceEmpty, sinceHost);
     this.outlineList.addEventListener('focusout', () => queueMicrotask(() => this.render()));
     this.applyTab();
@@ -165,10 +167,7 @@ export class NavigatorUI {
   render(force = false): void {
     const lm = this.host.lineMarks();
     if (this.reader !== lm.me()) { this.reader = lm.me(); this.sessions = { 'needs-you': emptyReviewSession(), 'all-open': emptyReviewSession() }; }
-    const summary = lm.issueSummary();
-    const views = reviewViews({ issues: summary?.issues ?? [], viewer: lm.me(), aliases: lm.viewerAliases(),
-      lineAtPos: pos => lm.lineAtPos(pos), threads: lm.allThreads(), team: summary?.team ?? [],
-      states: lm.lineStates(), lineCount: lm.lineList().length });
+    const views = lm.reviewViews();
     const open = views[this.scope];
     const label = reviewCountLabel(this.scope, open.count);
     this.count.textContent = label;
@@ -192,6 +191,17 @@ export class NavigatorUI {
     this.issuesEmpty.hidden = this.session.rows.length > 0 || !lm.isLoaded();
     this.renderIssues();
     if (this.tab === 'outline') this.renderOutline(force);
+  }
+
+  /** Keep the selected row in place when its detail receives a remote update above the list. */
+  holdDetailAnchor(): () => void {
+    const pane = this.panes.issues;
+    const anchor = this.issuesList.querySelector<HTMLElement>(`[data-line="${this.host.cursor()}"]`);
+    if (!this.panelOpen || this.tab !== 'issues' || !anchor) return () => {};
+    const before = anchor.getBoundingClientRect().top;
+    return () => {
+      if (anchor.isConnected) pane.scrollTop = anchoredReviewScroll(pane.scrollTop, before, anchor.getBoundingClientRect().top);
+    };
   }
 
   private renderIssues(): void {

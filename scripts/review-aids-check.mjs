@@ -178,7 +178,8 @@ async function run(browser, style) {
 
     await check(`${tag}: the change card shows the AI's why; Ask why replies to the author and records it`, async () => {
       await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.ALPHA);
-      const card = mike.locator('.prw-right .prw-changes .prw-card').first();
+      await mike.evaluate(() => window.__proofReadingWalk.openReviewItem(window.__proofReadingWalk.focusIndex()));
+      const card = mike.locator('.prw-left .prw-changes .prw-card').first();
       await card.waitFor({ state: 'visible' });
       assert.match(await card.locator('.prw-why').innerText(), /Why: The style guide spells it this way\./);
       await mike.waitForTimeout(250);
@@ -338,7 +339,7 @@ async function run(browser, style) {
       await phone.locator(`.plm-dot[data-line="${L.BETA}"]`).scrollIntoViewIfNeeded();
       assert.equal(await phone.locator(`.plm-dot[data-line="${L.BETA}"]`).getAttribute('data-uncertain'), 'true');
       await phone.locator(`.plm-dot[data-line="${L.BETA}"]`).tap();
-      const sheet = phone.locator('.plm-menu.plm-sheet');
+      const sheet = phone.locator('.prw-right.prw-sheet-open');
       await sheet.waitFor({ state: 'visible' });
       assert.match(await sheet.locator('.plm-flag-note').innerText(), /claude flagged this line uncertain/i);
       await sheet.getByRole('button', { name: /Reject/ }).tap();

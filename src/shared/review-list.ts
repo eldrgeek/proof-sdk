@@ -4,6 +4,7 @@
  * Insertions preserve the selected row's screen position and never move keyboard focus.
  * Mike, 2026-09-23 (usability brief).
  */
+import { participantStatus } from './participant-status';
 import { actorKey } from './line-marks';
 import { openView, OPEN_KIND_ORDER, type OpenViewInput, type OpenItem, type OpenView } from './open-view';
 
@@ -80,4 +81,12 @@ export function anchoredReviewScroll(scrollTop: number, beforeTop: number, after
 }
 export function reviewStorageKey(document: string, reader: string): string {
   return `proof:review-panel:${encodeURIComponent(document)}:${encodeURIComponent(actorKey(reader))}`;
+}
+
+/** A single read of the visible facts for status, header, Review rows, count and dots. */
+export function reviewSurface(input: OpenViewInput) {
+  const status = participantStatus({ states: input.states ?? [], team: input.team ?? [],
+    objections: input.issues.flatMap(issue => issue.type === 'objection'
+      ? [{ by: issue.by, reason: issue.reason, condition: issue.condition, lineIndices: issue.lineIndices }] : []) });
+  return { status, views: reviewViews({ ...input, status }) };
 }

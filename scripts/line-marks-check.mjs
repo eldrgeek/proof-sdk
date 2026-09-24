@@ -310,12 +310,12 @@ async function phone(browser, base) {
   await page.screenshot({ path: path.join(shots, `${tag}-1-load.png`) });
   await check(`${tag}: tapping a dot opens a bottom sheet above the feedback chip; Agree sets the mark`, async () => {
     await page.locator('.plm-dot[data-line="1"]').tap();
-    const sheet = page.locator('.plm-menu.plm-sheet');
+    const sheet = page.locator('.prw-right.prw-sheet-open');
     await sheet.waitFor({ state: 'visible' });
-    const r = await page.evaluate(() => ({ ...document.querySelector('.plm-menu').getBoundingClientRect().toJSON(), vh: innerHeight, vw: innerWidth }));
+    const r = await page.evaluate(() => ({ ...document.querySelector('.prw-right.prw-sheet-open').getBoundingClientRect().toJSON(), vh: innerHeight, vw: innerWidth }));
     assert.ok(Math.abs(r.bottom - r.vh) <= 2 && r.width >= r.vw - 2, `sheet rect ${JSON.stringify(r)}`);
     const chipOnTop = await page.evaluate(() => {
-      const chip = document.querySelector('.soma-feedback-root'); const sheet = document.querySelector('.plm-menu');
+      const chip = document.querySelector('.soma-feedback-root'); const sheet = document.querySelector('.prw-right.prw-sheet-open');
       if (!chip || !sheet) return false;
       const c = chip.getBoundingClientRect(); const s = sheet.getBoundingClientRect();
       const x = Math.max(c.left, s.left) + 4, y = Math.max(c.top, s.top) + 4;
@@ -332,8 +332,9 @@ async function phone(browser, base) {
     assert.equal(await page.locator('#share-banner .plm-issues-count').innerText(), '0 need you');
   });
   await check(`${tag}: Reject asks for a reason on the phone`, async () => {
+    if (await page.locator('.prw-right.prw-sheet-open').count()) await page.locator('.prw-strip-grab').tap();
     await page.locator('.plm-dot[data-line="4"]').tap();
-    const sheet = page.locator('.plm-menu.plm-sheet');
+    const sheet = page.locator('.prw-right.prw-sheet-open');
     await sheet.getByRole('button', { name: /Reject/ }).tap();
     await sheet.getByRole('textbox', { name: /Reason/ }).fill('Not true for phones');
     await sheet.locator('.plm-reason button[type="submit"]').tap();

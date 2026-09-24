@@ -317,7 +317,9 @@ async function runPhone(browser, base, tag) {
   activePage = page;
 
   await check(`${tag}: the Undo button is reachable and full-width in the rail`, async () => {
-    await page.locator('.prw-strip-agree').tap();
+    if (!(await page.locator('.prw-right.prw-sheet-open').count())) await page.locator('.prw-strip-where').tap();
+    await page.locator('.prw-right .plm-primary-row [data-status="agreed"]').tap();
+    await page.locator('.prw-strip-grab').tap();
     await page.waitForFunction(() => window.__proofUndo.debugState().depth > 0, null, { timeout: 6000 });
     await page.locator('.prw-sheet-open, .prw-right-open, .prw-strip-more').first().tap().catch(() => {});
     await page.waitForTimeout(400);

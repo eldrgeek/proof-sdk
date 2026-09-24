@@ -3,8 +3,8 @@
 // (docs/accord/usability-brief-2026-09-23.md, "Acceptance checks").
 //
 // Starts an isolated local server (run `npm run build` first), builds a review fixture through
-// the agent API, and drives Chromium at 1280×800 and 375×812. One line per case: PASS, FAIL, or
-// SKIP. Exit non-zero if any case FAILs.
+// the agent API, and drives Chromium at 1280×800 and 375×812. One line per case: PASS or FAIL.
+// Exit non-zero if any case fails.
 //
 // Usage: node scripts/usability-acceptance-check.mjs [--shots dir]
 import assert from 'node:assert/strict';
@@ -22,7 +22,7 @@ const arg = (name) => { const i = process.argv.indexOf(name); return i > 0 ? pro
 const shots = arg('--shots') || path.join(root, '.preview', 'usability');
 mkdirSync(shots, { recursive: true });
 
-/** Selectors from src/ui — one adapter; TODO entries await S3/S4 UI. */
+/** Selectors from the shipped draft, Review and status surfaces. */
 const SEL = {
   proseMirror: '.ProseMirror',
   foldChip: '.pfold-chip[data-heading]',
@@ -50,12 +50,12 @@ const SEL = {
   reviewList: '[data-accord-review-list]',
   reviewScopeNeedsYou: '[data-accord-review-scope="needs-you"]',
   reviewClearCompleted: '[data-accord-review-clear-completed]',
-  // TODO S3 — inline draft until Propose change.
+  // Inline draft until Propose change.
   suggestChangeButton: '[data-accord-suggest-change]',
-  proposeChangeButton: '[data-accord-propose-change]',
-  draftResume: '[data-accord-draft-resume]',
-  draftDiscard: '[data-accord-draft-discard]',
-  // TODO S4 — unified status copy ("finished reviewing", rejecter not "unread").
+  proposeChangeButton: '[data-draft-action="propose"]',
+  draftResume: '[data-draft-action="resume"]',
+  draftDiscard: '[data-draft-action="discard"]',
+  // Unified status copy.
   personalCompletionStatus: '[data-accord-review-complete-status]',
 };
 
@@ -66,11 +66,6 @@ const PHONE = devices['iPhone 13'];
 let failures = 0;
 const results = [];
 let activePage = null;
-
-function skip(name, reason) {
-  results.push(`SKIP ${name} (${reason})`);
-  console.log(results[results.length - 1]);
-}
 
 async function check(name, fn) {
   try {
@@ -298,10 +293,6 @@ async function isHiddenLine(page, line) {
     const dom = lm.editorView().nodeDOM(l.pos);
     return !!dom && dom.getBoundingClientRect().height === 0;
   }, line);
-}
-
-async function hasDraftUI(page) {
-  return (await page.locator(SEL.proposeChangeButton).count()) > 0;
 }
 
 async function hoverBlock(page, lineIndex) {
@@ -541,14 +532,36 @@ async function runViewportCases(browser, base, created, label, viewport) {
     assert.equal(agreedProposal, false, 'scrolling recorded agreement on a proposal');
   });
 
-  // 6 — draft until Propose (S3).
-  if (!(await hasDraftUI(page))) {
-    skip(`ac06-draft-until-propose@${label}`, `awaiting S3; selector ${SEL.proposeChangeButton} TODO`);
-  } else {
-    await check(`ac06-draft-until-propose@${label}`, async () => {
-      assert.fail('draft UI present but case not implemented');
-    });
-  }
+  // 6 — draft until Propose; leaving and Escape preserve it, one submit and one Undo.
+  await check(`ac06-draft-until-propose@${label}`, async () => {
+    await setFolded(page, L.SEC1, false);
+    await focusLine(page, L.SAFE);
+    const before = await page.evaluate(() => ({ text: window.__proofLineMarks.editorView().state.doc.textContent,
+      ids: window.proof.getAllMarks().map(m => m.id), depth: window.__proofUndo.debugState().depth }));
+    if (touch) await page.locator(`.plm-dot[data-line="${L.SAFE}"]`).tap();
+    await page.locator(SEL.suggestChangeButton).click();
+    const draft = page.locator('.accord-draft textarea');
+    const proposed = `${SAFE_LINE} This is a proposed sentence.`;
+    await draft.fill(proposed);
+    await page.mouse.wheel(0, 250);
+    await page.locator(SEL.reviewPanelToggle).click();
+    await page.keyboard.press('Escape');
+    assert.deepEqual(await page.evaluate(() => window.proof.getAllMarks().map(m => m.id)), before.ids, 'leaving published the draft');
+    assert.equal(await page.evaluate(() => window.__proofLineMarks.editorView().state.doc.textContent), before.text, 'draft changed shared text');
+    if (await page.locator(SEL.reviewPanelToggle).getAttribute('aria-expanded') === 'true') await page.locator(SEL.reviewPanelToggle).click();
+    if (!(await draft.isVisible())) await page.locator(SEL.draftResume).click();
+    assert.equal(await draft.inputValue(), proposed, 'draft not recoverable');
+    await page.locator(SEL.proposeChangeButton).click();
+    await waitFor(page, ids => window.proof.getAllMarks().some(m => !ids.includes(m.id) && m.kind === 'replace'), before.ids);
+    const made = await page.evaluate(ids => window.proof.getAllMarks().filter(m => !ids.includes(m.id)), before.ids);
+    assert.equal(made.length, 1, 'submit must create exactly one proposal');
+    assert.match(made[0].by, /Alice/, 'proposal attribution missing');
+    assert.equal(made[0].data.content, proposed);
+    assert.equal(await page.evaluate(() => window.__proofUndo.debugState().depth), before.depth + 1);
+    await page.evaluate(() => window.__proofUndo.undo());
+    await waitFor(page, id => !window.proof.getAllMarks().some(m => m.id === id), made[0].id);
+    assert.equal(await page.evaluate(() => window.__proofLineMarks.editorView().state.doc.textContent), before.text, 'Undo changed document text');
+  });
 
   // 7 — remote activity must not steal focus, unfold sections, or open panels.
   await check(`ac07-remote-distraction-free@${label}`, async () => {
@@ -624,6 +637,10 @@ async function runViewportCases(browser, base, created, label, viewport) {
         folded: window.__proofFolding.debugState().folded,
       }));
       assert.deepEqual(after, before, 'completion changed the current view or target');
+      if (touch) { await toggle.click(); await p.locator(`.plm-dot[data-line="${after.cursor}"]`).tap(); }
+      for (const selector of ['[data-status="agreed"]', '[data-accord-suggest-change]', '.plm-discuss', '[data-status="rejected"]']) {
+        assert.equal(await p.locator(`.plm-primary-row ${selector}`).isVisible(), true, `completion removed ${selector}`);
+      }
     } finally { await final.context.close(); activePage = page; }
   });
 
@@ -632,33 +649,49 @@ async function runViewportCases(browser, base, created, label, viewport) {
     const dotLabel = await page.locator(`${SEL.marginDot}[data-line="${L.SAFE}"]`).getAttribute('aria-label')
       ?? await page.locator(`${SEL.marginDot}[data-line="${L.SAFE}"]`).getAttribute('title');
     assert.ok(dotLabel && dotLabel.length > 2, 'line status has no accessible text');
-    if (touch) {
-      await page.getByRole('button', { name: /^More options/ }).click();
-      await page.locator('.proof-share-overflow-menu').getByRole('menuitem', { name: 'View agreed copy', exact: true }).click();
-    } else {
-      await page.locator('#accord-menubar .amb-top[data-menu="view"]').click();
-      await page.locator('.amb-menu').getByRole('menuitem', { name: 'View agreed copy', exact: true }).click();
-    }
+    // Agreement is incomplete, so the View menu must explain its disabled offer.
+    if (touch) await page.getByRole('button', { name: /^More options/ }).click();
+    else await page.locator('#accord-menubar .amb-top[data-menu="view"]').click();
+    const offer = page.locator('[data-item="view-agreed-copy"]');
+    assert.equal(await offer.isDisabled(), true);
+    assert.match(await offer.innerText(), /Not yet agreed: waiting for/);
+    await page.keyboard.press('Escape');
     await page.waitForTimeout(500);
     const header = await page.locator(SEL.honestHeaderText).innerText().catch(() => '');
-    assert.ok(header.length > 0, 'honest header missing in Accord view');
+    assert.ok(header.length > 0, 'honest header missing in document view');
     assert.ok(!/chris has not read/i.test(header),
       `rejecter mislabeled unread: ${header}`);
     if (!/reject|object|declin|rejected/i.test(header)) {
       throw new Error(`header should describe Chris's rejection, not unreadness: ${header}`);
     }
-    const completion = await page.locator(SEL.personalCompletionStatus).innerText().catch(() => '');
-    if (completion) {
-      assert.ok(!/everyone agreed|team agreed|fully agreed/i.test(completion),
-        `personal completion claims team agreement: ${completion}`);
-    }
-    if (touch) {
-      await page.getByRole('button', { name: /^More options/ }).click();
-      await page.locator('.proof-share-overflow-menu').getByRole('menuitem', { name: 'Return to document', exact: true }).click();
-    } else {
-      await page.locator('#accord-menubar .amb-top[data-menu="view"]').click();
-      await page.locator('.amb-menu').getByRole('menuitem', { name: 'Return to document', exact: true }).click();
-    }
+    await page.evaluate(async () => {
+      const lm = window.__proofLineMarks;
+      for (const line of lm.lineList()) await lm.setLineStatus(line.index, 'agreed', undefined, 'click');
+    });
+    await waitFor(page, () => document.querySelector('[data-accord-review-complete-status]')?.textContent?.includes('You have finished reviewing.'));
+    const completion = await page.locator(SEL.personalCompletionStatus).innerText();
+    assert.match(completion, /^You have finished reviewing\./);
+    assert.doesNotMatch(completion, /everyone agreed|team agreed|fully agreed/i, 'personal completion claims team agreement');
+    await agent(base, created, '/marks/line', { by: 'ai:bob', quote: SAFE_LINE, status: 'seen' });
+    const owner = await openDoc(browser, base, `${created.slug}?token=${encodeURIComponent(created.ownerSecret)}`, 'Owner', viewport, false);
+    try {
+      await owner.page.evaluate(async () => {
+        if (!window.__proofLineMarks.canApproveHere()) throw new Error('owner cannot approve');
+        await window.__proofLineMarks.setLineStatus(0, 'approved', undefined, 'click');
+      });
+      await page.evaluate(() => window.__proofLineMarks.refresh());
+      await waitFor(page, () => window.__proofLineMarks.participantStatus().participants.some(p => p.counts.approved > 0));
+    } finally { await owner.context.close(); }
+    await page.locator('.anv-people').click();
+    const people = await page.locator('.acd-participant-statuses').innerText();
+    assert.match(people, /Alice[^\n]*Agreed/);
+    assert.match(people, /Seen \d+/);
+    assert.match(people, /Approved \d+/);
+    assert.match(people, /not read yet/);
+    assert.match(people, /chris[^\n]*Rejected 1/i);
+    assert.doesNotMatch(people, /chris[^\n]*has not read/i);
+    await page.locator('#who-dialog .acd-close').click();
+
   });
 
   // 10 — meaning change lapses agreement (safe → unsafe, etc.).
@@ -704,9 +737,8 @@ async function runViewportCases(browser, base, created, label, viewport) {
   // 12 — primary actions without hover; focus visible; statuses have text.
   await check(`ac12-actions-a11y@${label}`, async () => {
     await focusLine(page, L.LIST_TAIL);
-    const agreeBtn = touch
-      ? page.locator('.prw-strip-agree')
-      : page.locator('.prw-right .plm-actions button').filter({ hasText: /^Agree$/ }).first();
+    if (touch) await page.locator(`.plm-dot[data-line="${L.LIST_TAIL}"]`).tap();
+    const agreeBtn = page.locator('.prw-right .plm-primary-row [data-status="agreed"]');
     if (touch) {
       await agreeBtn.waitFor({ state: 'visible', timeout: 12_000 });
       const box = await agreeBtn.boundingBox();
@@ -728,6 +760,25 @@ async function runViewportCases(browser, base, created, label, viewport) {
       return dot?.getAttribute('aria-label') || dot?.getAttribute('title') || dot?.dataset.status || '';
     }, L.LIST_TAIL);
     assert.ok(a11y.length > 1, 'line status is color-only (no text label)');
+    for (const selector of ['[data-status="agreed"]', '[data-accord-suggest-change]', '.plm-discuss', '[data-status="rejected"]']) {
+      const action = page.locator(`.plm-primary-row ${selector}`);
+      assert.equal(await action.count(), 1, `duplicate action ${selector}`);
+      assert.equal(await action.isVisible(), true, `hidden action ${selector}`);
+      await action.focus();
+      assert.equal(await action.evaluate(node => node === document.activeElement), true);
+    }
+    if (touch) await page.locator('.prw-strip-grab').tap();
+    await setFolded(page, L.SEC3, false);
+    await scrollLineIntoView(page, L.THREAD);
+    const marker = page.locator(`.plm-review-marker[data-line="${L.THREAD}"]`);
+    assert.match(await marker.innerText(), /\d+ comments?/);
+    await marker.focus();
+    await page.keyboard.press('Enter');
+    assert.equal(await page.locator(SEL.reviewPanelToggle).getAttribute('aria-expanded'), 'true');
+    assert.equal((await walk(page)).focus, L.THREAD);
+    assert.equal(await page.locator('.anv-detail .amg-thread').first().isVisible(), true);
+    await page.locator(SEL.reviewPanelToggle).click();
+    assert.equal(await marker.isVisible(), true, 'closing Review hid the marker');
   });
 
   await context.close();
@@ -747,7 +798,7 @@ async function main() {
     console.log(`\n${failures} case(s) failed.`);
     process.exit(1);
   }
-  console.log('\nAll runnable acceptance cases passed (SKIP lines are expected until S2–S4 land).');
+  console.log('\nAll acceptance cases passed.');
 }
 
 main().catch(error => {

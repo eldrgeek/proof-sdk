@@ -207,7 +207,8 @@ async function run(browser, style) {
     await check(`${tag}: the rail shows the bundle as one card: title, why, every passage with its result, and the not-agreement note`, async () => {
       await waitFor(mike, () => window.__proofLineMarks.debugState().extras.bundles.some(b => b.id === 'launch'));
       await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.LAUNCH);
-      const card = mike.locator('.prw-right .prw-bundle[data-bundle-id="launch"]');
+      await mike.evaluate(() => window.__proofReadingWalk.openReviewItem(window.__proofReadingWalk.focusIndex()));
+      const card = mike.locator('.prw-left .prw-bundle[data-bundle-id="launch"]');
       await card.waitFor({ state: 'visible' });
       assert.equal(await card.locator('.prw-bundle-title').innerText(), 'Move launch to October');
       assert.match(await card.locator('.prw-why').innerText(), /vendor slipped two weeks/);
@@ -231,7 +232,8 @@ async function run(browser, style) {
     });
 
     await check(`${tag}: Accept bundle applies both changes in one step; the lines still need their own marks`, async () => {
-      const card = mike.locator('.prw-right .prw-bundle[data-bundle-id="launch"]');
+      await mike.evaluate(() => window.__proofReadingWalk.openReviewItem(window.__proofReadingWalk.focusIndex()));
+      const card = mike.locator('.prw-left .prw-bundle[data-bundle-id="launch"]');
       await card.locator('.prw-bundle-accept').click();
       await waitFor(mike, n => window.__proofLineMarks.lineList()[n]?.text.includes('October 14'), L.LAUNCH);
       assert.match(await lineText(mike, L.MILESTONE), /October 7/);
@@ -251,14 +253,15 @@ async function run(browser, style) {
 
     await check(`${tag}: a stale bundle refuses on the page too; its changes fall back to one-by-one review, the stale one marked`, async () => {
       await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.ALPHA);
-      const card = mike.locator('.prw-right .prw-bundle[data-bundle-id="second"]');
+      await mike.evaluate(() => window.__proofReadingWalk.openReviewItem(window.__proofReadingWalk.focusIndex()));
+      const card = mike.locator('.prw-left .prw-bundle[data-bundle-id="second"]');
       await card.waitFor({ state: 'visible' });
       assert.equal(await card.getAttribute('data-stale'), 'true');
       assert.equal(await card.locator('.prw-bundle-passage[data-stale="true"]').count(), 1);
       await card.locator('.prw-bundle-accept').click();
       await waitFor(mike, () => window.__proofReadingWalk.debugState().bundleDecisions.some(d => d.id === 'second' && !d.ok));
       assert.match(await mike.locator('.prw-right .prw-error').innerText(), /changed since they were bundled\. Nothing was accepted/);
-      assert.ok(await mike.locator('.prw-right .prw-card[data-mark-id]').count() >= 1, 'individual change cards');
+      assert.ok(await mike.locator('.prw-left .prw-card[data-mark-id]').count() >= 1, 'individual change cards');
       assert.match(await lineText(mike, L.ALPHA), /alpha words/);
       await mike.screenshot({ path: path.join(shots, `${tag}-2-bundle-stale.png`) });
       const rejected = await agent('POST', '/bundles/second/reject', {});
@@ -445,7 +448,7 @@ async function run(browser, style) {
       const dot = phone.locator(`.plm-dot[data-line="${L.PHONE}"]`);
       await dot.scrollIntoViewIfNeeded();
       await dot.tap();
-      const sheet = phone.locator('.plm-menu.plm-sheet');
+      const sheet = phone.locator('.prw-right.prw-sheet-open');
       await sheet.waitFor({ state: 'visible' });
       const rows = sheet.locator('.plm-alts .plm-alt');
       assert.equal(await rows.count(), 2);
@@ -460,10 +463,10 @@ async function run(browser, style) {
     await check(`${ptag}: the rail sheet shows a bundle card with Accept bundle / Reject bundle at touch size`, async () => {
       await waitFor(phone, () => window.__proofLineMarks.debugState().extras.bundles.some(b => b.id === 'phone'));
       await phone.keyboard.press('Escape');
-      await phone.locator('.plm-menu.plm-sheet').waitFor({ state: 'detached' }).catch(() => {});
+      await phone.locator('.prw-right.prw-sheet-open').waitFor({ state: 'detached' }).catch(() => {});
       await phone.evaluate(i => window.__proofReadingWalk.focusLine(i), L.OPS);
-      await phone.evaluate(() => window.__proofReadingWalk.openSheet('right'));
-      const card = phone.locator('.prw-right.prw-sheet-open .prw-bundle[data-bundle-id="phone"]');
+      await phone.evaluate(() => window.__proofReadingWalk.openReviewItem(window.__proofReadingWalk.focusIndex()));
+      const card = phone.locator('.prw-left.prw-sheet-open .prw-bundle[data-bundle-id="phone"]');
       await card.waitFor({ state: 'visible' });
       await card.scrollIntoViewIfNeeded();
       const h = await card.locator('.prw-bundle-accept').evaluate(el => el.getBoundingClientRect().height);

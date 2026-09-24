@@ -186,7 +186,7 @@ async function desktop(browser, base, style) {
   const tag = `threads-${style}-1440`;
   const { context, page } = await openDoc(browser, base, created.slug, 'Ada', { viewport: { width: 1440, height: 900 } });
   activePage = page;
-  const rail = page.locator('.prw-right');
+  const rail = page.locator('.prw-left');
 
   await check(`${tag}: T with no selection starts a thread on the cursor line, and the closing condition is offered`, async () => {
     await page.evaluate(() => window.getSelection()?.removeAllRanges());
@@ -256,10 +256,10 @@ async function desktop(browser, base, style) {
     await page.evaluate(([quote, content]) => window.proof.markSuggestReplace(quote, 'ai:check', content), [SHIP, 'We will ship the export button in November.']);
     await waitFor(page, () => window.__proofLineMarks.allThreads().some(v => v.thread.kind === 'proposal'));
     await focusLine(page, L.SHIP);
-    const proposal = rail.locator('.amg-thread[data-kind="proposal"]').first();
+    const proposal = rail.locator('.prw-card').first();
     await proposal.waitFor({ state: 'visible' });
     assert.equal(await proposal.locator('.amg-thread-closes').innerText(), 'Closes when: accept or reject');
-    assert.deepEqual(await proposal.locator('.amg-thread-resolve').allInnerTexts(), ['Accept', 'Reject'], 'a proposal accepts or rejects');
+    assert.deepEqual(await proposal.locator('.prw-accept, .prw-reject').allInnerTexts(), ['Accept', 'Reject'], 'a proposal accepts or rejects');
     await page.screenshot({ path: path.join(shots, `${tag}-3-proposal.png`) });
   });
 
@@ -352,7 +352,7 @@ async function desktop(browser, base, style) {
     assert.equal(after.status, 'open', 'and it is STILL OPEN: a deletion never closes a disagreement');
     assert.notEqual(after.line, null, 'it attached to a surviving line');
     await focusLine(page, after.line);
-    const card = page.locator('.prw-right .amg-thread[data-detached="true"]').first();
+    const card = page.locator('.prw-left .amg-thread[data-detached="true"]').first();
     await card.waitFor({ state: 'visible' });
     const notice = await card.locator('.amg-thread-detached').innerText();
     assert.match(notice, /the text this was about has changed/, notice);

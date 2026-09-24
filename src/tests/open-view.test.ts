@@ -1,3 +1,5 @@
+import { reviewSurface } from '../shared/review-list';
+import { participantStatusText, agreedCopyOffer } from '../shared/participant-status';
 /**
  * Accord round 2, stage C — Open and Accord.
  *
@@ -135,7 +137,8 @@ function randomIssues(random: () => number, lineCount: number): ProofIssue[] {
 
 function invariant(label: string, issues: ProofIssue[], lines: DocLine[], states: ReturnType<typeof buildLineStates>, threads: ThreadView[]): void {
   const lineAtPos = (pos: number) => (pos % 10 === 0 ? pos / 10 : -1);
-  const full = openView({ issues, viewer: ME, lineAtPos, threads, team: [ME, ERIC, IZZY], states, lineCount: lines.length });
+  const surface = reviewSurface({ issues, viewer: ME, lineAtPos, threads, team: [ME, ERIC, IZZY], states, lineCount: lines.length });
+  const full = surface.views['needs-you'];
 
   // The three surfaces, each read through the function the product calls for it.
   const pill = full.count;                 // toolbar: openView(...).count
@@ -158,8 +161,19 @@ function invariant(label: string, issues: ProofIssue[], lines: DocLine[], states
   // The header and the status module are one computation. A later surface that publishes the
   // same object (the server's /state participantStatus) cannot disagree with the header.
   const team = [ME, ERIC, IZZY];
-  const status = participantStatus({ states, team });
-  const h = accordHeader({ states, team, viewer: ME, name: actor => actor });
+  const objections = issues.flatMap(issue => issue.type === 'objection' ? [{ by: issue.by, reason: issue.reason, condition: issue.condition, lineIndices: issue.lineIndices }] : []);
+  const status = participantStatus({ states, team, objections });
+  const h = accordHeader({ states, team, objections, viewer: ME, name: actor => actor });
+  assert.deepEqual(surface.status, status);
+  assert.equal(agreedCopyOffer(surface.status, 'revision', actor => actor).enabled, h.settled);
+  const completion = personalCompletionText({ status: surface.status, viewer: ME, name: actor => actor });
+  assert.equal(Boolean(completion), status.participants[0].finishedOwnReview);
+  if (completion) assert.doesNotMatch(completion, /everyone.*agreed/i);
+  for (const person of surface.status.participants) {
+    const text = participantStatusText(person);
+    if (person.counts.rejected) assert.match(text, new RegExp(`Rejected ${person.counts.rejected}`));
+    if (person.approved) assert.equal(text, 'Approved');
+  }
   assert.deepEqual(h.status, status, `${label}: the header did not read the shared status`);
   assert.deepEqual(h.agreed, status.participants.filter(person => person.agreed && !person.approved).map(person => person.actor));
   for (const person of status.participants) {

@@ -9,9 +9,9 @@
  * decisions for the gaps; built by Claude Opus 5 (worker reading-walk), 2026-09-18.
  *
  * Layout (desktop): a left rail, the document in a readable centre column, and a right rail
- * that holds the selected passage's mark box and the changes on that line. Both rails collapse.
+ * that holds the selected passage's one answer group. Review holds its discussion and proposals.
  * Phones (<= 700 px): one column; the rails open as bottom sheets from the ⋯ menu, and a margin
- * dot opens Step 1's mark sheet.
+ * dot opens the same answer group in the Margin sheet.
  *
  * The selected passage is where A, R, S and the Margin act. Scrolling moves the reading position
  * used to record Seen. It does not move the selected passage. A heading mark covers the heading only.
@@ -21,7 +21,7 @@
  * Accord layout stage 3 (Ren's proposal, Mike ruled 2026-09-21; decisions 4, 6, 7, 8, 11;
  * policies in src/shared/layout-panels.ts): the left rail is the Navigator (Outline · Issues ·
  * Since you, src/ui/navigator.ts), the right rail is the Margin (Line N · Room).
- * Phones: a bottom strip (Line N of M, Agree, Reject, ⋯) and the Margin as a sheet under it.
+ * Phones: a position strip opens the one answer group in the Margin sheet.
  */
 import type { Mark, CommentData, ReplaceData } from '../formats/marks';
 import { getActorName, getMarkColor } from '../formats/marks';
@@ -50,6 +50,7 @@ import { TIER_POLICY } from '../shared/line-tiers';
 import { HIGHLIGHT_POLICY, MARKED_UP_TO_POLICY, formatAgo, issuesLeftText } from '../shared/layout-status';
 import { MARGIN_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY, parseRailState, type MarginTab, type RailState } from '../shared/layout-panels';
 import { NavigatorUI } from './navigator';
+import { personalCompletionText } from '../shared/participant-status';
 import { reviewStorageKey } from '../shared/review-list';
 import type { FoldingUI } from './folding';
 import './reading-walk.css';
@@ -70,7 +71,7 @@ export const READING_EDIT_POLICY = {
  * Touch focus (Mike, 2026-09-19): "On a touch surface, there should be some other way to indicate
  * what the current mark or the current item being looked at is." The focus line is the reading
  * line; it gets a strong band and a left bar, and a strip docked at the bottom shows its mark and
- * three big buttons (Agree / Reject / More…). Tapping text still edits (editing first).
+ * one control that opens the answer sheet. Tapping text selects a passage.
  */
 export const TOUCH_FOCUS_POLICY = {
   enabled: true,
@@ -192,8 +193,6 @@ export class ReadingWalkUI {
   /** Accord round 2 stage A: "Proposed — Undo" after a leave posts, then it goes quiet. */
   private readonly sbNotice = el('span', 'pst-notice');
   private noticeTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Phones: the visible Done control while editing (there is no Cmd+Enter on a phone). */
-  private readonly suggestBtn = el('button', 'prw-edit-done', 'Suggest change');
   /**
    * Accord layout stage 1: the status bar fixed under the page (Line N of M · You marked up to
    * line K · Issues left · Reading / Writing), and the "You marked up to
@@ -202,6 +201,7 @@ export class ReadingWalkUI {
   private readonly statusBar = el('div', 'pst-bar');
   private readonly sbLine = el('span', 'pst-line');
   private readonly sbMarked = el('span', 'pst-marked');
+  private readonly completionEl = el('span', 'pst-completion');
   private readonly sbIssues = el('span', 'pst-issues');
   private readonly sbProvisional = el('span', 'pst-provisional');
   private readonly ruleEl = el('div', 'pst-rule');
@@ -270,7 +270,6 @@ export class ReadingWalkUI {
   private readonly lineTools = el('div', 'amg-tools');
   /** The Familiar's note (folded) and everyone's marks on the line, after the line's changes. */
   private readonly tailHost = el('div', 'amg-tail');
-  private readonly replyHost = el('form', 'amg-reply');
   /** Who the viewer's marks name, and My Familiar: the Line tab's footer. */
   private readonly meRow = el('div', 'amg-me');
   private marginTab: MarginTab = MARGIN_POLICY.defaultTab;
@@ -735,12 +734,10 @@ export class ReadingWalkUI {
     }
   };
 
-  /** T: open the thread composer in the Margin's Line tab, on the selection or the cursor line. */
+  /** T or Discuss opens the Review composer for the selected passage or phrase. */
   startThreadHere(fromSelection = false): boolean {
     if (!this.threads) return false;
-    this.selectMarginTab('line');
-    if (isPhone()) this.openSheet('right');
-    else if (document.body.classList.contains('prw-right-collapsed')) this.setCollapsed('right', false);
+    this.openReviewItem(this.cursorLine());
     const opened = this.threads.openComposer(fromSelection);
     if (opened) this.threads.element.scrollIntoView({ block: 'nearest' });
     return opened;
@@ -753,6 +750,12 @@ export class ReadingWalkUI {
       focusLine: () => this.targetLine(),
       lineText: (index) => this.lines[index]?.text ?? '',
       threadsOnLine: (index) => lm().threadsOnLine(index),
+      proposalCardElsewhere: view => {
+        if (!view.open || view.thread.kind !== 'proposal' || !view.thread.markId) return false;
+        const bundle = lm().bundleForMark(view.thread.markId);
+        return !bundle || bundle.stale.length > 0;
+      },
+      proposalDecisionElsewhere: view => Boolean(view.open && view.thread.markId && lm().bundleForMark(view.thread.markId)?.stale.length === 0),
       // The subject of a thread: a selected range of the document (line-selected or text-selected),
       // else the line in focus.
       selectedLines: (force) => {
@@ -830,7 +833,7 @@ export class ReadingWalkUI {
    */
   private railEndTop(): number {
     const body = this.rightBody;
-    const last = !this.changesHost.hidden && this.changesHost.childElementCount ? this.changesHost : this.boxHost;
+    const last = this.boxHost;
     if (!last.isConnected || !last.childElementCount) return body.scrollHeight;
     const bottom = last.getBoundingClientRect().bottom - body.getBoundingClientRect().top + body.scrollTop;
     const pad = parseFloat(getComputedStyle(body).paddingBottom) || 0;
@@ -971,7 +974,8 @@ export class ReadingWalkUI {
       : 'Select a passage. Suggest change or S opens a local draft.';
     this.modeEl.setAttribute('aria-label', this.modeEl.textContent);
     document.body.classList.toggle('prw-editing', writing);
-    this.suggestBtn.disabled = !this.host.canSuggest() || writing;
+    const suggest = this.boxHost.querySelector<HTMLButtonElement>('.plm-suggest');
+    if (suggest) suggest.disabled = !this.host.canSuggest() || writing;
     this.renderFocus();
   }
 
@@ -992,7 +996,7 @@ export class ReadingWalkUI {
     }, EDIT_SESSION_POLICY.noticeMs);
   }
 
-  /** The touch strip: the focus line's own mark and Agree / Reject / More…. */
+  /** The touch strip names the passage and opens its one answer sheet. */
   private renderStrip(): void {
     const touch = this.touchMode();
     const lm = this.host.lineMarks();
@@ -1004,16 +1008,14 @@ export class ReadingWalkUI {
     document.body.style.setProperty('--prw-strip-h', `${TOUCH_FOCUS_POLICY.stripHeightPx}px`);
     this.strip.hidden = !show;
     if (!show) return;
-    // Accord layout stage 3 (decision 11): the strip is the position (Line N of M, "Marked up to line
-    // K ↑"), Agree, Reject and ⋯ More; the status bar folds into it (PHONE_STRIP_POLICY).
+    // Mike, 2026-09-23 (usability brief): the strip opens the sheet; it has no duplicate answers.
     const index = this.cursorLine();
     const line = this.lines[index];
     const status = lm.myStatus(index);
     const marked = lm.markedUpTo();
     const sheetOpen = this.right.classList.contains('prw-sheet-open');
     const sig = `${index}|${this.lines.length}|${line?.hash ?? ''}|${status}|${Boolean(lm.askForLine(index))}|${marked?.line ?? ''}|${sheetOpen}`;
-    // A focused Agree must not freeze the strip: the tap writes the mark, and the strip has to
-    // show "Marked up to line K ↑". An input would be kept; the strip has none. Mike, 2026-09-23.
+    // A mark updates the position strip without introducing another answer group.
     if (sig === this.stripSig) return;
     this.stripSig = sig;
     this.strip.dataset.line = String(index);
@@ -1044,12 +1046,6 @@ export class ReadingWalkUI {
       info.append(state);
     }
     const buttons = el('div', 'prw-strip-actions');
-    const agree = el('button', 'prw-strip-agree', status === 'agreed' ? 'Agreed ✓' : 'Agree');
-    agree.type = 'button';
-    agree.onclick = () => { this.renderNow(); this.box?.choose('agreed', 'click'); };
-    const reject = el('button', 'prw-strip-reject', 'Reject');
-    reject.type = 'button';
-    reject.onclick = () => this.openReason();
     const more = el('button', 'prw-strip-more', '⋯');
     more.type = 'button';
     more.setAttribute('aria-label', `More marks for line ${index + 1}`);
@@ -1059,7 +1055,7 @@ export class ReadingWalkUI {
       this.selectMarginTab('line');
       this.openSheet('right', { more: true });
     };
-    buttons.append(agree, reject, more);
+    buttons.append(more);
     this.strip.replaceChildren(grab, info, buttons);
   }
 
@@ -1110,9 +1106,11 @@ export class ReadingWalkUI {
 
   /** A margin dot on desktop: focus that line and put the keyboard in its box. */
   activateDot(index: number): boolean {
-    if (isPhone() || !this.walk) return false;
+    if (!this.walk) return false;
+    this.selectMarginTab('line');
     if (document.body.classList.contains('prw-right-collapsed')) this.setCollapsed('right', false);
     this.focusLine(index);
+    if (isPhone()) this.openSheet('right');
     this.renderNow();
     (this.boxHost.querySelector('.plm-actions button:not(:disabled)') as HTMLButtonElement | null)?.focus({ preventScroll: true });
     return true;
@@ -1426,6 +1424,13 @@ export class ReadingWalkUI {
     const walk = this.walk;
     if (!walk || !this.started) return;
     const active = document.activeElement;
+    const detailControl = active instanceof HTMLElement && this.navigator.detailEl.contains(active) ? active : null;
+    const detailCard = detailControl?.closest<HTMLElement>('[data-thread], [data-mark-id], [data-bundle-id]');
+    const detailKey = detailCard && detailControl ? {
+      thread: detailCard.dataset.thread, mark: detailCard.dataset.markId, bundle: detailCard.dataset.bundleId,
+      label: detailControl.getAttribute('aria-label') ?? detailControl.textContent,
+      tag: detailControl.tagName, cls: detailControl.className,
+    } : null;
     const held = active instanceof HTMLElement
       && (this.boxHost.contains(active) || this.tailHost.contains(active) || this.changesHost.contains(active))
       ? active : null;
@@ -1437,6 +1442,7 @@ export class ReadingWalkUI {
     this.renderDynamicStyle();
     this.renderStatus();
     this.renderMe();
+    const restoreDetailAnchor = Number(this.boxHost.dataset.line) === this.targetLine() ? this.navigator.holdDetailAnchor() : () => {};
     const railSig = `${this.boxSig}\n${this.changesSig}`;
     this.renderBox();
     this.renderChanges();
@@ -1450,9 +1456,17 @@ export class ReadingWalkUI {
     this.renderMarginTabs();
     this.renderTail();
     this.navigator.render();
+    restoreDetailAnchor();
     this.host.focusChanged?.(this.cursorLine());
     this.restoreViewport();
     if (heldKey && held && !held.isConnected) this.restoreMarginControl(heldKey);
+    if (detailKey && detailControl && !detailControl.isConnected) {
+      const cards = [...this.navigator.detailEl.querySelectorAll<HTMLElement>('[data-thread], [data-mark-id], [data-bundle-id]')];
+      const card = cards.find(node => node.dataset.thread === detailKey.thread && node.dataset.markId === detailKey.mark && node.dataset.bundleId === detailKey.bundle);
+      const replacement = card && [...card.querySelectorAll<HTMLElement>('button, input, textarea')].find(node =>
+        node.tagName === detailKey.tag && node.className === detailKey.cls && (node.getAttribute('aria-label') ?? node.textContent) === detailKey.label);
+      replacement?.focus({ preventScroll: true });
+    }
   }
 
   /**
@@ -1463,7 +1477,19 @@ export class ReadingWalkUI {
     const review = this.host.playmaker();
     if (!review) return;
     if (this.dockHost.parentElement !== this.navigator.panes.issues) this.navigator.panes.issues.append(this.dockHost);
-    review.dock(isPhone() ? null : this.dockHost);
+    review.dock(this.dockHost);
+  }
+
+  /** Marker, Review row or Discuss: an explicit navigation opens the same detail surface. */
+  openReviewItem(index: number): void {
+    this.host.lineMarks().revealLine(index);
+    this.focusLine(index);
+    this.navigator.select('issues');
+    if (isPhone()) this.openSheet('left');
+    else this.setCollapsed('left', false);
+    this.renderNow();
+    const first = this.navigator.detailEl.querySelector<HTMLElement>('button, input, textarea');
+    first?.focus({ preventScroll: true });
   }
 
   /** View › Marks panel: shows the Navigator on its Issues tab, where the panel lives. */
@@ -1602,10 +1628,13 @@ export class ReadingWalkUI {
     // Accord layout stage 3 (decision 8): the Margin's layout — the quote, Agree and Reject, ⋯ More.
     const box = lm.buildMarkBox(line, {
       layout: 'margin',
+      canSuggest: this.host.canSuggest() && !isWriting(),
+      suggest: () => { if (isPhone()) this.closeSheets(); this.host.suggestChange(focus); },
+      discuss: () => this.startThreadHere(),
     });
     const hasAsk = Boolean(lm.askForLine(focus));
     const alts = lm.altSetFor(focus);
-    const keys = el('p', 'prw-keys', hasAsk ? 'Y yes · N no · T not yet' : alts ? `1–${alts.options.length} pick · A agree · E explain` : 'A agree · R reject · T thread · E explain · D tier · J/K move');
+    const keys = el('p', 'prw-keys', hasAsk ? 'Y yes · N no · T not yet' : alts ? `1–${alts.options.length} pick · A agree · E explain` : 'A agree · S suggest · T discuss · R reject · J/K move');
     // Editing first (2026-09-19): who changed this line, and whether the meaning changed.
     const note = lm.editNoteFor(focus);
     if (note) {
@@ -1793,6 +1822,11 @@ export class ReadingWalkUI {
       body.append(el('p', undefined, (mark.data as CommentData)?.text || ''));
       for (const reply of (mark.data as CommentData)?.replies ?? []) body.append(el('p', 'prw-reply', `${getActorName(reply.by)}: ${reply.text}`));
     }
+    const thread = this.host.lineMarks().allThreads().find(view => view.thread.markId === mark.id || view.thread.id === mark.id);
+    if (thread) for (const reply of thread.thread.replies) body.append(el('p', 'prw-reply', `${getActorName(reply.by)}: ${reply.text}`));
+    if (mark.kind !== 'comment') card.append(el('p', 'amg-thread-closes', 'Closes when: accept or reject'));
+    if (thread?.detached) card.append(el('p', 'amg-thread-detached', `The passage was removed. It was about: ${thread.originalQuote}`));
+    else if (thread?.changed) card.append(el('p', 'amg-thread-changed', 'The line this is about has been edited since.'));
     card.append(body);
     // Step B4c: the author's one-line rationale, and "Ask why" for an AI's change.
     if (mark.kind !== 'comment') {
@@ -1896,11 +1930,11 @@ export class ReadingWalkUI {
     this.sinceHost.hidden = true;
     this.sinceHost.setAttribute('aria-label', 'Since you last marked');
     this.buildRate();
-    this.buildReply();
     // The Line tab: the line's quote and marks, its changes, the Familiar's note and everyone's
     // marks, a reply box, then who the viewer's marks name.
     this.threads = this.buildThreads();
-    this.rightBody.append(this.lineTools, this.suggestBtn, this.boxHost, this.changesHost, this.threads.element, this.tailHost, this.replyHost, this.meRow);
+    this.rightBody.append(this.lineTools, this.boxHost, this.tailHost, this.meRow);
+    this.navigator.detailEl.append(this.changesHost, this.threads.element);
     // The line notice sits under the tabs, outside the scrolling body: it stays in view and
     // does not move when the pane scrolls or the line's box changes size (2026-09-21).
     this.linePane.append(this.provisionalEl, this.rightBody);
@@ -1914,49 +1948,6 @@ export class ReadingWalkUI {
     this.applyMarginTab();
     this.buildStripGestures();
   }
-
-  /** "Reply on this line…": a reply to the line's newest open comment, else a new comment on the line. */
-  private buildReply(): void {
-    const form = this.replyHost;
-    const input = el('input', 'amg-reply-input');
-    input.type = 'text';
-    input.maxLength = 2000;
-    input.placeholder = 'Reply on this line…';
-    input.setAttribute('aria-label', 'Reply on this line');
-    const send = el('button', 'amg-reply-send', 'Send');
-    send.type = 'submit';
-    const note = el('p', 'amg-resolve-note', 'Resolve this thread when every item above is answered.');
-    form.append(input, send, note);
-    input.addEventListener('keydown', (event) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault(); event.stopPropagation();
-      input.value = '';
-      input.blur();
-    });
-    form.onsubmit = (event) => {
-      event.preventDefault();
-      const text = input.value.trim();
-      if (!text) { input.focus(); return; }
-      const line = this.targetLine();
-      const lm = this.host.lineMarks();
-      const comment = MARGIN_POLICY.replyToNewestComment
-        ? [...this.pendingMarks()].reverse().find(mark => mark.kind === 'comment' && lm.lineAtPos(mark.range!.from) === line)
-        : undefined;
-      if (comment) {
-        this.decide(comment, 'reply', text);
-      } else {
-        const id = lm.commentLine(line, text);
-        if (!id) { this.lastError = 'Could not place your reply on this line.'; this.renderNow(); return; }
-        this.replies.push({ line, id });
-      }
-      input.value = '';
-      this.changesSig = '';
-      this.renderNow();
-    };
-  }
-
-  /** Test hook: replies that opened a new thread on a line. */
-  private readonly replies: Array<{ line: number; id: string }> = [];
 
   /** The Margin's tab (the viewer's choice; it never switches itself). */
   selectMarginTab(tab: MarginTab, remember = true): void {
@@ -2030,7 +2021,6 @@ export class ReadingWalkUI {
       this.tailHost.replaceChildren(...parts);
       this.tailHost.hidden = parts.length === 0;
     }
-    this.replyHost.hidden = !this.host.lineMarks().canCommentHere();
   }
 
   // --------------------------------------------------------------------------
@@ -2048,11 +2038,9 @@ export class ReadingWalkUI {
     const sep = () => { const s = el('span', 'pst-sep'); s.setAttribute('aria-hidden', 'true'); return s; };
     this.sbNotice.hidden = true;
     this.sbNotice.setAttribute('role', 'status');
-    this.suggestBtn.type = 'button';
-    this.suggestBtn.style.minHeight = '44px';
-    this.suggestBtn.title = 'Suggest a change to the selected passage (S)';
-    this.suggestBtn.onclick = () => this.host.suggestChange(this.cursorLine());
-    bar.append(this.sbLine, sep(), this.sbMarked, sep(), this.sbIssues, this.sbProvisional, this.sbNotice, this.modeEl);
+    this.completionEl.dataset.accordReviewCompleteStatus = '';
+    this.completionEl.setAttribute('role', 'status');
+    bar.append(this.sbLine, sep(), this.sbMarked, sep(), this.sbIssues, this.completionEl, this.sbProvisional, this.sbNotice, this.modeEl);
     this.ruleEl.setAttribute('aria-hidden', 'true');
     this.ruleEl.hidden = true;
   }
@@ -2061,6 +2049,11 @@ export class ReadingWalkUI {
     const walk = this.walk;
     if (!walk) return;
     const lm = this.host.lineMarks();
+    const completion = personalCompletionText({ status: lm.participantStatus(), viewer: lm.me(), name: actor => lm.displayName(actor) });
+    this.completionEl.textContent = completion ?? '';
+    this.completionEl.hidden = !completion;
+    const completionHost = this.touchMode() ? this.strip : this.statusBar;
+    if (this.completionEl.parentElement !== completionHost) completionHost.append(this.completionEl);
     const target = this.cursorLine();
     const marked = lm.isLoaded() ? lm.markedUpTo() : null;
     const needs = lm.isLoaded() ? lm.needsYouLines().length : null;
@@ -2302,7 +2295,7 @@ export class ReadingWalkUI {
       cursor: walk ? this.cursorLine() : -1,
       marginTab: this.marginTab,
       navigator: this.navigator.debugState(),
-      replies: this.replies.map(r => ({ ...r })),
+      replies: [],
       sheet: this.right.classList.contains('prw-sheet-open') ? 'margin' : this.left.classList.contains('prw-sheet-open') ? 'navigator' : null,
       touch: this.touchMode(),
       strip: this.strip.hidden ? null : { line: Number(this.strip.dataset.line), status: this.strip.dataset.status ?? '' },
@@ -2332,7 +2325,7 @@ export class ReadingWalkUI {
       modeText: this.modeEl.textContent ?? '',
       editing: isWriting(),
       notice: this.sbNotice.hidden ? '' : (this.sbNotice.textContent ?? ''),
-      doneVisible: !this.suggestBtn.hidden,
+      doneVisible: Boolean(this.boxHost.querySelector('.plm-suggest')),
       statusBar: { line: this.sbLine.textContent, marked: this.sbMarked.textContent, issues: this.sbIssues.dataset.count === '' ? null : Number(this.sbIssues.dataset.count), provisional: 0 },
       rule: this.ruleEl.hidden ? null : Number(this.ruleEl.dataset.line),
       rail: this.railFollow?.debugState() ?? null,

@@ -6,7 +6,6 @@
  */
 import {
   actorKey,
-  countsAsSeen,
   type LineState,
   type ProofIssue,
 } from './line-marks.js';
@@ -123,6 +122,8 @@ export interface OpenViewInput {
   team?: readonly string[];
   /** The line states (src/shared/line-marks.ts buildLineStates), for lapsed marks and unread lines. */
   states?: readonly LineState[];
+  /** The same visible participant result used by the header, People and completion. */
+  status?: DocumentStatus;
   /** How many lines the document has, so an item can never point off the end. */
   lineCount?: number;
 }
@@ -208,13 +209,17 @@ export function openView(input: OpenViewInput): OpenView {
   // the wording the viewer agreed to, so the row can show both.
   const me = actorKey(input.viewer);
   const myKeys = new Set([me, ...aliases.map(actorKey)]);
-  for (const state of input.states ?? []) {
-    const at = buckets.get(state.line.index);
-    if (!at) continue;
-    for (const [key, entry] of state.marks) {
-      if (!myKeys.has(key) || !entry.lapsed) continue;
+  const status = input.status ?? participantStatus({ states: input.states ?? [], team: [...new Set([
+    ...(input.team ?? []), input.viewer, ...aliases, ...(input.states ?? []).flatMap(state => [...state.marks.keys()]),
+  ])] });
+  for (const person of status.participants) {
+    if (!myKeys.has(actorKey(person.actor))) continue;
+    for (const passage of person.passages) {
+      if (passage.state !== 'lapsed') continue;
+      const at = buckets.get(passage.lineIndex);
+      if (!at) continue;
       for (const row of at.entries) if (row.kind === 'changed') row.kind = 'lapsed';
-      at.agreedTo = entry.lapsedFrom ?? at.agreedTo;
+      at.agreedTo = passage.earlierVersion ?? at.agreedTo;
     }
   }
 
@@ -241,12 +246,10 @@ export function openView(input: OpenViewInput): OpenView {
 
   // ---- 4. Lines nobody has marked (OPEN_VIEW_POLICY.unreadLinesAreOpen; see there). ---------
   if (OPEN_VIEW_POLICY.unreadLinesAreOpen) {
+    const readLines = new Set(status.participants.flatMap(person => person.passages
+      .filter(passage => ['seen', 'agreed', 'rejected', 'approved'].includes(passage.state)).map(passage => passage.lineIndex)));
     for (const state of input.states ?? []) {
-      let read = false;
-      for (const entry of state.marks.values()) {
-        if (entry.current && countsAsSeen(entry.mark.status) && !entry.mark.hidden) { read = true; break; }
-      }
-      if (read) continue;
+      if (readLines.has(state.line.index)) continue;
       const at = bucket(state.line.index);
       if (at && at.entries.length === 0) at.entries.push({ kind: 'unread', by: null, because: ISSUE_WORDS.unread });
     }
@@ -364,8 +367,9 @@ export function accordHeader(input: {
   name: (actor: string) => string;
   /** Open objections, so a Rejected mark that was stored as Seen still counts as Rejected. */
   objections?: readonly StatusObjection[];
+  status?: ReturnType<typeof participantStatus>;
 }): AccordHeader {
-  const status = participantStatus({ states: input.states, team: input.team, objections: input.objections });
+  const status = input.status ?? participantStatus({ states: input.states, team: input.team, objections: input.objections });
   const header = statusHeader(status, input.viewer, input.name);
   const me = actorKey(input.viewer);
   const readers: AccordReader[] = header.readers.map(reader => ({

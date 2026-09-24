@@ -1,6 +1,6 @@
 /**
  * Proof Documents Step 1 — the line-marks UI.
- * Mike, 2026-09-23 (usability brief): the pencil opens a local Suggest change draft.
+ * Mike, 2026-09-23 (usability brief): one answer group opens drafts and discussions; markers always show their text counts.
  * Clicking passage text selects it; it never begins direct Editing.
  * Line marks target the selected passage. Explicit section agreement captures text identities,
  * and it is offered only when every line of the section is visible.
@@ -9,8 +9,8 @@
  *
  * - A dot in the left margin of every line shows the viewer's own mark; small pips beside it
  *   show other team members' marks. Click (or tap) the dot to mark the line.
- * - Desktop: a small menu next to the dot. Phones (< 700 px): a bottom sheet.
- * - The top bar shows "N issues" (or "Aligned") and a Next issue button.
+ * - Desktop and phone share one answer group. Discussions and proposals open in Review.
+ * - Status and both Review scopes are computed once from the visible facts.
  * The overlay sits outside ProseMirror's DOM, so it never enters the text or the Yjs document.
  */
 import type { EditorView } from '@milkdown/kit/prose/view';
@@ -27,6 +27,7 @@ import {
   computeIssues,
   computeStep1Team,
   extractLines,
+  hashText,
   isAiActor,
   PASSIVE_VIAS,
   registerActorLabels,
@@ -125,14 +126,17 @@ import {
 import { tierViewKey, setTierDecorations, tierDecorationCount, type TierLineSpec } from '../editor/plugins/tier-view';
 import { buildTierRow, loadOnlyDecisions, renderTierControl, saveOnlyDecisions } from './line-tiers';
 import { HIGHLIGHT_POLICY, issueNeedsViewer, markedUpTo, type MarkedUpTo } from '../shared/layout-status';
-import { openView, type OpenView } from '../shared/open-view';
-import { MARGIN_POLICY, MARKED_BY_POLICY, markedByFold, type NeedsYouItem } from '../shared/layout-panels';
+import type { OpenView } from '../shared/open-view';
+import { reviewSurface } from '../shared/review-list';
+import { participantStatus, agreedCopyOffer } from '../shared/participant-status';
+import { MARGIN_POLICY, MARKED_BY_POLICY, markedByFold, passageMarkers, type NeedsYouItem } from '../shared/layout-panels';
 import { ISSUES_PILL_POLICY, NEXT_ISSUE_POLICY, issuesPillText, issuesPillTitle } from '../shared/layout-chrome';
 import './line-marks.css';
 
 export interface LineMarksHost {
   /** Review navigation follows the panel scope and document order. */
   nextReview?(): void;
+  openReviewItem?(line: number): void;
   slug(): string | null;
   apiBase(): string;
   authHeaders(): Record<string, string>;
@@ -173,13 +177,7 @@ export interface LineMarksHost {
   authorsOfRange?(from: number, to: number): string[];
   /** Editing first: true while the editor is in Suggesting mode (edits become suggestions). */
   isSuggesting?(): boolean;
-  /**
-   * The margin pencil. Opens a local Suggest change draft on this line.
-   * Mike, 2026-09-23 (usability brief). It does not begin direct Editing.
-   */
-  startEditingLine?(lineIndex: number): boolean;
-  /** The line the cursor is on (the pencil shows there only). */
-  cursorLine?(): number;
+
 }
 
 export interface MarkBoxOptions {
@@ -193,6 +191,9 @@ export interface MarkBoxOptions {
    * phone's dot sheet, unchanged.
    */
   layout?: 'full' | 'margin';
+  suggest?: () => void;
+  discuss?: () => void;
+  canSuggest?: boolean;
 }
 
 export interface MarkBox {
@@ -378,6 +379,7 @@ export class LineMarksUI {
   private needsYou: readonly number[] = [];
   /** Accord round 2 stage C: the one definition of Open, computed once per recompute. */
   private open: OpenView = { items: [], lines: [], count: 0 };
+  private surface = { status: participantStatus({ states: [], team: [] }), views: { 'needs-you': this.open, 'all-open': this.open } };
   private needsYouSet = new Set<number>();
   private states: LineState[] = [];
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -721,7 +723,7 @@ export class LineMarksUI {
       // Navigator's Issues tab all read this one answer (src/shared/open-view.ts), so they cannot
       // disagree on the page any more than they can in the pure code. The threads are passed here
       // and nowhere else, which is why a thread with no review mark is counted in all three.
-      this.open = openView({
+      this.surface = reviewSurface({
         issues: this.summary.issues,
         viewer: this.me(),
         aliases: this.viewerAliases(),
@@ -731,6 +733,7 @@ export class LineMarksUI {
         states: this.states,
         lineCount: this.lines.length,
       });
+      this.open = this.surface.views['needs-you'];
       this.needsYou = this.open.lines;
       this.needsYouSet = new Set(this.needsYou);
       this.ranked = rankIssues(this.summary.issues, { viewer: this.me(), explicitFor: explicitPriorityLookup(this.serverNotes, this.lines) });
@@ -798,6 +801,14 @@ export class LineMarksUI {
   lineState(index: number): LineState | undefined { return this.states[index]; }
   issueSummary(): IssueSummary | null { return this.summary; }
   /** Accord layout: the lines with an amber "needs you" dot (the status bar's Issues left). */
+  participantStatus() { return this.surface.status; }
+  reviewViews() { return this.surface.views; }
+  agreedCopyOffer() {
+    // Content identity is stable across reloads and clients; it is not the server's edit counter.
+    const revision = hashText(JSON.stringify(this.lines.map(line => [line.kind, line.text])));
+    return agreedCopyOffer(this.surface.status, revision, actor => this.displayName(actor));
+  }
+
   needsYouLines(): readonly number[] { return this.needsYou; }
   /**
    * Accord layout stage 3: the Navigator's Issues list. Accord round 2 stage C: it is the SAME
@@ -1353,19 +1364,19 @@ export class LineMarksUI {
     // dots, the status bar's "Issues left"); the team's count is in the title and People › Who is here.
     const mine = this.needsYou.length;
     const shown = ISSUES_PILL_POLICY.counts === 'viewer' ? mine : n;
-    this.bannerEl.dataset.state = n === 0 ? 'aligned' : shown === 0 ? 'clear' : 'issues';
+    this.bannerEl.dataset.state = this.surface.status.aligned ? 'aligned' : shown === 0 ? 'clear' : 'issues';
     this.countEl.dataset.teamCount = String(n);
     this.countEl.dataset.viewerCount = String(mine);
-    this.countEl.textContent = ISSUES_PILL_POLICY.counts === 'viewer' ? issuesPillText(mine, n) : (n === 0 ? 'Aligned' : `${n} ${n === 1 ? 'issue' : 'issues'}`);
+    this.countEl.textContent = ISSUES_PILL_POLICY.counts === 'viewer' ? issuesPillText(mine, n) : (this.surface.status.aligned ? 'Aligned' : `${n} ${n === 1 ? 'issue' : 'issues'}`);
     const lead = ISSUES_PILL_POLICY.teamCountInTitle ? `${issuesPillTitle(mine, n)} ` : '';
-    this.countEl.title = n === 0
+    this.countEl.title = this.surface.status.aligned
       ? `${lead}Every team member has seen every line and no one has rejected anything. Team: ${summary.team.map(actorLabel).join(', ')}`
       : `${lead}${summary.counts.lineIssues} lines not yet seen by everyone or rejected; ${summary.counts.reviewMarkIssues} open comments or suggestions; ${summary.counts.askIssues} unanswered ${summary.counts.askIssues === 1 ? 'ask' : 'asks'}; ${summary.counts.uncertainIssues} uncertain ${summary.counts.uncertainIssues === 1 ? 'line' : 'lines'}; ${summary.counts.objectionIssues} open ${summary.counts.objectionIssues === 1 ? 'objection' : 'objections'}; ${summary.counts.alternativeIssues} ${summary.counts.alternativeIssues === 1 ? 'line' : 'lines'} with competing wordings; ${summary.counts.ttlIssues} expired ${summary.counts.ttlIssues === 1 ? 'claim' : 'claims'}; ${summary.counts.doIssues} unfinished ${summary.counts.doIssues === 1 ? 'action' : 'actions'}${this.blind ? '; blind marking is on' : ''}. Next issue goes by stakes: ${this.ranked.filter(r => r.urgent).length} urgent. Team: ${summary.team.map(actorLabel).join(', ')}`;
     this.nextBtn.disabled = n === 0;
     // Polish pass (COS, 2026-09-21): the phone pill reads as the mockup's "12 Issues".
-    this.setShort(n === 0 ? '✓ Aligned' : issuesPillText(shown, n));
-    this.nextBtn.setAttribute('aria-label', n === 0 ? 'No issues: aligned' : `Next issue (${shown} ${shown === 1 ? 'issue needs' : 'issues need'} you; the team has ${n})`);
-    this.renderAlignedAt(n === 0);
+    this.setShort(this.surface.status.aligned ? '✓ Aligned' : issuesPillText(shown, n));
+    this.nextBtn.setAttribute('aria-label', n === 0 ? 'No open issues' : `Next issue (${shown} ${shown === 1 ? 'issue needs' : 'issues need'} you; the team has ${n})`);
+    this.renderAlignedAt(this.surface.status.aligned);
   }
 
   /** Step B3c: the snapshot link beside the Issue count. */
@@ -1411,7 +1422,7 @@ export class LineMarksUI {
     this.alignedEl.textContent = aligned ? `Aligned as of ${when}` : `Last aligned ${when}`;
     this.alignedEl.dataset.state = aligned ? 'aligned' : 'since';
     this.alignedEl.title = aligned
-      ? `Everyone agreed on this version at ${new Date(snap.createdAt).toLocaleString()}. Open the ledger: the text, every mark and every answer.`
+      ? `Everyone had seen this version without rejection at ${new Date(snap.createdAt).toLocaleString()}. Open the ledger: the text, every mark and every answer.`
       : `The last aligned version was frozen at ${new Date(snap.createdAt).toLocaleString()}; changes since then start a new round. Open its ledger.`;
     this.alignedEl.setAttribute('aria-label', `${this.alignedEl.textContent}: open the ledger`);
   }
@@ -1437,6 +1448,7 @@ export class LineMarksUI {
     for (const issue of this.summary?.issues ?? []) if ('lineIndex' in issue && issue.lineIndex !== null) issueLines.add(issue.lineIndex);
     let chatCounts = new Map<number, number>();
     try { chatCounts = this.host.chatCounts?.() ?? chatCounts; } catch { /* chat is optional */ }
+    const markers = passageMarkers(this.threadViews);
     for (const state of this.states) {
       const line = state.line;
       const dom = view.nodeDOM(line.pos) as HTMLElement | null;
@@ -1465,6 +1477,25 @@ export class LineMarksUI {
         const lh = parseFloat(getComputedStyle(dom).lineHeight) || 24;
         bubble.style.top = `${Math.round(rect.top - containerRect.top + Math.max(0, (Math.min(lh, rect.height) - dotSize) / 2) - (phone ? 8 : 6))}px`;
         bubble.style.left = `${Math.round(Math.max(0, leftEdge) + dotSize - (phone ? 12 : 8))}px`;
+      }
+      const marker = markers.get(line.index);
+      if (marker) {
+        const markerKey = `review:${key}`;
+        used.add(markerKey);
+        let button = existing.get(markerKey);
+        if (!button) {
+          button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'plm-review-marker';
+          button.dataset.key = markerKey;
+          this.gutter.append(button);
+        }
+        button.dataset.line = String(line.index);
+        button.textContent = marker.text;
+        button.setAttribute('aria-label', `${marker.text} on line ${line.index + 1}: open Review`);
+        button.style.top = `${Math.round(rect.top - containerRect.top)}px`;
+        button.style.left = `${Math.round(editorRect.right - containerRect.left + 4)}px`;
+        button.onclick = () => this.host.openReviewItem?.(line.index);
       }
       let dot = existing.get(key);
       if (!dot) {
@@ -1558,33 +1589,6 @@ export class LineMarksUI {
       dot.setAttribute('aria-label', `Line ${line.index + 1}${needsYou ? ' (needs you)' : ''}: your mark ${myStatus === 'changed' ? 'is out of date (the line changed)' : shownLabel(myStatus)}${carriedText}${extraText}${othersText ? `. ${othersText}` : ''}. Mark this line`);
       dot.title = othersText ? `You: ${myStatus === 'changed' ? 'changed since you marked it' : shownLabel(myStatus)}\n${othersText.replace(/; /g, '\n')}` : 'Mark this line';
     }
-    // Suggest change is also reachable from the selected passage's margin pencil.
-    const cursor = this.host.cursorLine?.() ?? -1;
-    const pencilKey = 'edit-pencil';
-    const cursorLine = cursor >= 0 ? this.lines[cursor] : null;
-    const canEdit = Boolean(this.host.startEditingLine) && this.canMark;
-    const cursorDom = cursorLine ? view.nodeDOM(cursorLine.pos) as HTMLElement | null : null;
-    if (canEdit && cursorLine && cursorDom && typeof cursorDom.getBoundingClientRect === 'function' && cursorDom.getBoundingClientRect().height > 0) {
-      used.add(pencilKey);
-      let pencil = existing.get(pencilKey);
-      if (!pencil) {
-        pencil = document.createElement('button');
-        pencil.type = 'button';
-        pencil.className = 'plm-edit-pencil';
-        pencil.dataset.key = pencilKey;
-        pencil.textContent = '✎';
-        this.gutter.append(pencil);
-      }
-      const rect = cursorDom.getBoundingClientRect();
-      const lh = parseFloat(getComputedStyle(cursorDom).lineHeight) || 24;
-      pencil.dataset.line = String(cursor);
-      pencil.setAttribute('aria-label', `Suggest change to line ${cursor + 1}`);
-      pencil.title = 'Suggest change: opens a local draft. Propose change or Cmd/Ctrl+Enter submits it.';
-      pencil.style.top = `${Math.round(rect.top - containerRect.top + Math.max(0, (Math.min(lh, rect.height) - dotSize) / 2))}px`;
-      pencil.style.left = `${Math.round(Math.max(0, leftEdge) - (phone ? 22 : 20))}px`;
-      pencil.style.width = `${dotSize}px`;
-      pencil.style.height = `${dotSize}px`;
-    }
     for (const [key, el] of existing) if (!used.has(key)) el.remove();
   }
 
@@ -1593,13 +1597,6 @@ export class LineMarksUI {
   // --------------------------------------------------------------------------
 
   private onGutterClick = (event: MouseEvent): void => {
-    const pencil = (event.target as HTMLElement).closest('.plm-edit-pencil') as HTMLButtonElement | null;
-    if (pencil) {
-      event.preventDefault();
-      event.stopPropagation();
-      this.host.startEditingLine?.(Number(pencil.dataset.line));
-      return;
-    }
     const bubble = (event.target as HTMLElement).closest('.plm-chat-bubble') as HTMLButtonElement | null;
     if (bubble) {
       event.preventDefault();
@@ -1971,6 +1968,24 @@ export class LineMarksUI {
       };
       (margin && !primary ? moreMarks : actions).append(btn);
     }
+    if (margin) {
+      const suggest = document.createElement('button');
+      suggest.type = 'button';
+      suggest.className = 'plm-choice plm-suggest';
+      suggest.dataset.accordSuggestChange = '';
+      suggest.textContent = 'Suggest change';
+      suggest.title = 'Suggest change (S): opens a local draft';
+      suggest.disabled = !options.canSuggest;
+      suggest.onclick = () => options.suggest?.();
+      const discuss = document.createElement('button');
+      discuss.type = 'button';
+      discuss.className = 'plm-choice plm-discuss';
+      discuss.textContent = 'Discuss';
+      discuss.disabled = !this.canCommentHere();
+      discuss.onclick = () => options.discuss?.();
+      actions.insertBefore(suggest, actions.lastElementChild);
+      actions.insertBefore(discuss, actions.lastElementChild);
+    }
     if (mine) {
       const clear = document.createElement('button');
       clear.type = 'button';
@@ -1987,6 +2002,8 @@ export class LineMarksUI {
     let toggleMore: (() => void) | undefined;
     if (margin) {
       actions.classList.add('plm-primary-row');
+      actions.setAttribute('role', 'group');
+      actions.setAttribute('aria-label', 'Answer selected passage');
       const moreBtn = document.createElement('button');
       moreBtn.type = 'button';
       moreBtn.className = 'plm-more-btn';
@@ -3777,7 +3794,7 @@ export class LineMarksUI {
       sectionWrites: this.sectionWrites,
       loaded: this.loaded,
       issues: this.summary?.counts.total ?? -1,
-      aligned: this.summary?.aligned ?? false,
+      aligned: this.surface.status.aligned,
       team: this.summary?.team ?? [],
       lines: this.lines.length,
       marks: this.serverMarks,

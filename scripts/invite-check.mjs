@@ -318,7 +318,7 @@ async function run(browser, style) {
       const view = await serverView(ada, phoneSlug);
       assert.equal(view.body.identity.me.actor, 'human:ada@example.test');
       await ada.locator('.plm-dot[data-line="2"]').tap();
-      const sheet = ada.locator('.plm-menu.plm-sheet');
+      const sheet = ada.locator('.prw-right.prw-sheet-open');
       await sheet.waitFor({ state: 'visible' });
       await sheet.getByRole('button', { name: /Agree/ }).tap();
       await waitFor(ada, () => document.querySelector('.plm-dot[data-line="2"]')?.dataset.status === 'agreed');

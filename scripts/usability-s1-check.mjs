@@ -335,7 +335,7 @@ async function phone(browser, base, style) {
     await chip(page, 9).scrollIntoViewIfNeeded(); await chip(page, 9).tap();
     assert.equal(await chip(page, 9).getAttribute('aria-expanded'), 'false');
     await page.locator('.plm-dot[data-line="9"]').tap();
-    const sheet = page.locator('.plm-menu.plm-sheet');
+    const sheet = page.locator('.prw-right.prw-sheet-open');
     await sheet.getByRole('button', { name: /^Agree$/ }).tap();
     await waitFor(page, () => window.__proofLineMarks.myStatus(9) === 'agreed');
     assert.notEqual(await page.evaluate(() => window.__proofLineMarks.myStatus(10)), 'agreed');

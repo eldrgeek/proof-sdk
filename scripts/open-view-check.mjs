@@ -144,7 +144,7 @@ async function chooseCopy(page, clean) {
   const current = (await state(page)).clean;
   if (current === clean) return;
   await page.locator('#accord-menubar .amb-top[data-menu="view"]').click();
-  await page.locator('.amb-menu').getByRole('menuitem', { name: clean ? 'View agreed copy' : 'Return to document', exact: true }).click();
+  await page.locator('.amb-menu').getByRole('menuitem', { name: clean ? /^View agreed copy/ : 'Return to document' }).click();
 }
 
 async function main() {
@@ -315,7 +315,7 @@ async function main() {
     });
 
     // ------------------------------------------------------------------ 6
-    await check('the Accord reads clean and its header is accurate for two viewers', async () => {
+    await check('the honest header names two viewers and the agreed copy waits for both', async () => {
       const eric = await openDoc(browser, base, created.slug, 'Eric');
       try {
         // Mike agrees to everything; Eric agrees to the first few lines only.
@@ -324,7 +324,11 @@ async function main() {
         // The header names Eric as soon as his first mark syncs ("from line 2"). Wait for the
         // three marks, which is the state the assertion below describes.
         await waitFor(mike.page, () => /Eric[^.]* has not read from line 4 on\./.test(window.__proofOpenView.debugState().header.text || ''), null, 20_000);
-        await chooseCopy(mike.page, true);
+        await mike.page.locator('#accord-menubar .amb-top[data-menu="view"]').click();
+        const offer = mike.page.locator('[data-item="view-agreed-copy"]');
+        assert.equal(await offer.isDisabled(), true);
+        assert.match(await offer.innerText(), /Not yet agreed: waiting for.*Eric/);
+        await mike.page.keyboard.press('Escape');
         await mike.page.waitForTimeout(500);
         const s = await state(mike.page);
         assert.ok(/^Agreed by you/.test(s.header.text), `header: ${s.header.text}`);
@@ -467,7 +471,15 @@ async function main() {
         await page.page.screenshot({ path: path.join(shots, 'open-view-1440.png') });
         const s = await state(page.page);
         assert.equal(s.hiddenLines.length, 0, 'Review filtered the document');
+        await markAll(page.page, 'agreed');
+        const current = await agent(base, doc3, '/state', undefined, 'GET');
+        for (const actor of current.alignment.team) {
+          if (/Mike/.test(actor)) continue;
+          for (const line of current.lines) await agent(base, doc3, '/marks/line', { by: actor, quote: line.text, status: 'agreed' });
+        }
+        await waitFor(page.page, () => window.__proofLineMarks.agreedCopyOffer().enabled);
         await chooseCopy(page.page, true);
+        assert.match(await page.page.locator('.aov-header-text').innerText(), /Wording revision.*Agreed by.*Mike/);
         await waitFor(page.page, () => window.__proofOpenView.debugState().view === 'accord');
         await page.page.waitForTimeout(500);
         const back = await state(page.page);

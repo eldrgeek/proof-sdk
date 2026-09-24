@@ -292,8 +292,9 @@ async function run(browser, style) {
     await check(`${ptag}: a margin dot's sheet shows the tier row; a touch-sized button flips the line to decision`, async () => {
       await phone.locator(`.plm-dot[data-line="${L.BACKGROUND}"]`).scrollIntoViewIfNeeded();
       await phone.locator(`.plm-dot[data-line="${L.BACKGROUND}"]`).tap();
-      const sheet = phone.locator('.plm-menu.plm-sheet, .prw-right.prw-sheet-open').first();
+      const sheet = phone.locator('.prw-right.prw-sheet-open').first();
       await sheet.waitFor({ state: 'visible' });
+      await sheet.locator('.plm-more-btn').tap();
       const row = sheet.locator('.plm-tier-row');
       await row.waitFor({ state: 'visible' });
       assert.match(await row.innerText(), /AI proposed context — read for you by Claude/);
@@ -308,7 +309,7 @@ async function run(browser, style) {
     });
     await check(`${ptag}: the Navigator sheet's Outline has the counts and "Show only decisions" (touch-sized)`, async () => {
       await phone.keyboard.press('Escape').catch(() => {});
-      await phone.evaluate(() => { document.querySelector('.plm-menu')?.remove(); window.__proofReadingWalk.openSheet('left'); });
+      await phone.evaluate(() => { window.__proofReadingWalk.openSheet('left'); });
       await phone.locator('.prw-left.prw-sheet-open .anv-tab[data-tab="outline"]').tap();
       const control = phone.locator('.prw-left.prw-sheet-open .plm-tiers');
       await control.waitFor({ state: 'visible' });

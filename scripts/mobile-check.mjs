@@ -245,10 +245,11 @@ async function phone(browser, base, name, viewport) {
     }), 'the tap did not place the caret in the text');
     await page.getByRole('button', { name: 'More options', exact: true }).click();
     await page.getByRole('menuitem', { name: /This line/ }).click();
+    await page.evaluate(() => window.__proofReadingWalk.openReviewItem(window.__proofReadingWalk.focusIndex()));
     // Accord round 2 stage C: a comment is a THREAD, and it shows once — in Discussion. It used to
     // show there AND in "Changes on this line", which now carries only proposals. Same sheet, same
     // reply, one card.
-    const card = page.locator(`.prw-right .amg-thread[data-thread="${id}"]`);
+    const card = page.locator(`.prw-left .amg-thread[data-thread="${id}"]`);
     await card.waitFor({ state: 'visible', timeout: 3000 }).catch(async () => {
       const why = await page.evaluate(() => ({
         rightHidden: !document.querySelector('.prw-right') || getComputedStyle(document.querySelector('.prw-right')).display === 'none',
@@ -266,7 +267,7 @@ async function phone(browser, base, name, viewport) {
     const reply = card.locator('.amg-thread-reply-input').first();
     await reply.fill('Reply from the phone');
     await page.screenshot({ path: path.join(shots, `${tag}-6-thread.png`) });
-    assert.equal(await chipOnTop(page, `.prw-right .amg-thread[data-thread="${id}"] .amg-thread-reply-input`), false, 'feedback chip covers the reply box');
+    assert.equal(await chipOnTop(page, `.prw-left .amg-thread[data-thread="${id}"] .amg-thread-reply-input`), false, 'feedback chip covers the reply box');
   });
   await context.close();
 }

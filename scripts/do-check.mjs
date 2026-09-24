@@ -303,7 +303,7 @@ async function run(browser, style) {
     await check(`${ptag}: the dot's bottom sheet carries the control; a tap on Approve approves`, async () => {
       await phone.locator(`.plm-dot[data-line="${L.DO}"]`).scrollIntoViewIfNeeded();
       await phone.locator(`.plm-dot[data-line="${L.DO}"]`).tap();
-      const sheet = phone.locator('.plm-menu.plm-sheet');
+      const sheet = phone.locator('.prw-right.prw-sheet-open');
       await sheet.waitFor({ state: 'visible' });
       const control = sheet.locator('.pdo');
       await control.waitFor({ state: 'visible' });

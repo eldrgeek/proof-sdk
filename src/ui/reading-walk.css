@@ -238,8 +238,6 @@ body.prw-strip-on .prw-strip:not([hidden]) {
   min-width: 56px; min-height: 48px; padding: 0 10px; border-radius: 12px; border: 1px solid #d4d4cf;
   background: #fff; color: #26303c; font: 600 14px system-ui, sans-serif; cursor: pointer;
 }
-.prw-strip-actions .prw-strip-agree { background: #16a34a; border-color: #15803d; color: #fff; }
-.prw-strip-actions .prw-strip-reject { color: #b91c1c; border-color: #fca5a5; }
 /* Reserve the strip's height so it never covers the end of the text; lift the feedback chip above it. */
 body.prw-strip-on #app #editor { padding-bottom: calc(100vh - 80px + var(--prw-strip-h, 64px)) !important; }
 body.prw-strip-on .soma-feedback-root { bottom: calc(var(--prw-strip-h, 64px) + 12px + env(safe-area-inset-bottom, 0px)); }
@@ -297,11 +295,7 @@ body.prw-on.pw-reading .ProseMirror { caret-color: transparent; }
 .pst-notice { flex-shrink: 1; min-width: 0; margin-left: 12px; overflow: hidden; text-overflow: ellipsis; color: #166534; font-weight: 600; }
 .pst-notice[hidden] { display: none; }
 /* The phone's door: there is no Cmd+Enter on a phone, so Done is visible while editing. */
-.prw-edit-done {
-  flex-shrink: 0; margin-left: 10px; min-height: 22px; padding: 0 12px; border: none; border-radius: 6px;
-  background: #2563eb; color: #fff; font: 600 12px system-ui, sans-serif; cursor: pointer;
-}
-.prw-edit-done[hidden] { display: none; }
+
 /* A touch strip (tablets, phones) docks at the very bottom: the bar sits right above it. */
 body.prw-strip-on .pst-bar { bottom: calc(var(--proof-keyboard-offset, 0px) + var(--prw-strip-h, 64px) + env(safe-area-inset-bottom, 0px)); }
 /* Toasts and the feedback chip sit above the bar. */
@@ -335,3 +329,12 @@ body.pst-on .plm-toast { bottom: 40px; }
 
 /* The selected-passage anchor owns compensation; native anchoring would apply it twice. */
 body.prw-on { overflow-anchor: none; }
+
+/* Persistent completion text wraps without replacing mode or navigation controls. */
+.pst-bar:has(.pst-completion:not([hidden])) { height: auto; min-height: 28px; flex-wrap: wrap; overflow: visible; }
+.pst-completion { white-space: normal; line-height: 1.4; padding: 4px; color: #166534; }
+.pst-completion[hidden] { display: none; }
+.prw-strip:has(.pst-completion:not([hidden])) { flex-wrap: wrap; }
+.prw-strip .pst-completion { flex: 0 0 100%; font-size: 12px; }
+.anv-detail { padding: 8px; border-bottom: 1px solid #dde2ea; }
+.anv-detail:has(> [hidden]):not(:has(> :not([hidden]))) { display: none; }

@@ -313,7 +313,9 @@ async function phone(browser, base, style) {
   });
   await check(`${tag}: amber dots match the count; marking a line shows "Marked up to line K ↑" in the strip`, async () => {
     assert.deepEqual(await amber(page), [L.ASK, L.CHANGE, L.COMMENT, L.ASK2]);
-    await page.locator('.prw-strip-agree').tap();
+    if (!(await page.locator('.prw-right.prw-sheet-open').count())) await page.locator('.prw-strip-where').tap();
+    await page.locator('.prw-right .plm-primary-row [data-status="agreed"]').tap();
+    await page.locator('.prw-strip-grab').tap();
     await waitFor(page, () => document.querySelector('.prw-strip-marked')?.textContent === 'Marked up to line 1 ↑');
     await waitFor(page, () => /line 1/.test(document.querySelector('.pst-bar .pst-marked')?.textContent ?? ''));
     const fits = await page.evaluate(() => { const e = document.querySelector('.prw-strip'); return e.scrollWidth <= e.clientWidth + 1; });
@@ -713,20 +715,17 @@ async function desktop3(browser, base, style) {
     assert.equal(await page.locator('.prw-right .amg-tab[data-tab="line"] .amg-tab-label').textContent(), `Line ${L.CHANGE + 1}`);
     assert.equal(await page.locator(`.prw-left .anv-issue[data-line="${L.CHANGE}"]`).getAttribute('aria-current'), 'true');
   });
-  await check(`${tag}: the Line tab is the thread on the line — quote, Agree A / Reject R / ⋯, then its changes with Accept / Reject / Reply, and a reply box`, async () => {
-    const info = await page.evaluate(() => {
-      const pane = document.querySelector('.prw-right .amg-pane[data-tab="line"]');
-      const quote = pane.querySelector('.plm-quote');
-      const primary = [...pane.querySelectorAll('.plm-primary-row > button')].map(b => b.getAttribute('aria-label') || [...b.querySelectorAll('span:not(.plm-choice-glyph), kbd')].map(n => n.textContent).join(' '));
-      const order = ['.plm-quote', '.plm-primary-row', '.prw-changes', '.amg-reply'].map(s => pane.querySelector(s)?.getBoundingClientRect().top ?? -1);
-      return { quote: quote?.textContent ?? '', primary, order, card: [...pane.querySelectorAll('.prw-card .prw-card-actions button')].map(b => b.textContent), reply: pane.querySelector('.amg-reply-input')?.placeholder };
-    });
-    assert.match(info.quote, /^The reviewer could not read that list/);
-    assert.deepEqual(info.primary, ['Agree A', 'Reject R', 'More marks for this line']);
-    assert.deepEqual(info.card, ['Accept', 'Reject', 'Reply']);
-    assert.equal(info.reply, 'Reply on this line…');
-    for (let i = 1; i < info.order.length; i += 1) assert.ok(info.order[i] > info.order[i - 1], `the Line tab is out of order: ${info.order}`);
-    await page.screenshot({ path: path.join(shots, `${tag}-line-tab.png`), clip: { x: 1090, y: 60, width: 350, height: 640 } });
+  await check(`${tag}: the margin has one answer group and Review has the proposal detail`, async () => {
+    const primary = page.locator('.prw-right .plm-primary-row');
+    assert.equal(await primary.count(), 1);
+    const labels = await primary.locator('button').evaluateAll(buttons => buttons.map(b => b.getAttribute('aria-label') || b.textContent.replace(/[✓✗]/g, '').trim()));
+    assert.match(labels[0], /Agree/);
+    assert.equal(labels[1], 'Suggest change');
+    assert.equal(labels[2], 'Discuss');
+    assert.match(labels[3], /Reject/);
+    assert.equal(labels[4], 'More marks for this line');
+    assert.equal(await page.locator('.prw-right .prw-card').count(), 0);
+    assert.deepEqual(await page.locator('.anv-detail .prw-card-actions button').allTextContents(), ['Accept', 'Reject', 'Reply']);
   });
   await check(`${tag}: ⋯ More holds Seen, Clear my mark, Flag uncertain, Offer another wording, Explain, Time-to-live and the tier`, async () => {
     assert.equal(await page.locator('.prw-right .plm-more').isVisible(), false, 'More is open before it is asked for');
@@ -740,11 +739,11 @@ async function desktop3(browser, base, style) {
     assert.ok((await page.locator('.prw-right .plm-more').innerText()).includes('Clear my mark'));
     await page.locator('.prw-right .plm-more .plm-clear').click();
   });
-  await check(`${tag}: "Reply on this line…" replies to the line's comment, or opens a new thread on a plain line`, async () => {
+  await check(`${tag}: Review replies to the selected comment; Discuss opens a new thread on a plain line`, async () => {
     await page.locator(`.prw-left .anv-issue[data-line="${L.COMMENT}"]`).click();
     await waitFor(page, i => window.__proofReadingWalk.debugState().focus === i, L.COMMENT);
-    await page.locator('.prw-right .amg-reply-input').fill('Thanks, that settles it.');
-    await page.locator('.prw-right .amg-reply-input').press('Enter');
+    await page.locator('.anv-detail .amg-thread-reply-input').first().fill('Thanks, that settles it.');
+    await page.locator('.anv-detail .amg-thread-reply-input').first().press('Enter');
     await waitFor(page, () => (window.proof.getAllMarks() ?? []).some(m => m.kind === 'comment' && (m.data?.replies ?? []).some(r => r.text === 'Thanks, that settles it.')));
     await page.evaluate(() => document.activeElement?.blur());
     await page.locator('.prw-left .anv-tab[data-tab="outline"]').click();
@@ -752,9 +751,9 @@ async function desktop3(browser, base, style) {
     await waitFor(page, i => window.__proofReadingWalk.debugState().focus === i, L.H1);
     await page.keyboard.press('j');
     await waitFor(page, () => window.__proofReadingWalk.debugState().focus === 1);
-    await page.locator('.prw-right .amg-reply-input').fill('Is this line still true?');
-    await page.locator('.prw-right .amg-reply-send').click();
-    await waitFor(page, () => window.__proofReadingWalk.debugState().replies.some(r => r.line === 1));
+    await page.locator('.plm-discuss').click();
+    await page.locator('.amg-thread-text-input').fill('Is this line still true?');
+    await page.locator('.amg-thread-new button[type="submit"]').click();
     await waitFor(page, () => (window.proof.getAllMarks() ?? []).some(m => m.kind === 'comment' && m.data?.text === 'Is this line still true?'));
     await page.evaluate(() => document.activeElement?.blur());
   });
@@ -895,15 +894,15 @@ async function phone3(browser, base, style) {
   });
   activePage = page;
   const strip = page.locator('.prw-strip');
-  await check(`${tag}: the bottom strip is the position, Agree, Reject and ⋯ (mockup: 56 px at the bottom)`, async () => {
+  await check(`${tag}: the bottom strip is the position and ⋯; answers live in the sheet (mockup: 56 px at the bottom)`, async () => {
     await strip.waitFor({ state: 'visible' });
     const r = await strip.boundingBox();
     assert.ok(Math.abs(r.y + r.height - 844) <= 2, `strip bottom ${r.y + r.height}`);
     assert.ok(r.height >= 56 && r.height <= 80, `strip height ${r.height}`);
     assert.equal(await page.locator('.prw-strip-where').innerText(), 'Line 1 of 25');
     const buttons = await page.evaluate(() => [...document.querySelectorAll('.prw-strip-actions button')].map(b => b.textContent));
-    assert.deepEqual(buttons, ['Agree', 'Reject', '⋯']);
-    const boxes = await page.evaluate(() => ['.prw-strip-agree', '.prw-strip-reject', '.prw-strip-more'].map(s => document.querySelector(s).getBoundingClientRect().height));
+    assert.deepEqual(buttons, ['⋯']);
+    const boxes = await page.evaluate(() => ['.prw-strip-more'].map(s => document.querySelector(s).getBoundingClientRect().height));
     for (const h of boxes) assert.ok(h >= 44, `a strip button is too small to tap: ${h}`);
     await page.screenshot({ path: path.join(shots, `${tag}-strip.png`) });
   });
@@ -949,8 +948,10 @@ async function phone3(browser, base, style) {
     await waitFor(page, i => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i && m.status === 'seen'), L.S1);
     await page.locator('.prw-strip-grab').tap();
   });
-  await check(`${tag}: Agree in the strip marks the cursor's line; "Marked up to line K ↑" takes you back there`, async () => {
-    await page.locator('.prw-strip-agree').tap();
+  await check(`${tag}: Agree in the sheet marks the cursor's line; "Marked up to line K ↑" takes you back there`, async () => {
+    if (!(await page.locator('.prw-right.prw-sheet-open').count())) await page.locator('.prw-strip-where').tap();
+    await page.locator('.prw-right .plm-primary-row [data-status="agreed"]').tap();
+    await page.locator('.prw-strip-grab').tap();
     await waitFor(page, i => document.querySelector('.prw-strip-marked')?.textContent === `Marked up to line ${i + 1} ↑`, L.S1);
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight / 2));
     await page.waitForTimeout(500);

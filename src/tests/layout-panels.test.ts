@@ -1,3 +1,4 @@
+import type { ThreadView } from '../shared/threads';
 /**
  * Accord layout stage 3 (Ren's proposal, Mike ruled 2026-09-21; decisions 4, 6, 7, 8, 11): the pure
  * parts of one cursor, the Margin's two tabs, the Navigator's Issues and Outline lists, and the
@@ -8,7 +9,7 @@ import assert from 'node:assert/strict';
 import type { ProofIssue } from '../shared/line-marks';
 import { needsYouLines } from '../shared/layout-status';
 import {
-  stableReviewOrder, resolveSettledIndex, MARGIN_POLICY, MARKED_BY_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY,
+  passageMarkers, stableReviewOrder, resolveSettledIndex, MARGIN_POLICY, MARKED_BY_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY,
   markedByFold, needsYouItems, needsYouLabel, outlineRows, parseRailState,
 } from '../shared/layout-panels';
 
@@ -30,6 +31,7 @@ const comment = (line: number, by: string | null): ProofIssue => ({ type: 'comme
 test('policy: two Margin tabs, three Navigator tabs, Agree and Reject primary, selection owns the target', () => {
   assert.deepEqual(MARGIN_POLICY.tabs, ['line', 'room']);
   assert.deepEqual(NAVIGATOR_POLICY.tabs.map(t => t.label), ['Review', 'Outline', 'Since you']);
+  assert.deepEqual(MARGIN_POLICY.primaryActions, ['Agree', 'Suggest change', 'Discuss', 'Reject']);
   assert.deepEqual(MARGIN_POLICY.primaryMarks, ['agreed', 'rejected']);
   for (const item of ['approved', 'seen', 'clear', 'uncertain', 'alternative', 'explain', 'ttl', 'tier']) assert.ok(MARGIN_POLICY.moreItems.includes(item), item);
   assert.equal(NAVIGATOR_POLICY.widthPx, 240);
@@ -127,4 +129,16 @@ test('a settled row resolves by the identity captured when it settled, not by it
   assert.equal(resolveSettledIndex(settled, inserted.filter(line => line.hash !== 'charlie')), null, 'a removed passage stays unresolved');
 });
 
+
+test('margin counts remain for resolved history, deduplicate threads and cover each anchored passage', () => {
+  const thread = (id: string, kind: 'discussion' | 'proposal', lines: number[], replies = 0) => ({
+    thread: { id, kind, replies: Array.from({ length: replies }, () => ({})), status: 'resolved' },
+    lineIndices: lines, lineIndex: lines[0] ?? 4, open: false,
+  }) as ThreadView;
+  const discussion = thread('c', 'discussion', [1, 2], 1);
+  const markers = passageMarkers([discussion, discussion, thread('p', 'proposal', [2]), thread('gone', 'discussion', [])]);
+  assert.deepEqual(markers.get(1), { text: '2 comments', ids: ['c'] });
+  assert.deepEqual(markers.get(2), { text: '2 comments · 1 proposal', ids: ['c', 'p'] });
+  assert.equal(markers.get(4)?.text, '1 comment');
+});
 console.log(`\n${passed} layout-panels tests passed`);

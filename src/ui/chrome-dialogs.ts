@@ -1,4 +1,6 @@
 /**
+ * People names each participant’s review state from participant-status, with text counts.
+ * Mike, 2026-09-23 (usability brief).
  * Accord layout stage 2: the small dialogs the menus open — File › Open (the documents list),
  * People › Who is here, Help › Keyboard shortcuts, Help › What the marks mean, Help › About — and
  * Edit › Find (a find bar that moves the focus line; it never selects text, so it never starts
@@ -7,6 +9,8 @@
  * Authorship: Mike Wolf (rulings), Ren (SOMA UI, the proposal), built by Claude Opus 5 (worker
  * accord-layout2), 2026-09-21.
  */
+import type { DocumentStatus } from '../shared/participant-status';
+import { participantStatusText } from '../shared/participant-status';
 import { KEYBOARD_SHORTCUTS, MARKS_LEGEND } from '../shared/layout-chrome';
 import './chrome.css';
 
@@ -89,6 +93,8 @@ export interface WhoIsHere {
   viewerIssues: number;
   teamIssues: number;
   team: string[];
+  status?: DocumentStatus;
+  name?: (actor: string) => string;
 }
 
 /** People › Who is here: who has the document open, and the team's open Issues. */
@@ -99,6 +105,15 @@ export function showWhoDialog(who: WhoIsHere): void {
   counts.dataset.team = String(who.teamIssues);
   counts.textContent = `${who.viewerIssues} ${who.viewerIssues === 1 ? 'Issue needs' : 'Issues need'} you. The team has ${who.teamIssues} open ${who.teamIssues === 1 ? 'Issue' : 'Issues'}.`;
   body.append(counts);
+  if (who.status) {
+    const statuses = el('ul', 'acd-participant-statuses');
+    for (const person of who.status.participants) {
+      const row = el('li', 'acd-participant-status', `${who.name?.(person.actor) ?? person.actor} — ${participantStatusText(person)}`);
+      row.dataset.actor = person.actor;
+      statuses.append(row);
+    }
+    body.append(el('h3', undefined, 'Review status'), statuses);
+  }
   body.append(el('h3', undefined, 'People here now'));
   if (who.people.length === 0) body.append(el('p', 'acd-note', 'Only you.'));
   const list = el('ul', 'acd-who');

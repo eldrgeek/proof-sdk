@@ -3975,6 +3975,8 @@ class ProofEditorImpl implements ProofEditor {
     showWhoDialog({
       people: this.getHumanCollaboratorAvatars(),
       ais: this.getConnectedAgentEntries().map(agent => ({ name: agent.name, state: getAgentPresenceDisplay(agent).label })),
+      status: this.lineMarks?.participantStatus(),
+      name: actor => this.lineMarks?.displayName(actor) ?? actor,
       viewerIssues: this.lineMarks?.needsYouLines().length ?? 0,
       teamIssues: summary?.counts.total ?? 0,
       team: (summary?.team ?? []).map(actor => actor.replace(/^(human|ai|guest):/i, '')),
@@ -4027,7 +4029,13 @@ class ProofEditorImpl implements ProofEditor {
       }),
       menu('view', () => {
         const items: MenuItemSpec[] = [];
-        if (this.openViewUI) items.push({ id: 'view-agreed-copy', label: this.openViewUI.current() === 'accord' ? 'Return to document' : 'View agreed copy', run: () => this.openViewUI?.setView(this.openViewUI.current() === 'accord' ? 'open' : 'accord') });
+        if (this.openViewUI) {
+          const returning = this.openViewUI.current() === 'accord';
+          const offer = lm?.agreedCopyOffer();
+          items.push({ id: 'view-agreed-copy', label: returning ? 'Return to document' : 'View agreed copy',
+            detail: returning ? undefined : offer?.detail, enabled: returning || offer?.enabled === true,
+            run: () => this.openViewUI?.setView(returning ? 'open' : 'accord') });
+        }
         if (walk) {
           items.push(
             { id: 'view-navigator', label: 'Review panel', kind: 'checkbox', checked: walk.railShown('left'), keywords: 'left rail documents', run: () => walk.toggleRailFromMenu('left') },
@@ -4114,9 +4122,7 @@ class ProofEditorImpl implements ProofEditor {
           return authors;
         },
         onDotActivate: (lineIndex) => this.readingWalk?.activateDot(lineIndex) ?? false,
-        // Accord round 2 stage A: a visible way into editing (the margin's pencil).
-        startEditingLine: (lineIndex) => this.editGesture?.open(lineIndex) ?? false,
-        cursorLine: () => this.readingWalk?.focusIndex() ?? -1,
+        openReviewItem: index => this.readingWalk?.openReviewItem(index),
         nextReview: () => { this.readingWalk?.navigator.next(); },
         focusLine: (lineIndex) => this.readingWalk?.focusLine(lineIndex) ?? false,
         viewUpdated: () => { this.readingWalk?.notifyViewUpdate(); this.folding?.queueRender(); },

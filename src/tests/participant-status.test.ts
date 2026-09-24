@@ -8,6 +8,7 @@
 import assert from 'node:assert/strict';
 import { accordHeader } from '../shared/open-view';
 import {
+  participantStatusText, agreedCopyOffer,
   objectionsFromState,
   participantStatus,
   personalCompletionText,
@@ -286,6 +287,21 @@ test('someone who has agreed to nothing, and has not rejected, has not read it',
   assert.equal(header.text, 'Agreed by you. Alex has not read it.');
   assert.equal(header.status.participants[1].readingStopsAt, 0);
   assert.equal(header.readers[1].nothing, true);
+});
+
+test('People and the agreed-copy offer name Seen, Rejected, Approved and waiting people honestly', () => {
+  const lines = LINES();
+  const status = participantStatus({ states: buildLineStates(lines, [
+    ...lines.map(line => mark(line, ME, 'approved')),
+    ...lines.map(line => mark(line, ALEX, 'seen')),
+    mark(lines[0], JO, 'rejected', { reason: 'Fix it' }),
+  ]), team: [ME, ALEX, JO] });
+  assert.deepEqual(status.participants.map(participantStatusText), ['Approved', 'Seen 3', 'Rejected 1 · not read yet 2']);
+  assert.deepEqual(agreedCopyOffer(status, 'abc', name), { enabled: false, detail: 'Not yet agreed: waiting for Alex and Jo' });
+  assert.equal(personalCompletionText({ status, viewer: ME, name }), 'You have finished reviewing. Waiting for Alex and Jo.');
+  const agreed = participantStatus({ states: buildLineStates(lines, [ME, ALEX, JO].flatMap(actor => lines.map(line => mark(line, actor, 'agreed')))), team: [ME, ALEX, JO] });
+  assert.deepEqual(agreed.participants.map(participantStatusText), ['Agreed', 'Agreed', 'Agreed']);
+  assert.deepEqual(agreedCopyOffer(agreed, 'abc', name), { enabled: true, detail: 'Wording revision abc · Agreed by Mike, Alex and Jo' });
 });
 
 console.log(`\nparticipant-status tests: ${passed} passed`);

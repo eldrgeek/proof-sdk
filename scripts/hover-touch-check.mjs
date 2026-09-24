@@ -183,9 +183,11 @@ async function runPhone(browser, base, tag) {
     await page.screenshot({ path: path.join(shots, `${tag}-strip.png`) });
   });
 
-  await check(`${tag}: Agree in the strip marks the selected passage and leaves it visible`, async () => {
+  await check(`${tag}: Agree in the sheet marks the selected passage and leaves it visible`, async () => {
     await selectPassage(page, 3);
-    await page.locator('.prw-strip-agree').tap();
+    if (!(await page.locator('.prw-right.prw-sheet-open').count())) await page.locator('.prw-strip-where').tap();
+    await page.locator('.prw-right .plm-primary-row [data-status="agreed"]').tap();
+    await page.locator('.prw-strip-grab').tap();
     await page.waitForFunction(() => window.__proofLineMarks.myStatus(3) === 'agreed');
     await expandedStaysExpanded(page);
     await selectPassage(page, 3);

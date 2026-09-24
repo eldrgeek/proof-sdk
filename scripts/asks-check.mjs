@@ -306,7 +306,7 @@ async function phone(browser, base, style) {
   await check(`${tag}: the dot's bottom sheet carries the ask control; Not yet with a reason works there`, async () => {
     await page.locator(`.plm-dot[data-line="${L.Q2}"]`).scrollIntoViewIfNeeded();
     await page.locator(`.plm-dot[data-line="${L.Q2}"]`).tap();
-    const sheet = page.locator('.plm-menu.plm-sheet');
+    const sheet = page.locator('.prw-right.prw-sheet-open');
     await sheet.waitFor({ state: 'visible' });
     const control = sheet.locator('.pask');
     await control.waitFor({ state: 'visible' });

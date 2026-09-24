@@ -85,10 +85,10 @@ body.plm-on #editor { padding-left:calc(var(--provenance-bar-width, 6px) + 48px)
     max-height:min(80dvh,560px); overflow:auto; border-radius:16px 16px 0 0; padding:14px 16px max(18px,env(safe-area-inset-bottom));
     box-shadow:0 -8px 32px #16223833; font-size:15px;
   }
-  .plm-sheet .plm-close { width:44px; height:44px; font-size:26px; }
-  .plm-sheet .plm-choice { min-height:48px; font-size:15px; }
-  .plm-sheet .plm-reason input, .plm-sheet .plm-reason button { min-height:48px; font-size:16px; }
-  .plm-sheet .plm-team { font-size:14px; }
+  :is(.plm-sheet, .prw-sheet-open) .plm-close { width:44px; height:44px; font-size:26px; }
+  :is(.plm-sheet, .prw-sheet-open) .plm-choice { min-height:48px; font-size:15px; }
+  :is(.plm-sheet, .prw-sheet-open) .plm-reason input, :is(.plm-sheet, .prw-sheet-open) .plm-reason button { min-height:48px; font-size:16px; }
+  :is(.plm-sheet, .prw-sheet-open) .plm-team { font-size:14px; }
   #share-banner .plm-issues { gap:0; }
   #share-banner .plm-issues-count { display:none; }
   #share-banner .plm-next { min-height:44px; min-width:44px; padding:0 10px; font-size:13px; }
@@ -172,9 +172,9 @@ body.plm-on #editor { padding-left:calc(var(--provenance-bar-width, 6px) + 48px)
 .plm-budget[data-state="reached"] .plm-budget-status { font-weight:600; color:#1e3a8a; }
 .plm-budget-actions { display:flex; gap:6px; }
 @media (max-width: 700px) {
-  .plm-sheet .plm-reason .plm-chip { min-height:44px; font-size:14px; }
-  .plm-sheet .plm-flag-form input, .plm-sheet .plm-flag-form button,
-  .plm-sheet .plm-objection-override input, .plm-sheet .plm-objection-override button { min-height:44px; font-size:16px; }
+  :is(.plm-sheet, .prw-sheet-open) .plm-reason .plm-chip { min-height:44px; font-size:14px; }
+  :is(.plm-sheet, .prw-sheet-open) .plm-flag-form input, :is(.plm-sheet, .prw-sheet-open) .plm-flag-form button,
+  :is(.plm-sheet, .prw-sheet-open) .plm-objection-override input, :is(.plm-sheet, .prw-sheet-open) .plm-objection-override button { min-height:44px; font-size:16px; }
   .prw-right .plm-reason .plm-chip { min-height:44px; font-size:14px; }
   .plm-budget-setting select { min-height:44px; }
   .plm-budget-actions .plm-choice { min-height:44px; }
@@ -242,8 +242,8 @@ body.plm-on #editor { padding-left:calc(var(--provenance-bar-width, 6px) + 48px)
   .plm-alt { min-height:44px; }
   .plm-alt input { width:20px; height:20px; }
   .plm-extras-links .plm-link { min-height:44px; }
-  .plm-sheet .plm-alt-form button, .plm-sheet .plm-explain-form input, .plm-sheet .plm-explain-form button,
-  .plm-sheet .plm-ttl-form input, .plm-sheet .plm-ttl-form button, .plm-ttl-form .plm-ttl-preset { min-height:44px; font-size:16px; }
+  :is(.plm-sheet, .prw-sheet-open) .plm-alt-form button, :is(.plm-sheet, .prw-sheet-open) .plm-explain-form input, :is(.plm-sheet, .prw-sheet-open) .plm-explain-form button,
+  :is(.plm-sheet, .prw-sheet-open) .plm-ttl-form input, :is(.plm-sheet, .prw-sheet-open) .plm-ttl-form button, .plm-ttl-form .plm-ttl-preset { min-height:44px; font-size:16px; }
   .plm-blind-setting input { width:22px; height:22px; }
   .plm-blind-setting { min-height:44px; }
   .pdx-alt { min-height:36px; align-items:center; }
@@ -286,13 +286,19 @@ body.plm-on #editor { padding-left:calc(var(--provenance-bar-width, 6px) + 48px)
 .plm-lapsed-was del { color:#9a3412; text-decoration-color:#fdba74; }
 .plm-lapsed-now ins { text-decoration:none; background:#ffedd5; border-radius:3px; padding:0 2px; }
 .plm-dot[data-lapsed="true"]::after { content:"≠"; }
-/* Accord round 2 stage A (Mike, 2026-09-22: Option+click "has no affordance"): a pencil in the
-   margin's dot column on the cursor line. Clicking it puts the caret in the line and opens the edit. */
-.plm-edit-pencil {
-  position: absolute; display: inline-flex; align-items: center; justify-content: center;
-  padding: 0; border: none; border-radius: 999px; background: transparent; color: #6b7280;
-  font: 14px/1 system-ui, -apple-system, sans-serif; cursor: pointer; opacity: .55; transition: opacity .12s, color .12s, background .12s;
+/* Mike, 2026-09-23 (usability brief): counts stay visible without hover. */
+.plm-review-marker {
+  position: absolute; pointer-events: auto; z-index: 22; min-height: 28px;
+  max-width: 100px; padding: 3px 5px; border: 1px solid #b7c5dc; border-radius: 5px;
+  background: #fff; color: #234b81; font: 11px/1.2 system-ui, sans-serif; cursor: pointer;
 }
-.plm-edit-pencil:hover, .plm-edit-pencil:focus-visible { opacity: 1; color: #2563eb; background: #eef3ff; }
-.plm-edit-pencil:focus-visible { outline: 2px solid #2563eb; outline-offset: 1px; }
-body.prw-editing .plm-edit-pencil { opacity: 1; color: #2563eb; }
+.plm-review-marker:focus-visible, .plm-primary-row button:focus-visible { outline: 3px solid #2563eb; outline-offset: 2px; }
+.plm-primary-row { flex-wrap: wrap; }
+.plm-primary-row .plm-choice { min-height: 44px; }
+@media (max-width: 700px) {
+  .plm-review-marker { max-width: 42px; font-size: 10px; min-height: 40px; overflow-wrap: anywhere; }
+}
+
+/* Reserve space for the count instead of covering passage text. */
+body.prw-on #app #editor { padding-right: 64px !important; }
+.plm-review-marker { max-width: 56px; }
