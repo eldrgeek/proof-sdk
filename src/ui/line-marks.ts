@@ -525,7 +525,7 @@ export class LineMarksUI {
         reads: Array.isArray(body.tierSignals?.reads) ? body.tierSignals!.reads! : [],
         flags: Array.isArray(body.tierSignals?.flags) ? body.tierSignals!.flags! : [],
       };
-      this.snapshot = body.alignedSnapshot && typeof body.alignedSnapshot.id === 'string' ? body.alignedSnapshot : null;
+      this.snapshot = body.alignedSnapshot && typeof body.alignedSnapshot.id === 'string' ? body.alignedSnapshot : this.snapshot;
       this.loaded = true;
       this.recompute();
     } catch {
@@ -974,6 +974,8 @@ export class LineMarksUI {
   }
 
   private snapshot: { id: string; createdAt: string } | null = null;
+  /** The most recent aligned snapshot, kept after a rejection starts a new round. */
+  private priorAlignedSnapshot: { id: string; createdAt: string } | null = null;
   private alignCheckAt = 0;
   private alignCheckSig = '';
 
@@ -981,7 +983,7 @@ export class LineMarksUI {
   private maybeCheckAlignment(): void {
     const slug = this.host.slug();
     const summary = this.summary;
-    if (!slug || !summary || !summary.aligned || !this.loaded || summary.counts.lines === 0) return;
+    if (!slug || !summary || !this.surface?.status.aligned || !this.loaded || summary.counts.lines === 0) return;
     const sig = `${this.lines.map(line => line.hash).join(',')}|${this.serverMarks.map(mark => `${mark.id}:${mark.status}`).join(',')}`;
     const now = Date.now();
     if (sig === this.alignCheckSig && now - this.alignCheckAt < ALIGN_RECHECK_MS) return;
@@ -1377,6 +1379,7 @@ export class LineMarksUI {
     this.setShort(this.surface.status.aligned ? '✓ Aligned' : issuesPillText(shown, n));
     this.nextBtn.setAttribute('aria-label', n === 0 ? 'No open issues' : `Next issue (${shown} ${shown === 1 ? 'issue needs' : 'issues need'} you; the team has ${n})`);
     this.renderAlignedAt(this.surface.status.aligned);
+    if (this.surface.status.aligned && !this.snapshot) this.maybeCheckAlignment();
   }
 
   /** Step B3c: the snapshot link beside the Issue count. */
@@ -1415,13 +1418,16 @@ export class LineMarksUI {
   }
 
   private renderAlignedAt(aligned: boolean): void {
-    const snap = this.snapshot;
+    if (this.snapshot) this.priorAlignedSnapshot = this.snapshot;
+    const snap = this.snapshot ?? this.priorAlignedSnapshot;
     this.alignedEl.hidden = !snap;
     if (!snap) return;
     const when = formatWhen(snap.createdAt);
-    this.alignedEl.textContent = aligned ? `Aligned as of ${when}` : `Last aligned ${when}`;
-    this.alignedEl.dataset.state = aligned ? 'aligned' : 'since';
-    this.alignedEl.title = aligned
+    const anyRejected = this.surface.status.participants.some(person => person.counts.rejected > 0);
+    const showAsAligned = aligned && !anyRejected;
+    this.alignedEl.textContent = showAsAligned ? `Aligned as of ${when}` : `Last aligned ${when}`;
+    this.alignedEl.dataset.state = showAsAligned ? 'aligned' : 'since';
+    this.alignedEl.title = showAsAligned
       ? `Everyone had seen this version without rejection at ${new Date(snap.createdAt).toLocaleString()}. Open the ledger: the text, every mark and every answer.`
       : `The last aligned version was frozen at ${new Date(snap.createdAt).toLocaleString()}; changes since then start a new round. Open its ledger.`;
     this.alignedEl.setAttribute('aria-label', `${this.alignedEl.textContent}: open the ledger`);

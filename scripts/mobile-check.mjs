@@ -160,17 +160,16 @@ async function phone(browser, base, name, viewport) {
   });
 
   // Marks is a PlayMaker-style panel; the Proof style lists comments in its own popover.
-  if (style === 'playmaker') await check(`${tag}: overflow menu opens Marks as a bottom sheet with a close button`, async () => {
+  if (style === 'playmaker') await check(`${tag}: overflow menu opens Review as a bottom sheet with a close button`, async () => {
     await page.getByRole('button', { name: 'More options', exact: true }).click();
-    await page.getByRole('menuitem', { name: /Marks/ }).click();
-    await page.waitForTimeout(200);
-    assert.equal(await visible(page, '.pm-review-panel'), true, 'panel not shown');
-    const r = await page.evaluate(() => ({ ...document.querySelector('.pm-review-panel').getBoundingClientRect().toJSON(), vh: innerHeight, vw: innerWidth }));
+    await page.getByRole('menuitem', { name: /Review panel/ }).click();
+    await page.locator('.prw-left.prw-sheet-open').waitFor({ state: 'visible', timeout: 5000 });
+    const r = await page.evaluate(() => ({ ...document.querySelector('.prw-left.prw-sheet-open').getBoundingClientRect().toJSON(), vh: innerHeight, vw: innerWidth }));
     assert.ok(Math.abs(r.bottom - r.vh) <= 2 && r.width >= r.vw - 2, `panel rect ${JSON.stringify(r)}`);
     await page.screenshot({ path: path.join(shots, `${tag}-2-marks-sheet.png`) });
-    assert.equal(await chipOnTop(page, '.pm-review-panel'), false, 'feedback chip covers the Marks sheet');
-    await page.getByRole('button', { name: 'Close marks', exact: true }).click();
-    assert.equal(await visible(page, '.pm-review-panel'), false, 'panel did not close');
+    assert.equal(await chipOnTop(page, '.prw-left.prw-sheet-open'), false, 'feedback chip covers the Review sheet');
+    await page.locator('.prw-left.prw-sheet-open .prw-collapse').click();
+    assert.equal(await visible(page, '.prw-left.prw-sheet-open'), false, 'panel did not close');
   });
   await check(`${tag}: Review opens and closes the same list without hiding text`, async () => {
     const review = page.locator('[data-accord-review-toggle]');

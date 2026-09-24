@@ -210,10 +210,15 @@ async function run(browser, style) {
       assert.ok(!body.lineMarks.some(x => x.anchor.ordinal === L.MIDDLE && x.by === MIKE), 'the guest did not mark as Mike');
       await mike.evaluate(() => window.__proofLineMarks.refresh());
       await waitFor(mike, () => window.__proofLineMarks.debugState().team.includes('guest:Mike Wolf'));
-      await waitFor(mike, () => /Mike Wolf \(guest\)/.test(document.querySelector('#share-banner .plm-issues-count')?.title ?? ''));
-      const title = await mike.evaluate(() => document.querySelector('#share-banner .plm-issues-count').title);
-      const team = title.slice(title.indexOf('Team: ') + 6).split(', ');
-      assert.ok(team.includes('Mike Wolf') && team.includes('Mike Wolf (guest)') && team.includes('claude-cos'), title);
+      await mike.locator('.anv-people').click();
+      await mike.getByRole('menuitem', { name: 'Who is here' }).click();
+      await mike.locator('#who-dialog .acd-participant-statuses').waitFor({ state: 'visible', timeout: 8000 });
+      const peopleText = await mike.locator('#who-dialog .acd-participant-statuses').innerText();
+      assert.match(peopleText, /Mike Wolf \(guest\)/);
+      const team = await mike.evaluate(() => window.__proofLineMarks.debugState().team);
+      assert.ok(team.includes('guest:Mike Wolf'), JSON.stringify(team));
+      assert.ok(team.some(actor => actor.includes('claude')), JSON.stringify(team));
+      await mike.locator('#who-dialog .acd-close').click();
     });
 
     await check(`${tag}: an ask to human:<email> is not closed by the guest typing the name; the signed-in person closes it`, async () => {

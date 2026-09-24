@@ -4636,13 +4636,13 @@ class ProofEditorImpl implements ProofEditor {
   private updateSuggestToggleDisplay(): void {
     const btn = this.shareBannerSuggestBtnEl;
     if (!btn) return;
-    const visible = this.isShareMode && this.collabCanEdit;
-    btn.style.display = visible ? 'inline-flex' : 'none';
-    if (!visible) return;
+    const phone = window.matchMedia?.('(max-width: 700px)').matches ?? window.innerWidth <= 700;
+    const visible = this.isShareMode && this.collabCanEdit && !phone;
     btn.textContent = isWriting() ? 'Leave Editing' : 'Enter Editing';
     btn.setAttribute('aria-pressed', String(isWriting()));
     btn.setAttribute('aria-label', btn.textContent);
     btn.title = isWriting() ? 'Editing: typing changes the document directly' : 'Enter Editing to change the document directly';
+    btn.style.display = visible ? 'inline-flex' : 'none';
   }
 
   private getAnchoredPendingSuggestions(viewOverride?: EditorView): Mark[] {
@@ -6279,6 +6279,8 @@ class ProofEditorImpl implements ProofEditor {
   private updateBannerLayout(): void {
     const editor = document.getElementById('editor');
     if (!editor) return;
+    // Direct Editing: toolbar label changes must not reflow the document mid-keystroke. Mike, 2026-09-19.
+    if (isWriting()) return;
 
     const banners: HTMLElement[] = [];
     const shareBanner = document.getElementById('share-banner');

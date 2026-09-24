@@ -122,7 +122,16 @@ const state = page => page.evaluate(() => {
   const yjs = binding?.type.toArray().map(t => t.toString().replace(/<[^>]+>/g, ''));
   return { pm, yjs };
 });
-const toggleEditing = page => page.evaluate(() => document.querySelector('.share-pill-suggest-toggle').click());
+async function toggleEditing(page, phone) {
+  if (phone) {
+    await page.getByRole('button', { name: /^More options/ }).tap();
+    const item = page.locator('.proof-share-overflow-menu .apm-mode').getByRole('menuitem', { name: /Enter Editing|Leave Editing/ });
+    await item.tap();
+    await page.waitForFunction(() => !document.querySelector('.proof-share-overflow-menu'));
+    return;
+  }
+  await page.evaluate(() => document.querySelector('.share-pill-suggest-toggle')?.click());
+}
 // textContent, not innerText: on a phone the status bar is folded into the strip (display:none)
 // and innerText is empty, while the mode word is still the named status.
 const modeText = page => page.locator('.pst-mode').evaluate(el => el.textContent);
@@ -189,7 +198,7 @@ async function run(browser, base, style, phone) {
   });
   let undoDepthBefore = 0;
   await check(`${tag}: a second participant edits this passage while submission writes one attributed proposal`, async () => {
-    await toggleEditing(peer.page);
+    await toggleEditing(peer.page, phone);
     await peer.page.locator('.ProseMirror p').filter({ hasText: TARGET }).first().click();
     await peer.page.evaluate(index => {
       const view = window.__editorView;
@@ -228,9 +237,15 @@ async function run(browser, base, style, phone) {
     await open(); await page.locator('.accord-draft textarea').fill('Cancel me');
     await page.locator('[data-draft-action="cancel"]').click();
     assert.equal(await page.locator('.accord-draft').count(), 0);
-    await toggleEditing(page);
+    await toggleEditing(page, phone);
     assert.equal(await modeText(page), 'Editing');
-    assert.equal(await page.locator('.share-pill-suggest-toggle').getAttribute('aria-label'), 'Leave Editing');
+    if (phone) {
+      await page.getByRole('button', { name: /^More options/ }).tap();
+      assert.equal(await page.locator('.proof-share-overflow-menu .apm-mode .amb-label').textContent(), 'Leave Editing');
+      await page.keyboard.press('Escape');
+    } else {
+      assert.equal(await page.locator('.share-pill-suggest-toggle').getAttribute('aria-label'), 'Leave Editing');
+    }
     const passage = page.locator('.ProseMirror p').filter({ hasText: TARGET }).first();
     await passage.evaluate(el => el.scrollIntoView({ block: 'center', behavior: 'instant' }));
     await passage.click({ position: { x: 24, y: 8 } });
@@ -239,7 +254,7 @@ async function run(browser, base, style, phone) {
     assert.equal((await state(page)).pm.join('').length, before.length + 3);
     await page.keyboard.press('Escape');
     assert.equal(await modeText(page), 'Editing');
-    await toggleEditing(page);
+    await toggleEditing(page, phone);
     assert.equal(await modeText(page), 'Reading');
     assert.equal((await myProposals(page)).length, 0);
   });
