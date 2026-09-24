@@ -90,21 +90,16 @@ No stored value, field name or API value is renamed.
 - When the agreement requirement is met, the page offers **View agreed copy**, which is the existing Accord view. It names the revision and the people who agreed. A later substantive change reopens the affected agreement and keeps the earlier record.
 - Accepting a proposal changes the text under the existing authority rules. It never records anyone else's agreement.
 
-### 8. The change classifier (settles the brief's section 6, last paragraph)
+### 8. The change classifier (settles the brief's section 6, last paragraph) — as built in S5
 
-Today `safe → unsafe` and `paid → unpaid` count as spelling fixes in any line of about 20 letters or more, so an agreement carries across a change of meaning. The rule after this work:
+Today `safe → unsafe` and `paid → unpaid` count as spelling fixes in any line of about 20 letters or more, so an agreement carries across a change of meaning. This section first set a stricter distance rule. Codex showed that rule still let `fund → find` through, and agy found symbol and punctuation holes. So the rule that shipped in S5 (merged, ac-evq) is:
 
-- A changed word counts as a spelling fix only when all of these hold:
-  - the change is one edit: an insert, a delete, a substitution, or a swap of two neighbouring letters;
-  - the first letter is unchanged;
-  - both words are at least four letters long;
-  - neither word is the other with a negating or opposing affix added or removed. The prefixes are un, in, im, il, ir, non, dis, mis, a, anti, counter and de. The suffixes are -less and -n't.
-- The existing rules stay: a changed number, a meaning word, a name, and a moved word are all substantive.
-- A sentence that gains or loses "?" or "!" is substantive.
-- The tests must cover `safe → unsafe`, `paid → unpaid`, `legal → illegal`, `able → unable`, `increase → decrease`, `hire → fire`, `accept → except`, `male → female`, a changed amount, `shall → may`, and "We ship Friday." → "We ship Friday?". All of these must be substantive.
-- The tests must also cover whitespace, case at a sentence start, `recieve → receive`, `seperate → separate` and `accomodate → accommodate`. All of these must stay cosmetic.
+- A changed word carries an agreement only when the pair (old → new, lower-case) is on a fixed, directional list of 232 common misspellings (`src/shared/common-misspellings.ts`). The list holds only misspellings that are not themselves English words. Every other word change lapses the agreement, including `fund → find`, `causal → casual`, `form → from`, `same → some`, and regional variants such as `colour → color`.
+- A changed number, a meaning word, a name, and a moved word lapse the agreement, as before.
+- Adding or removing `?` or `!` lapses the agreement. So does any changed symbol or emoji.
+- Among punctuation changes, only whitespace, typographic look-alikes (straight and curly quotes, dash styles, `...` and `…`) and a sentence-final period carry. A comma, colon, semicolon, parenthesis or quote mark added or removed lapses the agreement.
 
-Whether a mark carries over is computed at read time from the stored anchor text. So stored mark rows are never changed. Under the stricter rule, a few marks that carried before will show as "agreed to an earlier version". That is the correction the brief asks for, and it rewrites no past consent. Before deploying, the reviewer counts, on a copy of the live database, how many marks change state.
+Whether a mark carries over is computed at read time from the stored anchor text. So stored mark rows are never changed. Under the stricter rule, some marks that carried before will show as "agreed to an earlier version". That is the correction the brief asks for, and it rewrites no past consent. Before deploying, the reviewer counts, on a copy of the live database, how many marks change state.
 
 ### 9. Not in this pass
 
