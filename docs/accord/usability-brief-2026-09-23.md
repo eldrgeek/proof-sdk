@@ -121,16 +121,22 @@ Whether a mark carries over is computed at read time from the stored anchor text
 
 ## The work as beads
 
+Mike, later on 2026-09-23: "We also have Grok, Cursor, agy, others." So the plan runs four vendors in parallel instead of one queue. S3 no longer waits for S1, because it replaces every edit door anyway. S4 is split: its logic (S4a) starts now, and its interface wiring (S4b) waits for S2 and S3. An acceptance harness written by a different model (S6a) checks all the builders.
+
 | Stage | Bead | What | Who | Depends on |
 |---|---|---|---|---|
-| S0 | ac-069 | Integration branch, baseline, this review, guidance | reviewer (Claude) | — |
-| S1 | ac-zhv | Nothing changes the view unless the reader does it: folding, fold scope, hover, viewport, scroll never commits | Codex | S0 |
-| S2 | ac-q3j | One Review list beside the full document | Codex | S1 |
-| S3 | ac-nkn | Proposals are drafts until the reader presses Propose | Codex | S2 |
-| S4 | ac-54j | One status model, honestly labelled | Codex | S3 |
-| S5 | ac-evq | A spelling fix never carries agreement across a change of meaning | Codex | S0 |
-| S6 | ac-o3l | Acceptance walkthrough on desktop and phone, validation report | reviewer | S4, S5 |
-| S7 | ac-c9t | Deploy, live check, changelog | reviewer | S6 |
+| S0 | ac-069 | Integration branch, baseline, this review, guidance (done) | Claude (reviewer) | — |
+| S1 | ac-zhv | Nothing changes the view unless the reader does it: folding, fold scope, hover, viewport, scroll never commits | Codex (gpt-6-astra, high) | S0 |
+| S2 | ac-q3j | One Review list beside the full document | next free builder | S1 |
+| S3 | ac-nkn | Proposals are drafts until the reader presses Propose | Codex (gpt-6-astra, high) | S0 (built beside S1, merged after it) |
+| S4a | ac-p4x | The status model: pure module, server, header | Grok (grok-4.7) | S0 |
+| S4b | ac-54j | The status model wired into the interface | next free builder | S2, S3, S4a |
+| S5 | ac-evq | A spelling fix never carries agreement across a change of meaning | Codex (gpt-6-astra, medium) | S0 |
+| S6a | ac-3g7 | An independent acceptance harness for the brief's twelve checks | Cursor (composer-2.5) | S0 |
+| S6 | ac-o3l | Acceptance walkthrough on desktop and phone, validation report | Claude (reviewer) | S4b, S5, S6a |
+| S7 | ac-c9t | Deploy, live check, changelog | Claude (reviewer) | S6 |
+
+Before a stage merges, agy (Gemini 3.1 Pro) reviews its diff against this document, and the reviewer runs the suites and the browser checks. Grok works as seat `grok-builder`, registered for this job.
 
 The bead ids are in the store (`~/Projects/_estate/bin/bead --repo proof-sdk list`).
 
