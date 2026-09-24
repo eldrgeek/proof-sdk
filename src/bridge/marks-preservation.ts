@@ -25,6 +25,10 @@ export function shouldIgnoreIncomingEmptyServerMarks(args: {
 }): boolean {
   if (Object.keys(args.incomingMarks).length > 0) return false;
   if (Object.keys(args.cachedServerMarks).length === 0) return false;
+  const cachedHasPendingSuggestion = Object.values(args.cachedServerMarks).some(isPendingSuggestionMark);
+  // An empty Yjs marks map must not clear pending suggestions that still live in the row
+  // or in the editor but have not been mirrored into Yjs yet (ac-lhc migration).
+  if (cachedHasPendingSuggestion) return true;
   if (!args.isSynced) return true;
   const localHydrated = Object.keys(args.cachedServerMarks).every(
     (id) => args.localMetadata[id] !== undefined,

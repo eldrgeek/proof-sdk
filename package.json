@@ -53,6 +53,7 @@
     "test:usability-impact": "tsx src/tests/usability-impact-report.test.ts",
     "check:usability-s1": "node scripts/usability-s1-check.mjs",
     "check:marks-survive-reload": "node scripts/marks-survive-reload-check.mjs",
+    "check:marks-migration": "node scripts/marks-migration-check.mjs",
     "test:blind-leaks": "tsx src/tests/blind-leaks.test.ts",
     "test:review-list": "tsx src/tests/review-list.test.ts",
     "test:collab-marks-preservation": "tsx src/tests/collab-client-marks-preservation.test.ts"

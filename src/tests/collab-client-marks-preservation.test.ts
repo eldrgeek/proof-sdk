@@ -160,6 +160,33 @@ function run(): void {
     'Expected pre-sync empty payloads to preserve cached marks',
   );
 
+  assert(
+    shouldIgnoreIncomingEmptyServerMarks({
+      incomingMarks: {},
+      cachedServerMarks: {
+        replace1: {
+          kind: 'replace',
+          status: 'pending',
+          by: 'ai:test',
+          quote: 'old',
+          content: 'new',
+        },
+      },
+      localMetadata: {
+        replace1: {
+          kind: 'replace',
+          status: 'pending',
+          by: 'ai:test',
+          quote: 'old',
+          content: 'new',
+        },
+      },
+      isSynced: true,
+      unsyncedChanges: 0,
+    }) === true,
+    'Expected empty Yjs payloads not to clear pending suggestions mirrored only in the row/editor',
+  );
+
   console.log('✓ collab client mark preservation rules avoid suggestion resurrection');
 }
 
