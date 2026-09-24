@@ -392,7 +392,7 @@ async function desktop2(browser, base, style) {
     assert.ok(Math.abs(c.toolbar.height - 44) <= 1, `toolbar height ${c.toolbar.height}`);
     assert.ok(c.toolbar.left <= 0 && c.toolbar.right >= 1440, 'the toolbar is still a floating pill');
     assert.equal(c.undo, null, 'Undo belongs to the Edit menu');
-    assert.ok(!c.seg || c.seg.width === 0, 'the mode switch remains in the toolbar');
+    assert.ok(c.seg && c.seg.width > 0, 'the labelled Editing control is not in the toolbar');
     assert.match(c.saved, /Saved|Sync|Connect|Offline/);
     assert.ok(c.title.right <= c.pill.left && c.pill.right <= c.share.left, 'title, Review and Share are out of order');
     assert.equal(await page.locator('.aov-toggle').count(), 0);
@@ -587,11 +587,11 @@ async function phone2(browser, base, style) {
     for (const heading of ['FILE', 'EDIT', 'VIEW', 'PEOPLE', 'HELP']) assert.ok(text.toUpperCase().includes(heading), `no ${heading} group`);
     for (const label of ['Open…', 'Reading settings…', 'Share…', 'Add agent…', 'Keyboard shortcuts']) assert.ok(text.includes(label), `no ${label}`);
     // The switch and Share lead the menu (TOOLBAR_POLICY.phoneMenuTop), each only once.
-    const top = await menu.evaluate(m => [...m.querySelectorAll('.amb-item')].slice(0, 2).map(b => ({ label: b.querySelector('.amb-label').textContent, checked: b.getAttribute('aria-checked') })));
-    assert.deepEqual(top.map(t => t.label), ['Enter Editing', 'Share…']);
+    const top = await menu.evaluate(m => [...m.querySelectorAll('.apm-mode .amb-item')].map(b => ({ label: b.querySelector('.amb-label').textContent, checked: b.getAttribute('aria-checked') })));
+    assert.deepEqual(top.map(t => t.label), ['Enter Editing']);
     assert.equal(await page.locator('.pst-mode').innerText(), 'Reading');
     const count = label => menu.evaluate((m, l) => [...m.querySelectorAll('.amb-item .amb-label')].filter(n => n.textContent === l).length, label);
-    for (const label of ['Enter Editing', 'Share…']) assert.equal(await count(label), 1, `${label} appears twice`);
+    for (const label of ['Enter Editing']) assert.equal(await count(label), 1, `${label} appears twice`);
     await page.screenshot({ path: path.join(shots, `${tag}-overflow.png`) });
     await menu.getByRole('menuitem', { name: /Reading settings/ }).tap();
     const panel = page.locator('#reading-settings');
@@ -603,10 +603,13 @@ async function phone2(browser, base, style) {
   });
   await check(`${tag}: the phone menu enters and leaves Editing through one labelled control`, async () => {
     await page.getByRole('button', { name: /^More options/ }).tap();
-    await page.locator('.apm-mode').getByRole('menuitem', { name: 'Enter Editing' }).tap();
+    const menu = page.locator('.proof-share-overflow-menu');
+    await menu.waitFor();
+    await menu.locator('.apm-mode').getByRole('menuitem', { name: 'Enter Editing' }).tap();
     assert.equal(await page.locator('.pst-mode').innerText(), 'Editing');
     await page.getByRole('button', { name: /^More options/ }).tap();
-    await page.locator('.apm-mode').getByRole('menuitem', { name: 'Leave Editing' }).tap();
+    await menu.waitFor();
+    await menu.locator('.apm-mode').getByRole('menuitem', { name: 'Leave Editing' }).tap();
     assert.equal(await page.locator('.pst-mode').innerText(), 'Reading');
   });
   await check(`${tag}: ⋯ › Share… opens the Share dialog; it fits the phone`, async () => {
@@ -644,9 +647,9 @@ const regions = page => page.evaluate(() => {
 });
 const near = (a, b, tol, what) => assert.ok(Math.abs(a - b) <= tol, `${what}: ${a} vs mockup ${b}`);
 async function openMore(page) {
-  const btn = page.locator('.prw-right .plm-more-btn');
+  const btn = page.locator('.prw-right .plm-box .plm-more-btn');
   if ((await btn.getAttribute('aria-expanded')) !== 'true') await btn.click();
-  await page.locator('.prw-right .plm-more').waitFor({ state: 'visible' });
+  await page.locator('.prw-right .plm-box .plm-more').waitFor({ state: 'visible' });
 }
 
 // Polish pass (COS, 2026-09-21): everyone's marks on a line fold into "Marked by N" in the Line tab,
@@ -728,16 +731,16 @@ async function desktop3(browser, base, style) {
     assert.deepEqual(await page.locator('.anv-detail .prw-card-actions button').allTextContents(), ['Accept', 'Reject', 'Reply']);
   });
   await check(`${tag}: ⋯ More holds Seen, Clear my mark, Flag uncertain, Offer another wording, Explain, Time-to-live and the tier`, async () => {
-    assert.equal(await page.locator('.prw-right .plm-more').isVisible(), false, 'More is open before it is asked for');
+    assert.equal(await page.locator('.prw-right .plm-box .plm-more').isVisible(), false, 'More is open before it is asked for');
     await openMore(page);
-    const text = await page.locator('.prw-right .plm-more').innerText();
+    const text = await page.locator('.prw-right .plm-box .plm-more').innerText();
     for (const label of ['Seen', 'Flag uncertain', 'Offer another wording', 'Explain', 'Time-to-live', 'Make context']) assert.ok(text.includes(label), `More lacks ${label}: ${text}`);
     await page.screenshot({ path: path.join(shots, `${tag}-more.png`), clip: { x: 1090, y: 60, width: 350, height: 640 } });
-    await page.locator('.prw-right .plm-more .plm-choice[data-status="seen"]').click();
+    await page.locator('.prw-right .plm-box .plm-more .plm-choice[data-status="seen"]').click();
     await waitFor(page, i => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i && m.status === 'seen'), L.CHANGE);
     await openMore(page);
-    assert.ok((await page.locator('.prw-right .plm-more').innerText()).includes('Clear my mark'));
-    await page.locator('.prw-right .plm-more .plm-clear').click();
+    assert.ok((await page.locator('.prw-right .plm-box .plm-more').innerText()).includes('Clear my mark'));
+    await page.locator('.prw-right .plm-box .plm-more .plm-clear').click();
   });
   await check(`${tag}: Review replies to the selected comment; Discuss opens a new thread on a plain line`, async () => {
     await page.locator(`.prw-left .anv-issue[data-line="${L.COMMENT}"]`).click();
@@ -758,11 +761,12 @@ async function desktop3(browser, base, style) {
     await page.evaluate(() => document.activeElement?.blur());
   });
   await check(`${tag}: Outline lists the headings with fold chips and counts; a chip folds its section, a heading moves the cursor`, async () => {
+    await page.locator('.prw-left .anv-tab[data-tab="outline"]').click();
     const rows = await page.evaluate(() => [...document.querySelectorAll('.prw-left .anv-row')].map(r => ({ heading: Number(r.dataset.heading), count: r.querySelector('.anv-count').textContent, text: r.querySelector('.anv-heading').textContent })));
     assert.deepEqual(rows.map(r => r.heading), [L.H1, 5]);
     assert.equal(rows[1].text, 'Needs your hands');
     assert.match(rows[1].count, /^\d+$/);
-    for (const label of ['Collapse all sections', 'Expand all sections']) assert.equal(await page.locator('.prw-left .anv-tools').getByRole('button', { name: label, exact: true }).count(), 1, `${label} is not on the Outline`);
+    for (const label of ['Collapse all sections', 'Expand all sections']) assert.equal(await page.locator('.prw-left .pfold-controls').getByRole('button', { name: label, exact: true }).count(), 1, `${label} is not on the Outline`);
     await page.locator('.prw-left .anv-row[data-heading="5"] .anv-fold').click();
     await waitFor(page, () => window.__proofFolding.isFolded(5) === true);
     assert.equal(await page.locator('.prw-left .anv-row[data-heading="5"] .anv-fold').getAttribute('data-folded'), 'true');

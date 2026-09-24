@@ -30,7 +30,7 @@ body.prw-on.prw-right-collapsed { --prw-right: var(--prw-collapsed); }
   body.prw-on { background: #f6f7f9 !important; }
   body.prw-on #app { background: transparent; }
   body.prw-on #editor-container {
-    background: #fff; border: 1px solid var(--acc-line); border-radius: 10px; margin-top: 6px !important; margin-bottom: 40px;
+    background: #fff; border: 1px solid var(--acc-line); border-radius: 10px; margin-top: 0 !important; margin-bottom: 40px;
     box-sizing: border-box;
   }
   /* The feedback chip sits over the Navigator's foot: its lists keep that space empty. */

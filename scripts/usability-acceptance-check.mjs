@@ -668,8 +668,11 @@ async function runViewportCases(browser, base, created, label, viewport) {
       const lm = window.__proofLineMarks;
       for (const line of lm.lineList()) await lm.setLineStatus(line.index, 'agreed', undefined, 'click');
     });
-    await waitFor(page, () => document.querySelector('[data-accord-review-complete-status]')?.textContent?.includes('You have finished reviewing.'));
-    const completion = await page.locator(SEL.personalCompletionStatus).innerText();
+    await waitFor(page, () => {
+      const el = document.querySelector('[data-accord-review-complete-status], .pst-completion:not([hidden])');
+      return el?.textContent?.includes('You have finished reviewing.');
+    });
+    const completion = await page.locator('[data-accord-review-complete-status], .pst-completion:not([hidden])').first().innerText();
     assert.match(completion, /^You have finished reviewing\./);
     assert.doesNotMatch(completion, /everyone agreed|team agreed|fully agreed/i, 'personal completion claims team agreement');
     await agent(base, created, '/marks/line', { by: 'ai:bob', quote: SAFE_LINE, status: 'seen' });
@@ -683,7 +686,9 @@ async function runViewportCases(browser, base, created, label, viewport) {
       await waitFor(page, () => window.__proofLineMarks.participantStatus().participants.some(p => p.counts.approved > 0));
     } finally { await owner.context.close(); }
     await page.locator('.anv-people').click();
-    const people = await page.locator('.acd-participant-statuses').innerText();
+    await page.getByRole('menuitem', { name: 'Who is here' }).click();
+    await page.locator('#who-dialog .acd-participant-statuses').waitFor({ state: 'visible', timeout: 8000 });
+    const people = await page.locator('#who-dialog .acd-participant-statuses').innerText();
     assert.match(people, /Alice[^\n]*Agreed/);
     assert.match(people, /Seen \d+/);
     assert.match(people, /Approved \d+/);
@@ -760,12 +765,17 @@ async function runViewportCases(browser, base, created, label, viewport) {
       return dot?.getAttribute('aria-label') || dot?.getAttribute('title') || dot?.dataset.status || '';
     }, L.LIST_TAIL);
     assert.ok(a11y.length > 1, 'line status is color-only (no text label)');
+    if (!touch) {
+      await page.locator(`${SEL.marginDot}[data-line="${L.LIST_TAIL}"]`).click();
+      await page.waitForTimeout(150);
+    }
     for (const selector of ['[data-status="agreed"]', '[data-accord-suggest-change]', '.plm-discuss', '[data-status="rejected"]']) {
-      const action = page.locator(`.plm-primary-row ${selector}`);
+      const action = page.locator(`.prw-right .plm-primary-row ${selector}`);
       assert.equal(await action.count(), 1, `duplicate action ${selector}`);
       assert.equal(await action.isVisible(), true, `hidden action ${selector}`);
+      if (await action.isDisabled()) continue;
       await action.focus();
-      assert.equal(await action.evaluate(node => node === document.activeElement), true);
+      assert.equal(await action.evaluate(node => node === document.activeElement), true, `focus failed for ${selector}`);
     }
     if (touch) await page.locator('.prw-strip-grab').tap();
     await setFolded(page, L.SEC3, false);

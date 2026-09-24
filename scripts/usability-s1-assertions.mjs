@@ -76,10 +76,13 @@ export async function expandedStaysExpanded(page) {
 
 export async function explicitAcceptUndo(page, line) {
   await selectPassage(page, line);
+  const toggle = page.locator('[data-accord-review-toggle]');
+  if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
+  const accept = page.locator('.anv-detail .prw-accept, .prw-changes .prw-accept').first();
   const pending = () => page.evaluate(() => window.proof.getAllMarks().filter(m => ['replace', 'insert', 'delete'].includes(m.kind) && (m.data?.status ?? 'pending') === 'pending').map(m => m.id).sort());
   const before = await pending();
   assert.ok(before.length > 0);
-  await page.locator('.prw-right .prw-accept').first().click();
+  await accept.click();
   await page.waitForFunction(n => window.proof.getAllMarks().filter(m => ['replace', 'insert', 'delete'].includes(m.kind) && (m.data?.status ?? 'pending') === 'pending').length === n - 1, before.length);
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.waitForTimeout(200);
@@ -91,6 +94,8 @@ export async function explicitAcceptUndo(page, line) {
 
 export async function explicitRefusalPreservesText(page, line) {
   await selectPassage(page, line);
+  const toggle = page.locator('[data-accord-review-toggle]');
+  if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
   const before = await page.evaluate(() => window.proof.getMarkdownSnapshot()?.content);
   await page.evaluate(() => {
     const host = window.__proofReadingWalk.host;
@@ -98,8 +103,8 @@ export async function explicitRefusalPreservesText(page, line) {
     host.decide = () => { throw new Error('The proposal changed. Nothing was changed.'); };
   });
   try {
-    await page.locator('.prw-right .prw-accept').first().click();
-    assert.match(await page.locator('.prw-error').textContent(), /Nothing was changed/);
+    await page.locator('.anv-detail .prw-accept, .prw-changes .prw-accept').first().click();
+    assert.match(await page.locator('.prw-provisional .prw-error, .prw-error').first().textContent(), /Nothing was changed/);
     assert.equal(await page.evaluate(() => window.proof.getMarkdownSnapshot()?.content), before);
   } finally {
     await page.evaluate(() => { window.__proofReadingWalk.host.decide = window.__s1Decide; delete window.__s1Decide; });

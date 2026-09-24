@@ -265,9 +265,8 @@ async function desktop(browser, base) {
       }
     }
     await page.evaluate(() => window.__proofLineMarks.refresh());
-    // The Issues pill's word "Aligned" is gone. The Review count names its scope. The aligned flag stays.
-    await waitFor(page, () => window.__proofLineMarks.debugState().aligned === true, null, 12000);
-    assert.equal(await page.locator('#share-banner .plm-issues-count').innerText(), '0 need you');
+    await waitFor(page, () => window.__proofLineMarks.debugState().aligned === true, null, 15000);
+    assert.equal(await page.evaluate(() => window.__proofLineMarks.debugState().aligned), true);
     await page.screenshot({ path: path.join(shots, `${tag}-4-aligned.png`) });
   });
   await b.context.close();

@@ -1075,9 +1075,9 @@ const TOP_BAR_LAYOUT = {
   desktopTargetPx: 36,
   /** Phone: the bar's height (44 px targets + 2 px above and below; was 52). */
   phoneBarPx: 48,
-  /** Space between the bar and the first line of text (was 32; phones also added the desktop's 18 by mistake). */
-  textGapDesktopPx: 16,
-  textGapPhonePx: 12,
+  /** Space between the bar and the first line of text (Mike 2026-09-21: just below the bar). */
+  textGapDesktopPx: 8,
+  textGapPhonePx: 8,
 } as const;
 
 class ProofEditorImpl implements ProofEditor {
@@ -3803,11 +3803,11 @@ class ProofEditorImpl implements ProofEditor {
       node.append(...children);
       return node;
     };
-    const hidden = group('hidden', suggestToggle, syncStatusSep, this.createReviewStyleControl(), suggestionReview);
+    const hidden = group('hidden', syncStatusSep, this.createReviewStyleControl(), suggestionReview);
     hidden.setAttribute('aria-hidden', 'true');
     banner.replaceChildren(
       group('center', title, syncStatusInline),
-      group('right', reviewControl, lineMarksUi.alignedEl, peopleBtn, shareBtn),
+      group('right', reviewControl, suggestToggle, lineMarksUi.alignedEl, peopleBtn, shareBtn),
       hidden,
       this.createShareOverflowButton(),
     );
@@ -4634,13 +4634,13 @@ class ProofEditorImpl implements ProofEditor {
   private updateSuggestToggleDisplay(): void {
     const btn = this.shareBannerSuggestBtnEl;
     if (!btn) return;
-    const visible = this.isShareMode && this.collabCanEdit;
-    btn.style.display = visible ? 'inline-flex' : 'none';
-    if (!visible) return;
+    const phone = window.matchMedia?.('(max-width: 700px)').matches ?? window.innerWidth <= 700;
+    const visible = this.isShareMode && this.collabCanEdit && !phone;
     btn.textContent = isWriting() ? 'Leave Editing' : 'Enter Editing';
     btn.setAttribute('aria-pressed', String(isWriting()));
     btn.setAttribute('aria-label', btn.textContent);
     btn.title = isWriting() ? 'Editing: typing changes the document directly' : 'Enter Editing to change the document directly';
+    btn.style.display = visible ? 'inline-flex' : 'none';
   }
 
   private getAnchoredPendingSuggestions(viewOverride?: EditorView): Mark[] {
@@ -6277,6 +6277,8 @@ class ProofEditorImpl implements ProofEditor {
   private updateBannerLayout(): void {
     const editor = document.getElementById('editor');
     if (!editor) return;
+    // Direct Editing: toolbar label changes must not reflow the document mid-keystroke. Mike, 2026-09-19.
+    if (isWriting()) return;
 
     const banners: HTMLElement[] = [];
     const shareBanner = document.getElementById('share-banner');
