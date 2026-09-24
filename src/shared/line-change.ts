@@ -14,7 +14,8 @@
  * stored anchor text; no stored mark is changed.
  *
  * Cosmetic means one of:
- *   - whitespace, letter case or punctuation other than ? and ! changed, and nothing else;
+ *   - whitespace, letter case, typographic look-alikes or a final period changed;
+ *     other punctuation changes and all symbol/emoji changes require review (S5 round 3);
  *   - listed spelling corrections: the same words in the same order, each changed word
  *     a lower-case misspelling -> correction pair in COMMON_MISSPELLINGS. The reverse
  *     direction and every unlisted word change are substantive, including regional variants.
@@ -120,11 +121,42 @@ export function editDistance(a: string, b: string, cap = Number.POSITIVE_INFINIT
   return prev[cols - 1];
 }
 
-/** Keep ? and ! tied to their passage position, so moving one between sentences matters too. */
+/** Preserve symbols, emoji modifiers, variation selectors, joiners and emoji tag characters. */
+function symbols(text: string): string {
+  return (text.match(/[\p{S}\p{Extended_Pictographic}\p{Emoji_Modifier}\u200d\ufe0e\ufe0f\u20e3\u{e0020}-\u{e007f}]/gu) ?? []).join('');
+}
+
+/** Normalize only typographic equivalents. An in-word single hyphen stays a hyphen. */
+function typography(text: string): string {
+  return text.replace(/[‘’]/gu, "'").replace(/[“”]/gu, '"')
+    .replace(/\.\.\./gu, '…')
+    .replace(/--|[–—]|(?<=\s)-(?=\s)/gu, ' — ');
+}
+
+/** Punctuation keeps its position among letter/number runs, even when a spelling is corrected. */
+function punctuation(text: string): string {
+  // A lone final period is optional, including before closing quotation marks or brackets.
+  // Interior periods and ellipses remain significant; numeric changes are checked separately.
+  const withoutFinalPeriod = text.replace(/\.(?=["')\]}]*$)/u, '');
+  const marks: Array<[number, string]> = [];
+  let run = 0;
+  for (const match of withoutFinalPeriod.matchAll(/[\p{L}\p{M}\p{N}]+|\p{P}/gu)) {
+    if (/^\p{P}/u.test(match[0])) marks.push([run, match[0]]);
+    else run += 1;
+  }
+  return JSON.stringify(marks);
+}
+
+/** Keep ? and ! at their word index in one scan, without repeatedly tokenizing prefixes. */
 function sentenceForce(text: string): string {
-  return JSON.stringify(Array.from(text.matchAll(/[.!?]+/gu))
-    .filter(match => /[!?]/u.test(match[0]))
-    .map(match => [words(text.slice(0, match.index)).length, match[0].replace(/\./gu, '')]));
+  const marks: Array<[number, string]> = [];
+  let wordIndex = 0;
+  for (const match of text.matchAll(/\p{L}[\p{L}\p{M}'’\-]*|[.!?]+/gu)) {
+    if (/^[.!?]/u.test(match[0])) {
+      if (/[!?]/u.test(match[0])) marks.push([wordIndex, match[0].replace(/\./gu, '')]);
+    } else wordIndex += 1;
+  }
+  return JSON.stringify(marks);
 }
 
 const bare = (word: string) => word.replace(/['’]/gu, '');
@@ -139,7 +171,12 @@ export function classifyLineChange(before: string, after: string): LineChange {
   if (a === b) return { kind: 'same', why: 'unchanged' };
   if (!a || !b) return { kind: 'substantive', why: a ? 'line emptied' : 'line added' };
 
-  if (sentenceForce(a) !== sentenceForce(b)) {
+  if (symbols(a) !== symbols(b)) {
+    return { kind: 'substantive', why: 'a symbol changed' };
+  }
+  const typedA = typography(a);
+  const typedB = typography(b);
+  if (sentenceForce(typedA) !== sentenceForce(typedB)) {
     return { kind: 'substantive', why: 'question or exclamation changed' };
   }
 
@@ -150,8 +187,12 @@ export function classifyLineChange(before: string, after: string): LineChange {
     return { kind: 'substantive', why: 'a number changed' };
   }
 
-  const wa = words(a);
-  const wb = words(b);
+  if (punctuation(typedA) !== punctuation(typedB)) {
+    return { kind: 'substantive', why: 'punctuation changed' };
+  }
+
+  const wa = words(typedA);
+  const wb = words(typedB);
   // Case and punctuation only: the same words in the same order, ignoring case.
   if (wa.length === wb.length && wa.every((t, i) => t.lower === wb[i].lower)) {
     return { kind: 'cosmetic', why: 'case, punctuation or spacing only' };

@@ -7,3 +7,11 @@
 4. **Not verified and remaining risks.** Browser checks were not run. `.preview/`, callers, APIs, stored formats, and production data remain unchanged. No commit or deployment was performed. The reviewer still needs the predeployment count of affected marks on a database copy. The finite list deliberately causes unlisted typo corrections to require agreement again.
 
 5. **Specification notes.** The round-one `fund → find` concern is resolved. I omitted example entries `calender` and `untill` because the local dictionary contains them, following the stronger exclusion of real words. The dictionary was used to reject collisions, not generate corrections. Whitespace retains the existing `same` result. The former substantive `teh → the` assertion now correctly expects cosmetic carry under the revised rule.
+
+## Round 3 (after the independent review)
+
+1. **Changes.** [line-change.ts:125](/Users/mikewolf/Projects/.fleet-wt/accord-usability-s5/src/shared/line-change.ts:125) now detects changed symbols, emoji modifiers, and joiners. Its punctuation guard allows typographic equivalents and passage-final periods; other punctuation changes require review. [sentenceForce:151](/Users/mikewolf/Projects/.fleet-wt/accord-usability-s5/src/shared/line-change.ts:151) now computes word indices in one scan. Added regressions and the performance test in [honest-reading.test.ts:46](/Users/mikewolf/Projects/.fleet-wt/accord-usability-s5/src/tests/honest-reading.test.ts:46). Updated the obsolete comma-carry fixture in [proxy-marks.test.ts:103](/Users/mikewolf/Projects/.fleet-wt/accord-usability-s5/src/tests/proxy-marks.test.ts:103).
+
+2. **Results.** Build passed. All **34 npm test groups passed**, including **86 honest-reading tests**. The 20,000-character, 3,000-exclamation test took **10.2 ms**. TypeScript reports **490 errors**, none in changed files. `git diff --check` passed.
+
+3. **Notes.** No concerns with the requested fixes. Interior periods remain substantive because sentence boundaries can be ambiguous. Only the classifier and two test files were edited. Existing reviewer-generated `.preview/` changes were left untouched.

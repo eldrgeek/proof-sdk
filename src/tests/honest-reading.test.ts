@@ -38,8 +38,65 @@ await test('classifier: identical text (any whitespace) is "same"', () => {
 
 await test('classifier: whitespace, case and punctuation only are cosmetic', () => {
   assert.equal(kind('We ship on friday', 'We ship on Friday.'), 'cosmetic');
-  assert.equal(kind('Hello, world', 'Hello world.'), 'cosmetic');
+  assert.equal(kind('Hello, world', 'Hello, world.'), 'cosmetic');
   assert.equal(kind('the plan is final', 'The plan is final.'), 'cosmetic');
+});
+
+// Round 3: invisible symbols and uncertain punctuation must never carry agreement.
+const surfaceChanges: Array<[string, string, string]> = [
+  ['I agree with the delivery schedule for tomorrow 👍', 'I agree with the delivery schedule for tomorrow 👎', 'a symbol changed'],
+  ['The approved condition is x < y for every delivery.', 'The approved condition is x > y for every delivery.', 'a symbol changed'],
+  ['I agree with the delivery schedule for tomorrow 👍🏻', 'I agree with the delivery schedule for tomorrow 👍🏽', 'a symbol changed'],
+  ['The delivery instructions show this worker 👩‍💻 today.', 'The delivery instructions show this worker 👩💻 today.', 'a symbol changed'],
+  ['The delivery instructions include this symbol ♥ today.', 'The delivery instructions include this symbol ♥️ today.', 'a symbol changed'],
+  ["Let's eat, Grandma before we review the delivery schedule.", "Let's eat Grandma before we review the delivery schedule.", 'punctuation changed'],
+  ['The delivery instructions are clear: leave the gate open.', 'The delivery instructions are clear leave the gate open.', 'punctuation changed'],
+  ['The delivery team (including the driver) agreed today.', 'The delivery team including the driver agreed today.', 'punctuation changed'],
+  ['The delivery instructions say "leave the gate open" today.', 'The delivery instructions say leave the gate open today.', 'punctuation changed'],
+  ['The delivery team is ready; the driver is waiting.', 'The delivery team is ready the driver is waiting.', 'punctuation changed'],
+  ['The delivery team [including the driver] agreed today.', 'The delivery team including the driver agreed today.', 'punctuation changed'],
+  ['The delivery team, including the driver agreed today.', 'The delivery team including the driver, agreed today.', 'punctuation changed'],
+  ['The delivery team reviews the long-term schedule today.', 'The delivery team reviews the long—term schedule today.', 'punctuation changed'],
+  ['The delivery team is ready... Please start the engine.', 'The delivery team is ready. Please start the engine.', 'punctuation changed'],
+];
+for (const [before, after, why] of surfaceChanges) {
+  await test(`classifier: surface change requires review: ${before} -> ${after}`, () => {
+    for (const text of [before, after]) assert.ok((text.match(/\p{L}/gu) ?? []).length >= 25);
+    for (const [a, b] of [[before, after], [after, before]]) {
+      assert.deepEqual(change.classifyLineChange(a, b), { kind: 'substantive', why });
+    }
+  });
+}
+
+const typographyChanges: Array<[string, string]> = [
+  ["The driver's delivery schedule is ready for tomorrow.", 'The driver’s delivery schedule is ready for tomorrow.'],
+  ['The delivery instructions say "leave the gate open" today.', 'The delivery instructions say “leave the gate open” today.'],
+  ['The delivery team is ready -- the driver is waiting.', 'The delivery team is ready — the driver is waiting.'],
+  ['The delivery team is ready - the driver is waiting.', 'The delivery team is ready – the driver is waiting.'],
+  ['The delivery team is ready--the driver is waiting!', 'The delivery team is ready—the driver is waiting!'],
+  ['The delivery team is ready... Please start the engine.', 'The delivery team is ready… Please start the engine.'],
+  ['The delivery team is ready for the shipment', 'The delivery team is ready for the shipment.'],
+  ['The delivery instructions say "leave the gate open"', 'The delivery instructions say "leave the gate open."'],
+];
+for (const [before, after] of typographyChanges) {
+  await test(`classifier: typography is cosmetic: ${before} -> ${after}`, () => {
+    for (const text of [before, after]) assert.ok((text.match(/\p{L}/gu) ?? []).length >= 25);
+    assert.equal(kind(before, after), 'cosmetic');
+    assert.equal(kind(after, before), 'cosmetic');
+  });
+}
+
+await test('classifier: 20,000 characters and 3,000 exclamations take under 200 ms', () => {
+  const before = 'word! '.repeat(3000) + 'x'.repeat(2000);
+  const after = before.replace('word', 'Word');
+  assert.equal(before.length, 20_000);
+  assert.equal((before.match(/!/gu) ?? []).length, 3000);
+  const started = performance.now();
+  const result = change.classifyLineChange(before, after);
+  const elapsed = performance.now() - started;
+  assert.equal(result.kind, 'cosmetic', 'exercise the full classifier, not the identical-text shortcut');
+  assert.ok(elapsed < 200, `classification took ${elapsed.toFixed(1)} ms`);
+  console.log(`  20,000 characters / 3,000 exclamations: ${elapsed.toFixed(1)} ms`);
 });
 
 await test('classifier: a listed spelling correction is cosmetic', () => {
