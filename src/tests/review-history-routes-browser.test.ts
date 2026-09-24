@@ -117,7 +117,7 @@ async function run(): Promise<void> {
         await accept(alice, id);
         if (redo) await history(alice);
         await bob.waitForFunction((text: string) => document.querySelector('.ProseMirror')?.textContent?.includes(text), redo ? 'Original' : 'Changed');
-        await bob.getByRole('button', { name: /^Suggesting:/ }).click();
+        await bob.getByRole('button', { name: 'Enter Editing', exact: true }).click();
         await bob.evaluate(() => {
           const view = (window as any).proof.editor.ctx.get('editorView'); view.dispatch(view.state.tr.insertText('BOB', 5));
         });

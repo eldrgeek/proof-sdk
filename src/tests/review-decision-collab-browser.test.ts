@@ -137,7 +137,7 @@ async function run(): Promise<void> {
       const { alice, bob, ids: [id], state } = await fixture();
       await accept(alice, id); await history(alice);
       await bob.waitForFunction(() => document.querySelector('.ProseMirror')?.textContent?.includes('Original'));
-      await bob.getByRole('button', { name: /^Suggesting:/ }).click();
+      await bob.getByRole('button', { name: 'Enter Editing', exact: true }).click();
       await bob.evaluate(() => {
         const view = (window as any).proof.editor.ctx.get('editorView'); view.dispatch(view.state.tr.insertText('BOB', 5));
       });
@@ -181,7 +181,7 @@ async function run(): Promise<void> {
     tests['history-order'] = async () => {
       const { alice, ids: [id] } = await fixture([{ quote: 'Original', content: 'Changed' }, { quote: 'Another paragraph', content: 'Another proposal' }]);
       await accept(alice, id);
-      await alice.getByRole('button', { name: /^Suggesting:/ }).click();
+      await alice.getByRole('button', { name: 'Enter Editing', exact: true }).click();
       await alice.evaluate(() => {
         const view = (window as any).proof.editor.ctx.get('editorView');
         view.dispatch(view.state.tr.insertText(' local', view.state.doc.content.size - 1));

@@ -99,6 +99,7 @@ async function openDoc(browser, base, slug) {
   await page.getByRole('button', { name: 'Continue anonymously', exact: true }).click({ timeout: 10_000 }).catch(() => {});
   await page.waitForFunction(() => window.proof?.collabConnectionStatus === 'connected' && window.proof?.collabIsSynced === true, null, { timeout: 20_000 });
   await page.waitForTimeout(800);
+  assert.equal(await page.evaluate(() => window.__proofEditingGuard().writing), false, 'opening proposals must stay in Reading');
   return { context, page };
 }
 

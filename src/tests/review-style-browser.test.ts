@@ -221,7 +221,7 @@ async function run(): Promise<void> {
     await page.getByRole('button', { name: 'Reject all', exact: true }).click();
     await check([commentId], 'reject all');
     await page.keyboard.press('Control+z'); await check([...ids, commentId], 'undo reject all');
-    await page.getByRole('button', { name: /^Suggesting:/ }).click();
+    await page.getByRole('button', { name: 'Enter Editing', exact: true }).click();
     // Typing on the page dismisses the decision dialog and keeps native undo.
     await page.locator(`[data-review-row="${ids[0]}"]`).click();
     await page.locator('.ProseMirror h1').click();

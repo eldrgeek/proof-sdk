@@ -4,7 +4,7 @@
 // scattered fragments). Clicks at a mid-document position and types 40 characters at human speed
 // (60–120 ms per key) while (a) the line-marks poll fires, (b) another client writes marks,
 // comments and asks through the API, (c) the mouse hovers over other lines (desktop). Runs in both
-// review styles, in Suggesting and Editing modes, at 1440 and on a 390x844 phone.
+// review styles, in direct Editing and legacy API Suggesting modes, at 1440 and on a 390x844 phone.
 // Asserts: every character lands contiguously at the click position, the selection never jumps,
 // the typed line keeps its place on screen (scrollY moves only by the height of content inserted
 // above it, by browser scroll anchoring). Every transaction that changes the selection and was not caused by the
@@ -306,7 +306,8 @@ async function run(browser, base, style, mode, device) {
   const created = await createDoc(base);
   const { context, page } = await openDoc(browser, base, created.slug, 'Ada', contextOptions);
   activePage = page;
-  await page.evaluate(m => { if (m === 'editing') window.proof.disableSuggestions(); else window.proof.enableSuggestions?.(); }, mode);
+  // Enter via the labelled control. The legacy mode remains an API compatibility check.
+  await page.evaluate(m => { document.querySelector('.share-pill-suggest-toggle').click(); if (m === 'suggesting') window.proof.enableSuggestions(); }, mode);
   await page.waitForTimeout(300);
   await instrument(page);
   if (trace) await page.evaluate(() => { window.__caretTrace = true; });

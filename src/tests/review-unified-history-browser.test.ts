@@ -91,7 +91,8 @@ async function run(): Promise<void> {
           method: 'POST', headers: { ...CLIENT_HEADERS, 'Content-Type': 'application/json' },
           body: JSON.stringify({ title: 'History cursor', markdown: 'Original\n\nSecond\n', marks: {} }),
         }));
-        const page = await openEditor(browser, `${httpBase}/d/${created.slug}?token=${encodeURIComponent(created.accessToken)}&mode=edit`, 'Alice');
+        const page = await openEditor(browser, `${httpBase}/d/${created.slug}?token=${encodeURIComponent(created.accessToken)}`, 'Alice');
+        await page.getByRole('button', { name: 'Enter Editing', exact: true }).click();
         let stage = 'style and initial typing';
         try {
           await page.getByLabel('Review style', { exact: true }).selectOption(source);

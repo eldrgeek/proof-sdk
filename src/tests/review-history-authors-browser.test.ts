@@ -111,7 +111,7 @@ async function run(): Promise<void> {
       if (process.argv[2] && process.argv[2] !== source) continue;
       const { alice, bob, ids: [id], agentReply, state } = await fixture();
       try {
-        await alice.getByRole('button', { name: /^Suggesting:/ }).click();
+        await alice.getByRole('button', { name: 'Enter Editing', exact: true }).click();
         await alice.evaluate(() => {
           const proof = (window as any).proof, view = proof.editor.ctx.get('editorView');
           proof.getReviewDecisionHistory().manager.clear();

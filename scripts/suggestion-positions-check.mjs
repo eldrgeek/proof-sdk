@@ -129,6 +129,7 @@ async function openDoc(browser, base, created, device) {
   const toast = page.locator('.proof-share-welcome-toast button');
   if (await toast.count()) await toast.first().click().catch(() => {});
   page.setDefaultTimeout(8000);
+  assert.equal(await page.evaluate(() => window.__proofEditingGuard().writing), false, 'opening proposals must stay in Reading');
   return { context, page };
 }
 

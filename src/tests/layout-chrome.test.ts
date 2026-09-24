@@ -80,6 +80,10 @@ test('searchMenus: every word must start a word; enabled first; shorter labels f
 });
 
 test('the keys list and the legend name what the menus and the page use', () => {
+  assert.ok(KEYBOARD_SHORTCUTS.some(k => k.keys === 'S' && /draft/.test(k.does)));
+  assert.ok(KEYBOARD_SHORTCUTS.some(k => k.keys === '⌘Enter / Ctrl+Enter' && k.does === 'Propose change'));
+  assert.ok(KEYBOARD_SHORTCUTS.some(k => k.keys === 'Esc' && /Keep the draft/.test(k.does)));
+  assert.ok(!KEYBOARD_SHORTCUTS.some(k => k.does === 'Start writing at the end of the line'));
   assert.ok(KEYBOARD_SHORTCUTS.some(k => k.keys === 'Alt+/'));
   assert.ok(KEYBOARD_SHORTCUTS.some(k => k.keys === 'F10'));
   assert.ok(KEYBOARD_SHORTCUTS.some(k => k.keys === 'A' && /Agree/.test(k.does)));

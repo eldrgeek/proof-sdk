@@ -1,4 +1,5 @@
 /**
+ * Mike, 2026-09-23 (usability brief): S drafts; Cmd/Ctrl+Enter submits; Esc keeps the draft.
  * Accord layout, stage 2 (Ren's proposal, Mike ruled 2026-09-21: "build the layout that you
  * proposed"; decisions 1, 10 and 12): the menu bar, the one toolbar row, the Share dialog, and the
  * settings that left the main view. Pure: src/ui/menu-bar.ts, src/ui/share-dialog.ts,
@@ -172,8 +173,9 @@ export const KEYBOARD_SHORTCUTS: ReadonlyArray<{ group: string; keys: string; do
   { group: 'Reading (caret out of the text)', keys: 'D', does: 'Make the line a decision or context' },
   { group: 'Reading (caret out of the text)', keys: 'E', does: 'Ask the AIs to explain the line' },
   { group: 'Reading (caret out of the text)', keys: '1–9', does: 'Pick one of the line’s competing wordings' },
-  { group: 'Reading (caret out of the text)', keys: 'Enter', does: 'Start writing at the end of the line' },
-  { group: 'Writing (caret in the text)', keys: 'Esc', does: 'Back to reading' },
+  { group: 'Reading (caret out of the text)', keys: 'S', does: 'Suggest a change in a local draft' },
+  { group: 'Draft', keys: 'Esc', does: 'Keep the draft for later' },
+  { group: 'Draft', keys: '⌘Enter / Ctrl+Enter', does: 'Propose change' },
   { group: 'Everywhere', keys: '⌘Z / Ctrl+Z', does: 'Undo the last thing you did (a mark, a decision or typing)' },
   { group: 'Everywhere', keys: '⇧⌘Z / Ctrl+Y', does: 'Redo' },
   { group: 'Menus', keys: 'Alt+F, E, V, P, H', does: 'Open File, Edit, View, People, Help (Ctrl+Option+letter on a Mac)' },

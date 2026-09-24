@@ -217,7 +217,8 @@ async function desktop(browser, base, style) {
     const top = await block(page, L.END_HEAD).evaluate(n => n.getBoundingClientRect().top);
     assert.ok(top > 0 && top < 900, `heading not in view (${top})`);
   });
-  await check(`${tag}: item 1 — Alt/Option+click on a link puts the caret in its words to edit them (nothing opens)`, async () => {
+  await page.evaluate(() => document.querySelector('.share-pill-suggest-toggle').click());
+  await check(`${tag}: item 1 — Alt/Option+click in direct Editing puts the caret in its words to edit them (nothing opens)`, async () => {
     await scrollLineIntoView(page, L.LINKS);
     const link = page.locator('.ProseMirror a[href="https://example.com/page"]');
     const box = await link.boundingBox();
@@ -231,40 +232,34 @@ async function desktop(browser, base, style) {
     assert.ok((await docText(page)).includes('the exZample page') || /the ex[a-z]*Z[a-z]* page/.test(await docText(page)) || (await docText(page)).includes('Z'), 'typing did not go into the link');
     await page.keyboard.press('Backspace');
     await page.keyboard.press('Escape');
-    assert.equal(await writing(page), false, 'Esc did not return to reading');
+    assert.equal(await writing(page), true, 'Esc changed direct Editing');
+    await page.evaluate(() => document.querySelector('.share-pill-suggest-toggle').click());
   });
-  await check(`${tag}: item 1 — clicking the words beside a link still places the caret (editing first)`, async () => {
-    const line = block(page, L.LINKS);
-    const box = await line.boundingBox();
-    await page.mouse.click(box.x + 12, box.y + 10); // "Links:" at the start of the line
-    await page.waitForTimeout(150);
-    assert.equal(await writing(page), true);
+  await check(`${tag}: item 1 — clicking beside a link selects the passage and leaves Reading on`, async () => {
+    const box = await block(page, L.LINKS).boundingBox();
+    await page.mouse.click(box.x + 12, box.y + 10);
+    assert.equal(await writing(page), false);
+    assert.equal((await walk(page)).focus, L.LINKS);
     assert.equal(await page.evaluate(() => window.__opened.length), 1);
-    await page.keyboard.press('Escape');
   });
 
   // ---- item 2: the reading keys never type ----------------------------------------------------
-  await check(`${tag}: item 2 — after a click on the text, keys type (writing), Esc returns to reading, then A agrees and types nothing`, async () => {
+  await check(`${tag}: item 2 — a click selects; S drafts; Esc keeps the draft; A never types into the document`, async () => {
     await scrollLineIntoView(page, 5);
     const box = await block(page, 5).boundingBox();
     await page.mouse.click(box.x + 60, box.y + 10);
-    await page.waitForTimeout(150);
-    assert.equal(await writing(page), true, 'a click on the text did not start writing');
-    // Accord layout stage 1: Reading / Writing is shown in the status bar under the page.
-    // Accord round 2 stage A: the bar names the state and the line ("Editing line 6"); it said "Writing".
-    assert.match(await page.locator('.pst-bar .pst-mode').innerText(), /^Editing line \d+$/);
+    assert.equal(await writing(page), false);
     const before = await docText(page);
-    await page.keyboard.type('a');
-    assert.equal((await docText(page)).length, before.length + 1, 'typing while writing did not type');
-    assert.equal(await myMarkOn(page, 5), null, 'typing while writing marked the line');
-    await page.keyboard.press('Backspace');
+    await page.keyboard.press('s');
+    await page.locator('.accord-draft textarea').fill('local asj draft');
+    assert.equal(await docText(page), before);
     await page.keyboard.press('Escape');
-    assert.equal(await writing(page), false, `Esc did not return to reading ${JSON.stringify(await page.evaluate(() => ({ g: window.__proofEditingGuard(), a: document.activeElement?.className })))}`);
-    assert.match(await page.locator('.pst-bar .pst-mode').innerText(), /Reading/);
-    const text = await docText(page);
+    assert.equal(await writing(page), false);
+    await page.locator('[data-draft-action="discard"]').click();
+    await page.evaluate(() => document.activeElement?.blur());
     await page.keyboard.press('a');
     await waitFor(page, i => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i && m.status === 'agreed'), 5);
-    assert.equal(await docText(page), text, 'A typed into the text');
+    assert.equal(await docText(page), before);
   });
   await check(`${tag}: item 2 — focus handed back to the text by code (a dialog closing) is reading: keys act, nothing types`, async () => {
     await codeFocusesText(page, 6);
@@ -289,33 +284,28 @@ async function desktop(browser, base, style) {
     const routes = await page.evaluate(() => window.__proofReadingWalk && window.__proofEditingGuard?.().routes);
     if (routes) assert.ok(routes.some(r => r.key === 'a' && r.route === 'command'), JSON.stringify(routes.slice(-3)));
   });
-  await check(`${tag}: item 2 — after typing pauses, resting on another line returns to reading, and A marks that line`, async () => {
+  await check(`${tag}: item 2 — hover and blur keep direct Editing; letter keys outside text do nothing`, async () => {
+    await page.evaluate(() => document.querySelector('.share-pill-suggest-toggle').click());
     await scrollLineIntoView(page, 9);
     const box = await block(page, 9).boundingBox();
     await page.mouse.click(box.x + 60, box.y + 10);
-    await page.waitForTimeout(120);
-    await page.keyboard.type('q');
-    await page.keyboard.press('Backspace');
-    assert.equal(await writing(page), true);
-    // Within the typing grace the caret owns the focus: hover does not end writing.
-    await hoverLine(page, 10);
-    await page.waitForTimeout(400);
-    assert.equal(await writing(page), true, 'hover ended writing while typing');
-    await page.waitForTimeout(4300); // EDITING_GUARD_POLICY.graceMs
+    await page.keyboard.type('q'); await page.keyboard.press('Backspace');
+    await page.waitForTimeout(4300);
     await hoverLine(page, 11);
-    await page.waitForFunction(() => window.__proofReadingWalk.debugState().target === 11, null, { timeout: 2000 });
-    assert.equal(await writing(page), false, 'hover after the grace did not return to reading');
-    const text = await docText(page);
+    assert.equal(await writing(page), true);
+    const before = await docText(page);
+    await page.evaluate(() => document.activeElement?.blur());
     await page.keyboard.press('a');
-    await waitFor(page, () => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === 11 && m.status === 'agreed'));
-    assert.equal(await docText(page), text, 'A typed into the text');
+    assert.equal(await docText(page), before);
+    assert.equal(await writing(page), true);
+    await page.evaluate(() => document.querySelector('.share-pill-suggest-toggle').click());
   });
   await check(`${tag}: item 2 — after the rail takes the keyboard (a click in it), A is a command`, async () => {
     await scrollLineIntoView(page, 13);
     const box = await block(page, 13).boundingBox();
     await page.mouse.click(box.x + 60, box.y + 10);
     await page.waitForTimeout(120);
-    assert.equal(await writing(page), true);
+    assert.equal(await writing(page), false);
     // Accord layout stage 3: the Margin's Line tab (a control in the rail, not the text).
     await page.locator('.prw-right .amg-tab[data-tab="line"]').click();
     await page.waitForTimeout(100);
@@ -327,6 +317,7 @@ async function desktop(browser, base, style) {
     assert.equal(await docText(page), text);
   });
   await check(`${tag}: item 2 — a remote update does not change the mode: writing keeps typing, reading keeps acting`, async () => {
+    await page.evaluate(() => document.querySelector('.share-pill-suggest-toggle').click());
     await scrollLineIntoView(page, 14);
     const box = await block(page, 14).boundingBox();
     await page.mouse.click(box.x + box.width - 30, box.y + 10);
@@ -338,7 +329,7 @@ async function desktop(browser, base, style) {
     await page.keyboard.type('k');
     assert.equal((await docText(page)).length, before + 1, 'typing after a remote update did not type');
     await page.keyboard.press('Backspace');
-    await page.keyboard.press('Escape');
+    await page.evaluate(() => document.querySelector('.share-pill-suggest-toggle').click());
     await created.post('/marks/suggest-replace', { quote: 'Paragraph 25 is plain', content: 'Paragraph 25 is simple', by: 'ai:check' });
     await page.waitForTimeout(600);
     const text = await docText(page);
@@ -348,23 +339,17 @@ async function desktop(browser, base, style) {
     assert.notEqual((await walk(page)).focus, focus, 'J did not move the focus');
     assert.equal(await docText(page), text, 'J typed into the text');
   });
-  await check(`${tag}: item 2 — Enter while reading puts the caret at the end of the focus line (writing); the status bar shows it`, async () => {
+  await check(`${tag}: item 2 — Enter never starts direct Editing; S opens a draft for the selected passage`, async () => {
     await page.evaluate(() => document.activeElement?.blur());
-    const focus = (await walk(page)).target;
+    const before = await docText(page);
     await page.keyboard.press('Enter');
-    await page.waitForTimeout(100);
-    assert.equal(await writing(page), true, 'Enter did not start writing');
-    const before = await page.evaluate(i => window.__proofLineMarks.lineList()[i].text, focus);
-    await page.keyboard.type('!');
-    const after = await page.evaluate(i => window.__proofLineMarks.lineList()[i].text, focus);
-    assert.equal(after, `${before}!`, 'Enter did not write at the end of the focus line');
-    await page.keyboard.press('Backspace');
-    // Accord layout stage 1: the state is shown, not switched (the chip is no longer a button); Esc reads.
-    // Accord round 2 stage A: the bar names the state and the line ("Editing line 6"); it said "Writing".
-    assert.match(await page.locator('.pst-bar .pst-mode').innerText(), /^Editing line \d+$/);
-    await page.screenshot({ path: path.join(shots, `${tag}-mode-chip.png`), clip: { x: 240, y: 840, width: 880, height: 60 } });
-    await page.keyboard.press('Escape');
-    assert.equal(await writing(page), false, 'Esc did not return to reading');
+    assert.equal(await writing(page), false);
+    await page.keyboard.press('s');
+    const field = page.locator('.accord-draft textarea');
+    const original = await field.inputValue();
+    await field.fill(`${original}!`);
+    assert.equal(await docText(page), before);
+    await page.locator('[data-draft-action="cancel"]').click();
     assert.match(await page.locator('.pst-bar .pst-mode').innerText(), /Reading/);
   });
 
@@ -598,12 +583,13 @@ async function phone(browser, base, style) {
     assert.equal(await page.locator('.markdown-link-action-card').count(), 0);
     assert.equal(await writing(page), false);
   });
-  await check(`${tag}: item 2 — a tap on the text is writing; focus handed over by code is reading (nothing types)`, async () => {
+  await check(`${tag}: item 2 — a tap selects the passage; focus handed over by code keeps Reading (nothing types)`, async () => {
     await scrollLineIntoView(page, 5);
     const box = await block(page, 5).boundingBox();
     await page.touchscreen.tap(box.x + 60, box.y + 10);
     await page.waitForTimeout(200);
-    assert.equal(await writing(page), true, 'a tap on the text did not start writing');
+    assert.equal(await writing(page), false, 'a tap started direct Editing');
+    assert.equal((await walk(page)).focus, 5);
     await page.evaluate(() => document.activeElement?.blur());
     await page.waitForTimeout(50);
     await codeFocusesText(page, 6);

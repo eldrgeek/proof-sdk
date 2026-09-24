@@ -12,7 +12,6 @@ import { markApiView, isOwnHumanMarkChange, withHumanReviewWrite } from './revie
 
 import { PlayMakerReview, type ReviewAction } from '../ui/playmaker-review';
 import { LineMarksUI } from '../ui/line-marks';
-import { actorKey } from '../shared/line-marks';
 import { ReadingWalkUI } from '../ui/reading-walk';
 import { ChatUI } from '../ui/chat';
 import { FoldingUI } from '../ui/folding';
@@ -25,7 +24,7 @@ import { FindBar, showAboutDialog, showKeysDialog, showMarksLegend, showOpenDial
 import { SCROLL_CAMERA_POLICY, cameraScroll, deadZone } from '../shared/scroll-camera';
 import { MENU_BAR_POLICY, TOOLBAR_POLICY, type ShareTab } from '../shared/layout-chrome';
 import { ClarifyUI } from '../ui/clarify';
-import { EditGestureUI } from '../ui/edit-gesture';
+import { EditGestureUI, draftViewPlugin } from '../ui/edit-gesture';
 import { lineMarksViewPlugin } from './plugins/line-marks-view';
 import { foldViewPlugin } from './plugins/fold-view';
 import { askViewPlugin } from './plugins/ask-view';
@@ -34,7 +33,7 @@ import { proofExtrasViewPlugin } from './plugins/proof-extras-view';
 import { tierViewPlugin } from './plugins/tier-view';
 import { closedFoldViewPlugin } from './plugins/closed-fold-view';
 import { getReviewStyle, setReviewStyle, REVIEW_STYLE_POLICY } from './review-style';
-import { isEditing, isWriting } from './editing-guard';
+import { isEditing, isWriting, setDirectEditing } from './editing-guard';
 import { ReviewDecisionHistory, reconnectNativeUndoManager } from './review-decision-history';
 
 import { getAgentPresenceDisplay } from '../shared/agent-presence';
@@ -65,6 +64,7 @@ import {
   absolutePositionToRelativePosition,
 } from 'y-prosemirror';
 import { applyAwarenessUpdate, removeAwarenessStates } from 'y-protocols/awareness';
+import { installLocalWriteResyncPolicy } from './local-write-resync';
 import { installRemoteChangeScrollPolicy } from './remote-change-scroll';
 import { anchorCaretAround } from './caret-anchor';
 import * as encoding from 'lib0/encoding';
@@ -281,6 +281,7 @@ import '../agent/external-agent-bridge';
 
 // Remote Yjs changes never scroll the view (caret stability, 2026-09-19).
 installRemoteChangeScrollPolicy();
+installLocalWriteResyncPolicy();
 
 const LEGACY_REST_FALLBACK = false;
 
@@ -1353,6 +1354,7 @@ class ProofEditorImpl implements ProofEditor {
       .use(tableKeyboardPlugin)
       // Proof Documents Step 1: line marks overlay (no decorations, no document changes)
       .use(lineMarksViewPlugin)
+      .use(draftViewPlugin)
       // Proof Documents Step B2: folded sections (view-only node decorations)
       .use(foldViewPlugin)
       // Proof Documents Step B3: {ask} tags and answer controls (view-only widgets)
@@ -2598,8 +2600,10 @@ class ProofEditorImpl implements ProofEditor {
     this.shareAllowLocalEdits = hydrationGate.allowLocalEdits;
     if (hydrationGate.allowLocalEdits && !this.suggestDefaultApplied) {
       this.suggestDefaultApplied = true;
-      if (this.resolveInitialSuggestMode() === 'suggest') this.enableSuggestions();
+      this.disableSuggestions();
+      setDirectEditing(false);
     }
+    if (!this.collabCanEdit) setDirectEditing(false);
     this.updateSuggestToggleDisplay();
     this.updateShareSuggestionReviewDisplay();
     // Only block content mutations for true view-only sessions.
@@ -4014,8 +4018,7 @@ class ProofEditorImpl implements ProofEditor {
           { id: 'edit-undo', label: undo.label, detail: '⌘Z', keywords: 'undo', enabled: undo.enabled, run: () => this.undoFromMenu(false) },
           { id: 'edit-redo', label: redo.label, detail: '⇧⌘Z', keywords: 'redo', enabled: redo.enabled, run: () => this.undoFromMenu(true) },
           { id: 'edit-find', label: 'Find…', keywords: 'search text', separatorBefore: true, run: () => this.openFindBar() },
-          { id: 'edit-suggesting', label: 'Suggesting', kind: 'radio', checked: this.isSuggestionsEnabled(), enabled: canEdit, separatorBefore: true, keywords: 'mode track changes', run: () => this.setSuggestingFromChrome(true) },
-          { id: 'edit-editing', label: 'Editing', kind: 'radio', checked: !this.isSuggestionsEnabled(), enabled: canEdit, keywords: 'mode direct', run: () => this.setSuggestingFromChrome(false) },
+          { id: 'edit-editing', label: isWriting() ? 'Leave Editing' : 'Enter Editing', enabled: canEdit, separatorBefore: true, keywords: 'mode direct', run: () => this.setSuggestingFromChrome(isWriting()) },
         ];
         if (style === 'proof' && canEdit) {
           items.push(
@@ -4121,7 +4124,7 @@ class ProofEditorImpl implements ProofEditor {
         },
         onDotActivate: (lineIndex) => this.readingWalk?.activateDot(lineIndex) ?? false,
         // Accord round 2 stage A: a visible way into editing (the margin's pencil).
-        startEditingLine: (lineIndex) => this.readingWalk?.editLine(lineIndex) ?? false,
+        startEditingLine: (lineIndex) => this.editGesture?.open(lineIndex) ?? false,
         cursorLine: () => this.readingWalk?.focusIndex() ?? -1,
         focusLine: (lineIndex) => this.readingWalk?.focusLine(lineIndex) ?? false,
         viewUpdated: () => { this.readingWalk?.notifyViewUpdate(); this.folding?.queueRender(); },
@@ -4176,6 +4179,8 @@ class ProofEditorImpl implements ProofEditor {
       (window as unknown as { __proofFolding?: FoldingUI }).__proofFolding = this.folding;
       this.readingWalk = new ReadingWalkUI({
         slug: () => shareClient.getSlug(),
+        suggestChange: (line) => this.editGesture?.open(line) ?? false,
+        canSuggest: () => this.shareAllowLocalEdits,
         // Step B6: the reading walk acts as the same identity the line marks write with.
         actor: () => lineMarks.me(),
         lineMarks: () => lineMarks,
@@ -4245,39 +4250,29 @@ class ProofEditorImpl implements ProofEditor {
           this.undoPlacementQuery.addEventListener('change', () => this.placeUndo());
         } catch { /* old browsers: it stays where it was placed */ }
       }
-      // Accord round 2 stage A (Mike, 2026-09-22): leaving an edit ALWAYS posts what was typed as
-      // a proposal others can see, through any of its three doors. Nothing is ever discarded.
+      // Mike, 2026-09-23 (usability brief): draft locally, then submit one suggestion.
       this.editGesture = new EditGestureUI({
         view: () => { let v: EditorView | null = null; this.editor?.action(ctx => { v = ctx.get(editorViewCtx); }); return v; },
-        isSuggesting: () => this.isSuggestionsEnabled(),
+        slug: () => shareClient.getSlug(),
         actor: () => lineMarks.me(),
-        directEditMeta: () => proofMarkActionMeta,
+        canPropose: () => this.shareAllowLocalEdits && !this.isReadOnly && this.reviewLockCount === 0,
         suggestReplace: (view, quote, by, content, range) => {
           let parser: Parameters<typeof suggestReplace>[6];
           this.editor?.action(ctx => { parser = ctx.get(parserCtx); });
           return suggestReplace(markApiView(view), quote, by, content, range, undefined, parser)?.id ?? null;
         },
-        myPendingOnLine: (lineIndex) => {
-          let ids: string[] = [];
-          // The viewer has two names: line marks call a guest `guest:<name>` while the editor
-          // writes their suggestions as `human:<name>`. Matching only one of them left a
-          // Suggesting-mode proposal with no Undo entry, which broke the rule that Undo is the
-          // only way to remove a posted proposal (2026-09-22).
-          const mine = new Set([lineMarks.me(), getCurrentActor()].filter(Boolean).map(actorKey));
-          this.editor?.action(ctx => {
-            ids = getMarks(ctx.get(editorViewCtx).state)
-              .filter(mark => (mark.kind === 'insert' || mark.kind === 'delete' || mark.kind === 'replace')
-                && ((mark.data as { status?: string } | undefined)?.status ?? 'pending') === 'pending'
-                && mine.has(actorKey(String(mark.by ?? '')))
-                && typeof mark.range?.from === 'number' && lineMarks.lineAtPos(mark.range.from) === lineIndex)
-              .map(mark => mark.id);
-          });
-          return ids;
+        pending: (id, content) => this.getAllMarks().some(mark => mark.id === id
+          && (mark.kind === 'replace' || mark.kind === 'insert' || mark.kind === 'delete')
+          && ((mark.data as { status?: string } | undefined)?.status ?? 'pending') === 'pending'
+          && (content === undefined || (mark.data as { content?: string } | undefined)?.content === content)),
+        decide: (ids) => {
+          if (!this.shareAllowLocalEdits || this.isReadOnly || this.reviewLockCount > 0) throw new Error('Connect with editing permission to undo this proposal.');
+          // The draft has its own Undo entry. The inverse uses the existing mark route without
+          // capturing a second native/Accord history entry for the rejection itself.
+          for (const id of ids) if (!this.markReject(id)) throw new Error('This proposal could not be undone.');
         },
-        decide: (ids, action) => this.performReviewDecision(ids, action),
         undoStack: () => lineMarks.undoStack(),
         proposed: (lineIndex) => this.readingWalk?.showEditProposed(lineIndex),
-        kept: (lineIndex) => this.readingWalk?.showEditKept(lineIndex),
         notice: (text) => this.readingWalk?.showEditNotice(text),
       });
       (window as unknown as { __proofEditGesture?: EditGestureUI }).__proofEditGesture = this.editGesture;
@@ -4378,14 +4373,13 @@ class ProofEditorImpl implements ProofEditor {
       const moved = new Set<string>();
       for (const part of TOOLBAR_POLICY.phoneMenuTop) {
         if (part === 'mode' && this.isShareMode && this.collabCanEdit) {
-          const on = this.isSuggestionsEnabled();
+          const on = isWriting();
           const seg = document.createElement('div');
           seg.className = 'apm-mode';
           seg.setAttribute('role', 'group');
-          seg.setAttribute('aria-label', 'Suggesting or Editing');
+          seg.setAttribute('aria-label', 'Editing mode');
           seg.append(...buildMenuItems([
-            { id: 'phone-mode-suggest', label: 'Suggesting', kind: 'radio', checked: on, run: () => this.setSuggestingFromChrome(true) },
-            { id: 'phone-mode-edit', label: 'Editing', kind: 'radio', checked: !on, run: () => this.setSuggestingFromChrome(false) },
+            { id: 'phone-mode-edit', label: on ? 'Leave Editing' : 'Enter Editing', run: () => this.setSuggestingFromChrome(on) },
           ], run));
           menu.append(seg);
           moved.add('edit-suggesting').add('edit-editing');
@@ -4633,23 +4627,6 @@ class ProofEditorImpl implements ProofEditor {
     }
   }
 
-  private suggestModeStorageKey(): string {
-    const slug = (window.location.pathname.match(/\/d\/([^/?#]+)/) || [])[1] || 'doc';
-    return `proof:suggest-mode:${slug}`;
-  }
-
-  private resolveInitialSuggestMode(): 'suggest' | 'edit' {
-    try {
-      const fromUrl = new URLSearchParams(window.location.search).get('mode');
-      if (fromUrl === 'suggest' || fromUrl === 'edit') return fromUrl;
-      const saved = window.localStorage.getItem(this.suggestModeStorageKey());
-      if (saved === 'suggest' || saved === 'edit') return saved;
-    } catch {
-      // storage can be unavailable (private windows); fall through to the default
-    }
-    return 'suggest';
-  }
-
   private createSuggestToggleButton(): HTMLButtonElement {
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -4662,25 +4639,17 @@ class ProofEditorImpl implements ProofEditor {
     btn.onmouseenter = () => { btn.style.background = '#fff'; btn.style.borderColor = 'rgba(17,24,39,0.20)'; };
     btn.onmouseleave = () => { btn.style.background = 'rgba(255,255,255,0.7)'; btn.style.borderColor = 'rgba(17,24,39,0.10)'; };
     btn.classList.add('amb-seg');
-    // Accord layout stage 2: a segmented switch. A click on the half already chosen does nothing.
-    btn.onclick = (event) => {
-      const half = (event.target as HTMLElement | null)?.closest?.('[data-mode]') as HTMLElement | null;
-      const on = this.isSuggestionsEnabled();
-      // Phones show only the chosen half: a tap on it switches.
-      const other = btn.querySelector<HTMLElement>(`[data-mode="${on ? 'edit' : 'suggest'}"]`);
-      const otherShown = Boolean(other && other.getClientRects().length > 0);
-      if (half && otherShown && (half.dataset.mode === 'suggest') === on) return;
-      this.setSuggestingFromChrome(!on);
-    };
+    btn.onclick = () => this.setSuggestingFromChrome(isWriting());
     this.shareBannerSuggestBtnEl = btn;
     return btn;
   }
 
-  /** Suggesting (true) or Editing (false), from the switch or Edit › Suggesting / Editing. */
-  private setSuggestingFromChrome(suggesting: boolean): void {
-    if (!this.collabCanEdit || this.isSuggestionsEnabled() === suggesting) return;
-    const enabled = this.toggleSuggestions();
-    try { window.localStorage.setItem(this.suggestModeStorageKey(), enabled ? 'suggest' : 'edit'); } catch { /* ignore */ }
+  /** The labelled control is the only UI route into and out of direct Editing. */
+  private setSuggestingFromChrome(review: boolean): void {
+    if (!this.collabCanEdit) return;
+    this.disableSuggestions();
+    setDirectEditing(!review);
+    this.updateEditableState();
     this.updateSuggestToggleDisplay();
   }
 
@@ -4690,19 +4659,10 @@ class ProofEditorImpl implements ProofEditor {
     const visible = this.isShareMode && this.collabCanEdit;
     btn.style.display = visible ? 'inline-flex' : 'none';
     if (!visible) return;
-    const on = this.isSuggestionsEnabled();
-    btn.replaceChildren();
-    for (const [mode, text] of [['suggest', 'Suggesting'], ['edit', 'Editing']] as const) {
-      const half = document.createElement('span');
-      half.className = 'amb-seg-opt';
-      half.dataset.mode = mode;
-      half.dataset.on = String((mode === 'suggest') === on);
-      half.textContent = text;
-      btn.append(half);
-    }
-    btn.setAttribute('aria-pressed', String(on));
-    btn.setAttribute('aria-label', on ? 'Suggesting: your edits are tracked. Click to edit directly.' : 'Editing directly. Click to suggest changes instead.');
-    btn.title = on ? 'Suggesting: your edits appear as tracked changes others can accept or reject' : 'Editing: your edits change the text directly';
+    btn.textContent = isWriting() ? 'Leave Editing' : 'Enter Editing';
+    btn.setAttribute('aria-pressed', String(isWriting()));
+    btn.setAttribute('aria-label', btn.textContent);
+    btn.title = isWriting() ? 'Editing: typing changes the document directly' : 'Enter Editing to change the document directly';
   }
 
   private getAnchoredPendingSuggestions(viewOverride?: EditorView): Mark[] {
@@ -6371,7 +6331,7 @@ class ProofEditorImpl implements ProofEditor {
   private updateEditableState(viewOverride?: EditorView): void {
     const isEditable = !this.isReadOnly
       && this.reviewLockCount === 0
-      && (!this.isShareMode || this.shareAllowLocalEdits);
+      && (!this.isShareMode || (this.shareAllowLocalEdits && isWriting()));
 
     const applyEditableState = (view: EditorView) => {
       view.setProps({
