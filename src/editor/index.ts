@@ -1936,7 +1936,10 @@ class ProofEditorImpl implements ProofEditor {
     this.updateShareEditGate();
   }
 
+  private shareMarksAnchored = false;
+
   private resetShareMarksSyncState(): void {
+    this.shareMarksAnchored = false;
     this.initialMarksSynced = false;
     this.lastReceivedServerMarks = {};
   }
@@ -6080,12 +6083,15 @@ class ProofEditorImpl implements ProofEditor {
 
   private applyLatestCollabMarksToEditor(): void {
     if (!this.isShareMode || !this.collabEnabled || !this.editor) return;
+    if (!this.initialMarksSynced) return;
+    if (this.collabCanEdit && (!this.collabIsSynced || !this.isCollabHydratedForEditing())) return;
     if (this.isEditorDocStructurallyEmpty()) return;
 
     this.applyingCollabRemote = true;
     this.suppressMarksSync = true;
     try {
       this.applyExternalMarks(this.lastReceivedServerMarks, { authoritativeSnapshot: true });
+      this.shareMarksAnchored = this.collabCanEdit;
     } finally {
       this.suppressMarksSync = false;
       this.applyingCollabRemote = false;
@@ -6114,6 +6120,8 @@ class ProofEditorImpl implements ProofEditor {
 
   private markInitialCollabHydrationComplete(): void {
     this.hasCompletedInitialCollabHydration = true;
+    // onMarks can arrive before the PM fragment. Hydration completion must retry anchors.
+    this.applyLatestCollabMarksToEditor();
   }
 
   private shouldPublishProjectionMarkdown(
@@ -6165,6 +6173,10 @@ class ProofEditorImpl implements ProofEditor {
   private flushShareMarks(_options?: { keepalive?: boolean; persistContent?: boolean }): void {
     if (!this.isShareMode || !this.editor || this.suppressMarksSync) return;
     if (!this.initialMarksSynced) return;
+    if (this.collabEnabled && !this.shareMarksAnchored) {
+      this.applyLatestCollabMarksToEditor();
+      if (!this.shareMarksAnchored) return;
+    }
     this.editor.action((ctx) => {
       try {
         const view = ctx.get(editorViewCtx);

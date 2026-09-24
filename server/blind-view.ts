@@ -12,6 +12,9 @@ import { getProofSettings, listPicks } from './proof-extras-store.js';
 import { blindViewFor } from './proof-extras-eval.js';
 import { listCanonicalAsks } from './asks.js';
 import { computeServerLines, listCanonicalLineMarks } from './line-marks.js';
+import { getDocumentBySlug } from './db.js';
+import { normalizeLineText } from '../src/shared/line-marks.js';
+import type { StoredMark } from '../src/formats/marks.js';
 import { listObjections } from './review-aids-store.js';
 
 export function blindReadView(slug: string, lines: DocLine[], viewer: string | undefined, lineMarks = listCanonicalLineMarks(slug), asks = listCanonicalAsks(slug)) {
@@ -61,6 +64,9 @@ export function filterBlindEvents<T extends { event_type: string; event_data: st
     if (type.startsWith('objection.')) {
       const objection = objections.find(o => o.id === data.objectionId);
       if (!objection || !visibleObjection(objection, view)) continue;
+    } else if (['suggestion.accepted', 'suggestion.rejected', 'suggestion.reopened'].includes(type)) {
+      const marks = JSON.parse(getDocumentBySlug(slug)?.marks ?? '{}') as Record<string, StoredMark>;
+      if (!suggestionDecisionRevealed(marks[String(data.markId)], view)) continue;
     } else if (type.startsWith('proxy.')) {
       if (!proxyVisibleTo({ for: String(data.for ?? ''), familiar: String(data.familiar ?? '') }, view.viewer)) continue;
     } else if (type === 'ask.answered' || type === 'ask.answer_withdrawn') {
@@ -89,4 +95,32 @@ export function redactTtl<T extends Record<string, unknown>>(ttl: T, view: Blind
   if (typeof ttl.lineIndex === 'number' && view.revealed.has(ttl.lineIndex)) return ttl;
   const { decayedMarks: _marks, openFor: _open, ...safe } = ttl;
   return safe as T;
+}
+
+/** Decisions span the proposal's whole quote. Ambiguous or missing anchors cannot grant reveal. */
+export function suggestionDecisionRevealed(mark: StoredMark | undefined, view: BlindReadView): boolean {
+  const quote = normalizeLineText(mark?.quote ?? '');
+  if (!quote) return false;
+  const text = view.lines.map(line => normalizeLineText(line.text)).join(' ');
+  const start = text.indexOf(quote);
+  if (start < 0 || text.indexOf(quote, start + 1) >= 0) return false;
+  let offset = 0;
+  const covered: number[] = [];
+  for (const line of view.lines) {
+    const end = offset + normalizeLineText(line.text).length;
+    if (end > start && offset < start + quote.length) covered.push(line.index);
+    offset = end + 1;
+  }
+  return objectionLinesRevealed(covered, view.revealed);
+}
+
+/** Who/when belong to the decision; hide the new fields on unrevealed lines. */
+export function redactSuggestionDecisions<T extends Record<string, unknown>>(marks: T, view: BlindReadView | null | undefined): T {
+  if (!view) return marks;
+  return Object.fromEntries(Object.entries(marks).map(([id, value]) => {
+    const mark = value as StoredMark;
+    if (!mark || typeof mark !== 'object' || suggestionDecisionRevealed(mark, view)) return [id, mark];
+    const { resolvedBy: _by, resolvedAt: _at, ...safe } = mark;
+    return [id, safe];
+  })) as T;
 }

@@ -1986,6 +1986,12 @@ function updateSuggestionStatus(
     };
   }
 
+  // Connected decisions retain their records. An opposite REST decision must not
+  // apply the proposal's text a second time; only the editor's guarded Undo reopens it.
+  if (existing.status === 'accepted' || existing.status === 'rejected') {
+    return { status: 409, body: { success: false, code: 'MARK_ALREADY_RESOLVED', error: 'Undo the earlier decision before deciding this suggestion again.' } };
+  }
+
   if (status !== 'rejected' && hasPotentiallyLiveCollabDoc(slug)) {
     return {
       status: 503,
@@ -2807,6 +2813,12 @@ async function updateSuggestionStatusAsync(
         marks,
       },
     };
+  }
+
+  // Connected decisions retain their records. An opposite REST decision must not
+  // apply the proposal's text a second time; only the editor's guarded Undo reopens it.
+  if (existing.status === 'accepted' || existing.status === 'rejected') {
+    return { status: 409, body: { success: false, code: 'MARK_ALREADY_RESOLVED', error: 'Undo the earlier decision before deciding this suggestion again.' } };
   }
 
   if (existing.kind !== 'insert' && existing.kind !== 'delete' && existing.kind !== 'replace') {

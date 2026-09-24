@@ -5,6 +5,8 @@
  * Metadata (comment text, suggestion content/status) lives in the PROOF block.
  */
 
+import { isSuggestion, suggestionWithStatus } from '../../shared/suggestion-status.js';
+import { getCurrentActor } from '../actor.js';
 import { $ctx, $prose } from '@milkdown/kit/utils';
 import { Plugin, PluginKey } from '@milkdown/kit/prose/state';
 import { Decoration, DecorationSet } from '@milkdown/kit/prose/view';
@@ -87,7 +89,7 @@ const MARK_ANCHOR_HYDRATION_FAILURE_MAX_ENTRIES = 20_000;
 const MARK_ANCHOR_RESOLUTION_FLUSH_INTERVAL_MS = 30 * 1000;
 const MARK_ANCHOR_RESOLUTION_MAX_REQUESTS_PER_PAGE = 8;
 const AUTHORED_ANCHOR_HYDRATION_FAILURE_BUDGET_PER_PASS = 20;
-type MarkTombstoneReason = 'resolved' | 'deleted';
+type MarkTombstoneReason = 'resolved' | 'deleted' | 'server-finalized';
 type MarkTombstone = { expiresAt: number; reason: MarkTombstoneReason };
 const resolvedMarkTombstones = new Map<string, MarkTombstone>();
 type MarkAnchorHydrationFailure = { docFingerprint: string; lastAttemptAt: number };
@@ -1249,6 +1251,7 @@ function buildAnchorMarks(
     const meta = pluginMeta
       ? { ...(anchor.attrMeta ?? {}), ...pluginMeta }
       : anchor.attrMeta;
+    if (isSuggestion(meta) && (meta.status === 'accepted' || meta.status === 'rejected')) continue;
     const text = doc.textBetween(anchor.from, anchor.to, '\n', '\n');
     const quote = normalizeQuote(text);
     const createdAt = meta?.createdAt ?? (meta as { at?: string } | undefined)?.at ?? '';
@@ -1459,14 +1462,6 @@ function getProofAnchorIds(doc: ProseMirrorNode): Map<string, { kind: MarkKind; 
   return ids;
 }
 
-function isPendingSuggestionMetadata(entry: StoredMark | undefined): entry is StoredMark {
-  return (
-    entry?.kind === 'insert'
-    || entry?.kind === 'delete'
-    || entry?.kind === 'replace'
-  ) && entry.status !== 'accepted' && entry.status !== 'rejected';
-}
-
 function normalizeMetadata(
   metadata: Record<string, StoredMark>,
   doc: ProseMirrorNode
@@ -1533,7 +1528,7 @@ function normalizeMetadata(
     if (!ids.has(id)) {
       const detached = next[id];
       if (detached?.kind === 'comment' && shouldIncludeMetadataEntry(detached, true)) continue;
-      if (isPendingSuggestionMetadata(detached)) continue;
+      if (isSuggestion(detached)) continue;
       delete next[id];
       changed = true;
     }
@@ -1636,7 +1631,7 @@ function buildMetadataSnapshot(
   const metadata: Record<string, StoredMark> = {};
 
   for (const [id, entry] of Object.entries(pluginState.metadata ?? {})) {
-    if (!anchoredIds.has(id) && entry?.kind !== 'comment' && !isPendingSuggestionMetadata(entry)) continue;
+    if (!anchoredIds.has(id) && entry?.kind !== 'comment' && !isSuggestion(entry)) continue;
     if (!shouldIncludeMetadataEntry(entry, includeAuthored)) continue;
     metadata[id] = { ...entry };
   }
@@ -1774,10 +1769,13 @@ export function mergePendingServerMarks(
   for (const [id, serverMark] of Object.entries(canonicalServer)) {
     const status = serverMark?.status;
     if (status === 'accepted' || status === 'rejected') {
-      delete merged[id];
+      if (merged[id]?.status !== 'accepted' && merged[id]?.status !== 'rejected') delete merged[id];
       continue;
     }
     const kind = serverMark?.kind;
+    if (isSuggestion(merged[id]) && (merged[id].status === 'accepted' || merged[id].status === 'rejected')) continue;
+    if (isSuggestion(serverMark) && !merged[id]
+      && (isResolvedMarkTombstoned(id, now, 'resolved') || isResolvedMarkTombstoned(id, now, 'server-finalized'))) continue;
     if (kind !== 'authored') {
       const isDeletedTombstone = isResolvedMarkTombstoned(id, now, 'deleted');
       const isResolvedTombstone = isResolvedMarkTombstoned(id, now, 'resolved');
@@ -1876,12 +1874,20 @@ export function applyRemoteMarks(
       if (stored.kind === 'insert' || stored.kind === 'delete' || stored.kind === 'replace') {
         finalizedSuggestionIds.add(id);
       }
-      delete merged[id];
+      if (hasLiveMarksMap(view.state)) merged[id] = stored;
+      else delete merged[id];
       continue;
+    }
+    // A server restore (or remote Undo) is authoritative even if an earlier
+    // wire message briefly omitted the key. Own unresolved decisions stay protected.
+    if (options?.authoritativeSnapshot && isSuggestion(stored)
+      && isResolvedMarkTombstoned(id, now, 'server-finalized')) {
+      clearResolvedMarkTombstones([id]);
     }
     const isDeletedTombstone = isResolvedMarkTombstoned(id, now, 'deleted');
     const isResolvedTombstone = isResolvedMarkTombstoned(id, now, 'resolved');
-    if (isDeletedTombstone) {
+    if (isDeletedTombstone || isResolvedMarkTombstoned(id, now, 'server-finalized')
+      || (isResolvedTombstone && isSuggestion(stored))) {
       // Skip deleted marks entirely (no metadata merge, no anchors)
       continue;
     }
@@ -1896,7 +1902,7 @@ export function applyRemoteMarks(
       filteredEntries.push([id, stored]);
       continue;
     }
-    merged[id] = mergeStoredMarkWithFallback(merged[id], stored);
+    merged[id] = mergeStoredMarkWithFallback(merged[id], isSuggestion(stored) ? { ...stored, status: 'pending' } : stored);
     filteredEntries.push([id, stored]);
   }
 
@@ -1919,7 +1925,7 @@ export function applyRemoteMarks(
   // A missing authoritative entry only resolves the local annotation. The Yjs
   // document transaction owns any text deletion/replacement, while an accepted
   // insert keeps the text already present in the shared document.
-  markResolvedMarkIds(Array.from(finalizedSuggestionIds), now);
+  markResolvedMarkIds(Array.from(finalizedSuggestionIds), now, RESOLVED_MARK_TOMBSTONE_TTL_MS, 'server-finalized');
   tr = removeSuggestionAnchors(tr, finalizedSuggestionIds);
 
   if (hydrateAnchors) {
@@ -3088,6 +3094,12 @@ function insertMarkdownNeedsReparse(
   return hasInlineFormatting;
 }
 
+// Headless REST operations retain their existing removal/tombstone contract.
+// A bound editor resolves through its shared map, whose status must survive snapshots.
+function hasLiveMarksMap(state: EditorState): boolean {
+  return Boolean(ySyncPluginKey.getState(state)?.type?.doc);
+}
+
 export function accept(view: EditorView, markId: string, parser?: MarkdownParser, preview = false): boolean {
   const effectiveParser = resolveMarkdownParser(parser);
   const marks = getMarks(view.state);
@@ -3202,8 +3214,10 @@ export function accept(view: EditorView, markId: string, parser?: MarkdownParser
   }
 
   if (!applied) return false;
-  const updatedMetadata = removeMetadataEntries(metadata, [markId]);
-  if (!preview) markResolvedMarkIds([markId], Date.now(), RESOLVED_MARK_TOMBSTONE_TTL_MS, 'deleted');
+  const updatedMetadata = hasLiveMarksMap(view.state)
+    ? { ...metadata, [markId]: suggestionWithStatus(metadata[markId], 'accepted', getCurrentActor()) }
+    : removeMetadataEntries(metadata, [markId]);
+  if (!preview) markResolvedMarkIds([markId], Date.now(), RESOLVED_MARK_TOMBSTONE_TTL_MS, 'resolved');
   finalizeMarkTransaction(view, tr, updatedMetadata, { action: 'accept' });
   if (!preview) emitMarkEvent('suggestion.accepted', { markId, kind: mark.kind, by: mark.by });
   return true;
@@ -3277,8 +3291,10 @@ export function reject(view: EditorView, markId: string, preview = false): boole
       return false;
   }
 
-  const updatedMetadata = removeMetadataEntries(metadata, [markId]);
-  if (!preview) markResolvedMarkIds([markId], Date.now(), RESOLVED_MARK_TOMBSTONE_TTL_MS, 'deleted');
+  const updatedMetadata = hasLiveMarksMap(view.state)
+    ? { ...metadata, [markId]: suggestionWithStatus(metadata[markId], 'rejected', getCurrentActor()) }
+    : removeMetadataEntries(metadata, [markId]);
+  if (!preview) markResolvedMarkIds([markId], Date.now(), RESOLVED_MARK_TOMBSTONE_TTL_MS, 'resolved');
   finalizeMarkTransaction(view, tr, updatedMetadata, { action: 'reject' });
   if (!preview) emitMarkEvent('suggestion.rejected', { markId, kind: mark.kind, by: mark.by });
   return true;
@@ -3307,7 +3323,7 @@ export function prepareSuggestionBatch(view: EditorView, ids: string[], action: 
     apply() {
       if (failedIds.length || view.state !== initial) throw new Error('Suggestions changed. Nothing was changed.');
       const marks = getMarks(initial).filter(mark => ids.includes(mark.id));
-      markResolvedMarkIds(ids, Date.now(), RESOLVED_MARK_TOMBSTONE_TTL_MS, 'deleted');
+      markResolvedMarkIds(ids, Date.now(), RESOLVED_MARK_TOMBSTONE_TTL_MS, 'resolved');
       finalizeMarkTransaction(view, transaction, metadata, { action });
       for (const mark of marks) emitMarkEvent(`suggestion.${action}ed`, { markId: mark.id, kind: mark.kind, by: mark.by });
     },
@@ -3416,8 +3432,9 @@ export function rejectAll(view: EditorView): number {
   }
 
   if (removedIds.length > 0) {
-    const updatedMetadata = removeMetadataEntries(metadata, removedIds);
-    markResolvedMarkIds(removedIds, Date.now(), RESOLVED_MARK_TOMBSTONE_TTL_MS, 'deleted');
+    const updatedMetadata = hasLiveMarksMap(view.state) ? { ...metadata } : removeMetadataEntries(metadata, removedIds);
+    if (hasLiveMarksMap(view.state)) for (const id of removedIds) updatedMetadata[id] = suggestionWithStatus(metadata[id], 'rejected', getCurrentActor());
+    markResolvedMarkIds(removedIds, Date.now(), RESOLVED_MARK_TOMBSTONE_TTL_MS, 'resolved');
     finalizeMarkTransaction(view, tr, updatedMetadata, { action: 'reject' });
   }
 

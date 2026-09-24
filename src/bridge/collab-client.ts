@@ -1,3 +1,4 @@
+import { isPendingSuggestion } from '../shared/suggestion-status.js';
 import * as Y from 'yjs';
 import { HocuspocusProvider } from '@hocuspocus/provider';
 import type { Awareness } from 'y-protocols/awareness';
@@ -856,7 +857,7 @@ export class CollabClient {
     const mergedMarks: Record<string, unknown> = { ...marks };
     this.marksMap.forEach((value, key) => {
       if (mergedMarks[key] !== undefined) return;
-      if (!shouldPreserveMissingLocalMark(value)) return;
+      if (!isPendingSuggestion(value) && !shouldPreserveMissingLocalMark(value)) return;
       mergedMarks[key] = value as unknown;
     });
     const currentKeys = Object.keys(currentMarksSnapshot);

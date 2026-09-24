@@ -1,4 +1,4 @@
-import { blindReadView, readBlindView, redactAsk, redactTtl, visibleObjection, visibleAlternative } from './blind-view.js';
+import { redactSuggestionDecisions, blindReadView, readBlindView, redactAsk, redactTtl, visibleObjection, visibleAlternative } from './blind-view.js';
 import { agentKeyRoutes } from './agent-key-routes.js';
 import { getClientIp, trustProxyHeaders } from './client-address.js';
 import { createHash, randomUUID } from 'crypto';
@@ -1327,7 +1327,7 @@ export async function handleShareMarkdown(req: Request, res: Response): Promise<
 }
 
 // Get a shared document
-apiRoutes.get('/documents/:slug', (req: Request, res: Response) => {
+apiRoutes.get('/documents/:slug', async (req: Request, res: Response) => {
   const slug = getSlugParam(req);
   if (!slug) {
     res.status(400).json({ error: 'Invalid slug' });
@@ -1362,7 +1362,7 @@ apiRoutes.get('/documents/:slug', (req: Request, res: Response) => {
     docId: doc.doc_id,
     title: doc.title,
     markdown: doc.markdown,
-    marks: parseJson(doc.marks),
+    marks: redactSuggestionDecisions(parseJson(doc.marks), await readBlindView(slug, doc.markdown ?? '', pageBlindViewer(req, slug, resolveLineMarkAccess(req, slug, doc)))),
     // Legacy compatibility for <=0.28 clients.
     active: doc.share_state === 'ACTIVE',
     shareState: doc.share_state,
@@ -2933,7 +2933,7 @@ apiRoutes.get('/documents/:slug/open-context', async (req: Request, res: Respons
         docId: doc.doc_id,
         title: doc.title,
         markdown: doc.markdown,
-        marks: parseJson(doc.marks),
+        marks: redactSuggestionDecisions(parseJson(doc.marks), await readBlindView(slug, doc.markdown ?? '', pageBlindViewer(req, slug, resolveLineMarkAccess(req, slug, doc)))),
         shareState: doc.share_state,
         active: doc.share_state === 'ACTIVE',
         createdAt: doc.created_at,
@@ -2967,7 +2967,7 @@ apiRoutes.get('/documents/:slug/open-context', async (req: Request, res: Respons
       docId: doc.doc_id,
       title: doc.title,
       markdown: doc.markdown,
-      marks: parseJson(doc.marks),
+      marks: redactSuggestionDecisions(parseJson(doc.marks), await readBlindView(slug, doc.markdown ?? '', pageBlindViewer(req, slug, resolveLineMarkAccess(req, slug, doc)))),
       shareState: doc.share_state,
       // Legacy compatibility for <=0.28 clients.
       active: doc.share_state === 'ACTIVE',

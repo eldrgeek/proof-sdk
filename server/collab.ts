@@ -1,3 +1,4 @@
+import { observeClientMarks } from './collab-marks-guard.js';
 import { documentAccessEvents } from './document-access-events.js';
 import type { Connection } from '@hocuspocus/server';
 import { DEFAULT_AGENT_PRESENCE_TTL_MS } from '../src/shared/agent-presence.js';
@@ -11571,7 +11572,8 @@ export async function startCollabRuntime(mainHttpPort: number): Promise<CollabRu
       async onLoadDocument(data: { documentName: string }) {
         return loadCollabDocumentForConnection(data.documentName);
       },
-      async afterLoadDocument(data: { document: Y.Doc }) {
+      async afterLoadDocument(data: { documentName: string; document: Y.Doc }) {
+        observeClientMarks(data.documentName, data.document);
         // Hocuspocus copies the onLoadDocument result into its own Document.
         // Track that live instance before its first client update reaches onChange.
         ensureFragmentEditTracking(data.document);
@@ -11751,7 +11753,8 @@ export async function startCollabRuntimeEmbedded(mainHttpPort: number): Promise<
       async onLoadDocument(data: { documentName: string }) {
         return loadCollabDocumentForConnection(data.documentName);
       },
-      async afterLoadDocument(data: { document: Y.Doc }) {
+      async afterLoadDocument(data: { documentName: string; document: Y.Doc }) {
+        observeClientMarks(data.documentName, data.document);
         // Hocuspocus copies the onLoadDocument result into its own Document.
         // Track that live instance before its first client update reaches onChange.
         ensureFragmentEditTracking(data.document);
@@ -11945,7 +11948,8 @@ export async function startCollabRuntimeAttached(mainHttpServer: HttpServer, mai
       async onLoadDocument(data: { documentName: string }) {
         return loadCollabDocumentForConnection(data.documentName);
       },
-      async afterLoadDocument(data: { document: Y.Doc }) {
+      async afterLoadDocument(data: { documentName: string; document: Y.Doc }) {
+        observeClientMarks(data.documentName, data.document);
         // Hocuspocus copies the onLoadDocument result into its own Document.
         // Track that live instance before its first client update reaches onChange.
         ensureFragmentEditTracking(data.document);

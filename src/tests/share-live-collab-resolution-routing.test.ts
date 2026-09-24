@@ -1,3 +1,4 @@
+import { suggestionWithStatus } from '../shared/suggestion-status.js';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -58,25 +59,25 @@ async function run(): Promise<void> {
 
       const liveActions = [
         () => {
-          marksMap.delete('accept-one');
+          marksMap.set('accept-one', suggestionWithStatus(marksMap.get('accept-one') as any, 'accepted', 'human:test'));
           runShareSuggestionRestFallback(connectedTransport, () => {
             void shareClient.acceptSuggestion('accept-one', 'human:test');
           });
         },
         () => {
-          marksMap.delete('reject-one');
+          marksMap.set('reject-one', suggestionWithStatus(marksMap.get('reject-one') as any, 'rejected', 'human:test'));
           runShareSuggestionRestFallback(connectedTransport, () => {
             void shareClient.rejectSuggestion('reject-one', 'human:test');
           });
         },
         () => {
-          marksMap.delete('accept-all-1');
+          marksMap.set('accept-all-1', suggestionWithStatus(marksMap.get('accept-all-1') as any, 'accepted', 'human:test'));
           runShareSuggestionRestFallback(connectedTransport, () => {
             void shareClient.acceptSuggestion('accept-all-1', 'human:test');
           });
         },
         () => {
-          marksMap.delete('reject-all-1');
+          marksMap.set('reject-all-1', suggestionWithStatus(marksMap.get('reject-all-1') as any, 'rejected', 'human:test'));
           runShareSuggestionRestFallback(connectedTransport, () => {
             void shareClient.rejectSuggestion('reject-all-1', 'human:test');
           });
@@ -85,7 +86,8 @@ async function run(): Promise<void> {
       liveActions.forEach((action) => action());
 
       assert.deepEqual(calls, [], 'Connected accept/reject and bulk actions must make no REST calls');
-      assert.equal(marksMap.size, 0, 'Resolved live suggestions must be absent from the Yjs marks map');
+      assert.equal(marksMap.size, actionIds.length, 'Resolved live suggestions stay in the Yjs marks map');
+      for (const id of actionIds) assert.equal((marksMap.get(id) as any).status, id.startsWith('accept') ? 'accepted' : 'rejected');
       ydoc.destroy();
 
       const disconnectedTransport = getShareSuggestionResolutionTransport({

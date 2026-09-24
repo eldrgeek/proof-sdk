@@ -1,4 +1,4 @@
-import { blindReadView, readBlindView, redactAsk, redactTtl, filterBlindEvents, visibleAlternative } from './blind-view.js';
+import { redactSuggestionDecisions, blindReadView, readBlindView, redactAsk, redactTtl, filterBlindEvents, visibleAlternative } from './blind-view.js';
 import { createHash } from 'crypto';
 import { Router, type Request, type Response } from 'express';
 import {
@@ -2273,6 +2273,7 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
         if (viewer !== undefined) {
           const lines = report.docLines ?? [];
           const view = blindReadView(slug, lines, viewer, report.lineMarks)!;
+          body.marks = redactSuggestionDecisions(isRecord(body.marks) ? body.marks : {}, view);
           revealedLines = view.revealed;
           body.lineMarks = view.lineMarks;
           body.dialectHistory = historyNotesForState(slug, lines, view.revealed);
