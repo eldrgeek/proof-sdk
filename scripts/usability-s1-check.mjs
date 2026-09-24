@@ -221,11 +221,11 @@ async function desktop(browser, base, style, width) {
     await reason.fill('arjke');
     assert.equal((await walk(page)).cursor, 15);
     assert.notEqual(await page.evaluate(() => window.__proofLineMarks.myStatus(15)), 'agreed');
-    await page.evaluate(() => { document.activeElement?.blur(); window.proof.disableSuggestions(); });
+    await page.getByRole('button', { name: 'Enter Editing', exact: true }).click();
     await page.keyboard.press('a'); await page.keyboard.press('j');
     assert.equal((await walk(page)).cursor, 15, 'direct Editing mode ran a letter shortcut');
     assert.notEqual(await page.evaluate(() => window.__proofLineMarks.myStatus(15)), 'agreed');
-    await page.evaluate(() => window.proof.enableSuggestions());
+    await page.getByRole('button', { name: 'Leave Editing', exact: true }).click();
 
   });
   await check(`${tag}: remote comment preserves folds, panels, focus and passage position`, async () => {

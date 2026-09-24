@@ -4189,7 +4189,7 @@ class ProofEditorImpl implements ProofEditor {
         },
         playmaker: () => this.playmakerReview,
         reviewStyle: () => getReviewStyle(),
-        directEditing: () => !this.isSuggestionsEnabled(),
+        directEditing: () => isWriting(), // S3's explicit Editing mode, not "suggestions off" (merge fix, Codex diagnosis)
         folding: () => this.folding,
         // Step B2 folded sections, plus line tiers' "Show only decisions" (folded context lines).
         hiddenLines: () => {
