@@ -12,6 +12,9 @@
  * different picks) is highlighted and becomes a priority Issue. AIs get the same blindness through
  * the API: their /state hides others' positions per line until they have marked it.
  *
+ * Mike, 2026-09-23 (usability brief): participant status and /state must also hide an
+ * objection's rejection, reason and condition until all its surviving lines are revealed.
+ *
  * Redaction happens on the server before anything leaves it (the page and the agent API receive
  * placeholders), so hidden positions are not in the browser's data either.
  */
@@ -123,4 +126,10 @@ export function disagreementLines(states: LineState[]): Set<number> {
     if (yes && no) out.add(state.line.index);
   }
   return out;
+}
+
+/** An objection's reason and condition cover the whole span, so partial reveal is not enough. */
+export function objectionLinesRevealed(lineIndices: readonly (number | null)[], revealed: ReadonlySet<number>): boolean {
+  const live = lineIndices.filter((index): index is number => index !== null);
+  return live.length > 0 && live.every(index => revealed.has(index));
 }

@@ -327,9 +327,22 @@ The response adds:
 - `issues`: document-ordered list. A line is an Issue when a team member has not marked its current
   text (`unseenBy`, `changedFor`) or someone rejected it (`rejectedBy`). An open comment or a pending
   suggestion is also an Issue (`type: "comment" | "suggestion"`).
-- `alignment`: `{ aligned, team, owners, counts }`. `aligned` is true when there are no Issues.
+- `alignment`: `{ aligned, team, owners, counts }`. `alignment.aligned` answers whether there are
+  zero Issues, including open comments and proposals.
   Step 1 team = the owner, everyone who has line-marked, commented, replied or suggested, and
   every active agent key (as `ai:<key-name-slug>`).
+- `participantStatus`: `{ aligned, agreed, participants }`. `participantStatus.aligned` answers
+  whether every participant has seen the current text and nobody rejects it. An open comment
+  can leave this true while `alignment.aligned` is false. These fields answer different questions.
+  `agreed` requires current Agreed or Approved on every passage from every participant.
+  Approved stays the owner's ruling and supplies only that owner's own agreement.
+  A lapsed Agreed or Approved mark counts as neither current agreement nor current approval.
+  Each participant has `passages`, `counts`, `readingStopsAt` (0-based or null), `rejections`,
+  `finishedOwnReview`, `agreed`, and `approved`. Passage states remain distinct, so Approved
+  passages count under `counts.approved`. While blind, this status uses only visible positions.
+  An objection and its Issue are omitted until all its surviving passages are revealed, so
+  their reason and resolution condition stay hidden. The Issue counts remain document-wide;
+  a blind viewer's visible `issues` list can therefore be shorter than those counts.
 
 Mark a line (commenter, editor or owner token):
 

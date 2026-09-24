@@ -3,7 +3,7 @@
  *
  * Mike, 2026-09-23 (usability brief), acceptance check 9: a person who rejected text is never
  * described as not having read it; Seen is never shown as agreement; Approved is the owner's
- * ruling, apart from agreement. The header and the object /state publishes are this computation.
+ * ruling, including their own agreement but never another person's. The header and the object /state publishes are this computation.
  */
 import assert from 'node:assert/strict';
 import { accordHeader } from '../shared/open-view';
@@ -85,9 +85,9 @@ test('check 9: a rejecter is not unread, Seen is not agreement, Approved stands 
 
   assert.deepEqual(header.status, status, 'the header and the published status are one computation');
   assert.equal(status.aligned, false, 'Jo rejected, so the document is not aligned');
-  assert.equal(status.agreed, false, 'nobody has agreed to every passage');
+  assert.equal(status.agreed, false, 'Alex and Jo have not agreed to every passage');
   assert.equal(status.participants[0].approved, true);
-  assert.equal(status.participants[0].agreed, false, 'Approved is not agreement');
+  assert.equal(status.participants[0].agreed, true, 'Approved includes the owner\'s own agreement');
   assert.equal(status.participants[1].counts.seen, 3);
   assert.equal(status.participants[1].agreed, false);
   assert.equal(status.participants[1].readingStopsAt, null, 'Alex has read every passage');
@@ -104,6 +104,60 @@ test('check 9: a rejecter is not unread, Seen is not agreement, Approved stands 
   assert.doesNotMatch(header.text, /Agreed by/);
   const jo = header.clauses.find(clause => clause.actor === JO);
   assert.deepEqual(jo?.lines, [1, 2], 'the rejection clause points at the lines, for the header link');
+});
+
+test('owner approval settles only the owner; every participant must Agreed or Approved every passage', () => {
+  const lines = LINES();
+  for (const ownerStatuses of [
+    ['approved', 'approved', 'approved'],
+    ['approved', 'agreed', 'approved'],
+  ] as LineMarkStatus[][]) {
+    const ownerMarks = lines.map((line, index) => mark(line, ME, ownerStatuses[index]));
+    for (const otherState of ['seen', 'rejected', 'agreed', 'approved'] as const) {
+      const marks = [...ownerMarks, ...lines.map(line => mark(line, ALEX, otherState))];
+      const states = buildLineStates(lines, marks);
+      const status = participantStatus({ states, team: [ME, ALEX] });
+      const owner = status.participants[0];
+      assert.equal(owner.agreed, true);
+      assert.equal(owner.finishedOwnReview, true);
+      assert.equal(owner.approved, ownerStatuses.every(value => value === 'approved'));
+      assert.deepEqual(owner.passages.map(passage => passage.state), ownerStatuses);
+      assert.equal(owner.counts.approved, ownerStatuses.filter(value => value === 'approved').length);
+      assert.equal(owner.counts.agreed + owner.counts.approved, lines.length);
+      const everyoneAgreed = otherState === 'agreed' || otherState === 'approved';
+      assert.equal(status.agreed, everyoneAgreed);
+      const header = accordHeader({ states, team: [ME, ALEX], viewer: ME, name });
+      assert.equal(header.settled, everyoneAgreed);
+      if (everyoneAgreed) assert.equal(header.text, '');
+      else if (owner.approved) assert.match(header.text, /^Approved by you\./);
+      else assert.match(header.text, /^Agreed by you\./);
+    }
+  }
+});
+
+test('lapsed or decayed approval supplies neither current approval nor personal agreement', () => {
+  const lines = LINES();
+  for (const stale of ['lapsed', 'decayed'] as const) {
+    const states = buildLineStates(lines, lines.flatMap(line => [mark(line, ME, 'approved'), mark(line, ALEX, 'agreed')]));
+    const entry = states[1].marks.get(actorKey(ME))!;
+    if (stale === 'lapsed') {
+      entry.current = false;
+      entry.lapsed = true;
+      entry.lapsedFrom = 'the older wording';
+    } else entry.decayed = true;
+    const status = participantStatus({ states, team: [ME, ALEX] });
+    assert.equal(status.participants[0].passages[1].state, stale === 'lapsed' ? 'lapsed' : 'seen');
+    assert.equal(status.participants[0].agreed, false);
+    assert.equal(status.participants[0].approved, false);
+    assert.equal(status.participants[0].finishedOwnReview, false);
+    assert.equal(status.agreed, false);
+    assert.equal(status.aligned, stale === 'decayed');
+    const header = accordHeader({ states, team: [ME, ALEX], viewer: ME, name });
+    assert.equal(header.settled, false);
+    assert.deepEqual(header.approved, []);
+    assert.deepEqual(header.agreed, [ALEX]);
+    assert.doesNotMatch(header.text, /Approved by|Everyone has agreed/);
+  }
 });
 
 test('an open objection is Rejected, with its reason and its resolution condition', () => {

@@ -65,7 +65,7 @@ import {
   ttlInputs,
   type ExtrasEvaluation,
 } from './proof-extras-eval.js';
-import { BLIND_POLICY } from '../src/shared/blind.js';
+import { BLIND_POLICY, objectionLinesRevealed } from '../src/shared/blind.js';
 import {
   participantStatus,
   type DocumentStatus,
@@ -261,6 +261,7 @@ export interface IssueReport extends IssueSummary {
   /**
    * Per-participant status from src/shared/participant-status.ts. /state publishes this.
    * Computed on the decayed line states, before any blind redaction.
+   * Its aligned field asks whether everyone has seen the current text and nobody rejects it.
    */
   participantStatus: DocumentStatus;
   /** Mark ids decayed before this report. The blind recompute copies the flag. Not serialized. */
@@ -389,8 +390,7 @@ export function viewerParticipantStatus(report: IssueReport, lineMarks: LineMark
     }
   }
   const objections = report.statusObjections.filter(objection => {
-    const live = objection.lineIndices.filter((index): index is number => index !== null);
-    return live.length > 0 && live.every(index => revealed.has(index));
+    return objectionLinesRevealed(objection.lineIndices, revealed);
   });
   return participantStatus({ states, team: report.team, objections });
 }

@@ -162,13 +162,13 @@ function invariant(label: string, issues: ProofIssue[], lines: DocLine[], states
   const status = participantStatus({ states, team });
   const h = accordHeader({ states, team, viewer: ME, name: actor => actor });
   assert.deepEqual(h.status, status, `${label}: the header did not read the shared status`);
-  assert.deepEqual(h.agreed, status.participants.filter(person => person.agreed).map(person => person.actor));
+  assert.deepEqual(h.agreed, status.participants.filter(person => person.agreed && !person.approved).map(person => person.actor));
   for (const person of status.participants) {
     const who = person.actor === ME ? 'You' : person.actor;
     if (!person.agreed) assert.ok(!h.agreed.includes(person.actor), `${label}: ${who} shown as agreed`);
     if (person.approved) {
       assert.ok(h.approved.includes(person.actor), `${label}: Approved missing for ${who}`);
-      assert.ok(!h.agreed.includes(person.actor), `${label}: Approved shown as agreement`);
+      assert.ok(!h.agreed.includes(person.actor), `${label}: Approved must keep its own header label`);
     } else {
       assert.ok(!h.approved.includes(person.actor), `${label}: ${who} listed as Approved`);
     }
@@ -472,7 +472,8 @@ test('Seen is never shown as agreement, and Approved is the owner ruling apart f
   const status = participantStatus({ states, team: [ME, ERIC] });
   const h = header(states, [ME, ERIC]);
   assert.equal(status.aligned, true, 'everyone has seen the text and nobody rejects it');
-  assert.equal(status.agreed, false, 'Seen and Approved are not agreement');
+  assert.equal(status.agreed, false, 'Eric has only Seen, so the team has not agreed');
+  assert.equal(status.participants[0].agreed, true, 'the owner has agreed by approving');
   assert.equal(h.settled, false);
   assert.deepEqual(h.agreed, []);
   assert.deepEqual(h.approved, [ME]);

@@ -11,14 +11,15 @@
  *   Agreed   — this participant endorses the current wording.
  *   Rejected — unresolved disagreement, with its reason and its resolution condition.
  *              A person with a Rejected mark has read the text.
- *   Approved — the owner's ruling. It is not agreement.
+ *   Approved — the owner's ruling, including that owner's own agreement, not the team's.
  *   lapsed   — "agreed to an earlier version": an Agreed or Approved mark whose line changed
  *              in substance (src/shared/line-marks.ts, lapseSubstantiveEdits).
  *
  * Aligned means every participant has seen every passage and nobody rejects the current text.
- * Agreed means every participant agreed to every passage. Aligned is weaker. Approved does not
- * count as Agreed. A zero-issue report (`alignment.aligned` on /state) stays that other fact:
- * this module does not replace it.
+ * Agreed means every participant has Agreed or Approved every passage. Aligned is weaker.
+ * Approved stays a distinct state and never supplies another participant's agreement.
+ * A zero-issue report (`alignment.aligned` on /state) stays that other fact: this module
+ * does not replace it.
  */
 import { actorKey, type LineMarkEntry, type LineState } from './line-marks.js';
 
@@ -86,9 +87,9 @@ export interface ParticipantStatus {
   rejections: RejectionDetail[];
   /** Every passage is a current decision (Agreed, Rejected or Approved). */
   finishedOwnReview: boolean;
-  /** Every passage is Agreed. Approved is not Agreed. */
+  /** Every passage is current Agreed or Approved; approval counts as this participant's agreement. */
   agreed: boolean;
-  /** Every passage is Approved. This is the owner's ruling, not agreement. */
+  /** Every passage is Approved. This is the owner's ruling, not the team's agreement. */
   approved: boolean;
   passages: PassageStatus[];
 }
@@ -99,7 +100,7 @@ export interface DocumentStatus {
    * A lapsed agreement is not "seen" for the wording as it reads now.
    */
   aligned: boolean;
-  /** Every participant agreed to every passage. */
+  /** Every participant has current Agreed or Approved on every passage. */
   agreed: boolean;
   participants: ParticipantStatus[];
 }
@@ -115,7 +116,7 @@ export interface HeaderClause {
 
 export interface StatusReader {
   actor: string;
-  /** Every passage is Agreed. */
+  /** Every passage is current Agreed or Approved. */
   agreed: boolean;
   /** Every passage is Approved. */
   approved: boolean;
@@ -237,7 +238,7 @@ export function participantStatus(input: {
       readingStopsAt,
       rejections,
       finishedOwnReview: hasLines && passages.every(passage => decided(passage.state)),
-      agreed: hasLines && passages.every(passage => passage.state === 'agreed'),
+      agreed: hasLines && passages.every(passage => passage.state === 'agreed' || passage.state === 'approved'),
       approved: hasLines && passages.every(passage => passage.state === 'approved'),
       passages,
     };
@@ -344,13 +345,14 @@ function clauseFor(person: ParticipantStatus, reader: StatusReader, viewerKey: s
 
 /**
  * The honest header, from `participantStatus` and from nothing else.
- * Settled means everyone agreed. Approved is named on its own and does not settle the header.
+ * Settled means everyone has Agreed or Approved every passage. An owner who Approved every
+ * passage is named only under "Approved by" while the header waits for other participants.
  * A participant with a rejection is never described as not having read the text.
  */
 export function statusHeader(status: DocumentStatus, viewer: string, name: (actor: string) => string): StatusHeader {
   const viewerKey = actorKey(viewer);
   const readers = status.participants.map(readerFor);
-  const agreedActors = viewerFirst(status.participants.filter(person => person.agreed).map(person => person.actor), viewerKey);
+  const agreedActors = viewerFirst(status.participants.filter(person => person.agreed && !person.approved).map(person => person.actor), viewerKey);
   const approvedActors = viewerFirst(status.participants.filter(person => person.approved).map(person => person.actor), viewerKey);
   if (status.agreed) {
     return { text: '', settled: true, agreedActors, approvedActors, clauses: [], readers };
