@@ -130,6 +130,8 @@ import { ISSUES_PILL_POLICY, NEXT_ISSUE_POLICY, issuesPillText, issuesPillTitle 
 import './line-marks.css';
 
 export interface LineMarksHost {
+  /** Review navigation follows the panel scope and document order. */
+  nextReview?(): void;
   slug(): string | null;
   apiBase(): string;
   authHeaders(): Record<string, string>;
@@ -2332,8 +2334,24 @@ export class LineMarksUI {
    * Step B4c: Next issue follows stakes (ISSUE_PRIORITY), then document order. With a sitting
    * budget, once the reader has visited that many Issues it stops and says what is left.
    */
+  /** The Review list keeps the existing sitting budget while choosing its own document order. */
+  visitReviewItem(key: string, line: number): boolean {
+    if (this.sittingStopped) this.startSitting();
+    const sitting = this.sittingSummary();
+    if (sitting.reached) {
+      this.renderBudget();
+      this.host.onBudgetReached?.(sitting);
+      return false;
+    }
+    const ranked = this.ranked.find(r => ('lineIndex' in r.issue && typeof r.issue.lineIndex === 'number' ? r.issue.lineIndex : this.lineAtPos(r.issue.pos ?? -1)) === line);
+    this.visitIssue(ranked?.key ?? key);
+    this.renderBudget();
+    return true;
+  }
+
   gotoNextIssue(): void {
     if (this.walkOnly) { this.gotoNextFlagged(); return; }
+    if (this.host.nextReview) { this.host.nextReview(); return; }
     let ranked = this.ranked.filter(r => r.issue.pos !== null);
     // Accord layout stage 2: the Issues that need the viewer (the pill's count) come first.
     if (NEXT_ISSUE_POLICY.viewerFirst) {

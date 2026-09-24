@@ -22,7 +22,7 @@ import {
   type DocSection,
   type SectionAgreementOffer,
 } from '../shared/folding';
-import { hiddenBlocks, setHiddenBlocks, type FoldRule } from '../editor/plugins/fold-view';
+import { hiddenBlocks, setHiddenBlocks } from '../editor/plugins/fold-view';
 import type { LineMarksUI } from './line-marks';
 import './folding.css';
 
@@ -45,12 +45,6 @@ export class FoldingUI {
   private lines: DocLine[] = [];
   private folded = new Set<string>();
   private hidden = new Set<number>();
-  /**
-   * Accord round 2 stage C: the Open view's filter. When set, only these lines are shown; every
-   * other line is hidden on top of the section folds, and each collapsed run draws a thin rule.
-   * Null means no filter (the Accord view and the ordinary document).
-   */
-  private openFilter: { shown: ReadonlySet<number>; rules: FoldRule[]; settled: ReadonlySet<number> } | null = null;
   private loadedSlug: string | null = null;
   private started = false;
   private renderQueued = false;
@@ -59,7 +53,6 @@ export class FoldingUI {
   private unsubscribe: (() => void) | null = null;
   private readonly listeners = new Set<() => void>();
   private controlsSig = '';
-  private extraSig = '';
 
   constructor(private readonly host: FoldingHost) {
     this.layer.className = 'pfold-layer';
@@ -148,74 +141,9 @@ export class FoldingUI {
 
   private recomputeHidden(): boolean {
     const next = hiddenLineSet(this.sections, this.folded);
-    // The Open view hides everything it is not showing, on top of the section folds.
-    const filter = this.openFilter;
-    if (filter) for (const line of this.lines) if (!filter.shown.has(line.index)) next.add(line.index);
     const changed = next.size !== this.hidden.size || [...next].some(i => !this.hidden.has(i));
     this.hidden = next;
     return changed;
-  }
-
-  /**
-   * Accord round 2 stage C: the Open view sets which lines are shown; everything else collapses.
-   * Passing null takes the filter off (the Accord view, and the ordinary document).
-   */
-  setOpenFilter(filter: { shown: ReadonlySet<number>; rules: FoldRule[]; settled: ReadonlySet<number> } | null): void {
-    const before = JSON.stringify(this.openFilterSignature());
-    this.openFilter = filter;
-    if (JSON.stringify(this.openFilterSignature()) === before) return;
-    this.recomputeHidden();
-    this.apply();
-    this.renderNow();
-  }
-
-  private openFilterSignature(): unknown {
-    const filter = this.openFilter;
-    if (!filter) return null;
-    return [[...filter.shown].sort((a, b) => a - b), filter.rules, [...filter.settled].sort((a, b) => a - b)];
-  }
-
-  /** The block indices every one of whose lines the Open view hides (a block is the fold's unit). */
-  private openFilterBlocks(): Array<[number, number]> {
-    const filter = this.openFilter;
-    if (!filter) return [];
-    const byBlock = new Map<number, DocLine[]>();
-    for (const line of this.lines) {
-      const list = byBlock.get(line.block) ?? [];
-      list.push(line);
-      byBlock.set(line.block, list);
-    }
-    const hidden = [...byBlock.entries()]
-      .filter(([, lines]) => lines.every(line => !filter.shown.has(line.index)))
-      .map(([block]) => block)
-      .sort((a, b) => a - b);
-    const ranges: Array<[number, number]> = [];
-    for (const block of hidden) {
-      const last = ranges[ranges.length - 1];
-      if (last && block === last[1]) last[1] = block + 1;
-      else ranges.push([block, block + 1]);
-    }
-    return ranges;
-  }
-
-  /** The blocks a settled line sits in (they stay visible, greyed and struck through). */
-  private settledBlocks(): number[] {
-    const filter = this.openFilter;
-    if (!filter) return [];
-    const blocks = new Set<number>();
-    for (const line of this.lines) if (filter.settled.has(line.index)) blocks.add(line.block);
-    return [...blocks].sort((a, b) => a - b);
-  }
-
-  /** The rules, mapped from line ranges to the block each is drawn before. */
-  private ruleDecorations(): FoldRule[] {
-    const filter = this.openFilter;
-    if (!filter) return [];
-    const blockOf = new Map<number, number>();
-    for (const line of this.lines) if (!blockOf.has(line.index)) blockOf.set(line.index, line.block);
-    return filter.rules
-      .map(rule => ({ ...rule, at: blockOf.get(rule.from) ?? -1 }))
-      .filter(rule => rule.at >= 0);
   }
 
   private queueApply(): void {
@@ -231,7 +159,7 @@ export class FoldingUI {
   private apply(): void {
     const view = this.view();
     if (!view) return;
-    const ranges = [...hiddenBlockRanges(this.sections, this.folded), ...this.openFilterBlocks()]
+    const ranges = hiddenBlockRanges(this.sections, this.folded)
       .sort((a, b) => a[0] - b[0]);
     const merged: Array<[number, number]> = [];
     for (const range of ranges) {
@@ -242,12 +170,8 @@ export class FoldingUI {
     const want: number[] = [];
     for (const [from, to] of merged) for (let i = from; i < Math.min(to, view.state.doc.childCount); i += 1) want.push(i);
     const have = hiddenBlocks(view);
-    const rules = this.ruleDecorations();
-    const settled = this.settledBlocks();
-    const extraSig = JSON.stringify([rules, settled]);
-    if (want.length !== have.length || want.some((block, i) => block !== have[i]) || extraSig !== this.extraSig) {
-      this.extraSig = extraSig;
-      setHiddenBlocks(view, merged, { rules, settled });
+    if (want.length !== have.length || want.some((block, i) => block !== have[i])) {
+      setHiddenBlocks(view, merged);
     }
     this.notify();
   }

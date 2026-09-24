@@ -143,17 +143,21 @@ export class MenuBar {
 
   isOpen(): boolean { return this.openId !== null || this.searchEl !== null; }
 
+  private externalAnchor: HTMLButtonElement | null = null;
+
   private spec(id: MenuId): MenuSpec | undefined {
     return this.host.menus().find(menu => menu.id === id);
   }
 
   /** Opens a menu under its button. `focusFirst`: keyboard opened it, so the first item takes focus. */
-  open(id: MenuId, focusFirst: boolean): void {
+  open(id: MenuId, focusFirst: boolean, anchor?: HTMLButtonElement): void {
     const spec = this.spec(id);
-    const button = this.buttons.get(id);
+    const button = anchor ?? this.buttons.get(id);
     if (!spec || !button) return;
     this.close(false);
     this.closeSearch();
+    this.externalAnchor = anchor ?? null;
+    anchor?.setAttribute('aria-expanded', 'true');
     this.host.beforeOpen?.();
     const menu = el('div', 'amb-menu');
     menu.setAttribute('role', 'menu');
@@ -164,7 +168,7 @@ export class MenuBar {
     document.body.append(menu);
     const r = button.getBoundingClientRect();
     menu.style.top = `${Math.round(r.bottom + 2)}px`;
-    menu.style.left = `${Math.round(Math.min(r.left, window.innerWidth - menu.offsetWidth - 8))}px`;
+    menu.style.left = `${Math.round(Math.max(8, Math.min(r.left, window.innerWidth - menu.offsetWidth - 8)))}px`;
     this.menuEl = menu;
     this.openId = id;
     for (const [menuId, top] of this.buttons) {
@@ -176,6 +180,9 @@ export class MenuBar {
 
   close(returnFocus: boolean): void {
     const was = this.openId;
+    const anchor = this.externalAnchor;
+    anchor?.setAttribute('aria-expanded', 'false');
+    this.externalAnchor = null;
     this.menuEl?.remove();
     this.menuEl = null;
     this.openId = null;
@@ -183,7 +190,7 @@ export class MenuBar {
       top.setAttribute('aria-expanded', 'false');
       top.classList.remove('amb-top-open');
     }
-    if (returnFocus && was) this.buttons.get(was)?.focus({ preventScroll: true });
+    if (returnFocus && was) (anchor ?? this.buttons.get(was))?.focus({ preventScroll: true });
   }
 
   private run(item: MenuItemSpec): void {

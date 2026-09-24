@@ -84,15 +84,15 @@ export function markedByFold(statuses: readonly string[], hasOpenObjection: bool
   return { count, total: statuses.length, open, label: count === 0 ? 'Not marked yet' : `Marked by ${count}`, detail };
 }
 
-/** The Navigator (decision 7): three tabs, lists of the whole document. */
+/** Review, Outline and Since you. Mike, 2026-09-23 (usability brief). The issues id stays compatible. */
 export type NavigatorTab = 'outline' | 'issues' | 'since';
 export const NAVIGATOR_POLICY = {
   tabs: [
+    { id: 'issues', label: 'Review' },
     { id: 'outline', label: 'Outline' },
-    { id: 'issues', label: 'Issues' },
     { id: 'since', label: 'Since you' },
   ] as ReadonlyArray<{ id: NavigatorTab; label: string }>,
-  /** The mockup opens on Issues. */
+  /** The panel opens on Review. */
   defaultTab: 'issues' as NavigatorTab,
   /** Width on desktop (px), per the mockup. */
   widthPx: 240,

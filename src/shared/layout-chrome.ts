@@ -1,4 +1,6 @@
 /**
+ * Toolbar: title, Review with a scoped count, People, Share.
+ * Mike, 2026-09-23 (usability brief).
  * Accord layout, stage 2 (Ren's proposal, Mike ruled 2026-09-21: "build the layout that you
  * proposed"; decisions 1, 10 and 12): the menu bar, the one toolbar row, the Share dialog, and the
  * settings that left the main view. Pure: src/ui/menu-bar.ts, src/ui/share-dialog.ts,
@@ -38,19 +40,15 @@ export const MENU_BAR_POLICY = {
 /** The one toolbar row under the menu bar (proposal: "Toolbar (44 px), one row, three groups"). */
 export const TOOLBAR_POLICY = {
   heightPx: 44,
-  /** Left: the Suggesting | Editing switch and Undo. Centre: title and "Saved". Right: Issues · Next and Share. */
+  /** Title and save state, followed by Review, People and Share. Editing and Undo remain in the menus. */
   groups: {
-    left: ['mode', 'undo'],
     centre: ['title', 'saved'],
-    right: ['issues', 'share'],
+    right: ['review', 'people', 'share'],
   },
-  /**
-   * Phones keep only these, plus the ⋯ menu, as in mockup-phone (COS, 2026-09-21, polish pass:
-   * "Phone toolbar matches the mockup"). The Issues pill reads "12 Issues" there, not "12 ›".
-   */
-  phoneKeeps: ['title', 'issues'] as readonly string[],
-  /** What moved off the phone toolbar, in order, at the top of its ⋯ menu. */
-  phoneMenuTop: ['mode', 'share'] as readonly string[],
+  /** The same primary controls stay reachable on a phone. */
+  phoneKeeps: ['title', 'review', 'people', 'share'] as readonly string[],
+  /** Direct editing remains reachable at the top of the phone menu. */
+  phoneMenuTop: ['mode'] as readonly string[],
   /**
    * The sync dot beside the title (the mockup has none): on phones it shows only while the state is
    * not "Saved" (Saving, Syncing, Offline, Unsaved…), so a real problem is still visible there.

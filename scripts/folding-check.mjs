@@ -6,6 +6,7 @@
 // 1440 (desktop) and 390 (phone). Screenshots go to .preview/ (or --shots <dir>).
 // Exit code 0 only if every check passes.
 // Usage: node scripts/folding-check.mjs [--style playmaker|proof] [--width 1440] [--shots dir]
+import { nextReview, showReview } from './review-ui.mjs';
 import assert from 'node:assert/strict';
 import { selectPassage, expandedStaysExpanded } from './usability-s1-assertions.mjs';
 
@@ -345,13 +346,14 @@ async function desktop(browser, base, style, width) {
     const hiddenBefore = new Set((await fold(page)).hidden);
     let unfoldedOne = false;
     for (let i = 0; i < 6 && !unfoldedOne; i += 1) {
-      await page.locator('#share-banner .plm-next').click();
+      await nextReview(page);
       await page.waitForTimeout(250);
       const s = await walk(page);
       assert.equal(await isHiddenLine(page, s.focus), false, `Next issue landed on hidden line ${s.focus}`);
       if (hiddenBefore.has(s.focus)) unfoldedOne = true;
     }
     assert.ok(unfoldedOne, 'Next issue never went into a folded section');
+    await page.locator('.anv-tab[data-tab="outline"]').click();
     await page.locator('.prw-left .pfold-controls').getByRole('button', { name: 'Expand all sections', exact: true }).click();
   });
 

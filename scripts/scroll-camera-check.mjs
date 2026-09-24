@@ -263,7 +263,7 @@ async function surface(browser, base, long, brief, tag, contextOptions, phone) {
     await page.waitForTimeout(250);
     if (phone) {
       await page.locator('#share-banner .share-pill-overflow').tap();
-      await page.getByRole('menuitem', { name: /Navigator/ }).tap();
+      await page.getByRole('menuitem', { name: /Review panel/ }).tap();
       await page.locator('.prw-left.prw-sheet-open').waitFor({ state: 'visible' });
     }
     const outlineTab = page.locator('.anv-tab[data-tab="outline"]');

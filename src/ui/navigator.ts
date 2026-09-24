@@ -1,19 +1,9 @@
-/**
- * Accord layout stage 3 — the Navigator (Ren's proposal, decision 7): the left side, three tabs of
- * whole-document lists.
- *   - Outline: the headings, each with its fold chip (▾ / ▸ and the section's Issues) and the
- *     fold controls (Fold all, Unfold all, H1 / H2, Unfold closed, decision / context).
- *   - Issues: the viewer's own Issues, one row per line (title, kind, line). The same lines as the
- *     amber dots and the Issues pill. A row moves the cursor there. A settled row keeps the
- *     passage's text identity from the moment it settled, so a remote insert cannot re-label it.
- *     Mike, 2026-09-23 (usability brief).
- *   - Since you: what changed since the viewer last marked (the reading walk's Since-you list).
- * The documents list moved to File › Open (stage 2), so the Navigator carries no documents.
- *
- * Authorship: Mike Wolf (rulings), Ren (SOMA UI, the proposal), built by Claude Opus 5 (worker
- * accord-layout3), 2026-09-21.
+/** Review, Outline and Since you beside the full document.
+ * Mike, 2026-09-23 (usability brief). Existing selectors keep their machine names.
  */
-import { NAVIGATOR_POLICY, stableReviewOrder, needsYouLabel, outlineRows, resolveSettledIndex, type NavigatorTab, type SettledIdentity } from '../shared/layout-panels';
+import { NAVIGATOR_POLICY, needsYouLabel, outlineRows, type NavigatorTab } from '../shared/layout-panels';
+import { REVIEW_LIST_POLICY, reviewViews, reviewCountLabel, reconcileReview, emptyReviewSession,
+  clearCompleted, nextReviewRow, anchoredReviewScroll, type ReviewScope } from '../shared/review-list';
 import type { LineMarksUI } from './line-marks';
 import type { FoldingUI } from './folding';
 
@@ -26,6 +16,7 @@ export interface NavigatorHost {
   go(index: number): void;
   /** The tab changed (the host remembers it). */
   tabChanged(tab: NavigatorTab): void;
+  toggle?(): void;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -46,31 +37,27 @@ export class NavigatorUI {
   readonly toolsEl = el('div', 'anv-tools');
   private readonly outlineList = el('ul', 'anv-outline');
   private readonly issuesList = el('ul', 'anv-issues');
-  /**
-   * Accord round 2 stage C (brief 4): nothing vanishes under the cursor. A row the viewer settles
-   * greys out with a strikethrough and STAYS IN PLACE; it leaves on "Clear settled", or when they
-   * leave the tab. A list that collapses as you work it makes you lose your place.
-   */
-  private readonly settled = new Map<string, SettledIdentity & { kinds: string[]; label: string; text: string }>();
-  private tracked = new Set<string>();
-  private readonly settledTools = el('div', 'anv-settled-tools');
-  private readonly settledLabel = el('span', 'anv-settled-count');
-  private readonly clearSettledBtn = el('button', 'anv-clear-settled', 'Clear settled');
-  private readonly issuesEmpty = el('p', 'prw-empty anv-empty', 'Nothing needs you.');
+  private sessions = { 'needs-you': emptyReviewSession(), 'all-open': emptyReviewSession() };
+  private get session() { return this.sessions[this.scope]; }
+  private scope: ReviewScope = REVIEW_LIST_POLICY.defaultScope;
+  private readonly scopeTools = el('div', 'anv-review-tools');
+  private readonly clearSettledBtn = el('button', 'anv-clear-settled', 'Clear completed');
+  private readonly nextBtn = el('button', 'anv-next', 'Next');
+  private readonly issuesEmpty = el('p', 'prw-empty anv-empty');
   private readonly sinceEmpty = el('p', 'prw-empty anv-empty', 'Nothing yet: this list fills in once you have marked lines and others change them.');
   private readonly buttons = new Map<NavigatorTab, HTMLButtonElement>();
   private readonly badge = el('span', 'anv-badge');
+  readonly reviewButton = el('button', 'plm-issues anv-review-toggle');
+  private readonly count = el('span', 'plm-issues-count');
   private tab: NavigatorTab;
   private outlineSig = '';
-  private issueOrder: string[] = [];
-  private issuesSig = '';
-  /** The last row drawn for each passage, so a settled row keeps the identity it had. */
-  private lastRows = new Map<string, SettledIdentity & { kinds: string[]; label: string; text: string }>();
+  private reader = '';
+  private panelOpen = false;
 
   constructor(private readonly host: NavigatorHost, initial: NavigatorTab | undefined, sinceHost: HTMLElement) {
     this.tab = initial ?? NAVIGATOR_POLICY.defaultTab;
     this.tabsEl.setAttribute('role', 'tablist');
-    this.tabsEl.setAttribute('aria-label', 'Navigator');
+    this.tabsEl.setAttribute('aria-label', 'Review panel');
     for (const spec of NAVIGATOR_POLICY.tabs) {
       const b = el('button', 'anv-tab', spec.label);
       b.type = 'button';
@@ -90,18 +77,36 @@ export class NavigatorUI {
       pane.setAttribute('aria-labelledby', b.id);
     }
     this.outlineList.setAttribute('aria-label', 'Headings');
-    this.issuesList.setAttribute('aria-label', 'Lines that need you');
+    this.issuesList.setAttribute('aria-label', 'Review items');
+    this.issuesList.dataset.accordReviewList = '';
     this.panes.outline.append(this.toolsEl, this.outlineList);
+    this.reviewButton.type = 'button';
+    this.reviewButton.dataset.accordReviewToggle = '';
+    this.reviewButton.setAttribute('aria-controls', 'anv-panel');
+    this.count.setAttribute('role', 'status');
+    this.count.setAttribute('aria-live', 'polite');
+    this.reviewButton.append('Review ', this.count);
+    this.reviewButton.onclick = () => this.host.toggle?.();
+    for (const spec of REVIEW_LIST_POLICY.scopes) {
+      const button = el('button', 'anv-scope', spec.label);
+      button.type = 'button';
+      button.dataset.accordReviewScope = spec.id;
+      button.onclick = () => {
+        if (this.scope === spec.id) return;
+        this.scope = spec.id;
+        this.render();
+      };
+      this.scopeTools.append(button);
+    }
     this.clearSettledBtn.type = 'button';
-    this.clearSettledBtn.title = 'Take the settled rows out of this list. Nothing about the document changes.';
-    this.clearSettledBtn.addEventListener('mousedown', event => event.preventDefault());
-    this.clearSettledBtn.onclick = () => { this.settled.clear(); this.issuesSig = ''; this.render(); };
-    this.settledTools.append(this.settledLabel, this.clearSettledBtn);
-    this.settledTools.hidden = true;
-    this.panes.issues.append(this.issuesEmpty, this.settledTools, this.issuesList);
+    this.clearSettledBtn.dataset.accordReviewClearCompleted = '';
+    this.clearSettledBtn.onclick = () => { this.clearDone(); this.render(); };
+    this.nextBtn.type = 'button';
+    this.nextBtn.onclick = () => this.next();
+    this.scopeTools.append(this.nextBtn, this.clearSettledBtn);
+    this.panes.issues.append(this.scopeTools, this.issuesEmpty, this.issuesList);
     this.panes.since.append(this.sinceEmpty, sinceHost);
     this.outlineList.addEventListener('focusout', () => queueMicrotask(() => this.render()));
-    this.issuesList.addEventListener('focusout', () => queueMicrotask(() => this.render()));
     this.applyTab();
   }
 
@@ -109,8 +114,6 @@ export class NavigatorUI {
 
   select(tab: NavigatorTab, remember = true): void {
     if (tab === this.tab) return;
-    // Leaving the Issues tab is the other way a settled row goes (OPEN_VIEW_POLICY.keepSettled).
-    if (this.tab === 'issues') { this.settled.clear(); this.tracked.clear(); this.issueOrder = []; }
     this.tab = tab;
     this.applyTab();
     if (remember) this.host.tabChanged(tab);
@@ -136,116 +139,108 @@ export class NavigatorUI {
     }
   }
 
-  /** Re-renders the visible lists (cheap: each list has a signature). */
+  resetSession(): void { this.sessions = { 'needs-you': emptyReviewSession(), 'all-open': emptyReviewSession() }; }
+
+  setPanelOpen(open: boolean): void {
+    if (!open) {
+      this.clearDone();
+      if (this.tabsEl.closest('.prw-left')?.contains(document.activeElement)) this.reviewButton.focus({ preventScroll: true });
+    }
+    this.panelOpen = open;
+    this.reviewButton.setAttribute('aria-expanded', String(open));
+    this.render();
+  }
+
+  private clearDone(): void {
+    for (const scope of ['needs-you', 'all-open'] as const) this.sessions[scope] = clearCompleted(this.sessions[scope]);
+  }
+
+  next(): void {
+    const next = nextReviewRow(this.session, this.host.cursor());
+    this.clearDone();
+    if (next && this.host.lineMarks().visitReviewItem(next.key, next.line)) this.host.go(next.line);
+    this.render();
+  }
+
   render(force = false): void {
-    if (force) { this.outlineSig = ''; this.issuesSig = ''; }
-    const items = this.host.lineMarks().needsYouItems();
-    this.badge.textContent = items.length ? String(items.length) : '';
-    this.badge.hidden = items.length === 0;
-    this.buttons.get('issues')?.setAttribute('aria-label', items.length ? `Issues (${items.length} lines need you)` : 'Issues (nothing needs you)');
-    const sinceShown = this.panes.since.querySelector('.prw-since:not([hidden])');
-    this.sinceEmpty.hidden = Boolean(sinceShown);
-    if (this.tab === 'issues') this.renderIssues(items);
+    const lm = this.host.lineMarks();
+    if (this.reader !== lm.me()) { this.reader = lm.me(); this.sessions = { 'needs-you': emptyReviewSession(), 'all-open': emptyReviewSession() }; }
+    const summary = lm.issueSummary();
+    const views = reviewViews({ issues: summary?.issues ?? [], viewer: lm.me(), aliases: lm.viewerAliases(),
+      lineAtPos: pos => lm.lineAtPos(pos), threads: lm.allThreads(), team: summary?.team ?? [],
+      states: lm.lineStates(), lineCount: lm.lineList().length });
+    const open = views[this.scope];
+    const label = reviewCountLabel(this.scope, open.count);
+    this.count.textContent = label;
+    this.count.title = `${views['needs-you'].count} need you; ${views['all-open'].count} open for the team.`;
+    this.count.dataset.viewerCount = String(views['needs-you'].count);
+    this.count.dataset.teamCount = String(views['all-open'].count);
+    this.reviewButton.setAttribute('aria-label', `Review (${label})`);
+    this.badge.textContent = label;
+    this.buttons.get('issues')?.setAttribute('aria-label', `Review (${label})`);
+    this.sinceEmpty.hidden = Boolean(this.panes.since.querySelector('.prw-since:not([hidden])'));
+    for (const button of this.scopeTools.querySelectorAll<HTMLElement>('[data-accord-review-scope]')) {
+      button.setAttribute('aria-pressed', String(button.dataset.accordReviewScope === this.scope));
+    }
+    if (lm.isLoaded()) for (const scope of ['needs-you', 'all-open'] as const) {
+      const session = reconcileReview(this.sessions[scope], views[scope], lm.lineList());
+      this.sessions[scope] = this.panelOpen ? session : clearCompleted(session);
+    }
+    this.nextBtn.disabled = open.count === 0 && !this.session.rows.some(row => row.done);
+    this.clearSettledBtn.disabled = !this.session.rows.some(row => row.done);
+    this.issuesEmpty.textContent = this.scope === 'needs-you' ? 'Nothing needs you.' : 'Nothing is open.';
+    this.issuesEmpty.hidden = this.session.rows.length > 0 || !lm.isLoaded();
+    this.renderIssues();
     if (this.tab === 'outline') this.renderOutline(force);
   }
 
-  private passageKey(lineIndex: number, lines: ReturnType<LineMarksUI['lineList']>): string | null {
-    const passage = lines[lineIndex];
-    return passage ? `${passage.hash}:${passage.occurrence}` : null;
-  }
-
-  private renderIssues(items: ReturnType<LineMarksUI['needsYouItems']>): void {
+  private renderIssues(): void {
     const lm = this.host.lineMarks();
-    const lines = lm.lineList();
     const cursor = this.host.cursor();
-    // A passage that was on this list and is not any more has SETTLED. Its identity is the
-    // hash and occurrence it had while it was open, not the index it happens to occupy now.
-    if (lm.isLoaded()) {
-      const now = new Set<string>();
-      for (const item of items) {
-        const key = this.passageKey(item.line, lines);
-        if (key) now.add(key);
-      }
-      for (const key of this.tracked) {
-        if (now.has(key) || this.settled.has(key)) continue;
-        const was = this.lastRows.get(key);
-        if (was) this.settled.set(key, was);
-      }
-      for (const key of now) this.settled.delete(key);
-      this.tracked = now;
-      const remembered = new Map<string, SettledIdentity & { kinds: string[]; label: string; text: string }>();
-      for (const item of items) {
-        const passage = lines[item.line];
-        if (!passage) continue;
-        remembered.set(`${passage.hash}:${passage.occurrence}`, {
-          hash: passage.hash,
-          occurrence: passage.occurrence,
-          kinds: item.kinds as string[],
-          label: needsYouLabel(item, actor => lm.displayName(actor), lm.me()),
-          text: passage.text,
-        });
-      }
-      this.lastRows = remembered;
-    }
-    const openRows = items.flatMap(item => {
-      const passage = lines[item.line];
-      if (!passage) return [];
-      return [{
-        key: `${passage.hash}:${passage.occurrence}`,
-        line: item.line,
-        settled: false,
-        kinds: item.kinds as string[],
-        label: needsYouLabel(item, actor => lm.displayName(actor), lm.me()),
-        text: passage.text,
-      }];
-    });
-    const settledRows = [...this.settled.values()].map(item => {
-      const line = resolveSettledIndex(item, lines);
-      const current = line === null ? null : lines[line];
-      return {
-        key: `${item.hash}:${item.occurrence}`,
-        line: line ?? -1,
-        settled: true,
-        kinds: item.kinds,
-        label: item.label,
-        text: current?.text ?? item.text,
-      };
-    });
-    const rows = [...openRows, ...settledRows];
-    this.issueOrder = stableReviewOrder(this.issueOrder, rows.map(row => row.key));
-    rows.sort((a, b) => this.issueOrder.indexOf(a.key) - this.issueOrder.indexOf(b.key));
-    const sig = JSON.stringify([rows.map(r => [r.key, r.line, r.settled, r.kinds, r.label, r.text]), cursor]);
-    if (sig === this.issuesSig || this.issuesList.contains(document.activeElement)) return;
-    this.issuesSig = sig;
-    this.issuesEmpty.hidden = rows.length > 0 || !lm.isLoaded();
-    const n = this.settled.size;
-    this.settledTools.hidden = n === 0;
-    this.settledLabel.textContent = n ? `${n} settled ${n === 1 ? 'row' : 'rows'}` : '';
+    const pane = this.panes.issues;
+    const active = document.activeElement;
+    const anchor = this.issuesList.querySelector<HTMLElement>(`[data-line="${cursor}"]`)
+      ?? (active instanceof HTMLElement && this.issuesList.contains(active) ? active : null);
+    const before = anchor?.getBoundingClientRect().top;
+    const scroll = pane.scrollTop;
+    // Reserve room below short lists so an insertion above can still be compensated.
+    this.issuesList.style.paddingBottom = `${pane.clientHeight}px`;
     const existing = new Map([...this.issuesList.children].map(node => [(node as HTMLElement).dataset.key, node as HTMLElement]));
-    for (const row of rows) {
+    this.session.rows.forEach((row, index) => {
       const li = existing.get(row.key) ?? el('li');
       li.dataset.key = row.key;
       existing.delete(row.key);
       const b = li.querySelector<HTMLButtonElement>('button') ?? el('button', 'anv-issue');
       b.type = 'button';
-      if (row.line >= 0) b.dataset.line = String(row.line); else delete b.dataset.line;
+      b.dataset.line = String(row.line);
       b.dataset.kind = row.kinds[0] ?? 'changed';
-      b.dataset.settled = String(row.settled);
-      if (row.line >= 0 && row.line === cursor) b.setAttribute('aria-current', 'true'); else b.removeAttribute('aria-current');
-      const dot = el('span', 'anv-dot');
-      dot.setAttribute('aria-hidden', 'true');
+      b.dataset.settled = String(row.done);
+      b.dataset.new = String(row.fresh);
+      if (row.line === cursor) b.setAttribute('aria-current', 'true'); else b.removeAttribute('aria-current');
       const title = row.text.length > NAVIGATOR_POLICY.titleChars ? `${row.text.slice(0, NAVIGATOR_POLICY.titleChars - 1)}…` : row.text;
-      const body = el('span', 'anv-issue-body');
-      body.append(
-        el('span', 'anv-issue-title', title || (row.line >= 0 ? `Line ${row.line + 1}` : 'Removed line')),
-        el('small', 'anv-issue-kind', row.settled ? (row.line >= 0 ? `Settled · line ${row.line + 1}` : 'Settled · line removed') : row.label),
-      );
-      b.replaceChildren(dot, body);
-      b.onclick = () => { if (row.line >= 0) this.host.go(row.line); };
+      const label = row.done ? (row.line < 0 ? 'Done · passage removed' : `Done · line ${row.line + 1}`)
+        : `${row.fresh ? 'New · ' : ''}${needsYouLabel(this.scope === 'all-open' ? { ...row, count: 1 } : row, actor => lm.displayName(actor), lm.me())}`;
+      if (b.dataset.label !== title + label) {
+        const dot = el('span', 'anv-dot'); dot.setAttribute('aria-hidden', 'true');
+        const body = el('span', 'anv-issue-body');
+        body.append(el('span', 'anv-issue-title', title), el('small', 'anv-issue-kind', label));
+        b.replaceChildren(dot, body);
+        b.dataset.label = title + label;
+      }
+      b.onclick = () => {
+        row.fresh = false;
+        if (row.line >= 0) this.host.go(row.line);
+        this.render();
+      };
       if (b.parentElement !== li) li.append(b);
-      if (li.parentElement !== this.issuesList) this.issuesList.append(li);
-    }
+      // Inserting above a focused button preserves that button's DOM node.
+      const at = this.issuesList.children[index];
+      if (at !== li) this.issuesList.insertBefore(li, at ?? null);
+    });
     for (const node of existing.values()) node.remove();
+    if (anchor?.isConnected && before !== undefined) pane.scrollTop = anchoredReviewScroll(scroll, before, anchor.getBoundingClientRect().top);
+    // Moving a node can blur it in older browsers; restore only the exact existing control.
+    if (active instanceof HTMLElement && active.isConnected && document.activeElement !== active) active.focus({ preventScroll: true });
   }
 
   private renderOutline(force = false): void {
@@ -294,10 +289,8 @@ export class NavigatorUI {
     return {
       tab: this.tab,
       issues: [...this.issuesList.querySelectorAll<HTMLElement>('.anv-issue')].map(b => ({ line: Number(b.dataset.line), kind: b.dataset.kind, settled: b.dataset.settled === 'true', label: b.querySelector('.anv-issue-kind')?.textContent ?? '' })),
-      settled: [...this.settled.values()]
-        .map(item => resolveSettledIndex(item, this.host.lineMarks().lineList()))
-        .filter((index): index is number => index !== null)
-        .sort((a, b) => a - b),
+      scope: this.scope,
+      settled: this.session.rows.filter(row => row.done).map(row => row.line),
       outline: [...this.outlineList.querySelectorAll<HTMLElement>('.anv-row')].map(r => ({ heading: Number(r.dataset.heading), folded: r.querySelector<HTMLElement>('.anv-fold')?.dataset.folded === 'true' })),
     };
   }

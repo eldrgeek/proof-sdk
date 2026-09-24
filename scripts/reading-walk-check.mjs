@@ -6,6 +6,7 @@
 // 1440 and 1280 (desktop) and 390 (phone). Screenshots go to .preview/ (or --shots <dir>).
 // Exit code 0 only if every check passes.
 // Usage: node scripts/reading-walk-check.mjs [--style playmaker|proof] [--width 1440] [--shots dir]
+import { nextReview, showReview } from './review-ui.mjs';
 import assert from 'node:assert/strict';
 import { selectPassage, scrollAcceptsNothing, explicitAcceptUndo } from './usability-s1-assertions.mjs';
 
@@ -255,13 +256,14 @@ async function desktop(browser, base, style, width) {
   await check(`${tag}: Next issue moves the focus line`, async () => {
     await page.keyboard.press('j'); await page.keyboard.press('j');
     const before = (await walk(page)).focus;
-    await page.locator('#share-banner .plm-next').click();
+    await nextReview(page);
     await page.waitForTimeout(200);
     const after = (await walk(page)).focus;
-    const flash = await page.evaluate(() => document.querySelector('.plm-flash')?.getBoundingClientRect().top ?? null);
+
     const focusTop = await page.evaluate(() => document.querySelector('.prw-focus')?.getBoundingClientRect().top ?? null);
     assert.notEqual(after, before, 'focus did not move');
-    assert.ok(flash !== null && Math.abs(flash - focusTop) < 12, `flash ${flash} vs focus ${focusTop}`);
+    assert.ok(focusTop !== null && focusTop >= 0, 'the selected passage is not visible');
+    assert.equal(Number(await page.locator('.anv-issue[aria-current="true"]').getAttribute('data-line')), after);
   });
   await check(`${tag}: a margin dot focuses its line and keeps the box in the rail (no popover)`, async () => {
     await page.evaluate(() => window.scrollTo(0, 0));

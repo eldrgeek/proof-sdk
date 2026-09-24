@@ -380,28 +380,13 @@ async function desktop2(browser, base, style) {
     assert.ok(Math.abs(c.toolbar.top - c.menubar.bottom) <= 1, `toolbar top ${c.toolbar.top}, menu bar bottom ${c.menubar.bottom}`);
     assert.ok(Math.abs(c.toolbar.height - 44) <= 1, `toolbar height ${c.toolbar.height}`);
     assert.ok(c.toolbar.left <= 0 && c.toolbar.right >= 1440, 'the toolbar is still a floating pill');
-    // Three groups: left the switch and Undo, centre the title and Saved, right Issues · Next and Share.
-    assert.ok(c.seg && c.seg.left < 60, 'the Suggesting | Editing switch is not at the left');
-    assert.ok(c.undo && c.undo.left > c.seg.right && c.undo.left < 400, 'Undo is not beside the switch');
-    const mid = (c.title.left + c.title.right) / 2;
-    assert.ok(Math.abs(mid - 720) <= 120, `the title is not centred (${mid})`);
+    assert.equal(c.undo, null, 'Undo belongs to the Edit menu');
+    assert.ok(!c.seg || c.seg.width === 0, 'the mode switch remains in the toolbar');
     assert.match(c.saved, /Saved|Sync|Connect|Offline/);
-    assert.ok(c.share.right >= 1440 - 24, 'Share is not at the right end');
-    assert.ok(c.pill.right <= c.share.left && c.pill.left > 1000, 'the Issues pill is not just left of Share');
-    assert.match(c.pillNext, /Next ›/);
-    // Nothing else in the toolbar: no Add agent, no Marks, no people, no ⋯. Accord round 2 stage C
-    // added ONE more thing by Mike's ruling — the Open | Accord toggle, immediately left of the
-    // Issues pill, because the pill counts what Open holds. The list stays exact, so nothing else
-    // can creep in behind it.
-    for (const label of c.controls) assert.match(label, /^(Suggesting|Editing|Undo|Nothing to undo|Next issue|No issues|Share|Waiting on Mike|Open|Accord)$|^(Suggesting|Editing|Undo|Nothing to undo|Next issue|No issues|Share|Waiting on Mike)/, `unexpected toolbar control: ${label}`);
-    // ...and the toggle really is where this stage says it is.
-    const toggle = await page.evaluate(() => {
-      const t = document.querySelector('#share-banner .share-pill-right .aov-toggle');
-      const pill = document.querySelector('#share-banner .plm-issues');
-      return { present: Boolean(t), beforePill: t?.nextElementSibling === pill, segs: [...(t?.querySelectorAll('.aov-seg-label') ?? [])].map(n => n.textContent) };
-    });
-    assert.deepEqual(toggle.segs, ['Open', 'Accord'], 'the Open | Accord toggle is not in the toolbar');
-    assert.ok(toggle.beforePill, 'the toggle must sit immediately left of the Issues pill');
+    assert.ok(c.title.right <= c.pill.left && c.pill.right <= c.share.left, 'title, Review and Share are out of order');
+    assert.equal(await page.locator('.aov-toggle').count(), 0);
+    assert.equal(await page.locator('#share-banner .anv-people').isVisible(), true);
+    for (const label of c.controls) assert.match(label, /^(Review|People|Share|Waiting on Mike)/, `unexpected toolbar control: ${label}`);
     const rails = await page.evaluate(() => ({ left: document.querySelector('.prw-left').getBoundingClientRect().top, right: document.querySelector('.prw-right').getBoundingClientRect().top }));
     assert.ok(rails.left >= c.toolbar.bottom && rails.right >= c.toolbar.bottom, 'a rail sits under the toolbar');
     await page.screenshot({ path: path.join(shots, `${tag}-chrome.png`), clip: { x: 0, y: 0, width: 1440, height: 120 } });
@@ -410,17 +395,17 @@ async function desktop2(browser, base, style) {
     const lines = await amber(page);
     const c = await chrome(page);
     const b = await bar(page);
-    assert.equal(c.pillText, `${lines.length} Issues`);
+    assert.equal(c.pillText, `${lines.length} need you`);
     assert.equal(b.count, lines.length);
     const team = await page.evaluate(() => Number(document.querySelector('#share-banner .plm-issues-count').dataset.teamCount));
-    assert.ok(team > lines.length, 'the team count should be larger here (unseen lines are team Issues)');
-    assert.match(await page.locator('#share-banner .plm-issues-count').getAttribute('title'), new RegExp(`^${lines.length} lines need you .*; the team has ${team} open Issues`));
+    assert.ok(team >= lines.length, 'All open must include Needs you');
+    assert.match(await page.locator('#share-banner .plm-issues-count').getAttribute('title'), new RegExp(`^${lines.length} need you; ${team} open for the team`));
   });
   await check(`${tag}: Next goes to the lines that need you first`, async () => {
     const lines = await amber(page);
     const seen = [];
     for (let i = 0; i < lines.length; i += 1) {
-      await page.locator('#share-banner .plm-next').click();
+      await page.locator('.anv-next').click();
       await page.waitForTimeout(150);
       seen.push((await walk(page)).target);
     }
@@ -453,7 +438,7 @@ async function desktop2(browser, base, style) {
     await page.keyboard.press('Control+Alt+KeyV');
     await page.locator('.amb-menu[data-menu="view"]').waitFor();
     const view = (await menuItems(page)).map(i => i.label);
-    for (const label of ['Navigator', 'Margin', 'Collapse all sections', 'Expand all sections', 'Show only decisions', 'Reading settings…', 'Familiar’s brief', 'Keyboard shortcuts']) assert.ok(view.includes(label), `View lacks ${label}: ${view}`);
+    for (const label of ['Review panel', 'View agreed copy', 'Margin', 'Collapse all sections', 'Expand all sections', 'Show only decisions', 'Reading settings…', 'Familiar’s brief', 'Keyboard shortcuts']) assert.ok(view.includes(label), `View lacks ${label}: ${view}`);
     await page.keyboard.press('Escape');
     await reading(page);
     await page.keyboard.press('Alt+Slash');
@@ -477,30 +462,20 @@ async function desktop2(browser, base, style) {
     await panel.getByRole('button', { name: 'Close reading settings' }).click();
     assert.equal(await panel.isVisible(), false);
   });
-  await check(`${tag}: Edit › Suggesting / Editing is the same switch as the toolbar's; the toolbar switch is two halves`, async () => {
+  await check(`${tag}: direct editing remains reachable in Edit`, async () => {
     await page.locator('#accord-menubar .amb-top[data-menu="edit"]').click();
-    const items = await menuItems(page);
-    assert.equal(items.find(i => i.label === 'Suggesting')?.checked, 'true');
-    await page.locator('.amb-menu .amb-item', { hasText: 'Editing' }).click();
+    await page.locator('.amb-menu').getByRole('menuitemradio', { name: 'Editing', exact: true }).click();
     await waitFor(page, () => window.proof.isSuggestionsEnabled() === false);
-    assert.equal(await page.locator('#share-banner .amb-seg-opt[data-mode="edit"]').getAttribute('data-on'), 'true');
-    await page.locator('#share-banner .amb-seg-opt[data-mode="edit"]').click();
-    assert.equal(await page.evaluate(() => window.proof.isSuggestionsEnabled()), false, 'the chosen half toggled');
-    await page.locator('#share-banner .amb-seg-opt[data-mode="suggest"]').click();
+    await page.locator('#accord-menubar .amb-top[data-menu="edit"]').click();
+    await page.locator('.amb-menu').getByRole('menuitemradio', { name: 'Suggesting', exact: true }).click();
     await waitFor(page, () => window.proof.isSuggestionsEnabled() === true);
   });
-  await check(`${tag}: the toolbar's Undo says Undo, names what it reverses in its tooltip, and reverses it; Edit › Undo is the same Undo`, async () => {
+  await check(`${tag}: Edit Undo names and reverses the selected passage's agreement`, async () => {
     await selectPassage(page, L.S1 + 2);
     await page.keyboard.press('a');
-    const undo = page.locator('#share-banner .pundo-btn').first();
-    // Stage 3 (COS): the toolbar button says just "Undo"; its tooltip and Edit › Undo name what it reverses.
-    await waitFor(page, () => /Undo: agreed line 5/.test(document.querySelector('#share-banner .pundo-btn')?.title ?? ''));
-    assert.equal((await undo.textContent()).trim(), 'Undo');
-    assert.equal(await undo.getAttribute('aria-label'), 'Undo agreed line 5');
     await page.locator('#accord-menubar .amb-top[data-menu="edit"]').click();
     assert.equal((await menuItems(page))[0].label, 'Undo agreed line 5');
-    await page.keyboard.press('Escape');
-    await undo.click();
+    await page.locator('.amb-menu .amb-item').first().click();
     await page.waitForFunction(() => window.__proofUndo.debugState().log.some(m => m === 'Undid: agreed line 5'), null, { timeout: 6000 });
   });
   await check(`${tag}: Share opens one dialog with Link, People and AIs; People › Add agent opens its AIs tab`, async () => {
@@ -531,7 +506,7 @@ async function desktop2(browser, base, style) {
     await counts.waitFor();
     const lines = await amber(page);
     assert.equal(await counts.getAttribute('data-viewer'), String(lines.length));
-    assert.equal(await counts.getAttribute('data-team'), await page.evaluate(() => document.querySelector('#share-banner .plm-issues-count').dataset.teamCount));
+    assert.equal(Number(await counts.getAttribute('data-team')), await page.evaluate(() => window.__proofLineMarks.issueSummary().counts.total));
     await page.keyboard.press('Escape');
     await page.locator('#accord-menubar .amb-top[data-menu="help"]').click();
     assert.deepEqual((await menuItems(page)).map(i => i.label), ['Search the menus', 'Keyboard shortcuts', 'What the marks mean', 'Agent docs', 'About Accord']);
@@ -576,57 +551,19 @@ async function phone2(browser, base, style) {
   activePage = page;
   // Polish pass (COS, 2026-09-21: "Phone toolbar matches the mockup"): only the title, the Issues
   // count and ⋯, as in mockup-phone.png; Suggesting | Editing and Share lead the ⋯ menu.
-  await check(`${tag}: no menu bar; the toolbar is the mockup's: the title, "N Issues" and ⋯, nothing else`, async () => {
+  await check(`${tag}: the phone toolbar shows title, Review, People and Share with touch targets`, async () => {
     const c = await chrome(page);
-    assert.equal(c.menubar, null, 'the menu bar shows on a phone');
+    assert.equal(c.menubar, null);
     assert.equal(c.toolbar.top, 0);
-    // Accord round 2 stage C: the mockup's three PLUS ONE — the Open / Accord toggle. This stage
-    // rules that "the phone gets the toggle too", and the toggle is the product's whole claim in
-    // one control, so it does not belong behind ⋯. On a 375 px bar it shows as a single button
-    // naming the view it takes you to, so it cannot reach the middle of the bar and swallow taps
-    // meant for the title. Everything the 09-21 polish removed stays removed, and the list is
-    // still exact, so nothing can creep back in behind this one addition.
-    assert.equal(c.controls.length, 4, `phone toolbar controls: ${c.controls.join(' | ')}`);
-    assert.match(c.controls[0], /Waiting on Mike/);
-    assert.match(c.controls[1], /^(Open|Accord)$/);
-    assert.match(c.controls[2], /^Next issue/);
-    assert.match(c.controls[3], /^More options/);
-    // The toggle sits at the LEFT, right after the title and well clear of the Issues pill: the
-    // space beside the pill is where a thumb lands, and this control changes what the whole page
-    // shows. It is one 44 px button there, not a two-segment control that would fill the bar.
-    const toggle = await page.evaluate(() => {
-      const t = document.querySelector('#share-banner .aov-toggle');
-      const title = document.querySelector('#share-banner .share-pill-title');
-      const pill = document.querySelector('#share-banner .plm-issues');
-      const box = t?.getBoundingClientRect();
-      return {
-        afterTitle: title?.nextElementSibling === t,
-        leftOfPill: Boolean(box && pill && box.right <= pill.getBoundingClientRect().left + 1),
-        segs: [...(t?.querySelectorAll('.aov-seg') ?? [])].filter(n => n.getBoundingClientRect().width > 0).map(n => n.textContent),
-        height: box?.height ?? 0,
-      };
-    });
-    assert.ok(toggle.afterTitle, 'the phone toggle is not right after the title');
-    assert.ok(toggle.leftOfPill, 'the phone toggle is not clear of the Issues pill');
-    assert.equal(toggle.segs.length, 1, `the phone shows one button, not ${toggle.segs.length}: ${toggle.segs.join(' | ')}`);
-    assert.ok(toggle.height >= 44, `the phone toggle is ${toggle.height} px tall`);
-    assert.equal(c.seg && c.seg.width > 0 ? 'shown' : 'gone', 'gone', 'Suggesting | Editing is still in the phone toolbar');
-    assert.ok(!c.share || c.share.width === 0, 'Share is still in the phone toolbar');
-    assert.equal(c.undo, null, 'Undo is in the phone toolbar');
-    const lines = await amber(page);
-    assert.equal(c.pillText, `${lines.length} Issues`);
-    // Regions as in the mockup: title at the left, the pill then ⋯ at the right.
-    const pos = await page.evaluate(() => {
-      const r = sel => document.querySelector(sel).getBoundingClientRect();
-      return { title: r('#share-banner .share-pill-title'), next: r('#share-banner .plm-next'), more: r('#share-banner .share-pill-overflow'), nextText: document.querySelector('#share-banner .plm-next').innerText.trim(), dot: getComputedStyle(document.querySelector('#share-banner .share-pill-status-inline')).display };
-    });
-    assert.ok(pos.title.left <= 24, `title starts at ${pos.title.left}`);
-    assert.ok(pos.next.left > pos.title.right - 1 && pos.more.left >= pos.next.right - 1 && pos.more.right >= 390 - 12, 'the pill and ⋯ are not at the right, in that order');
-    assert.equal(pos.nextText, `${lines.length} Issues`, 'the pill does not read "N Issues"');
-    assert.equal(pos.dot, 'none', 'the Saved dot shows on a phone');
-    assert.equal((await bar(page)).count, lines.length);
-    const fits = await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1);
-    assert.ok(fits, 'the page scrolls sideways');
+    assert.equal(c.undo, null);
+    assert.ok(!c.seg || c.seg.width === 0);
+    assert.equal(c.pillText, `${(await amber(page)).length} need you`);
+    for (const selector of ['[data-accord-review-toggle]', '.anv-people', '.share-pill-share-btn > button']) {
+      const box = await page.locator(`#share-banner ${selector}`).boundingBox();
+      assert.ok(box && box.height >= 44 && box.x >= 0 && box.x + box.width <= 391, selector);
+    }
+    assert.equal(await page.locator('.aov-toggle').count(), 0);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
     await page.screenshot({ path: path.join(shots, `${tag}-toolbar.png`), clip: { x: 0, y: 0, width: 390, height: 120 } });
   });
   await check(`${tag}: the ⋯ menu holds the menu bar's menus; Reading settings opens as a sheet`, async () => {
@@ -637,8 +574,8 @@ async function phone2(browser, base, style) {
     for (const heading of ['FILE', 'EDIT', 'VIEW', 'PEOPLE', 'HELP']) assert.ok(text.toUpperCase().includes(heading), `no ${heading} group`);
     for (const label of ['Open…', 'Reading settings…', 'Share…', 'Add agent…', 'Keyboard shortcuts']) assert.ok(text.includes(label), `no ${label}`);
     // The switch and Share lead the menu (TOOLBAR_POLICY.phoneMenuTop), each only once.
-    const top = await menu.evaluate(m => [...m.querySelectorAll('.amb-item')].slice(0, 3).map(b => ({ label: b.querySelector('.amb-label').textContent, checked: b.getAttribute('aria-checked') })));
-    assert.deepEqual(top.map(t => t.label), ['Suggesting', 'Editing', 'Share…']);
+    const top = await menu.evaluate(m => [...m.querySelectorAll('.amb-item')].slice(0, 2).map(b => ({ label: b.querySelector('.amb-label').textContent, checked: b.getAttribute('aria-checked') })));
+    assert.deepEqual(top.map(t => t.label), ['Suggesting', 'Editing']);
     assert.equal(top[0].checked, 'true', 'Suggesting is not the chosen mode');
     const count = label => menu.evaluate((m, l) => [...m.querySelectorAll('.amb-item .amb-label')].filter(n => n.textContent === l).length, label);
     for (const label of ['Suggesting', 'Editing', 'Share…']) assert.equal(await count(label), 1, `${label} appears twice`);
@@ -740,7 +677,7 @@ async function desktop3(browser, base, style) {
     assert.ok(g.text.left >= g.left.right + 16 && g.text.right <= g.right.left - 16, 'the text runs under a side');
     const mid = (g.left.right + g.right.left) / 2;
     assert.ok(Math.abs((g.text.left + g.text.right) / 2 - mid) <= 40, 'the text is not centred between the sides');
-    assert.deepEqual(g.navTabs, ['Outline', 'Issues', 'Since you']);
+    assert.deepEqual(g.navTabs, ['Review', 'Outline', 'Since you']);
     assert.deepEqual(g.marginTabs, ['Line 1', 'Room']);
     assert.equal(g.selectedNav, 'issues', 'the Navigator opens on Issues (the mockup)');
     assert.equal(g.selectedMargin, 'line');
@@ -752,8 +689,8 @@ async function desktop3(browser, base, style) {
     const lines = await amber(page);
     const items = await page.evaluate(() => [...document.querySelectorAll('.prw-left .anv-issue')].map(b => ({ line: Number(b.dataset.line), title: b.querySelector('.anv-issue-title').textContent, kind: b.querySelector('.anv-issue-kind').textContent })));
     assert.deepEqual(items.map(i => i.line), lines);
-    assert.equal(await page.locator('.prw-left .anv-tab[data-tab="issues"] .anv-badge').textContent(), String(lines.length));
-    assert.equal((await chrome(page)).pillText, `${lines.length} Issues`);
+    assert.equal(await page.locator('.prw-left .anv-tab[data-tab="issues"] .anv-badge').textContent(), `${lines.length} need you`);
+    assert.equal((await chrome(page)).pillText, `${lines.length} need you`);
     assert.match(items[0].kind, new RegExp(`^Ask · line ${L.ASK + 1}$`));
     assert.match(items[1].kind, new RegExp(`^Change from \\w+ · line ${L.CHANGE + 1}$`));
     assert.match(items[2].kind, new RegExp(`^Comment from \\w+ · line ${L.COMMENT + 1}$`));
@@ -900,10 +837,10 @@ async function desktop3(browser, base, style) {
   });
   await check(`${tag}: View › Navigator and View › Margin show and hide the sides`, async () => {
     await page.locator('#accord-menubar .amb-top[data-menu="view"]').click();
-    await page.locator('.amb-menu .amb-item', { hasText: 'Navigator' }).click();
+    await page.locator('.amb-menu .amb-item', { hasText: 'Review panel' }).click();
     await waitFor(page, () => document.body.classList.contains('prw-left-collapsed'));
     await page.locator('#accord-menubar .amb-top[data-menu="view"]').click();
-    await page.locator('.amb-menu .amb-item', { hasText: 'Navigator' }).click();
+    await page.locator('.amb-menu .amb-item', { hasText: 'Review panel' }).click();
     await waitFor(page, () => !document.body.classList.contains('prw-left-collapsed'));
   });
   await check(`${tag}: everyone's marks fold into "Marked by N" in the Line tab; open by default only for a Reject; a person's choice is kept`, async () => {
@@ -1015,17 +952,17 @@ async function phone3(browser, base, style) {
     await page.locator('.prw-strip-marked').tap();
     await waitFor(page, i => window.__proofReadingWalk.debugState().cursor === i, L.S1);
   });
-  await check(`${tag}: the ⋯ menu opens the Navigator as a sheet; an Issue there moves the cursor and closes it`, async () => {
-    await page.getByRole('button', { name: /^More options/ }).tap();
-    await page.locator('.proof-share-overflow-menu').getByRole('menuitem', { name: /Navigator/ }).tap();
+  await check(`${tag}: Review opens the bottom sheet; selecting a row keeps it open`, async () => {
+    await page.locator('[data-accord-review-toggle]').tap();
     const nav = page.locator('.prw-left.prw-sheet-open');
     await nav.waitFor({ state: 'visible' });
     const tabs = await page.evaluate(() => [...document.querySelectorAll('.prw-left.prw-sheet-open .anv-tab')].map(t => t.firstChild.textContent.trim()));
-    assert.deepEqual(tabs, ['Outline', 'Issues', 'Since you']);
+    assert.deepEqual(tabs, ['Review', 'Outline', 'Since you']);
     await page.screenshot({ path: path.join(shots, `${tag}-navigator.png`) });
     await nav.locator(`.anv-issue[data-line="${L.CHANGE}"]`).tap();
     await waitFor(page, i => window.__proofReadingWalk.debugState().cursor === i, L.CHANGE);
-    assert.equal(await page.locator('.prw-left.prw-sheet-open').count(), 0, 'the Navigator stayed open');
+    assert.equal(await page.locator('.prw-left.prw-sheet-open').count(), 1, 'the Review panel closed on selection');
+    await page.locator('[data-accord-review-toggle]').tap();
     assert.equal(await page.locator('.prw-strip-where').innerText(), `Line ${L.CHANGE + 1} of 25`);
   });
   await check(`${tag}: the sheet's Line tab folds everyone's marks into "Marked by N"; a Reject opens it; the row is touch-sized`, async () => {

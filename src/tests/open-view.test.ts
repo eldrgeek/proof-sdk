@@ -13,7 +13,6 @@ import {
   OPEN_VIEW_POLICY,
   ZERO_POLICY,
   accordHeader,
-  openLayout,
   openView,
   zeroMoment,
 } from '../shared/open-view';
@@ -366,38 +365,6 @@ test('lapse: only an Agreed or Approved mark lapses; a Seen one is merely out of
 });
 
 // ============================================================================
-// 4. The Open view's layout: context, collapsed runs, expansion
-// ============================================================================
-
-test('openLayout keeps a line of context either side and collapses the rest to runs', () => {
-  const layout = openLayout(12, [5]);
-  assert.deepEqual([...layout.shown].sort((a, b) => a - b), [4, 5, 6]);
-  assert.deepEqual(layout.runs.map(r => [r.from, r.to, r.lines]), [[0, 3, 4], [7, 11, 5]]);
-  assert.equal(layout.runs[0].label, '4 lines settled');
-});
-
-test('openLayout shows a run too short to be worth a control instead of collapsing it', () => {
-  // Lines 0-2 and 4-6 are shown; line 3 alone is left between them and is not worth a rule.
-  const layout = openLayout(8, [1, 5]);
-  assert.ok(layout.shown.has(3), 'one line behind a control costs the reader more than showing it');
-  assert.deepEqual(layout.runs.map(r => [r.from, r.to]), [[7, 7]].filter(() => false).concat(layout.runs.map(r => [r.from, r.to])));
-  assert.ok(layout.runs.every(run => run.lines >= OPEN_VIEW_POLICY.minCollapseRun));
-});
-
-test('openLayout: a run the reader expanded stays open (explicit beats automatic)', () => {
-  const closed = openLayout(12, [5]);
-  assert.equal(closed.shown.has(0), false);
-  const opened = openLayout(12, [5], new Set([0, 1, 2, 3]));
-  assert.equal(opened.shown.has(0), true);
-  assert.deepEqual(opened.runs.map(r => [r.from, r.to]), [[7, 11]]);
-});
-
-test('openLayout with nothing open collapses the whole document to one rule', () => {
-  const layout = openLayout(9, []);
-  assert.deepEqual(layout.runs.map(r => [r.from, r.to, r.lines]), [[0, 8, 9]]);
-});
-
-// ============================================================================
 // 5. The honest header
 // ============================================================================
 
@@ -550,12 +517,12 @@ test('a count above zero is never the zero moment, whatever the header says', ()
   assert.equal(zero.view, 'open');
 });
 
-test('reaching zero puts the document in the Accord but never strips the reader controls', () => {
+test('reaching zero preserves the chosen document view and controls', () => {
   const lines = makeLines(['One line of real words here.', 'Two lines of real words here.']);
   const mine = lines.map(line => mark(line, ME, 'agreed'));
   const h = header(buildLineStates(lines, mine), [ME, ERIC]);
   const unchosen = zeroMoment(EMPTY, h, 'open', false);
-  assert.equal(unchosen.view, 'accord', 'at zero the document IS the Accord');
+  assert.equal(unchosen.view, 'open', 'completion never switches views');
   assert.equal(unchosen.clean, false, 'but the margin and the rail stay: a page must not take the Agree button away');
   assert.equal(ZERO_POLICY.zeroNeverStripsChrome, true);
   const chosen = zeroMoment(EMPTY, h, 'accord', true);

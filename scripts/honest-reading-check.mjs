@@ -321,7 +321,7 @@ async function phone(browser, base, style) {
     assert.ok(await settings.locator('.prw-rate select').isVisible(), 'no reading speed in Reading settings');
     await settings.getByRole('button', { name: 'Close reading settings' }).tap();
     await page.locator('#share-banner .share-pill-overflow').tap();
-    await page.getByRole('menuitem', { name: /Navigator/ }).tap();
+    await page.getByRole('menuitem', { name: /Review panel/ }).tap();
     const sheet = page.locator('.prw-left.prw-sheet-open');
     await sheet.waitFor({ state: 'visible' });
     await sheet.locator('.anv-tab[data-tab="since"]').tap();

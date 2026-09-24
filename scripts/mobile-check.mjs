@@ -172,6 +172,21 @@ async function phone(browser, base, name, viewport) {
     await page.getByRole('button', { name: 'Close marks', exact: true }).click();
     assert.equal(await visible(page, '.pm-review-panel'), false, 'panel did not close');
   });
+  await check(`${tag}: Review opens and closes the same list without hiding text`, async () => {
+    const review = page.locator('[data-accord-review-toggle]');
+    const folded = await page.evaluate(() => window.__proofFolding.debugState().folded);
+    await review.tap();
+    await page.locator('.prw-left.prw-sheet-open').waitFor({ state: 'visible' });
+    assert.equal(await review.getAttribute('aria-expanded'), 'true');
+    assert.match(await page.locator('.plm-issues-count').innerText(), /^\d+ need you$/);
+    await page.locator('[data-accord-review-scope="all-open"]').tap();
+    assert.match(await page.locator('.plm-issues-count').innerText(), /^\d+ open$/);
+    await review.tap();
+    assert.equal(await review.getAttribute('aria-expanded'), 'false');
+    assert.deepEqual(await page.evaluate(() => window.__proofFolding.debugState().folded), folded);
+    assert.equal(await page.locator('.aov-toggle, .aov-rule').count(), 0);
+  });
+
   // Editing first (Mike 2026-09-19): Proof Documents is the only review behaviour, so the
   // Review style item is gone from the overflow menu.
   await check(`${tag}: overflow menu holds Add agent and no Review style`, async () => {
@@ -241,9 +256,9 @@ async function phone(browser, base, name, viewport) {
         threads: [...document.querySelectorAll('.amg-thread')].map(n => n.dataset.thread),
         focus: window.__proofReadingWalk?.debugState().cursor,
         ov: window.__proofOpenView?.debugState(),
-        toggleBox: document.querySelector('.aov-toggle')?.getBoundingClientRect(),
+        reviewBox: document.querySelector('[data-accord-review-toggle]')?.getBoundingClientRect(),
       }));
-      throw new Error(`no Discussion card: ${JSON.stringify({ rightHidden: why.rightHidden, toggleBox: why.toggleBox, view: why.ov?.view, clean: why.ov?.clean, chosen: why.ov?.chosen, count: why.ov?.open?.count })}`);
+      throw new Error(`no Discussion card: ${JSON.stringify({ rightHidden: why.rightHidden, reviewBox: why.reviewBox, view: why.ov?.view, clean: why.ov?.clean, chosen: why.ov?.chosen, count: why.ov?.open?.count })}`);
     });
     assert.ok((await card.innerText()).includes(commentText), 'This line does not show the comment');
     assert.equal(await page.locator(`.prw-changes .prw-card[data-mark-id="${id}"]`).count(), 0,

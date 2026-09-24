@@ -1,37 +1,8 @@
 /**
- * Accord round 2, stage C — Open and Accord, two views of one document (pure code, shared by the
- * browser and the server).
- *
- * Mike, 2026-09-22: "Users should have a view where they see only open issues — which would be new
- * text or text or decisions about which there is not yet agreement — or else see a finished
- * document that has been agreed on."
- *
- * ONE DEFINITION OF OPEN. Before this file the unsettled work was counted in three places: the
- * Issues pill in the toolbar (`needsYouLines().length`), the amber dots in the margin
- * (`needsYouLines()`), and the Navigator's Issues tab (`needsYouItems()`). They agreed by
- * convention — each called `issueNeedsViewer` — and nothing stopped them drifting apart. Now
- * `openView` is the only place that decides, and all three read its result:
- *
- *     openView()  ->  OpenView.items   ->  the Open list and the Navigator's Issues tab
- *                 ->  OpenView.lines   ->  the amber dots
- *                 ->  OpenView.count   ->  the Issues pill
- *
- * `lines` and `count` are DERIVED from `items` in this file, so the three cannot disagree by
- * construction; `src/tests/open-view.test.ts` proves it over random documents, and
- * `scripts/open-view-check.mjs` proves it again on the page.
- *
- * Open, for a viewer, is:
- *   - a line whose agreement has LAPSED: they agreed, then someone changed the meaning
- *     (src/shared/line-change.ts decides; src/shared/line-marks.ts findLapseTarget finds the line);
- *   - a line that changed since they marked it (the same Issue, older wording);
- *   - an open thread or proposal that is open FOR THEM — `threadOpenFor` (src/shared/threads.ts)
- *     decides that, and this file never re-derives it;
- *   - an ask asked of them and unanswered, and the other per-line Issues NEEDS_YOU_POLICY lists;
- *   - a line nobody has marked, when OPEN_VIEW_POLICY.unreadLinesAreOpen is on (see there).
- *
- * Open is the viewer's OWN list. Nothing here takes another person's viewer string.
- *
- * Authorship: Mike Wolf (rulings), built by Claude Opus 5 (worker accord-open), 2026-09-22.
+ * One definition of Open for the Review list, its count and the margin dots.
+ * The document stays whole; only reader-chosen section folds hide text.
+ * Completion never changes the view or removes controls.
+ * Mike, 2026-09-23 (usability brief).
  */
 import {
   actorKey,
@@ -57,22 +28,6 @@ import { threadOpenFor, type ThreadOpenness, type ThreadView } from './threads.j
 // ============================================================================
 
 export const OPEN_VIEW_POLICY = {
-  /**
-   * How many lines either side of an open item the Open view keeps, so the sentence still means
-   * something. Mike's words are "each item with context"; one line either side is the smallest
-   * amount that reads.
-   */
-  contextLines: 1,
-  /**
-   * A run of collapsed lines shorter than this is not worth a rule: showing two extra lines is
-   * cheaper for the reader than a control they have to click.
-   */
-  minCollapseRun: 2,
-  /**
-   * Nothing vanishes under the cursor (brief 4). A row the viewer settles greys out with a
-   * strikethrough and stays where it is; it leaves on "Clear settled" or when they leave the view.
-   */
-  keepSettled: true,
   /**
    * ★ THE ONE PLACE Mike's words and an earlier ruling disagree, kept as one flag.
    *
@@ -321,60 +276,6 @@ export function openView(input: OpenViewInput): OpenView {
 }
 
 // ============================================================================
-// The Open view: what it shows, and what collapses to a thin rule
-// ============================================================================
-
-export interface CollapsedRun {
-  /** First line of the run (inclusive). */
-  from: number;
-  /** Last line of the run (inclusive). */
-  to: number;
-  /** How many lines the rule stands for. */
-  lines: number;
-  /** "14 lines agreed" — what the rule says. */
-  label: string;
-}
-
-export interface OpenLayout {
-  /** The lines the Open view shows: every item, plus OPEN_VIEW_POLICY.contextLines either side. */
-  shown: Set<number>;
-  /** The runs that collapse to a thin rule, in document order. */
-  runs: CollapsedRun[];
-}
-
-/**
- * Which lines the Open view shows and which collapse. A run shorter than
- * OPEN_VIEW_POLICY.minCollapseRun is shown instead of collapsed: hiding one line behind a control
- * costs the reader more than showing it.
- */
-export function openLayout(lineCount: number, itemLines: readonly number[], expanded: ReadonlySet<number> = new Set()): OpenLayout {
-  const shown = new Set<number>();
-  const span = OPEN_VIEW_POLICY.contextLines;
-  for (const line of itemLines) {
-    for (let i = Math.max(0, line - span); i <= Math.min(lineCount - 1, line + span); i += 1) shown.add(i);
-  }
-  for (const line of expanded) if (line >= 0 && line < lineCount) shown.add(line);
-  const runs: CollapsedRun[] = [];
-  let start: number | null = null;
-  const close = (end: number) => {
-    if (start === null) return;
-    const lines = end - start + 1;
-    if (lines >= OPEN_VIEW_POLICY.minCollapseRun) {
-      runs.push({ from: start, to: end, lines, label: `${lines} ${lines === 1 ? 'line' : 'lines'} settled` });
-    } else {
-      for (let i = start; i <= end; i += 1) shown.add(i);
-    }
-    start = null;
-  };
-  for (let i = 0; i < lineCount; i += 1) {
-    if (shown.has(i)) { close(i - 1); continue; }
-    if (start === null) start = i;
-  }
-  close(lineCount - 1);
-  return { shown, runs };
-}
-
-// ============================================================================
 // The Accord view's honest header
 // ============================================================================
 
@@ -497,27 +398,18 @@ export function accordHeader(input: {
 export type AccordView = 'open' | 'accord';
 
 export const ZERO_POLICY = {
-  /**
-   * At zero the toggle goes away and the document is simply the Accord (brief 7). Quiet and
-   * dignified: a state change, not confetti.
-   */
-  switchToAccordAtZero: true,
   /** The words when the viewer is at zero but others are not. */
-  forYou: 'Nothing is open for you. This is the Accord.',
+  forYou: 'You have finished reviewing.',
   /** The words when the document is settled for everyone. */
-  forEveryone: 'Everyone has agreed. This is the Accord.',
-  /**
-   * Reaching zero never strips the reader's controls. The document IS the Accord at zero — the
-   * toggle goes, the header stays — but the margin and the rail only go when the person chooses
-   * Accord themselves. A page that quietly takes away the Agree button has moved under the reader.
-   */
+  forEveryone: 'Everyone has agreed.',
+  /** Completion preserves controls; only explicitly choosing the agreed copy hides them. */
   zeroNeverStripsChrome: true,
   /** How long the band stays before it fades to the plain header (0: it stays). */
   bandMs: 0,
 } as const;
 
 export interface ZeroMoment {
-  /** The viewer has nothing open. The toggle goes away. */
+  /** The viewer has agreed to every passage and has nothing open. */
   forViewer: boolean;
   /** Everyone has agreed to every line. The header goes too. */
   forEveryone: boolean;
@@ -526,30 +418,17 @@ export interface ZeroMoment {
   /** The view the document should be in. */
   view: AccordView;
   /**
-   * Strip the chrome and read clean. TRUE ONLY when the person CHOSE Accord — reaching zero puts
-   * the document in the Accord, but it must not take their marking tools away from under them.
+   * Strip the chrome and read clean only when the reader explicitly chooses the agreed copy.
    * Explicit beats automatic: a view that removes controls is never entered on the page's say-so.
    */
   clean: boolean;
 }
 
-/**
- * The zero moment, from the viewer's Open count and the honest header.
- *
- * `chosen` is whether the person pressed Open or Accord for this document. Until they do, the
- * document reads exactly as it did before this stage — margin, dots, rail — with the honest header
- * added. That is the whole difference the default load sees.
- *
- * ★ A zero count is NOT on its own the zero moment. On a document nobody has read, nothing is in
- * the viewer's Open list (OPEN_VIEW_POLICY.unreadLinesAreOpen is off) and the page would otherwise
- * say "Nothing is open for you. This is the Accord." directly above "You have not read it." — two
- * true sentences that together are a lie. The moment needs the viewer to have actually AGREED to
- * the document as it now reads, which is the thing the whole product is for.
- */
+/** Completion reports status. The reader's chosen view is always preserved. */
 export function zeroMoment(open: OpenView, header: AccordHeader, wanted: AccordView, chosen = false): ZeroMoment {
   const forViewer = open.count === 0 && Boolean(header.viewerRow?.agreed);
   const forEveryone = forViewer && header.settled;
-  const view: AccordView = forViewer && ZERO_POLICY.switchToAccordAtZero ? 'accord' : wanted;
+  const view = wanted;
   return {
     forViewer,
     forEveryone,
