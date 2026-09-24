@@ -127,6 +127,21 @@ try {
     assert.equal(folding.resolveSectionScope(scope, now).length, scope.lines.length - 1);
   });
 
+  await test('a renamed heading keeps its fold when position mapping does not land on it', async () => {
+    const goals = lines.find(line => line.text === 'Goals')!;
+    const renamedDoc = doc.replace('## Goals', '## Goals renamed');
+    const after = await serverLines.computeServerLines(renamedDoc);
+    const folded = new Set([`${goals.hash}:${goals.occurrence}`]);
+    const next = folding.remapFoldedKeys(folded, lines, after, () => 999999);
+    const renamed = after.find(line => line.text === 'Goals renamed')!;
+    assert.ok(next.has(`${renamed.hash}:${renamed.occurrence}`), 'the fold must follow the renamed heading');
+    assert.equal(next.size, 1);
+    const shifted = folding.remapFoldedKeys(folded, lines, after, pos => pos);
+    assert.ok(shifted.has(`${renamed.hash}:${renamed.occurrence}`));
+    const kept = folding.remapFoldedKeys(folded, [], after, () => 0);
+    assert.ok(kept.has(`${goals.hash}:${goals.occurrence}`), 'a load that does not contain the heading must not drop its fold');
+  });
+
   await test('section agreement is offered only when every line of the section is visible', () => {
     const goals = folding.sectionByHeading(sections, GOALS)!;
     const detail = folding.sectionByHeading(sections, DETAIL)!;

@@ -301,7 +301,7 @@ async function desktop(browser, base, style, width) {
     await note.click();
     await waitFor(page, () => window.__proofFolding.isFolded(6) === false && window.__proofFolding.isFolded(2) === false);
     assert.equal(await note.textContent(), 'Agree with this section (7 lines)');
-    assert.notEqual(await page.evaluate(() => window.__proofLineMarks.myStatus(3)), 'agreed', 'showing the lines agreed a hidden line');
+    assert.notEqual(await page.evaluate(() => window.__proofLineMarks.myStatus(8)), 'agreed', 'showing the lines agreed a hidden line');
   });
   await check(`${tag}: captured section agreement excludes a concurrent insertion`, async () => {
     await selectPassage(page, 14);

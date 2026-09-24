@@ -1945,7 +1945,7 @@ export class LineMarksUI {
       btn.dataset.status = choice;
       btn.setAttribute('aria-pressed', String(current === choice));
       const primary = margin && MARGIN_POLICY.primaryMarks.includes(choice);
-      const g = document.createElement('span'); g.className = 'plm-choice-glyph'; g.textContent = STATUS_GLYPH[choice];
+      const g = document.createElement('span'); g.className = 'plm-choice-glyph'; g.textContent = STATUS_GLYPH[choice]; g.setAttribute('aria-hidden', 'true');
       const l = document.createElement('span');
       l.textContent = primary
         ? (choice === 'agreed' ? (current === 'agreed' ? 'Agreed' : 'Agree') : (current === 'rejected' ? 'Rejected' : 'Reject'))

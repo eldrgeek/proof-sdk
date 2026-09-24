@@ -292,8 +292,11 @@ export class ReadingWalkUI {
     setReadingAnchor({
       position: () => this.lines[this.cursorLine()]?.pos ?? null,
       mapped: pos => {
-        const index = this.host.lineMarks().lineAtPos(pos);
-        if (index >= 0) this.selectPassage(index);
+        // lineAtPos falls through to the last line when its list is still the pre-edit one.
+        // Follow the mapped position only when it still lands inside the selected passage.
+        const lines = this.host.lineMarks().lineList();
+        const line = lines.find(candidate => pos >= candidate.pos && pos < candidate.pos + candidate.nodeSize);
+        if (line && `${line.hash}:${line.occurrence}` === this.selectedKey) this.selectPassage(line.index);
         this.rememberViewport();
       },
     });

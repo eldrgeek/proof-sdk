@@ -98,6 +98,39 @@ export function sectionByHeading(sections: DocSection[], headingIndex: number): 
   return sections.find(section => section.headingIndex === headingIndex);
 }
 
+/**
+ * A remote edit can rename a heading, which changes its hash, or shift it.
+ * The fold follows that heading: same key, else the mapped position, else the same
+ * block and level, else the same ordinal when the heading count did not change.
+ * Mike, 2026-09-23 (usability brief).
+ */
+export function remapFoldedKeys(
+  folded: ReadonlySet<string>,
+  before: readonly DocLine[],
+  after: readonly DocLine[],
+  mapPos: (pos: number) => number,
+): Set<string> {
+  const beforeHeadings = before.filter(line => line.level !== undefined);
+  const afterHeadings = after.filter(line => line.level !== undefined);
+  // A key whose heading is not in `before` is kept. A document load must not wipe stored folds.
+  const next = new Set(folded);
+  for (const key of folded) {
+    const old = before.find(line => line.level !== undefined && headingKey(line) === key);
+    if (!old) continue;
+    next.delete(key);
+    const mapped = mapPos(old.pos);
+    const ordinal = beforeHeadings.findIndex(line => line.index === old.index);
+    const heading = afterHeadings.find(line => headingKey(line) === key)
+      ?? afterHeadings.find(line => line.level === old.level && line.pos === mapped)
+      ?? afterHeadings.find(line => line.level === old.level && line.block === old.block)
+      ?? (ordinal >= 0 && beforeHeadings.length === afterHeadings.length && afterHeadings[ordinal]?.level === old.level
+        ? afterHeadings[ordinal]
+        : undefined);
+    if (heading) next.add(headingKey(heading));
+  }
+  return next;
+}
+
 /** Folded sections, keeping only keys that still name a heading. */
 export function foldedSections(sections: DocSection[], folded: ReadonlySet<string>): DocSection[] {
   return sections.filter(section => folded.has(section.key));

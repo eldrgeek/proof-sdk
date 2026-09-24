@@ -9,7 +9,7 @@ import { actorKey, extractLines, type DocLine } from '../shared/line-marks';
 import {
   FOLDING,
   captureSectionScope,
-  headingKey,
+  remapFoldedKeys,
   type SectionScope,
   computeSections,
   foldedAncestors,
@@ -125,18 +125,9 @@ export class FoldingUI {
   /** Preserve disclosure choices when an edit renames or shifts their heading. */
   mapTransaction(tr: Transaction): void {
     if (!tr.docChanged || !this.folded.size) return;
+    const beforeLines = extractLines(tr.before);
     const nextLines = extractLines(tr.doc);
-    const next = new Set(this.folded);
-    for (const section of this.sections) {
-      if (!this.folded.has(section.key)) continue;
-      const old = this.lines[section.headingIndex];
-      const mapped = tr.mapping.map(old.pos, -1);
-      const heading = nextLines.find(line => line.level !== undefined && headingKey(line) === section.key)
-        ?? nextLines.find(line => line.level === old.level && line.pos === mapped);
-      next.delete(section.key);
-      if (heading) next.add(headingKey(heading));
-    }
-    this.folded = next;
+    this.folded = remapFoldedKeys(this.folded, beforeLines, nextLines, pos => tr.mapping.map(pos, -1));
     this.saveFolded();
   }
 
