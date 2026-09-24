@@ -7,6 +7,8 @@
 // Exit code 0 only if every check passes.
 // Usage: node scripts/folding-check.mjs [--style playmaker|proof] [--width 1440] [--shots dir]
 import assert from 'node:assert/strict';
+import { selectPassage, expandedStaysExpanded } from './usability-s1-assertions.mjs';
+
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
@@ -210,7 +212,7 @@ async function desktop(browser, base, style, width) {
 
   await check(`${tag}: scrolling past a folded section marks none of its hidden lines Seen and accepts nothing hidden`, async () => {
     await page.evaluate(() => window.scrollTo(0, 0));
-    await waitFor(page, () => window.__proofReadingWalk.debugState().focus === 0);
+    await selectPassage(page, 0);
     await chip(page, L.ALPHA).click();
     await waitFor(page, () => document.querySelector('.pfold-chip[data-heading="2"]')?.dataset.folded === 'true');
     // Read slowly with J from the top to Delta: every visible line dwells.
@@ -223,7 +225,7 @@ async function desktop(browser, base, style, width) {
     await page.waitForTimeout(400);
     const s = await walk(page);
     assert.equal(s.focus, L.DELTA, `focus ${s.focus}`);
-    assert.deepEqual(s.provisional, [], 'a hidden suggestion was accepted by scrolling');
+    assert.equal(await page.locator('.prw-commit').count(), 0, 'a hidden suggestion was accepted by scrolling');
     for (const line of [3, 4, 5, 6, 7, 8, 10, 11, 12, 13]) {
       assert.ok(!s.seenWrites.includes(line), `hidden line ${line} was marked Seen`);
     }
@@ -234,7 +236,7 @@ async function desktop(browser, base, style, width) {
     assert.equal(pending, 1);
   });
 
-  await check(`${tag}: A on a folded heading agrees with every line of the section in one request; Undo restores`, async () => {
+  await check(`${tag}: explicit section agreement captures its lines, preserves Rejects and has one Undo`, async () => {
     // Alpha is folded. Line 3 gets a Seen and line 5 an Approve? (not owner) — give line 7 a Reject first.
     await chip(page, L.ALPHA).click(); // unfold to reject one line inside
     await waitFor(page, () => document.querySelector('.pfold-chip[data-heading="2"]')?.dataset.folded === 'false');
@@ -250,11 +252,14 @@ async function desktop(browser, base, style, width) {
     await waitFor(page, () => document.querySelector('.pfold-chip[data-heading="2"]')?.dataset.folded === 'true');
     await page.locator(`.plm-dot[data-line="${L.ALPHA}"]`).click();
     await waitFor(page, i => window.__proofReadingWalk.debugState().focus === i, L.ALPHA);
-    const note = await page.locator('.prw-right .plm-section-note').innerText();
-    assert.match(note, /all 7 lines/, note);
+    const note = page.locator('.prw-right .plm-section-note');
+    assert.equal(await note.innerText(), 'Show all 7 lines to agree with this section');
+    await note.click();
+    await waitFor(page, () => document.querySelector('.pfold-chip[data-heading="2"]')?.dataset.folded === 'false');
+    assert.equal(await note.innerText(), 'Agree with this section (7 lines)');
     await page.evaluate(() => document.activeElement?.blur());
     const before = batchPosts.length;
-    await page.keyboard.press('a');
+    await page.locator('.prw-right .plm-section-note').click();
     await waitFor(page, () => document.querySelector('.plm-toast[data-action]') !== null);
     await page.waitForTimeout(600);
     assert.equal(batchPosts.length - before, 1, `section mark sent ${batchPosts.length - before} batch requests`);
@@ -280,20 +285,19 @@ async function desktop(browser, base, style, width) {
     assert.equal(after.get(7), 'rejected');
   });
 
-  await check(`${tag}: R on a folded heading shows the "reject a specific line" hint, not a reason field`, async () => {
+  await check(`${tag}: Reject on a collapsed heading opens its own reason field`, async () => {
     await page.evaluate(() => document.activeElement?.blur());
     await page.keyboard.press('r');
-    const hint = page.locator('.prw-right .plm-section-hint');
-    await hint.waitFor({ state: 'visible' });
-    assert.match(await hint.innerText(), /specific line/);
-    assert.equal(await page.locator('.prw-right .plm-reason').isVisible(), false);
+    await page.locator('.prw-right .plm-reason').waitFor({ state: 'visible' });
+    assert.equal(await page.locator('.plm-section-hint').count(), 0);
+    await page.evaluate(() => document.activeElement?.blur());
   });
 
   await check(`${tag}: on an unfolded heading a mark applies to the heading line only`, async () => {
     await chip(page, L.GAMMA).scrollIntoViewIfNeeded();
     await page.locator(`.plm-dot[data-line="${L.GAMMA}"]`).click();
     await waitFor(page, i => window.__proofReadingWalk.debugState().focus === i, L.GAMMA);
-    assert.equal(await page.locator('.prw-right .plm-section-note').count(), 0);
+    assert.match(await page.locator('.prw-right .plm-section-note').innerText(), /Agree with this section/);
     await page.evaluate(() => document.activeElement?.blur());
     const before = batchPosts.length;
     await page.keyboard.press('a');
@@ -311,7 +315,12 @@ async function desktop(browser, base, style, width) {
       await p.evaluate(() => { window.__proofReadingWalk.focusLine(17); });
       await p.evaluate(() => document.activeElement?.blur());
       await p.waitForTimeout(200);
-      await p.keyboard.press('a');
+      const note = p.locator('.prw-right .plm-section-note');
+      if ((await note.innerText()).startsWith('Show all')) {
+        await note.click();
+        await p.waitForFunction(() => document.querySelector('.prw-right .plm-section-note')?.textContent?.startsWith('Agree with this section'));
+      }
+      await p.locator('.prw-right .plm-section-note').click();
       await p.waitForTimeout(500);
     }
     await waitFor(page, () => document.querySelector('.pfold-chip[data-heading="17"]')?.dataset.state === 'resolved', null, 12000);
@@ -321,27 +330,18 @@ async function desktop(browser, base, style, width) {
   });
 
   // Accord layout stage 3 (decision 7): the fold controls live on the Navigator's Outline tab.
-  await check(`${tag}: Fold all, level and Unfold all controls on the Navigator's Outline tab`, async () => {
+  await check(`${tag}: Collapse all and Expand all controls preserve explicit reader choice`, async () => {
     await page.locator('.prw-left .anv-tab[data-tab="outline"]').click();
     const controls = page.locator('.prw-left .pfold-controls');
-    await controls.getByRole('button', { name: 'Fold every section', exact: true }).click();
-    let f = await fold(page);
-    assert.equal(f.folded.length, 6);
-    assert.ok(await isHiddenLine(page, L.ALPHA), 'Alpha heading visible under a folded title');
-    await controls.getByRole('button', { name: 'Show headings down to level 2' }).click();
-    f = await fold(page);
-    assert.equal(await isHiddenLine(page, L.ALPHA), false);
-    assert.ok(await isHiddenLine(page, 3));
-    assert.equal(await isHiddenLine(page, 1), false, 'the H1 body before the first H2 is hidden');
-    await page.screenshot({ path: path.join(shots, `${tag}-5-level2.png`) });
-    await controls.getByRole('button', { name: 'Unfold every section', exact: true }).click();
-    f = await fold(page);
-    assert.deepEqual(f.folded, []);
-    assert.deepEqual(f.hiddenBlocks, []);
+    await controls.getByRole('button', { name: 'Collapse all sections', exact: true }).click();
+    assert.equal((await fold(page)).folded.length, 6);
+    await controls.getByRole('button', { name: 'Expand all sections', exact: true }).click();
+    assert.deepEqual((await fold(page)).hiddenBlocks, []);
+    await expandedStaysExpanded(page);
   });
 
   await check(`${tag}: Next issue unfolds the section that holds the next issue`, async () => {
-    await page.locator('.prw-left .pfold-controls').getByRole('button', { name: 'Fold every section', exact: true }).click();
+    await page.locator('.prw-left .pfold-controls').getByRole('button', { name: 'Collapse all sections', exact: true }).click();
     const hiddenBefore = new Set((await fold(page)).hidden);
     let unfoldedOne = false;
     for (let i = 0; i < 6 && !unfoldedOne; i += 1) {
@@ -352,7 +352,7 @@ async function desktop(browser, base, style, width) {
       if (hiddenBefore.has(s.focus)) unfoldedOne = true;
     }
     assert.ok(unfoldedOne, 'Next issue never went into a folded section');
-    await page.locator('.prw-left .pfold-controls').getByRole('button', { name: 'Unfold every section', exact: true }).click();
+    await page.locator('.prw-left .pfold-controls').getByRole('button', { name: 'Expand all sections', exact: true }).click();
   });
 
   await bob.context.close();
@@ -389,18 +389,21 @@ async function phone(browser, base, style) {
     await page.locator(`.plm-dot[data-line="${L.BETA}"]`).tap();
     const sheet = page.locator('.plm-menu.plm-sheet');
     await sheet.waitFor({ state: 'visible' });
-    assert.match(await sheet.locator('.plm-section-note').innerText(), /all 5 lines/);
+    const section = sheet.locator('.plm-section-note');
+    assert.equal(await section.innerText(), 'Show all 5 lines to agree with this section');
     await page.screenshot({ path: path.join(shots, `${tag}-2-sheet.png`) });
-    await sheet.getByRole('button', { name: /Seen/ }).tap();
-    await waitFor(page, () => window.__proofLineMarks.debugState().marks.filter(m => m.by === 'guest:Pat' && m.status === 'seen' && !m.id.startsWith('local-')).length >= 5);
+    await section.tap();
+    await page.waitForFunction(() => document.querySelector('.plm-menu.plm-sheet .plm-section-note')?.textContent === 'Agree with this section (5 lines)');
+    await sheet.locator('.plm-section-note').tap();
+    await waitFor(page, () => window.__proofLineMarks.debugState().marks.filter(m => m.by === 'guest:Pat' && m.status === 'agreed' && !m.id.startsWith('local-')).length >= 5);
     await page.screenshot({ path: path.join(shots, `${tag}-3-marked.png`) });
   });
   await check(`${tag}: the ⋯ menu has Fold all and Unfold all`, async () => {
     await page.locator('#share-banner .share-pill-overflow').tap();
-    await page.getByRole('menuitem', { name: /Fold all/ }).tap();
+    await page.getByRole('menuitem', { name: /Collapse all sections/ }).tap();
     await waitFor(page, () => window.__proofFolding.debugState().folded.length === 6);
     await page.locator('#share-banner .share-pill-overflow').tap();
-    await page.getByRole('menuitem', { name: /Unfold all/ }).tap();
+    await page.getByRole('menuitem', { name: /Expand all sections/ }).tap();
     await waitFor(page, () => window.__proofFolding.debugState().folded.length === 0);
   });
   await context.close();

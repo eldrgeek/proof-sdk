@@ -1,20 +1,6 @@
 /**
- * Rail scrolling (Mike, 2026-09-21): "The marks in the sidebar don't automatically scroll down to
- * the bottom." and "Scrolling in the chat sidebar and scrolling in the text are not decoupled.
- * Scrolling in the text should always scroll the chat to the bottom, where the mark for the text
- * is found."
- *
- * Two rules, for every scrolling list in a rail (the right rail's body, the chat's messages):
- *   1. Independent scroll roots. A wheel or swipe over a rail scrolls that list only; at its ends
- *      it stops (overscroll-behavior: contain), and over a part of the rail that does not scroll
- *      the wheel does nothing. Neither list ever scrolls the page, and the page never scrolls them.
- *   2. Follow the end. While the person has not scrolled a list away from its end, the list keeps
- *      its newest item in view: when items arrive, and when the text's focus line changes. Once
- *      they scroll up in it, it stays where they put it and a "New below ↓" pill offers the way
- *      back (clicking it, or scrolling back down to the end, follows again). Nothing moves under a
- *      reader who is looking at something else (the one model's rule 2).
- *
- * Authorship: Claude Opus 5 (worker proof-bugs6), 2026-09-21.
+ * Rails scroll independently. Incoming content offers New below without moving the list.
+ * Only the reader's scroll or pill click moves it. Mike, 2026-09-23 (usability brief).
  */
 
 export const RAIL_FOLLOW_POLICY = {
@@ -79,11 +65,12 @@ export class ScrollFollower {
   /** The pill, for callers that place it themselves. */
   get pillElement(): HTMLButtonElement { return this.pill; }
 
-  /** Something new is at the end (items arrived, the focus line changed): keep it in view, or offer the pill. */
+  /** Something new is at the end (items arrived, the focus line changed): offer the pill without scrolling. */
   follow(): void {
+    // Mike, 2026-09-23 (usability brief): incoming content never scrolls a list.
     if (!RAIL_FOLLOW_POLICY.enabled) return;
-    if (this.following) { this.scrollToEnd(); return; }
     if (this.distanceFromEnd() <= RAIL_FOLLOW_POLICY.slackPx) { this.following = true; this.pill.hidden = true; return; }
+    this.following = false;
     if (this.pill.hidden) this.pillShows += 1;
     this.pill.hidden = false;
   }

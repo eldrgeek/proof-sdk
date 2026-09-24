@@ -1,30 +1,16 @@
 /**
- * Caret stability (Mike, 2026-09-19: "When I tried to click before that line it started to make
- * changes but moved the view away from where I was typing").
- *
- * While the person is editing (editing-guard.ts), a change they did not make must not move the line
- * they are typing in. Remote Yjs updates and our view-only decoration refreshes (asks, folds,
- * tiers, extras, line marks) can add or remove height ABOVE the caret, for example an ask that
- * appears on a visible line above. The browser's scroll anchoring does not help when the inserted
- * content is on screen (it anchors on the first visible element, which is above the insertion), and
- * iOS Safari has no scroll anchoring at all. So around every such transaction this measures the
- * caret's line on screen before and after, and scrolls by the difference.
- *
- * The person's own transactions (typing changes the document; a click or key sets the selection)
- * are never compensated: their own scrolling, Enter and caret moves behave as before.
- *
- * Authorship: Claude Opus 5 (worker proof-caret), 2026-09-19.
+ * Foreign transactions keep the selected passage (or the writing caret) at its screen position.
+ * The person's own navigation and scrolling remain deliberate actions.
+ * Mike, 2026-09-23 (usability brief).
  */
 import type { EditorView } from '@milkdown/kit/prose/view';
 import type { Transaction } from '@milkdown/kit/prose/state';
 import { ySyncPluginKey } from 'y-prosemirror';
-import { isEditing } from './editing-guard';
+import { isWriting } from './editing-guard';
 
 export const CARET_ANCHOR_POLICY = {
   /** Keep the caret's line in place on screen when a change the person did not make shifts it. */
   enabled: true,
-  /** Only while the person is editing (EDITING_GUARD_POLICY.graceMs); reading keeps its own rules. */
-  onlyWhileEditing: true,
   /** Shifts smaller than this (px) are ignored (sub-pixel layout noise). */
   minShiftPx: 1,
 } as const;
@@ -40,19 +26,17 @@ export function isForeignTransaction(tr: Transaction): boolean {
   return !tr.docChanged && !tr.selectionSet;
 }
 
-/** Viewport top of the top-level block holding the caret, or null. */
-function caretLineTop(view: EditorView): number | null {
+/** The reading UI supplies its explicitly selected passage, independently of the caret. */
+let readingAnchor: { position(): number | null; mapped(position: number): void } | null = null;
+export function setReadingAnchor(anchor: typeof readingAnchor): void { readingAnchor = anchor; }
+
+function lineTop(view: EditorView, pos: number): number | null {
   try {
-    const { head } = view.state.selection;
-    const $head = view.state.doc.resolve(head);
-    const depth = Math.min(1, $head.depth);
-    if (depth < 1) return null;
-    const dom = view.nodeDOM($head.before(1));
-    if (!(dom instanceof HTMLElement) || !dom.isConnected) return null;
-    return dom.getBoundingClientRect().top;
-  } catch {
-    return null;
-  }
+    const $pos = view.state.doc.resolve(pos);
+    const at = $pos.depth ? $pos.before(1) : pos;
+    const dom = view.nodeDOM(at);
+    return dom instanceof HTMLElement && dom.isConnected ? dom.getBoundingClientRect().top : null;
+  } catch { return null; }
 }
 
 /**
@@ -61,14 +45,20 @@ function caretLineTop(view: EditorView): number | null {
  */
 export function anchorCaretAround(view: EditorView, tr: Transaction, dispatch: (tr: Transaction) => void): void {
   if (!CARET_ANCHOR_POLICY.enabled || !isForeignTransaction(tr)
-    || (CARET_ANCHOR_POLICY.onlyWhileEditing && !isEditing()) || typeof window === 'undefined') {
+    || typeof window === 'undefined') {
     dispatch(tr);
     return;
   }
-  const before = caretLineTop(view);
+  // Mike, 2026-09-23 (usability brief): also anchor reading after typing has paused.
+  const writing = isWriting();
+  const position = writing ? view.state.selection.head : readingAnchor?.position();
+  const before = typeof position === 'number' ? lineTop(view, position) : null;
+  const mapped = typeof position === 'number' ? tr.mapping.map(position, 1) : null;
   dispatch(tr);
   if (before === null) return;
-  const after = caretLineTop(view);
+  if (mapped === null) return;
+  if (!writing) readingAnchor?.mapped(mapped);
+  const after = lineTop(view, writing ? view.state.selection.head : mapped);
   if (after === null) return;
   const shift = after - before;
   if (Math.abs(shift) >= CARET_ANCHOR_POLICY.minShiftPx) window.scrollBy(0, shift);

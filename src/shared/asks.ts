@@ -87,8 +87,6 @@ export const ASK_POLICY = {
   emptyToMeans: 'any-human' as const,
   /** Answering also sets the answerer's line mark to Seen when they had none (never lowers one). */
   answerMarksLineSeen: true,
-  /** Answering is the TM's explicit action for the reading walk (commits scroll-accepts above). */
-  answerIsExplicitReadingAction: true,
   /** One ask per line: asking again on the same line returns 409 ASK_EXISTS (use re-ask). */
   oneAskPerLine: true,
   /** An ask whose line was deleted is "orphaned": listed, but not an Issue. */

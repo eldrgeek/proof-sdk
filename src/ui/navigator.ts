@@ -4,14 +4,16 @@
  *   - Outline: the headings, each with its fold chip (▾ / ▸ and the section's Issues) and the
  *     fold controls (Fold all, Unfold all, H1 / H2, Unfold closed, decision / context).
  *   - Issues: the viewer's own Issues, one row per line (title, kind, line). The same lines as the
- *     amber dots and the Issues pill. A row moves the cursor there.
+ *     amber dots and the Issues pill. A row moves the cursor there. A settled row keeps the
+ *     passage's text identity from the moment it settled, so a remote insert cannot re-label it.
+ *     Mike, 2026-09-23 (usability brief).
  *   - Since you: what changed since the viewer last marked (the reading walk's Since-you list).
  * The documents list moved to File › Open (stage 2), so the Navigator carries no documents.
  *
  * Authorship: Mike Wolf (rulings), Ren (SOMA UI, the proposal), built by Claude Opus 5 (worker
  * accord-layout3), 2026-09-21.
  */
-import { NAVIGATOR_POLICY, needsYouLabel, outlineRows, type NavigatorTab } from '../shared/layout-panels';
+import { NAVIGATOR_POLICY, stableReviewOrder, needsYouLabel, outlineRows, resolveSettledIndex, type NavigatorTab, type SettledIdentity } from '../shared/layout-panels';
 import type { LineMarksUI } from './line-marks';
 import type { FoldingUI } from './folding';
 
@@ -49,8 +51,8 @@ export class NavigatorUI {
    * greys out with a strikethrough and STAYS IN PLACE; it leaves on "Clear settled", or when they
    * leave the tab. A list that collapses as you work it makes you lose your place.
    */
-  private readonly settled = new Map<number, { kinds: string[]; label: string }>();
-  private tracked = new Set<number>();
+  private readonly settled = new Map<string, SettledIdentity & { kinds: string[]; label: string; text: string }>();
+  private tracked = new Set<string>();
   private readonly settledTools = el('div', 'anv-settled-tools');
   private readonly settledLabel = el('span', 'anv-settled-count');
   private readonly clearSettledBtn = el('button', 'anv-clear-settled', 'Clear settled');
@@ -60,9 +62,10 @@ export class NavigatorUI {
   private readonly badge = el('span', 'anv-badge');
   private tab: NavigatorTab;
   private outlineSig = '';
+  private issueOrder: string[] = [];
   private issuesSig = '';
-  /** The last row drawn for each line, so a settled row keeps the words it had. */
-  private lastRows = new Map<number, { kinds: string[]; label: string }>();
+  /** The last row drawn for each passage, so a settled row keeps the identity it had. */
+  private lastRows = new Map<string, SettledIdentity & { kinds: string[]; label: string; text: string }>();
 
   constructor(private readonly host: NavigatorHost, initial: NavigatorTab | undefined, sinceHost: HTMLElement) {
     this.tab = initial ?? NAVIGATOR_POLICY.defaultTab;
@@ -97,6 +100,8 @@ export class NavigatorUI {
     this.settledTools.hidden = true;
     this.panes.issues.append(this.issuesEmpty, this.settledTools, this.issuesList);
     this.panes.since.append(this.sinceEmpty, sinceHost);
+    this.outlineList.addEventListener('focusout', () => queueMicrotask(() => this.render()));
+    this.issuesList.addEventListener('focusout', () => queueMicrotask(() => this.render()));
     this.applyTab();
   }
 
@@ -105,7 +110,7 @@ export class NavigatorUI {
   select(tab: NavigatorTab, remember = true): void {
     if (tab === this.tab) return;
     // Leaving the Issues tab is the other way a settled row goes (OPEN_VIEW_POLICY.keepSettled).
-    if (this.tab === 'issues') { this.settled.clear(); this.tracked.clear(); }
+    if (this.tab === 'issues') { this.settled.clear(); this.tracked.clear(); this.issueOrder = []; }
     this.tab = tab;
     this.applyTab();
     if (remember) this.host.tabChanged(tab);
@@ -141,63 +146,111 @@ export class NavigatorUI {
     const sinceShown = this.panes.since.querySelector('.prw-since:not([hidden])');
     this.sinceEmpty.hidden = Boolean(sinceShown);
     if (this.tab === 'issues') this.renderIssues(items);
-    if (this.tab === 'outline') this.renderOutline();
+    if (this.tab === 'outline') this.renderOutline(force);
+  }
+
+  private passageKey(lineIndex: number, lines: ReturnType<LineMarksUI['lineList']>): string | null {
+    const passage = lines[lineIndex];
+    return passage ? `${passage.hash}:${passage.occurrence}` : null;
   }
 
   private renderIssues(items: ReturnType<LineMarksUI['needsYouItems']>): void {
     const lm = this.host.lineMarks();
     const lines = lm.lineList();
     const cursor = this.host.cursor();
-    // A line that was on this list and is not any more has SETTLED: remember it, in place.
+    // A passage that was on this list and is not any more has SETTLED. Its identity is the
+    // hash and occurrence it had while it was open, not the index it happens to occupy now.
     if (lm.isLoaded()) {
-      const now = new Set(items.map(item => item.line));
-      for (const line of this.tracked) {
-        if (now.has(line) || this.settled.has(line)) continue;
-        const was = this.lastRows.get(line);
-        this.settled.set(line, was ?? { kinds: ['changed'], label: 'Settled' });
+      const now = new Set<string>();
+      for (const item of items) {
+        const key = this.passageKey(item.line, lines);
+        if (key) now.add(key);
       }
-      for (const line of now) this.settled.delete(line);
+      for (const key of this.tracked) {
+        if (now.has(key) || this.settled.has(key)) continue;
+        const was = this.lastRows.get(key);
+        if (was) this.settled.set(key, was);
+      }
+      for (const key of now) this.settled.delete(key);
       this.tracked = now;
-      this.lastRows = new Map(items.map(item => [item.line, { kinds: item.kinds as string[], label: needsYouLabel(item, actor => lm.displayName(actor), lm.me()) }]));
+      const remembered = new Map<string, SettledIdentity & { kinds: string[]; label: string; text: string }>();
+      for (const item of items) {
+        const passage = lines[item.line];
+        if (!passage) continue;
+        remembered.set(`${passage.hash}:${passage.occurrence}`, {
+          hash: passage.hash,
+          occurrence: passage.occurrence,
+          kinds: item.kinds as string[],
+          label: needsYouLabel(item, actor => lm.displayName(actor), lm.me()),
+          text: passage.text,
+        });
+      }
+      this.lastRows = remembered;
     }
-    const settledLines = [...this.settled.keys()];
-    const rows = [
-      ...items.map(item => ({ line: item.line, settled: false, kinds: item.kinds as string[], label: needsYouLabel(item, actor => lm.displayName(actor), lm.me()) })),
-      ...settledLines.map(line => ({ line, settled: true, kinds: this.settled.get(line)!.kinds, label: this.settled.get(line)!.label })),
-    ].sort((a, b) => a.line - b.line);
-    const sig = JSON.stringify([rows.map(r => [r.line, r.settled, r.kinds, r.label, lines[r.line]?.hash]), cursor]);
-    if (sig === this.issuesSig) return;
+    const openRows = items.flatMap(item => {
+      const passage = lines[item.line];
+      if (!passage) return [];
+      return [{
+        key: `${passage.hash}:${passage.occurrence}`,
+        line: item.line,
+        settled: false,
+        kinds: item.kinds as string[],
+        label: needsYouLabel(item, actor => lm.displayName(actor), lm.me()),
+        text: passage.text,
+      }];
+    });
+    const settledRows = [...this.settled.values()].map(item => {
+      const line = resolveSettledIndex(item, lines);
+      const current = line === null ? null : lines[line];
+      return {
+        key: `${item.hash}:${item.occurrence}`,
+        line: line ?? -1,
+        settled: true,
+        kinds: item.kinds,
+        label: item.label,
+        text: current?.text ?? item.text,
+      };
+    });
+    const rows = [...openRows, ...settledRows];
+    this.issueOrder = stableReviewOrder(this.issueOrder, rows.map(row => row.key));
+    rows.sort((a, b) => this.issueOrder.indexOf(a.key) - this.issueOrder.indexOf(b.key));
+    const sig = JSON.stringify([rows.map(r => [r.key, r.line, r.settled, r.kinds, r.label, r.text]), cursor]);
+    const issuesFocus = document.activeElement;
+    const issuesTyping = issuesFocus instanceof HTMLInputElement || issuesFocus instanceof HTMLTextAreaElement;
+    if (sig === this.issuesSig || (issuesTyping && this.issuesList.contains(issuesFocus))) return;
     this.issuesSig = sig;
     this.issuesEmpty.hidden = rows.length > 0 || !lm.isLoaded();
     const n = this.settled.size;
     this.settledTools.hidden = n === 0;
     this.settledLabel.textContent = n ? `${n} settled ${n === 1 ? 'row' : 'rows'}` : '';
-    this.issuesList.replaceChildren();
+    const existing = new Map([...this.issuesList.children].map(node => [(node as HTMLElement).dataset.key, node as HTMLElement]));
     for (const row of rows) {
-      const li = el('li');
-      const b = el('button', 'anv-issue');
+      const li = existing.get(row.key) ?? el('li');
+      li.dataset.key = row.key;
+      existing.delete(row.key);
+      const b = li.querySelector<HTMLButtonElement>('button') ?? el('button', 'anv-issue');
       b.type = 'button';
-      b.dataset.line = String(row.line);
+      if (row.line >= 0) b.dataset.line = String(row.line); else delete b.dataset.line;
       b.dataset.kind = row.kinds[0] ?? 'changed';
-      if (row.settled) b.dataset.settled = 'true';
-      if (row.line === cursor) b.setAttribute('aria-current', 'true');
+      b.dataset.settled = String(row.settled);
+      if (row.line >= 0 && row.line === cursor) b.setAttribute('aria-current', 'true'); else b.removeAttribute('aria-current');
       const dot = el('span', 'anv-dot');
       dot.setAttribute('aria-hidden', 'true');
-      const text = lines[row.line]?.text ?? '';
-      const title = text.length > NAVIGATOR_POLICY.titleChars ? `${text.slice(0, NAVIGATOR_POLICY.titleChars - 1)}…` : text;
+      const title = row.text.length > NAVIGATOR_POLICY.titleChars ? `${row.text.slice(0, NAVIGATOR_POLICY.titleChars - 1)}…` : row.text;
       const body = el('span', 'anv-issue-body');
       body.append(
-        el('span', 'anv-issue-title', title || `Line ${row.line + 1}`),
-        el('small', 'anv-issue-kind', row.settled ? `Settled · line ${row.line + 1}` : row.label),
+        el('span', 'anv-issue-title', title || (row.line >= 0 ? `Line ${row.line + 1}` : 'Removed line')),
+        el('small', 'anv-issue-kind', row.settled ? (row.line >= 0 ? `Settled · line ${row.line + 1}` : 'Settled · line removed') : row.label),
       );
-      b.append(dot, body);
-      b.onclick = () => this.host.go(row.line);
-      li.append(b);
-      this.issuesList.append(li);
+      b.replaceChildren(dot, body);
+      b.onclick = () => { if (row.line >= 0) this.host.go(row.line); };
+      if (b.parentElement !== li) li.append(b);
+      if (li.parentElement !== this.issuesList) this.issuesList.append(li);
     }
+    for (const node of existing.values()) node.remove();
   }
 
-  private renderOutline(): void {
+  private renderOutline(force = false): void {
     const folding = this.host.folding();
     const lm = this.host.lineMarks();
     const lines = lm.lineList();
@@ -208,7 +261,9 @@ export class NavigatorUI {
     let here = -1;
     for (const row of rows) if (row.headingIndex <= cursor) here = row.headingIndex;
     const sig = JSON.stringify([rows, here, lm.isLoaded()]);
-    if (sig === this.outlineSig) return;
+    const outlineFocus = document.activeElement;
+    const outlineTyping = outlineFocus instanceof HTMLInputElement || outlineFocus instanceof HTMLTextAreaElement;
+    if (sig === this.outlineSig || (!force && outlineTyping && this.outlineList.contains(outlineFocus))) return;
     this.outlineSig = sig;
     this.outlineList.replaceChildren();
     if (rows.length === 0) {
@@ -243,7 +298,10 @@ export class NavigatorUI {
     return {
       tab: this.tab,
       issues: [...this.issuesList.querySelectorAll<HTMLElement>('.anv-issue')].map(b => ({ line: Number(b.dataset.line), kind: b.dataset.kind, settled: b.dataset.settled === 'true', label: b.querySelector('.anv-issue-kind')?.textContent ?? '' })),
-      settled: [...this.settled.keys()].sort((a, b) => a - b),
+      settled: [...this.settled.values()]
+        .map(item => resolveSettledIndex(item, this.host.lineMarks().lineList()))
+        .filter((index): index is number => index !== null)
+        .sort((a, b) => a - b),
       outline: [...this.outlineList.querySelectorAll<HTMLElement>('.anv-row')].map(r => ({ heading: Number(r.dataset.heading), folded: r.querySelector<HTMLElement>('.anv-fold')?.dataset.folded === 'true' })),
     };
   }

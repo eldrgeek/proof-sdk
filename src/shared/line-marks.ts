@@ -1,15 +1,7 @@
 /**
- * Proof Documents — Step 1: per-TM, per-line status marks and Issues.
- *
- * Authorship: spec by Mike Wolf ("Proof Documents" draft, 2026-09-18); built by
- * Claude Opus 5 (worker proof-line-marks), 2026-09-18. The rules marked POLICY below
- * are Claude's proposals pending Mike's ruling, kept in one place so they are easy to change.
- *
- * Pure code shared by the browser and the server. It never touches the document text:
- * a line mark is stored beside the document and points at a line through an anchor
- * (a hash of the line's text plus fallbacks). A mark whose hash no longer matches its
- * line's current text is "stale" and counts as unseen. That is how an edit resets marks
- * without edit hooks.
+ * Passage marks retain their text identity, attribution and authority.
+ * Reading records Seen only; agreement always requires an explicit decision.
+ * Mike, 2026-09-23 (usability brief).
  */
 
 import { classifyLineChange, editDistance } from './line-change.js';
@@ -180,12 +172,6 @@ export const LINE_MARK_POLICY = {
  * (its authored marks) or someone other than the viewer holds a current mark on it.
  */
 export const STATEMENT_POLICY = {
-  /** What reading another's statement by scrolling (dwell) gives the reader. */
-  dwellOnOthersStatement: 'agreed' as LineMarkStatus,
-  /** What reading one's own statement (or a line nobody else touched) by scrolling gives. */
-  dwellOnOwnStatement: 'seen' as LineMarkStatus,
-  /** A dwell Seen on another's statement is raised to the dwell status above on the next read. */
-  upgradeDwellSeen: true,
   /** Editing another's statement: the editor's own mark becomes this (cosmetic or meaning change). */
   editorMarkOnEdit: 'agreed' as LineMarkStatus,
 } as const;
@@ -225,11 +211,9 @@ export function isOthersStatement(input: {
 }
 
 /** The status a dwell read gives, and whether to write it over the viewer's current status. */
-export function dwellMarkFor(othersStatement: boolean, current: { status: string; via?: MarkVia | null } | null): LineMarkStatus | null {
-  const target = othersStatement ? STATEMENT_POLICY.dwellOnOthersStatement : STATEMENT_POLICY.dwellOnOwnStatement;
+export function dwellMarkFor(_othersStatement: boolean, current: { status: string; via?: MarkVia | null } | null): LineMarkStatus | null {
+  const target = 'seen';
   if (!current || current.status === 'unseen' || current.status === 'changed' || current.status === 'skimmed') return target;
-  if (STATEMENT_POLICY.upgradeDwellSeen && current.status === 'seen' && target !== 'seen'
-    && current.via === 'dwell') return target;
   return null;
 }
 

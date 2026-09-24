@@ -1,9 +1,10 @@
 /**
+ * Reading creates no undoable decision. Mike, 2026-09-23 (usability brief).
  * Proof Documents — one Undo for every change a person makes (pure state, no DOM).
  *
  * Mike, 2026-09-19: "Undo is needed for every user change." Not only text editing: line marks,
  * ask answers, accepting or rejecting a suggestion, resolving a comment, picking a wording, tier
- * flips, folds, clearing an objection, ratifying a Familiar's proxy, committing scroll-accepts.
+ * flips, folds, clearing an objection, ratifying a Familiar's proxy.
  *
  * The model: one ordered stack per person and document. Every action that changes something for
  * anyone pushes an entry carrying (a) a short description the person reads ("agreed line 12") and
@@ -56,7 +57,6 @@ export const UNDO_KINDS = {
   objection: 'objection',
   flag: 'flag',
   ratify: 'ratification',
-  'scroll-accept': 'scroll-accepted changes',
   clarify: 'clarify request',
   ttl: 'review-by date',
 } as const;
