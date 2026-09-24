@@ -14,6 +14,8 @@
  *
  * Mike, 2026-09-23 (usability brief): participant status and /state must also hide an
  * objection's rejection, reason and condition until all its surviving lines are revealed.
+ * Every read, export and history follows that rule. Only verified identities grant reveal.
+ * Hidden placeholders omit origin metadata that could prove a choice; proxies stay private.
  *
  * Redaction happens on the server before anything leaves it (the page and the agent API receive
  * placeholders), so hidden positions are not in the browser's data either.
@@ -37,7 +39,7 @@ export const BLIND_POLICY = {
    * their answer to its ask, or their pick among its wordings.
    */
   revealBy: ['mark', 'answer', 'pick'] as readonly string[],
-  /** A hidden mark still shows who marked (not how): the Issue count stays honest. */
+  /** A hidden mark still shows who marked; the position stays private. */
   showWhoMarked: true,
   /**
    * Revealed disagreement becomes the priority rule 'disagreement' (priority 1):
@@ -86,7 +88,8 @@ export function revealedLines(lines: DocLine[], lineMarks: LineMark[], viewer: s
 
 /** Someone else's mark as the viewer may see it before the line is revealed. */
 export function hiddenMark(mark: LineMark): LineMark {
-  return { ...mark, status: 'seen', reason: null, why: null, evidence: null, proxy: null, hidden: true };
+  const { via: _via, ...safe } = mark;
+  return { ...safe, status: 'seen', reason: null, why: null, evidence: null, proxy: null, hidden: true };
 }
 
 /**
@@ -132,4 +135,10 @@ export function disagreementLines(states: LineState[]): Set<number> {
 export function objectionLinesRevealed(lineIndices: readonly (number | null)[], revealed: ReadonlySet<number>): boolean {
   const live = lineIndices.filter((index): index is number => index !== null);
   return live.length > 0 && live.every(index => revealed.has(index));
+}
+
+/** Blind proxies belong only to their person and Familiar, even after a line is revealed. */
+export function proxyVisibleTo(proxy: { for: string; familiar: string }, viewer: string): boolean {
+  const me = actorKey(viewer);
+  return Boolean(me) && (actorKey(proxy.for) === me || actorKey(proxy.familiar) === me);
 }

@@ -203,7 +203,8 @@ try {
     assert.equal(page.text, exported);
     ok(await call(`/api/agent/${slug}/settings`, 'POST', { blind: true, by: MIKE }, OWNER), 'blind on');
     const blindPage = await call(`/api/documents/${slug}/export`, 'GET', undefined, ERIC_PAGE);
-    assert.ok(!/\{agreed @mw/.test(blindPage.text), 'Eric does not see Mike\'s positions while blind');
+    assert.ok(/\{agreed @mw/.test(blindPage.text), 'Eric sees Mike on the heading Eric already marked');
+    assert.ok(!/\{rejected @mw/.test(blindPage.text), 'Eric cannot see Mike on the unrevealed marketing line');
     assert.ok(/\{seen @eric/.test(blindPage.text), 'Eric sees his own');
     const blindOwner = await call(`/api/agent/${slug}/export`, 'GET', undefined, OWNER);
     assert.equal(blindOwner.text, exported, 'the owner credential reads everything');

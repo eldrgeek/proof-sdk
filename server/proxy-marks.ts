@@ -1,4 +1,5 @@
 /**
+ * Mike, 2026-09-23 (usability brief): blind briefs use neutral holds; ratification also checks the complete internal Issue report.
  * Proof Documents — Familiar proxy marks, server side (storage, binding, proxy writes, the brief,
  * ratify and undo). Rules live in src/shared/proxy-marks.ts (PROXY_POLICY, EVIDENCE_POLICY).
  *
@@ -11,6 +12,9 @@
  * person's own line marks (via "proxy") in one transaction and records what each line held before,
  * so Undo restores it in one request.
  */
+import { blindReadView } from './blind-view.js';
+import { redactIssues } from './proof-extras-eval.js';
+import { proxyVisibleTo } from '../src/shared/blind.js';
 import { randomUUID } from 'crypto';
 import { addDocumentEvent, assertWritesAllowed, getDb, listDocumentLineMarks, type DocumentLineMarkRow } from './db.js';
 import { broadcastToRoom } from './ws.js';
@@ -337,18 +341,32 @@ function suggestionLines(lines: DocLine[], rawMarks: unknown): number[] {
   return out;
 }
 
-export function briefFor(slug: string, human: string, report: IssueReport, rawMarks: unknown, proxies?: ProxyMark[]): ProxyBrief {
+export function briefFor(slug: string, human: string, report: IssueReport, rawMarks: unknown, proxies?: ProxyMark[], viewer?: string): ProxyBrief {
   const lines = report.docLines ?? [];
   const binding = familiarOf(slug, human);
-  const states = buildLineStates(lines, report.lineMarks);
+  const view = blindReadView(slug, lines, viewer, report.lineMarks);
+  const states = buildLineStates(lines, view ? view.lineMarks.filter(mark => !mark.hidden) : report.lineMarks);
+  const visibleIssues = view ? redactIssues(report.issues, view.revealed) : report.issues;
+  const held = heldLines({ issues: visibleIssues, human, suggestionLines: suggestionLines(lines, rawMarks) });
+  const needYou = new Set(humanIssueLines(visibleIssues, human));
+  // Mike, 2026-09-23 (usability brief): hidden objections must not change buckets or refusal text.
+  if (view) {
+    const fullyRevealed = lines.every(line => view.revealed.has(line.index));
+    for (const line of lines) {
+      // An objection can span a revealed line and an unrevealed one. Holding the whole brief
+      // until all lines are revealed avoids both a disclosure and a bypass of that objection.
+      if (!fullyRevealed) held.set(line.index, ['blind']);
+      if (!view.revealed.has(line.index)) needYou.add(line.index);
+    }
+  }
   return evaluateProxies({
     proxies: proxies ?? listProxyMarks(slug, { for: human }),
     human,
     familiar: binding?.familiar ?? null,
     lines,
     states,
-    held: heldLines({ issues: report.issues, human, suggestionLines: suggestionLines(lines, rawMarks) }),
-    humanIssueLines: humanIssueLines(report.issues, human),
+    held,
+    humanIssueLines: needYou,
   });
 }
 
@@ -391,8 +409,8 @@ export function proxyStateReport(slug: string, report: IssueReport, rawMarks: un
   let unratified = 0;
   for (const binding of familiars) {
     // Blind marking: a viewer sees a person's proxies only when it is that person or their Familiar.
-    if (options.viewer !== undefined && actorKey(options.viewer) !== actorKey(binding.human) && actorKey(options.viewer) !== actorKey(binding.familiar)) continue;
-    const brief = briefFor(slug, binding.human, report, rawMarks, all.filter(p => actorKey(p.for) === actorKey(binding.human)));
+    if (options.viewer !== undefined && !proxyVisibleTo({ for: binding.human, familiar: binding.familiar }, options.viewer)) continue;
+    const brief = briefFor(slug, binding.human, report, rawMarks, all.filter(p => actorKey(p.for) === actorKey(binding.human)), options.viewer);
     unratified += brief.items.length;
     proxies[binding.human] = serializeBrief(brief);
   }
@@ -415,9 +433,11 @@ export async function ratifyProxies(slug: string, input: { human: string; proxyI
   if (!Array.isArray(input.proxyIds) || input.proxyIds.length === 0) return fail(400, 'INVALID_PROXIES', '"proxyIds" must list the proxy marks you were shown');
   const wanted = new Set(input.proxyIds.filter((id): id is string => typeof id === 'string' && id.length <= 64).slice(0, PROXY_POLICY.maxLinesPerRequest));
   const report = await issueReportFor(slug, input.markdown, input.rawMarks);
-  const brief = briefFor(slug, human, report, input.rawMarks);
+  const brief = briefFor(slug, human, report, input.rawMarks, undefined, human);
   const lines = report.docLines ?? [];
-  const eligible = brief.ratify.filter(item => wanted.has(item.proxy.id));
+  const authoritative = briefFor(slug, human, report, input.rawMarks);
+  const allowed = new Set(authoritative.ratify.map(item => item.proxy.id));
+  const eligible = brief.ratify.filter(item => wanted.has(item.proxy.id) && allowed.has(item.proxy.id));
   const skipped: Array<{ proxyId: string; reason: string }> = [];
   for (const id of wanted) {
     if (eligible.some(item => item.proxy.id === id)) continue;

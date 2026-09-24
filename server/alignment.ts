@@ -1,4 +1,5 @@
 /**
+ * Mike, 2026-09-23 (usability brief): blind snapshot files require the administrative owner credential; stored snapshots stay intact.
  * Proof Documents Step B3c — server side of "Since you" and aligned snapshots.
  *
  * Authorship: direction by Mike Wolf (Proof Documents, 2026-09-18); built by Claude Opus 5
@@ -267,7 +268,11 @@ export async function buildSinceYou(slug: string, actor: string, state?: { markd
 }
 
 /** Step B3c: one snapshot as its markdown ledger (<id>.md) or JSON (<id>). */
-export function sendSnapshotFile(res: Response, slug: string, file: string): void {
+export function sendSnapshotFile(res: Response, slug: string, file: string, administrative = false): void {
+  if (getProofSettings(slug).blind && !administrative) {
+    res.status(403).json({ success: false, code: 'BLIND_SNAPSHOT_PRIVATE', error: 'Blind snapshots require the owner credential until per-viewer filtering is available' });
+    return;
+  }
   const md = file.endsWith('.md');
   const id = md ? file.slice(0, -3) : file;
   if (!/^snap_[a-z0-9]{1,40}$/i.test(id)) { res.status(404).json({ success: false, error: 'No such snapshot' }); return; }

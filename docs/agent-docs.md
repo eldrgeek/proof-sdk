@@ -341,8 +341,9 @@ The response adds:
   `finishedOwnReview`, `agreed`, and `approved`. Passage states remain distinct, so Approved
   passages count under `counts.approved`. While blind, this status uses only visible positions.
   An objection and its Issue are omitted until all its surviving passages are revealed, so
-  their reason and resolution condition stay hidden. The Issue counts remain document-wide;
-  a blind viewer's visible `issues` list can therefore be shorter than those counts.
+  their reason and resolution condition stay hidden. While blind, position-dependent Issue rows
+  on unrevealed lines are omitted. Section Issue counts and `alignment.counts` / `alignment.aligned`
+  are omitted for non-administrative viewers because they can disclose hidden choices.
 
 Mark a line (commenter, editor or owner token):
 
@@ -692,6 +693,8 @@ state; the newest 50 are kept). `/state` shows it in `alignment.lastSnapshot`.
 
 The page reads the latest from `GET /api/documents/<slug>/line-marks` (`alignedSnapshot`) and asks
 the server to check with `POST /api/documents/<slug>/alignment-check` (the server decides).
+While blind, snapshot JSON and ledger downloads require the owner credential. The stored snapshots
+remain intact. Non-administrative alignment checks return only `success` and `blind`, without counts.
 
 ## Review aids: why, uncertain flags, priority, reject chips (Accord, Step B4c)
 
@@ -834,6 +837,25 @@ owner credential with no `by` reads everything. While blind, `line_mark.*`, `ask
 `alternative.picked` events leave out the position. Revealed lines whose marks disagree (an Agree or
 Approve against a Reject) are listed in `disagreementLines`, flagged `disagreement` on their Issue,
 and ranked first (priority rule `disagreement`).
+
+Mike, 2026-09-23 (usability brief): reveal requires a verified session, a bound agent key, or the
+owner credential. A typed guest or unbound AI name grants no reveal, including after a key is revoked.
+All ask endpoints hide answer-dependent state as well as answer text. Hidden mark placeholders omit
+`via`. Proxy briefs and exports show proxies only to their person, their Familiar, or the administrative
+owner. Tier signals are derived from visible marks and proxies. Hidden TTLs omit `decayedMarks` and
+`openFor`. Alternative summaries do not describe hidden disagreement; closed alternatives are withheld
+until their line is revealed.
+
+Event reads filter existing history too, including acknowledged events and events written before
+blind mode was enabled. Unrevealed objection events are omitted. Line-mark events retain participation
+but omit positions and ratification metadata. Alternative choice events and imported dialect history
+are withheld from blind non-administrative reads because they lack a reliable historical reveal span.
+Event cursors still advance through omitted records. Exports count only the records they include.
+
+A blind proxy brief uses a neutral hold until the viewer has revealed the whole document. An objection
+can span several lines, so revealing only one line cannot safely authorize ratification on it. Ratification
+still checks the complete internal Issue report. These restrictions do not change stored marks, histories,
+or the owner credential's administrative view.
 
 **Explain.** E on the focus line (or "Explain…" in the rail) posts a comment thread on the line,
 `Explain: @<each AI collaborator> What does this line mean, and why is it here?` (or the reader's own question),

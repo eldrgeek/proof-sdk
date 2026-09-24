@@ -1,4 +1,5 @@
 /**
+ * Mike, 2026-09-23 (usability brief): viewer-facing tier signals use only visible marks and private proxies the viewer may read.
  * Proof Documents — line tiers, server side (storage, writes, the AI reads that cover context lines).
  * Rules live in src/shared/line-tiers.ts (TIER_POLICY).
  *
@@ -9,6 +10,7 @@
  * and when, and the newest tag still on a line is its tier. This module imports only the database,
  * the room broadcast and shared code, so server/line-marks.ts can use it without an import cycle.
  */
+import { proxyVisibleTo } from '../src/shared/blind.js';
 import { randomUUID } from 'crypto';
 import { addDocumentEvent, assertWritesAllowed, getDb } from './db.js';
 import { broadcastToRoom } from './ws.js';
@@ -72,13 +74,13 @@ export function listTierRecords(slug: string): TierRecord[] {
 interface ProxyReadRow { familiar_actor: string; for_actor: string; status: string; evidence: string; line_hash: string; line_occurrence: number; line_ordinal: number; line_kind: string; line_excerpt: string; line_text: string | null }
 
 /** Familiar proxy marks, as tier signals (read from their table directly: no import of proxy-marks.ts). */
-function proxySignals(slug: string): { reads: TierRead[]; flags: TierFlag[] } {
+function proxySignals(slug: string, viewer?: string): { reads: TierRead[]; flags: TierFlag[] } {
   try {
     const rows = getDb().prepare(`
       SELECT familiar_actor, for_actor, status, evidence, line_hash, line_occurrence, line_ordinal, line_kind, line_excerpt, line_text
       FROM document_proxy_marks WHERE document_slug = ? ORDER BY at ASC
     `).all(slug) as ProxyReadRow[];
-    return tierSignalsFromProxies(rows.map(row => {
+    return tierSignalsFromProxies(rows.filter(row => viewer === undefined || proxyVisibleTo({ for: row.for_actor, familiar: row.familiar_actor }, viewer)).map(row => {
       const anchor: LineAnchor = { hash: row.line_hash, occurrence: row.line_occurrence, ordinal: row.line_ordinal, kind: row.line_kind, excerpt: row.line_excerpt ?? '' };
       if (row.line_text) anchor.text = row.line_text;
       return { familiar: row.familiar_actor, for: row.for_actor, status: row.status, evidence: row.evidence, anchor };
@@ -89,16 +91,16 @@ function proxySignals(slug: string): { reads: TierRead[]; flags: TierFlag[] } {
 }
 
 /**
- * What covers a context line: AI line marks with evidence (from the full, unredacted marks) and the
- * Familiars' proxies. The page gets this list too, so blind marking's placeholders do not hide a read.
+ * Mike, 2026-09-23 (usability brief): construct tier signals only from visible marks and
+ * proxies belonging to this viewer. Internal alignment calls keep the full inputs.
  */
-export function tierSignals(slug: string, lineMarks: LineMark[]): { reads: TierRead[]; flags: TierFlag[] } {
-  const proxies = proxySignals(slug);
-  return { reads: [...aiReadsFromMarks(lineMarks), ...proxies.reads], flags: proxies.flags };
+export function tierSignals(slug: string, lineMarks: LineMark[], viewer?: string): { reads: TierRead[]; flags: TierFlag[] } {
+  const proxies = proxySignals(slug, viewer);
+  return { reads: [...aiReadsFromMarks(lineMarks.filter(mark => !mark.hidden)), ...proxies.reads], flags: proxies.flags };
 }
 
-export function evaluateDocumentTiers(slug: string, lines: DocLine[], lineMarks: LineMark[]): TierEvaluation {
-  const signals = tierSignals(slug, lineMarks);
+export function evaluateDocumentTiers(slug: string, lines: DocLine[], lineMarks: LineMark[], viewer?: string): TierEvaluation {
+  const signals = tierSignals(slug, lineMarks, viewer);
   return evaluateTiers({ lines, records: listTierRecords(slug), reads: signals.reads, flags: signals.flags });
 }
 
