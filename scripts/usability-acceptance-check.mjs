@@ -192,6 +192,8 @@ async function createFixture(base) {
     INTRO2: line('Intro paragraph 2'),
     SAFE: line('keeps customer data safe'),
     SEC1: section('Section one'),
+    ONE1: line('One paragraph 1'),
+    ONE3: line('One paragraph 3'),
     SEC2: section('Section two'),
     PROPOSAL: line('change word for a pending proposal'),
     SEC3: section('Section three'),
@@ -320,76 +322,151 @@ async function hoverBlock(page, lineIndex) {
   await page.waitForTimeout(350);
 }
 
+/** Agree every line in a section so the viewer has zero Issues there (auto-close precondition). */
+async function markSectionIssueFree(page, headingIndex) {
+  await page.evaluate(h => {
+    const fold = window.__proofFolding.debugState();
+    const section = fold.sections.find(s => s.headingIndex === h);
+    if (!section) throw new Error('section missing');
+    const lines = [];
+    for (let i = section.headingIndex; i < section.lineEnd; i += 1) lines.push(i);
+    const heading = window.__proofLineMarks.lineList()[h]?.text ?? 'section';
+    return window.__proofLineMarks.writeSectionMark({ lines, heading }, 'agreed');
+  }, headingIndex);
+  await page.waitForTimeout(900);
+}
+
+async function scrollLineIntoView(page, lineIndex, block = 'center') {
+  await page.evaluate(({ line, block }) => {
+    const lm = window.__proofLineMarks;
+    const dom = lm.editorView().nodeDOM(lm.lineList()[line].pos);
+    dom?.scrollIntoView({ block, behavior: 'instant' });
+  }, { line: lineIndex, block });
+  await page.waitForTimeout(250);
+}
+
+async function scrollFullyOutOfViewThenIdle(page, idleMs = 1500) {
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await page.waitForTimeout(idleMs);
+}
+
+async function headingLayoutBoxes(page, headingA, headingB) {
+  return page.evaluate(({ a, b }) => {
+    const rect = (heading) => {
+      const lm = window.__proofLineMarks;
+      const dom = lm.editorView().nodeDOM(lm.lineList()[heading].pos);
+      const r = dom?.getBoundingClientRect();
+      return r ? { top: r.top, left: r.left, height: r.height } : null;
+    };
+    return { first: rect(a), second: rect(b) };
+  }, { a: headingA, b: headingB });
+}
+
+function boxesStable(before, after, label) {
+  for (const key of ['first', 'second']) {
+    const a = before[key];
+    const b = after[key];
+    assert.ok(a && b, `${label}: missing box for ${key}`);
+    const dTop = Math.abs(b.top - a.top);
+    const dLeft = Math.abs(b.left - a.left);
+    assert.ok(dTop < 4 && dLeft < 4, `${label}: ${key} moved Δtop=${dTop} Δleft=${dLeft}`);
+  }
+}
+
+async function lineShowsFullPassage(page, lineIndex, needle) {
+  return page.evaluate(({ line, needle }) => {
+    const folded = document.querySelector(`.ProseMirror .pclose-folded[data-pclose-line="${line}"]`);
+    if (folded) {
+      return { ok: false, detail: folded.getAttribute('data-pclose-summary') ?? 'folded' };
+    }
+    const lm = window.__proofLineMarks;
+    const dom = lm.editorView().nodeDOM(lm.lineList()[line].pos);
+    const text = (dom?.textContent ?? '').trim();
+    if (/^✓ agreed|^✗ rejected|^✓ approved/i.test(text)) {
+      return { ok: false, detail: text.slice(0, 60) };
+    }
+    return { ok: text.includes(needle), detail: text.slice(0, 80) };
+  }, { line: lineIndex, needle });
+}
+
 async function runViewportCases(browser, base, created, label, viewport) {
   const readerName = 'Alice';
   const { context, page } = await openDoc(browser, base, created.slug, readerName, viewport);
   activePage = page;
   const touch = Boolean(viewport?.hasTouch || viewport?.isMobile);
 
-  // 1 — scroll away and return: section stays expanded; hover does not change layout.
+  // 1 — Issue-free section stays open after scroll; collapsed heading hover must not move layout.
   await check(`ac01-scroll-hover-stable@${label}`, async () => {
-    await setFolded(page, L.SEC2, false);
-    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-    await page.waitForTimeout(400);
-    await page.evaluate(() => window.scrollTo(0, 0));
-    await page.waitForTimeout(300);
-    const afterScroll = await layoutSnapshot(page, L.SEC2);
-    assert.equal(afterScroll.chipExpanded, 'true', 'section folded while reader was away');
-    await focusLine(page, L.INTRO1);
-    const anchorTop = await lineViewportTop(page, L.PROPOSAL);
-    const foldedBefore = (await foldState(page)).folded.slice();
-    await hoverBlock(page, L.PROPOSAL);
-    await page.waitForTimeout(450);
-    const hoverFx = await page.evaluate(() => {
-      const s = window.__proofReadingWalk.debugState();
-      return {
-        focus: s.focus,
-        preview: [...document.querySelectorAll('.plm-dot[data-preview="true"]')].map(d => Number(d.dataset.line)),
-        hoverTarget: s.hover ?? null,
-      };
-    });
-    assert.equal(hoverFx.focus, L.INTRO1, `hover moved the reading target to line ${hoverFx.focus}`);
-    assert.equal(hoverFx.preview.length, 0, `hover previewed line(s) ${hoverFx.preview.join(',')}`);
-    assert.equal(hoverFx.hoverTarget, null, `hover set hoverLine to ${hoverFx.hoverTarget}`);
-    const anchorAfter = await lineViewportTop(page, L.PROPOSAL);
-    assert.ok(anchorTop !== null && anchorAfter !== null && Math.abs(anchorAfter - anchorTop) < 6,
-      `hover shifted layout by ${anchorAfter - anchorTop}px`);
-    assert.deepEqual((await foldState(page)).folded.slice(), foldedBefore, 'hover folded or unfolded a section');
-    await page.evaluate(line => window.__proofLineMarks.setLineStatus(line, 'agreed', undefined, 'click'), L.LIST_TAIL);
-    const autoFolded = await page.evaluate(line => {
-      const folded = window.__proofClosedFold?.debugState?.().folded ?? [];
-      return folded.some(f => f.index === line);
-    }, L.LIST_TAIL);
-    assert.equal(autoFolded, false, 'agreeing auto-folded the passage (closed-Issue fold)');
+    await markSectionIssueFree(page, L.SEC1);
+    await scrollLineIntoView(page, L.SEC1);
+    assert.equal((await layoutSnapshot(page, L.SEC1)).chipExpanded, 'true', 'section one must start expanded');
+    await scrollFullyOutOfViewThenIdle(page, 1500);
+    await scrollLineIntoView(page, L.SEC1, 'start');
+    const afterScroll = await layoutSnapshot(page, L.SEC1);
+    assert.equal(afterScroll.chipExpanded, 'true', 'section auto-closed after scroll away (brief: nothing folds unless the reader acts)');
+    await chip(page, L.SEC1).click();
+    await waitFor(page, ({ heading }) => document.querySelector(`.pfold-chip[data-heading="${heading}"]`)?.dataset.folded === 'true', { heading: L.SEC1 });
+    const hiddenBodyLines = async () => page.evaluate(h => {
+      const fs = window.__proofFolding.debugState();
+      const sec = fs.sections.find(s => s.headingIndex === h);
+      return fs.hidden.filter(i => i > sec.headingIndex && i < sec.lineEnd).length;
+    }, L.SEC1);
+    const boxesBefore = await headingLayoutBoxes(page, L.SEC1, L.SEC2);
+    const hiddenBefore = await hiddenBodyLines();
+    await chip(page, L.SEC1).hover({ force: true });
+    await page.waitForTimeout(600);
+    const boxesAfter = await headingLayoutBoxes(page, L.SEC1, L.SEC2);
+    boxesStable(boxesBefore, boxesAfter, 'hover on collapsed section heading');
+    const hiddenAfter = await hiddenBodyLines();
+    assert.equal(hiddenAfter, hiddenBefore, `hover revealed ${hiddenBefore - hiddenAfter} folded body line(s)`);
+    const peeked = await page.evaluate(() => window.__proofFolding.debugState().peeked);
+    assert.equal(peeked, null, `hover peeked section open (peeked=${peeked})`);
   });
 
-  // 2 — agree / reject: passage stays visible and viewport stays anchored.
+  // 2 — agree / reject: viewport stays anchored; closed passages stay full text after scroll away.
   await check(`ac02-viewport-anchored-on-mark@${label}`, async () => {
-    await focusLine(page, L.INTRO2);
-    const y0 = await lineViewportTop(page, L.INTRO2);
+    const agreeLine = L.ONE1;
+    const rejectLine = L.ONE3;
+    if (await page.evaluate(h => window.__proofFolding.isFolded(h), L.SEC1)) {
+      await chip(page, L.SEC1).click();
+      await waitFor(page, ({ heading }) => document.querySelector(`.pfold-chip[data-heading="${heading}"]`)?.dataset.folded === 'false', { heading: L.SEC1 });
+    }
+    await scrollLineIntoView(page, agreeLine);
+    await focusLine(page, agreeLine);
+    const y0 = await lineViewportTop(page, agreeLine);
     const scroll0 = await page.evaluate(() => window.scrollY);
     const agreed = await page.evaluate(async line => {
       await window.__proofLineMarks.setLineStatus(line, 'agreed', undefined, 'click');
       const me = window.__proofLineMarks.me();
       const mark = window.__proofLineMarks.debugState().marks.find(m => m.by === me && m.anchor.ordinal === line);
       return mark?.status ?? null;
-    }, L.INTRO2);
-    assert.equal(agreed, 'agreed', `Agree did not stick on line ${L.INTRO2} (got ${agreed})`);
-    const y1 = await lineViewportTop(page, L.INTRO2);
+    }, agreeLine);
+    assert.equal(agreed, 'agreed', `Agree did not stick on line ${agreeLine} (got ${agreed})`);
+    const y1 = await lineViewportTop(page, agreeLine);
     const scroll1 = await page.evaluate(() => window.scrollY);
     assert.ok(Math.abs(y1 - y0) < 8, `viewport jumped ${y1 - y0}px on agree`);
     assert.ok(Math.abs(scroll1 - scroll0) < 8, `scroll jumped on agree`);
-    assert.ok(!(await isHiddenLine(page, L.INTRO2)), 'agreed passage was hidden');
+    assert.ok(!(await isHiddenLine(page, agreeLine)), 'agreed passage was hidden');
+    await focusLine(page, rejectLine);
+    const yReject0 = await lineViewportTop(page, rejectLine);
     const rejected = await page.evaluate(async ({ line, reason }) => {
       await window.__proofLineMarks.setLineStatus(line, 'rejected', reason, 'click');
       const me = window.__proofLineMarks.me();
       const mark = window.__proofLineMarks.debugState().marks.find(m => m.by === me && m.anchor.ordinal === line);
       return mark?.status ?? null;
-    }, { line: L.INTRO2, reason: 'Needs a fix' });
+    }, { line: rejectLine, reason: 'Needs a fix for usability ac02' });
     assert.equal(rejected, 'rejected', `Reject did not stick (got ${rejected})`);
-    const y2 = await lineViewportTop(page, L.INTRO2);
-    assert.ok(Math.abs(y2 - y0) < 12, `viewport jumped ${y2 - y0}px on reject`);
-    assert.ok(!(await isHiddenLine(page, L.INTRO2)), 'rejected passage was hidden');
+    const y2 = await lineViewportTop(page, rejectLine);
+    assert.ok(Math.abs(y2 - yReject0) < 12, `viewport jumped ${y2 - yReject0}px on reject`);
+    assert.ok(!(await isHiddenLine(page, rejectLine)), 'rejected passage was hidden');
+    await focusLine(page, L.SPELLING);
+    await page.waitForTimeout(400);
+    await scrollFullyOutOfViewThenIdle(page, 1500);
+    await scrollLineIntoView(page, agreeLine);
+    const agreedVisible = await lineShowsFullPassage(page, agreeLine, 'One paragraph 1');
+    assert.ok(agreedVisible.ok, `agreed line folded to summary: ${agreedVisible.detail}`);
+    const rejectedVisible = await lineShowsFullPassage(page, rejectLine, 'One paragraph 3');
+    assert.ok(rejectedVisible.ok, `rejected line folded to summary: ${rejectedVisible.detail}`);
   });
 
   // 3 — collapsed section: passage actions must not include hidden lines; section agree names scope.
