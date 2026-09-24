@@ -1,3 +1,5 @@
+import { liveSuggestionInputEvent, focusLiveSuggestion, type LiveSuggestionInput } from './live-suggestion-input';
+import { EDIT_SESSION_POLICY } from '../shared/edit-session';
 import { markApiView, isOwnHumanMarkChange, withHumanReviewWrite } from './review-mark-origin';
 /**
  * Proof Editor
@@ -90,6 +92,7 @@ import {
   toggleSuggestions,
   isSuggestionsEnabled,
   wrapTransactionForSuggestions,
+  clickEditDecisionsMeta,
 } from './plugins/suggestions';
 import {
   markPopoverPlugin,
@@ -2617,7 +2620,8 @@ class ProofEditorImpl implements ProofEditor {
     this.shareAllowLocalEdits = hydrationGate.allowLocalEdits;
     if (hydrationGate.allowLocalEdits && !this.suggestDefaultApplied) {
       this.suggestDefaultApplied = true;
-      this.disableSuggestions();
+      if (EDIT_SESSION_POLICY.liveProposals) this.enableSuggestions();
+      else this.disableSuggestions();
       setDirectEditing(false);
     }
     if (!this.collabCanEdit) setDirectEditing(false);
@@ -4038,7 +4042,7 @@ class ProofEditorImpl implements ProofEditor {
           { id: 'edit-undo', label: undo.label, detail: '⌘Z', keywords: 'undo', enabled: undo.enabled, run: () => this.undoFromMenu(false) },
           { id: 'edit-redo', label: redo.label, detail: '⇧⌘Z', keywords: 'redo', enabled: redo.enabled, run: () => this.undoFromMenu(true) },
           { id: 'edit-find', label: 'Find…', keywords: 'search text', separatorBefore: true, run: () => this.openFindBar() },
-          { id: 'edit-editing', label: isWriting() ? 'Leave Editing' : 'Enter Editing', enabled: canEdit, separatorBefore: true, keywords: 'mode direct', run: () => this.setSuggestingFromChrome(isWriting()) },
+          { id: 'edit-editing', label: isWriting() ? 'Leave text' : 'Edit text', enabled: canEdit, separatorBefore: true, keywords: 'mode direct', run: () => this.setSuggestingFromChrome(isWriting()) },
         ];
         if (style === 'proof' && canEdit) {
           items.push(
@@ -4201,7 +4205,11 @@ class ProofEditorImpl implements ProofEditor {
       this.readingWalk = new ReadingWalkUI({
         newDocument: () => { void this.newDocument(); },
         slug: () => shareClient.getSlug(),
-        suggestChange: (line) => this.editGesture?.open(line) ?? false,
+        suggestChange: (line) => {
+          if (EDIT_SESSION_POLICY.privateDrafts) return this.editGesture?.open(line) ?? false;
+          this.readingWalk?.focusDocument(line);
+          return Boolean(this.readingWalk);
+        },
         canSuggest: () => this.shareAllowLocalEdits,
         // Step B6: the reading walk acts as the same identity the line marks write with.
         actor: () => lineMarks.me(),
@@ -4336,7 +4344,7 @@ class ProofEditorImpl implements ProofEditor {
     this.folding?.start();
     this.undoUI?.start();
     this.clarifyUI?.start();
-    this.editGesture?.start();
+    if (EDIT_SESSION_POLICY.privateDrafts) this.editGesture?.start();
     this.readingWalk?.start();
     this.chat?.start();
     return this.lineMarks;
@@ -4645,10 +4653,14 @@ class ProofEditorImpl implements ProofEditor {
     return btn;
   }
 
-  /** The labelled control is the only UI route into and out of direct Editing. */
+  /** Retain the labelled control as another way to enter or leave the text. */
   private setSuggestingFromChrome(review: boolean): void {
     if (!this.collabCanEdit) return;
-    this.disableSuggestions();
+    if (EDIT_SESSION_POLICY.liveProposals) {
+      this.enableSuggestions();
+      if (review) (document.activeElement as HTMLElement | null)?.blur();
+      else this.editor?.ctx.get(editorViewCtx).focus();
+    } else this.disableSuggestions();
     setDirectEditing(!review);
     this.updateEditableState();
     this.updateSuggestToggleDisplay();
@@ -4659,10 +4671,10 @@ class ProofEditorImpl implements ProofEditor {
     if (!btn) return;
     const phone = window.matchMedia?.('(max-width: 700px)').matches ?? window.innerWidth <= 700;
     const visible = this.isShareMode && this.collabCanEdit && !phone;
-    btn.textContent = isWriting() ? 'Leave Editing' : 'Enter Editing';
+    btn.textContent = isWriting() ? 'Leave text' : 'Edit text';
     btn.setAttribute('aria-pressed', String(isWriting()));
     btn.setAttribute('aria-label', btn.textContent);
-    btn.title = isWriting() ? 'Editing: typing changes the document directly' : 'Enter Editing to change the document directly';
+    btn.title = 'Click text to propose changes as you type. Escape returns to Review.';
     btn.style.display = visible ? 'inline-flex' : 'none';
   }
 
@@ -6343,7 +6355,7 @@ class ProofEditorImpl implements ProofEditor {
   private updateEditableState(viewOverride?: EditorView): void {
     const isEditable = !this.isReadOnly
       && this.reviewLockCount === 0
-      && (!this.isShareMode || (this.shareAllowLocalEdits && isWriting()));
+      && (!this.isShareMode || (this.shareAllowLocalEdits && (EDIT_SESSION_POLICY.liveProposals || isWriting())));
 
     const applyEditableState = (view: EditorView) => {
       view.setProps({
@@ -6599,6 +6611,39 @@ class ProofEditorImpl implements ProofEditor {
         },
       });
 
+      view.dom.addEventListener(liveSuggestionInputEvent, ((event: CustomEvent<LiveSuggestionInput>) => {
+        const detail = event.detail;
+        if (!view.editable || !this.shareAllowLocalEdits || !this.isSuggestionsEnabled()) return;
+        const mark = getMarks(view.state).find(m => m.id === detail.id);
+        const stored = getMarkMetadataWithQuotes(view.state)[detail.id];
+        if (!mark?.range || !stored || (stored.status ?? 'pending') !== 'pending' || stored.content !== detail.before) {
+          this.readingWalk?.showEditNotice('This proposal changed. Read its current words before editing.');
+          return;
+        }
+        try {
+          if (!detail.content && EDIT_SESSION_POLICY.deleteProposalRejects) {
+            this.performReviewDecision([detail.id], 'reject');
+            detail.handled = true;
+          } else if (mark.by === getCurrentActor()) {
+            this.noteLocalContentMutation();
+            this.getReviewDecisionHistory().edit(() => {
+              detail.handled = modifySuggestionContent(markApiView(view), detail.id, detail.content);
+            });
+          } else if (!EDIT_SESSION_POLICY.editOtherProposalsInPlace) {
+            // P2 transfer is off: preserve the author's proposal and create the editor's
+            // competing replacement, just as typing a replacement on the old anchor does.
+            this.noteLocalContentMutation();
+            this.getReviewDecisionHistory().edit(() => {
+              const proposal = suggestReplace(markApiView(view), mark.quote, getCurrentActor(), detail.content, mark.range);
+              detail.handled = Boolean(proposal);
+              detail.nextId = proposal?.id;
+            });
+          }
+        } catch (error) {
+          this.readingWalk?.showEditNotice(error instanceof Error ? error.message : 'Could not edit this proposal.');
+        }
+      }) as EventListener);
+
       // Store the original dispatchTransaction
       const originalDispatch = view.dispatch.bind(view);
 
@@ -6619,7 +6664,19 @@ class ProofEditorImpl implements ProofEditor {
             marksPluginKey.getState(view.state)?.metadata ?? {},
             transaction.getMeta(marksPluginKey)?.metadata ?? {}, getCurrentActor());
           if (transaction.getMeta('proofLocalMarkChange') && !humanMark) transaction.setMeta('addToHistory', false);
-          if (humanMark && !this.capturingReviewDecision
+          const clickDecisions = transaction.getMeta(clickEditDecisionsMeta) as string[] | undefined;
+          if (clickDecisions?.length && !this.capturingReviewDecision && !this.restoringReviewDecision
+            && this.collabCanEdit && this.getShareSuggestionResolutionTransport() === 'collab') {
+            this.getReviewDecisionHistory().decide(() => {
+              originalDispatch(transaction);
+              const metadata = getMarkMetadataWithQuotes(view.state);
+              this.lastReceivedServerMarks = { ...metadata };
+              this.initialMarksSynced = true;
+              collabClient.setMarksMetadata(metadata);
+            });
+            clickDecisions.forEach(id => this.reviewDecisionIds.add(id));
+            this.recordDecisionUndo(clickDecisions, 'reject');
+          } else if (humanMark && !this.capturingReviewDecision
             && !this.restoringReviewDecision && !this.isYjsChangeOriginTransaction(transaction)
             && this.collabCanEdit && collabClient.getYDoc()
             && this.getShareSuggestionResolutionTransport() === 'collab') {
@@ -6687,7 +6744,11 @@ class ProofEditorImpl implements ProofEditor {
           } else {
             // Wrap the transaction to convert edits to suggestions
             const wrappedTr = wrapTransactionForSuggestions(tr, view.state, true);
+            const beforeIds = new Set(Object.keys(getMarkMetadata(view.state)));
             dispatchWithRevision(wrappedTr);
+            const replacement = getMarks(view.state).find(m => m.kind === 'replace' && !beforeIds.has(m.id));
+            if (replacement) focusLiveSuggestion(view, replacement.id);
+
           }
         } else {
           dispatchWithRevision(tr);

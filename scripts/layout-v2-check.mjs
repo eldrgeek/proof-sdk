@@ -16,7 +16,7 @@ const arg = name => { const at = process.argv.indexOf(name); return at > 0 ? pro
 const styles = arg('--style') ? [arg('--style')] : ['playmaker', 'proof'];
 const shots = arg('--shots') || path.join(root, '.preview');
 mkdirSync(shots, { recursive: true });
-const headers = { 'Content-Type': 'application/json', 'X-Proof-Client-Version': '0.32.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const headers = { 'Content-Type': 'application/json', 'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 const first = 'The first proposal replaces this original wording.';
 const second = 'The second proposal also keeps its original wording until accepted.';
 const markdown = ['# Layout v2', first, second, 'Should we publish this version?', ...Array.from({ length: 16 }, (_, i) => `Passage ${i + 1} is here to check deliberate navigation and a stable reading view.`)].join('\n\n');
@@ -131,17 +131,15 @@ async function run(browser, server, style, width) {
     const marks = Object.values((await decided.json()).marks || {});
     assert.ok(marks.some(m => m.kind === 'replace' && m.status === 'rejected'), 'Delete did not record a rejection on the server');
     await page.keyboard.press('k'); await page.keyboard.press('Enter');
-    // Step 1: the document is not editable while reading (typing into it is step 3), so Enter
-    // makes the item the selected passage rather than moving the caret into the text.
+    // Step 3: Enter from the list places the caret in the selected passage.
     assert.equal(await page.evaluate(() => window.__proofReadingWalk.debugState().focus), 1);
-    // S uses the retained draft path. These keys edit only its textarea.
-    await page.keyboard.press('s');
-    const draft = page.locator('.accord-draft textarea'); await draft.waitFor({ state: 'visible' });
-    const draftPending = await pending(page); const docBeforeDraft = await text(page);
-    await draft.fill('xy'); await draft.press('Home'); await draft.press('A'); await draft.press('Delete');
-    assert.equal(await draft.inputValue(), 'Ay');
-    assert.deepEqual(await pending(page), draftPending); assert.equal(await text(page), docBeforeDraft);
-    await page.locator('[data-draft-action="cancel"]').click();
+    const pendingBeforeTyping = await pending(page); const docBeforeTyping = await text(page);
+    await page.keyboard.press('End'); await page.keyboard.type('A');
+    assert.notEqual(await text(page), docBeforeTyping);
+    await page.keyboard.press('ArrowLeft'); await page.keyboard.press('Delete');
+    assert.equal(await text(page), docBeforeTyping);
+    assert.deepEqual(await pending(page), pendingBeforeTyping);
+    await page.keyboard.press('Escape');
     // Retired mark keys cannot mark a passage outside the list.
     await selectPassage(page, 1);
     const markStatuses = () => page.evaluate(() => window.__proofLineMarks.debugState().marks.filter(m => ['agreed', 'rejected'].includes(m.status)));
@@ -154,7 +152,7 @@ async function run(browser, server, style, width) {
     await page.locator('.plm-open-dot[data-line="3"]').click();
     await page.keyboard.press('a');
     assert.match(await page.locator('.anv-key-hint').innerText(), /Ask: answer Yes, Not yet or No/);
-    assert.deepEqual(await pending(page), draftPending);
+    assert.deepEqual(await pending(page), pendingBeforeTyping);
     assert.equal(await page.locator('.ProseMirror .pask button[data-choice="yes"]').count() > 0, true);
     if (phone) await page.locator('.prw-right .prw-collapse').click();
     // Bundle keys use the card's atomic decision and one existing undo entry.

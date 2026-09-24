@@ -1,3 +1,5 @@
+import { TextSelection } from '@milkdown/kit/prose/state';
+import { EDIT_SESSION_POLICY } from '../../shared/edit-session';
 import { $prose } from '@milkdown/kit/utils';
 import { Plugin, PluginKey } from '@milkdown/kit/prose/state';
 import type { EditorView } from '@milkdown/kit/prose/view';
@@ -426,6 +428,12 @@ class MarkSelectionBarController {
       if (!canCommentInRuntime()) return;
       const range = this.getActionRange();
       if (!range) return;
+      if (EDIT_SESSION_POLICY.liveProposals) {
+        this.view.dispatch(this.view.state.tr.setSelection(TextSelection.create(this.view.state.doc, range.from, range.to)));
+        this.view.focus();
+        this.dismissAfterAction();
+        return;
+      }
       const original = this.view.state.doc.textBetween(range.from, range.to, '\n', '\n');
       const replacement = window.prompt('Suggest replacement', original);
       if (replacement === null || replacement === original) return;

@@ -1,3 +1,6 @@
+import { isPendingSuggestion, suggestionWithStatus } from '../shared/suggestion-status';
+import type { StoredMark } from '../formats/marks';
+import { getCurrentActor } from './actor';
 import { historyCandidate } from './review-history-candidate';
 import * as Y from 'yjs';
 import type { EditorView } from '@milkdown/kit/prose/view';
@@ -57,6 +60,7 @@ export function withoutOwnEcho<T>(binding: SyncBinding | null | undefined, actio
 /** Review metadata extends the page's native history, including its selection hooks. */
 export class ReviewDecisionHistory {
   private destroyed = false;
+  private readonly withdrawnByUndo = new Map<string, { pending: StoredMark; resolved: StoredMark }>();
   private readonly origin = {};
   private readonly editOrigin = {};
   private readonly rangeKey = Symbol('review decision text');
@@ -85,7 +89,23 @@ export class ReviewDecisionHistory {
       captureTransaction: tr => tr.meta.get('addToHistory') !== false,
     });
     this.previousDeleteFilter = this.manager.deleteFilter;
-    this.manager.deleteFilter = item => this.previousDeleteFilter(item) && deleteEmptyContainer(item);
+    this.manager.deleteFilter = item => {
+      if (!this.previousDeleteFilter(item) || !deleteEmptyContainer(item)) return false;
+      const marks = doc.getMap('marks');
+      const id = item.parentSub;
+      // Undo of newly typed text is a withdrawal too. Set the decision inside the
+      // undo transaction, before its update can reach the server's marks guard.
+      if (item.parent === marks && id && marks._map.get(id) === item) {
+        const current = marks.get(id);
+        if (this.manager.undoing && isPendingSuggestion(current)) {
+          const resolved = suggestionWithStatus(current, 'rejected', getCurrentActor());
+          this.withdrawnByUndo.set(id, { pending: current, resolved });
+          marks.set(id, resolved);
+          return false;
+        }
+      }
+      return true;
+    };
     this.manager.addToScope(doc.getMap('marks'));
     this.manager.addTrackedOrigin(this.origin);
     this.manager.addTrackedOrigin(this.editOrigin);
@@ -160,7 +180,22 @@ export class ReviewDecisionHistory {
     // Use y-prosemirror's own relative selection and restoration machinery.
     // A metadata-only dispatch may have cleared its transient selection field.
     if (binding && beforeSelection) binding.beforeTransactionSelection = beforeSelection;
-    const item = redo ? manager.redo() : manager.undo();
+    // Redo can restore the text while Yjs declines to resurrect a map item we replaced
+    // with a withdrawal. Reopen only that exact locally withdrawn record, inside the
+    // native redo transaction, so neither wire updates nor Undo see a missing record.
+    const reopenWithdrawals = (transaction: Y.Transaction) => {
+      if (!redo || transaction.origin !== manager) return;
+      const records = candidate.meta.get(this.suggestionsKey) as SuggestionRecords | undefined;
+      const marks = this.doc.getMap('marks');
+      for (const id of records?.keys() ?? []) {
+        const withdrawal = this.withdrawnByUndo.get(id);
+        if (withdrawal && JSON.stringify(marks.get(id)) === JSON.stringify(withdrawal.resolved)) marks.set(id, withdrawal.pending);
+      }
+    };
+    this.doc.on('beforeTransaction', reopenWithdrawals);
+    let item: StackItem | null;
+    try { item = redo ? manager.redo() : manager.undo(); }
+    finally { this.doc.off('beforeTransaction', reopenWithdrawals); }
     if (!item) return false;
     // Yjs may skip superseded map writes. Use the item it actually popped,
     // and put the inverse range on the newly created inverse stack item.

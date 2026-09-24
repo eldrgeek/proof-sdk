@@ -44,7 +44,7 @@ try {
   const pending = { kind: 'replace', status: 'pending', by: 'ai:test', quote: 'Original', content: 'Changed' };
   db.createDocument(slug, 'Original\n', { suggestion: pending });
   for (const [route, method] of [['collab-session', 'GET'], ['collab-refresh', 'POST'], ['open-context', 'GET']]) {
-    for (const client of [{}, { ...headers, 'X-Proof-Client-Version': '0.31.0' }, { ...headers, 'X-Proof-Client-Build': '' }, { ...headers, 'X-Proof-Client-Protocol': '2' }]) {
+    for (const client of [{}, { ...headers, 'X-Proof-Client-Version': '0.32.0' }, { ...headers, 'X-Proof-Client-Build': '' }, { ...headers, 'X-Proof-Client-Protocol': '2' }]) {
       const response = await fetch(`${base}/api/documents/${slug}/${route}`, { method, headers: client });
       assert.equal(response.status, 426); const body = await response.json();
       assert.equal(body.code, 'CLIENT_UPGRADE_REQUIRED'); assert.equal(body.session, undefined);

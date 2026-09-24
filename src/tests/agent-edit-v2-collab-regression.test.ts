@@ -28,7 +28,7 @@ type AgentSnapshotResponse = {
 };
 
 const CLIENT_HEADERS = {
-  'X-Proof-Client-Version': '0.31.0',
+  'X-Proof-Client-Version': '0.33.0',
   'X-Proof-Client-Build': 'tests',
   'X-Proof-Client-Protocol': '3',
 };

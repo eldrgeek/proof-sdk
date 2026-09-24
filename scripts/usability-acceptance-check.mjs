@@ -22,7 +22,7 @@ const arg = (name) => { const i = process.argv.indexOf(name); return i > 0 ? pro
 const shots = arg('--shots') || path.join(root, '.preview', 'usability');
 mkdirSync(shots, { recursive: true });
 
-/** Selectors from the shipped draft, Review and status surfaces. */
+/** Selectors from the shipped Review and status surfaces. */
 const SEL = {
   proseMirror: '.ProseMirror',
   foldChip: '.pfold-chip[data-heading]',
@@ -50,16 +50,12 @@ const SEL = {
   reviewList: '[data-accord-review-list]',
   reviewScopeNeedsYou: '[data-accord-review-scope="needs-you"]',
   reviewClearCompleted: '[data-accord-review-clear-completed]',
-  // Inline draft until Propose change.
-  suggestChangeButton: '[data-accord-suggest-change]',
-  proposeChangeButton: '[data-draft-action="propose"]',
-  draftResume: '[data-draft-action="resume"]',
-  draftDiscard: '[data-draft-action="discard"]',
+
   // Unified status copy.
   personalCompletionStatus: '[data-accord-review-complete-status]',
 };
 
-const clientHeaders = { 'X-Proof-Client-Version': '0.32.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const clientHeaders = { 'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 const DESKTOP = { width: 1280, height: 800 };
 const PHONE = devices['iPhone 13'];
 
@@ -519,34 +515,24 @@ async function runViewportCases(browser, base, created, label, viewport) {
     assert.equal(agreedProposal, false, 'scrolling recorded agreement on a proposal');
   });
 
-  // 6 — draft until Propose; leaving and Escape preserve it, one submit and one Undo.
-  await check(`ac06-draft-until-propose@${label}`, async () => {
+  // 6 — Mike 2026-09-24 replaces private drafts with immediate proposals and native Undo.
+  await check(`ac06-live-proposal@${label}`, async () => {
     await setFolded(page, L.SEC1, false);
     await focusLine(page, L.SAFE);
     const before = await page.evaluate(() => ({ text: window.__proofLineMarks.editorView().state.doc.textContent,
-      ids: window.proof.getAllMarks().map(m => m.id), depth: window.__proofUndo.debugState().depth }));
-    await blurKeys(page); await page.keyboard.press('s');
-    const draft = page.locator('.accord-draft textarea');
-    const proposed = `${SAFE_LINE} This is a proposed sentence.`;
-    await draft.fill(proposed);
-    await page.mouse.wheel(0, 250);
-    await page.locator(SEL.reviewPanelToggle).click();
+      ids: window.proof.getAllMarks().map(m => m.id) }));
+    await page.evaluate(i => window.__proofReadingWalk.focusDocument(i), L.SAFE);
+    await page.keyboard.press('End');
+    await page.keyboard.type(' This is a proposed sentence.', { delay: 40 });
+    const made = await page.evaluate(ids => window.proof.getAllMarks().filter(m => !ids.includes(m.id) && m.kind === 'insert'), before.ids);
+    assert.equal(made.length, 1); assert.match(made[0].by, /Alice/);
+    assert.equal(made[0].data.content, ' This is a proposed sentence.');
     await page.keyboard.press('Escape');
-    assert.deepEqual(await page.evaluate(() => window.proof.getAllMarks().map(m => m.id)), before.ids, 'leaving published the draft');
-    assert.equal(await page.evaluate(() => window.__proofLineMarks.editorView().state.doc.textContent), before.text, 'draft changed shared text');
-    if (await page.locator(SEL.reviewPanelToggle).getAttribute('aria-expanded') === 'true') await page.locator(SEL.reviewPanelToggle).click();
-    if (!(await draft.isVisible())) await page.locator(SEL.draftResume).click();
-    assert.equal(await draft.inputValue(), proposed, 'draft not recoverable');
-    await page.locator(SEL.proposeChangeButton).click();
-    await waitFor(page, ids => window.proof.getAllMarks().some(m => !ids.includes(m.id) && m.kind === 'replace'), before.ids);
-    const made = await page.evaluate(ids => window.proof.getAllMarks().filter(m => !ids.includes(m.id)), before.ids);
-    assert.equal(made.length, 1, 'submit must create exactly one proposal');
-    assert.match(made[0].by, /Alice/, 'proposal attribution missing');
-    assert.equal(made[0].data.content, proposed);
-    assert.equal(await page.evaluate(() => window.__proofUndo.debugState().depth), before.depth + 1);
-    await page.evaluate(() => window.__proofUndo.undo());
+    assert.equal(await page.locator('.accord-draft').count(), 0);
+    assert.ok(await page.evaluate(id => window.proof.getAllMarks().some(m => m.id === id), made[0].id), 'leaving lost a live proposal');
+    await page.keyboard.press('ControlOrMeta+z');
     await waitFor(page, id => !window.proof.getAllMarks().some(m => m.id === id), made[0].id);
-    assert.equal(await page.evaluate(() => window.__proofLineMarks.editorView().state.doc.textContent), before.text, 'Undo changed document text');
+    assert.equal(await page.evaluate(() => window.__proofLineMarks.editorView().state.doc.textContent), before.text);
   });
 
   // 7 — remote activity must not steal focus, unfold sections, or open panels.
@@ -653,13 +639,9 @@ async function runViewportCases(browser, base, created, label, viewport) {
       const lm = window.__proofLineMarks;
       for (const line of lm.lineList()) await lm.setLineStatus(line.index, 'agreed', undefined, 'click');
     });
-    await waitFor(page, () => {
-      const el = document.querySelector('[data-accord-review-complete-status], .pst-completion:not([hidden])');
-      return el?.textContent?.includes('You have finished reviewing.');
-    });
-    const completion = await page.locator('[data-accord-review-complete-status], .pst-completion:not([hidden])').first().innerText();
-    assert.match(completion, /^You have finished reviewing\./);
-    assert.doesNotMatch(completion, /everyone agreed|team agreed|fully agreed/i, 'personal completion claims team agreement');
+    // Step 3 retires status text derived from line marks, including personal completion.
+    assert.equal(await page.locator('[data-accord-review-complete-status]').textContent(), '');
+    assert.equal(await page.locator('[data-accord-review-complete-status]').isVisible(), false);
     await agent(base, created, '/marks/line', { by: 'ai:bob', quote: SAFE_LINE, status: 'seen' });
     const owner = await openDoc(browser, base, `${created.slug}?token=${encodeURIComponent(created.ownerSecret)}`, 'Owner', viewport, false);
     try {

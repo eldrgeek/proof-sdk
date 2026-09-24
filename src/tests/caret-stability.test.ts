@@ -26,7 +26,7 @@ import { WebSocketServer } from 'ws';
 import * as Y from 'yjs';
 import { ProsemirrorBinding, ySyncPluginKey } from 'y-prosemirror';
 
-const CLIENT_HEADERS = { 'X-Proof-Client-Version': '0.32.0', 'X-Proof-Client-Build': 'tests', 'X-Proof-Client-Protocol': '3' };
+const CLIENT_HEADERS = { 'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'tests', 'X-Proof-Client-Protocol': '3' };
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);

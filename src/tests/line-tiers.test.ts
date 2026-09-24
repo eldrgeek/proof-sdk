@@ -57,7 +57,7 @@ app.use('/api/agent', agentRoutes);
 const server = createServer(app);
 await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
 const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-const clientHeaders = { 'X-Proof-Client-Version': '0.31.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const clientHeaders = { 'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 const call = async (url: string, method = 'GET', body?: unknown, headers: Record<string, string> = {}) => {
   const response = await fetch(base + url, {
     method,

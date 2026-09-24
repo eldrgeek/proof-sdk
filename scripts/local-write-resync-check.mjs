@@ -41,7 +41,7 @@ const styles = arg('--style') ? [arg('--style')] : ['playmaker', 'proof'];
 const deviceNames = arg('--device') ? [arg('--device')] : ['desktop', 'phone'];
 const ROUNDS = Number(arg('--rounds') ?? 10);
 
-const clientHeaders = { 'X-Proof-Client-Version': '0.31.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const clientHeaders = { 'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 let failures = 0;
 const results = [];
 let activePage = null;
@@ -273,43 +273,29 @@ async function run(browser, base, style, device) {
   await check(`${tag}: no local write comes back as a whole-document replace`, async () => {
     assert.equal(final.resyncs, 0, `${final.resyncs} local writes were re-applied as whole-document Yjs replaces`);
   });
-  // The same thing through the gesture a person actually uses: type into the contended line in
-  // Local draft submission uses the same programmatic write. The conversion gate stays off.
-  await page.evaluate(() => document.querySelector('.share-pill-suggest-toggle').click());
+  // Step 3: exercise the same contention with actual keys and live proposals.
   const TYPED = 'typed by the person ';
   const gesture = await (async () => {
     const before = await documentState(page);
     const original = before.pm[TARGET_LINE];
     const writer2 = startWriter(created);
     try {
-      await page.evaluate(i => window.__proofEditGesture.open(i), TARGET_LINE);
-      await page.locator('.accord-draft textarea').fill(`${original} ${TYPED}`);
-      if (phone) await page.locator('[data-draft-action="propose"]').click();
-      else await page.locator('.accord-draft textarea').press('Control+Enter');
+      await page.evaluate(i => window.__proofReadingWalk.focusDocument(i), TARGET_LINE);
+      await page.evaluate(i => {
+        const view = window.__editorView; let pos = 0;
+        for (let n = 0; n <= i; n++) pos += view.state.doc.child(n).nodeSize;
+        view.dispatch(view.state.tr.setSelection(view.state.selection.constructor.create(view.state.doc, pos - 1)));
+      }, TARGET_LINE);
+      await page.keyboard.type(TYPED, { delay: 60 });
       await page.waitForTimeout(1200);
-    } finally {
-      await writer2.stop();
-    }
+    } finally { await writer2.stop(); }
     const after = await documentState(page);
-    const posted = await page.evaluate(() => (window.__proofEditGesture?.posted ?? []).map(p => ({
-      door: p.door, markId: p.markId, refused: p.refused ?? null, proposed: p.proposed, tracked: p.tracked,
-    })));
-    const dom = await page.evaluate(i => document.querySelectorAll('.ProseMirror > *')[i]?.textContent ?? '', TARGET_LINE);
-    return { original, after, posted, dom };
+    const proposals = await page.evaluate(() => window.proof.getAllMarks().filter(m => m.kind === 'insert' && (m.data?.status ?? 'pending') === 'pending'));
+    return { original, after, proposals };
   })();
-  if (trace) {
-    console.log(`  ${tag} gesture: ${JSON.stringify(gesture.posted)}\n    DOM: ${gesture.dom}\n    PM : ${gesture.after.pm[TARGET_LINE]}\n    YJS: ${gesture.after.yjs?.[TARGET_LINE]}`);
-  }
-
-  await check(`${tag}: submitting a draft on the contended line posts it without writing the line twice`, async () => {
-    assert.ok(gesture.posted.length > 0, 'no door fired: the gesture never ran, so this checked nothing');
-    const last = gesture.posted[gesture.posted.length - 1];
-    assert.equal(last.refused, null, `submission refused: ${last.refused}`);
-    // The document holds the words it had; the typed words are the proposal over them.
-    assert.equal(gesture.after.pm[TARGET_LINE], gesture.original,
-      `submission left the line as:\n    ${gesture.after.pm[TARGET_LINE]}\n  instead of:\n    ${gesture.original}`);
-    assert.ok(last.proposed.includes(TYPED.trim()),
-      `the proposal lost the typed words: ${last.proposed}`);
+  await check(`${tag}: typing on the contended line proposes the words without writing the line twice`, async () => {
+    assert.equal(gesture.after.pm[TARGET_LINE], gesture.original + TYPED);
+    assert.ok(gesture.proposals.some(m => m.data.content.includes(TYPED)), 'typed words have no insertion proposal');
   });
   await check(`${tag}: the gesture keeps the document and the Yjs fragment in step`, async () => {
     assert.equal(gesture.after.pm.length, startBlocks, `the document went to ${gesture.after.pm.length} blocks`);

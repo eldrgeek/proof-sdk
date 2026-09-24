@@ -9,7 +9,7 @@ import { $prose } from '@milkdown/kit/utils';
 import { Plugin, PluginKey, type Transaction } from '@milkdown/kit/prose/state';
 import { Decoration, DecorationSet, type EditorView } from '@milkdown/kit/prose/view';
 import type { Node as ProseNode } from '@milkdown/kit/prose/model';
-import { beginDraft, describeEditProposal, draftAction, draftKey, draftPrefix, parseDraft, resolveDraft, type EditDraft, type EditDoor } from '../shared/edit-session';
+import { EDIT_SESSION_POLICY, beginDraft, describeEditProposal, draftAction, draftKey, draftPrefix, parseDraft, resolveDraft, type EditDraft, type EditDoor } from '../shared/edit-session';
 import { extractLines, type DocLine, type LineSourceNode } from '../shared/line-marks';
 import type { UndoStack } from '../shared/undo';
 
@@ -43,7 +43,7 @@ export const draftViewPlugin = $prose(() => new Plugin<DecorationSet>({
   state: {
     init: () => DecorationSet.empty,
     apply(tr, previous) {
-      if (!active) return DecorationSet.empty;
+      if (!EDIT_SESSION_POLICY.privateDrafts || !active) return DecorationSet.empty;
       if (!tr.docChanged && !tr.getMeta(draftViewKey)) return previous;
       if (tr.docChanged) active.beginDocSync();
       active.map(tr);
@@ -89,7 +89,7 @@ export class EditGestureUI {
   readonly posted: Array<{ line: number; door: string; original: string; proposed: string; markId: string }> = [];
   constructor(private readonly host: EditGestureHost) {}
   start(): void {
-    if (this.started) return;
+    if (!EDIT_SESSION_POLICY.privateDrafts || this.started) return;
     this.started = true; active = this;
     this.load(); this.refresh();
     this.watchDraftAnchor();
@@ -142,6 +142,7 @@ export class EditGestureUI {
     if (view && !view.isDestroyed) view.dispatch(view.state.tr.setMeta(draftViewKey, true).setMeta('addToHistory', false));
   }
   open(lineIndex: number): boolean {
+    if (!EDIT_SESSION_POLICY.privateDrafts) return false;
     this.load();
     const view = this.host.view();
     const slug = this.host.slug();
@@ -396,7 +397,7 @@ export class EditGestureUI {
     }
   };
   private submit(entry: LocalDraft, door: EditDoor): void {
-    if (!this.drafts.has(entry.key) || draftAction(entry.draft, door) !== 'publish') return;
+    if (!EDIT_SESSION_POLICY.privateDrafts || !this.drafts.has(entry.key) || draftAction(entry.draft, door) !== 'publish') return;
     const view = this.host.view();
     if (!view || !this.host.canPropose()) { this.host.notice('You cannot propose a change with the current document permissions. Your draft is saved.'); return; }
     const line = this.lineFor(entry, this.lines(view.state.doc));

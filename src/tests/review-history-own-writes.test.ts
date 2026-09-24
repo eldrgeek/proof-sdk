@@ -14,9 +14,10 @@ for (const origin of ['local-marks-sync', 'unfamiliar-page-origin', null]) {
     assert(a.restore(), 'Own page refresh must not block undo');
     for (const peer of [a, p.bob]) {
       assert(!peer.view.state.doc.textContent.includes('OWN'));
-      assert(!peer.map.has(id));
+      assert.equal(peer.map.get(id)?.status, 'rejected', 'Undo of typing records withdrawal');
     }
     assert(a.restore(true));
+    assert.equal(a.map.get(id)?.status, 'pending');
     // A remote transaction remains remote even if its origin resembles ours.
     p.bob.doc.transact(() => p.bob.map.set(id, { ...p.bob.map.get(id), replies: [{ by: 'human:Bob', text: 'Keep' }] }), origin);
     const before = JSON.stringify([a.map.toJSON(), a.view.state.doc.toJSON(), a.native.undoStack, a.native.redoStack], (k, v) => k === 'meta' ? [...v.values()].map(String) : v);

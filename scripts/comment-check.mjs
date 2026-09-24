@@ -22,7 +22,7 @@ const styleArg = process.argv.indexOf('--style');
 const styles = styleArg > 0 ? [process.argv[styleArg + 1]] : ['playmaker', 'proof'];
 const viewports = [{ width: 1280, height: 800 }, { width: 1440, height: 900 }];
 
-const clientHeaders = { 'X-Proof-Client-Version': '0.32.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const clientHeaders = { 'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 let failures = 0;
 async function check(name, fn) {
   let line;

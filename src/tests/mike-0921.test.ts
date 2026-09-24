@@ -100,7 +100,7 @@ test('where a key is aimed', () => {
 
 
 
-test('direct Editing survives blur; the viewport guard requires focus and recent activity', () => {
+test('caret defines Writing; the viewport guard requires focus and recent activity', () => {
   const g = globalThis as unknown as { document?: unknown };
   const previous = g.document;
   const editorEl = { isContentEditable: true, closest: (sel: string) => (sel === '.ProseMirror' ? {} : null), blur() { doc.activeElement = bodyEl; } };
@@ -109,12 +109,12 @@ test('direct Editing survives blur; the viewport guard requires focus and recent
   g.document = doc;
   try {
     resetEditingGuardForTests();
-    assert.equal(isWriting(), false, 'focus handed to the text by code is not writing');
+    assert.equal(isWriting(), true, 'focus in the text is Writing');
     assert.equal(isEditing(), false);
     setDirectEditing(true);
     assert.equal(isWriting(), true, 'the labelled control starts Editing');
     setDirectEditing(false);
-    assert.equal(isWriting(), false, 'the labelled control ends Editing');
+    assert.equal(isWriting(), true, 'only leaving the text ends Writing');
     assert.equal(doc.activeElement, editorEl, 'the labelled control changes mode without moving selection');
     doc.activeElement = editorEl;
     setDirectEditing(true);
@@ -124,7 +124,7 @@ test('direct Editing survives blur; the viewport guard requires focus and recent
     assert.equal(isEditing(1000 + EDITING_GUARD_POLICY.graceMs), false, 'the grace period ended (still writing)');
     assert.equal(isWriting(), true);
     doc.activeElement = bodyEl;
-    assert.equal(isWriting(), true, 'blur never leaves direct Editing');
+    assert.equal(isWriting(), false, 'blur leaves Writing');
   } finally {
     resetEditingGuardForTests();
     g.document = previous;

@@ -1,6 +1,7 @@
-/** ac-lhc: live decisions require status-writing clients; older tabs must reload. */
+/** Mike, 2026-09-24, yfbqrau4 (ac-8ae): live typing withdraws through status writes.
+ * Older clients must reload before editing; the ac-lhc protocol stays unchanged. */
 export const COLLAB_VERSION_POLICY = {
-  minVersion: '0.32.0',
+  minVersion: '0.33.0',
   protocol: '3',
   reloadCode: 4401, // Hocuspocus Unauthorized stops automatic socket retries, including 0913728.
   reloadReason: 'client-upgrade-required',

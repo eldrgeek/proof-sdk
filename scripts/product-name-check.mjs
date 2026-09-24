@@ -53,7 +53,7 @@ const ENGINE = ID.engineName;          // "Proof SDK" — the one place "Proof" 
 const DOC_NOUN = ID.documentNoun;
 
 
-const clientHeaders = { 'X-Proof-Client-Version': '0.31.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const clientHeaders = { 'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 const MIKE_EMAIL = 'mw@mike-wolf.com';
 let failures = 0;
 const results = [];

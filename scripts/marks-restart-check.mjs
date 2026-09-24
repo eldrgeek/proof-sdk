@@ -25,7 +25,7 @@ const iterations = Number(option('iterations', '10'));
 const temp = mkdtempSync(path.join(tmpdir(), 'proof-marks-restart-'));
 const dbPath = path.join(temp, 'test.db');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-const headers = { 'Content-Type': 'application/json', 'X-Proof-Client-Version': '0.32.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const headers = { 'Content-Type': 'application/json', 'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 let server, browser, base, port;
 async function start(repo, style) {
   const fd = openSync(path.join(temp, 'server.log'), 'a');

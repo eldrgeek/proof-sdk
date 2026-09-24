@@ -1,18 +1,21 @@
 /**
- * Proposals stay local until Propose change or Cmd/Ctrl+Enter.
- * Mike, 2026-09-23 (usability brief). Leaving keeps a draft; Cancel discards it.
- * Hover, scroll, blur and reload do not publish. A draft follows its passage the way a
- * lapsed mark does: exact text first, then findLapseTarget. It never attaches to an
- * unrelated line. A draft that cannot re-attach stays listed for the reader.
- * The direct-edit conversion gate stays off. A local write while another person writes
- * the same document makes Yjs resync the whole document (local-write-resync.ts).
+ * Click editing publishes live proposals. Mike, 2026-09-24, Accord yfbqrau4,
+ * points 5–6 and proposed P2/P3 (ac-8ae). The old draft UI is rollback only.
  */
 import { actorKey, anchorForLine, findLapseTarget, type DocLine, type LineAnchor } from './line-marks';
 
 export const EDIT_SESSION_POLICY = {
   publishDoors: ['propose', 'cmd-enter'] as const,
-  /** Off. Turning it on writes the document twice, and that resync concatenates under a second writer. */
-  convertDirectEditsToProposals: false,
+  liveProposals: true,
+  privateDrafts: false,
+  // The existing rejected event carries by/resolvedBy; the same author means withdrawal.
+  withdrawOwnInsert: true,
+  deleteProposalRejects: true,
+  // P2's ownership transfer is deferred: competing edits retain the engine's authorship.
+  editOtherProposalsInPlace: false,
+  caretDefinesWriting: true,
+  escapeReturnsToReview: true,
+  showMarkProgress: false,
   undoEntriesPerPost: 1,
   noticeMs: 6000,
 } as const;

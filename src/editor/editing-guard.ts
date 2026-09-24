@@ -1,9 +1,9 @@
 /**
- * Review selects passages; only the labelled Editing control enables direct typing.
- * Mike, 2026-09-23 (usability brief). Hover, scroll and blur never change this mode.
- * A local draft is a field, so its keys cannot become reading commands.
- * Letter shortcuts are optional and never run during typing or composition.
+ * Mike, 2026-09-24, Accord yfbqrau4: a caret in the text means Writing.
+ * Letter keys belong to that text; Escape returns to the Review list.
+ * Hover and scroll never move focus. Retained draft fields own their keys too.
  */
+import { EDIT_SESSION_POLICY } from '../shared/edit-session';
 import { routeKey, type KeyTarget } from '../shared/reading-keys';
 export const EDITING_GUARD_POLICY = { graceMs: 4000 } as const;
 
@@ -26,17 +26,17 @@ const readingOwned = new WeakSet<Event>();
 const routeLog: Array<{ key: string; route: string; target: KeyTarget; writing: boolean }> = [];
 function now(): number { return typeof performance !== 'undefined' ? performance.now() : Date.now(); }
 function editorHasFocus(): boolean {
-  return typeof document !== 'undefined' && Boolean((document.activeElement as HTMLElement | null)?.closest?.('.ProseMirror'));
+  return typeof document !== 'undefined' && Boolean((document.activeElement as HTMLElement | null)?.isContentEditable && (document.activeElement as HTMLElement)?.closest?.('.ProseMirror'));
 }
 function draftHasFocus(): boolean {
   return typeof document !== 'undefined' && Boolean((document.activeElement as HTMLElement | null)?.closest?.('.accord-draft textarea'));
 }
-export function isWriting(): boolean { return directEditing; }
+export function isWriting(): boolean { return EDIT_SESSION_POLICY.caretDefinesWriting ? editorHasFocus() : directEditing; }
 export function isEditing(at = now()): boolean {
-  return draftHasFocus() || (directEditing && editorHasFocus() && at - lastActivity < EDITING_GUARD_POLICY.graceMs);
+  return draftHasFocus() || (isWriting() && editorHasFocus() && at - lastActivity < EDITING_GUARD_POLICY.graceMs);
 }
 export function noteEditingActivity(at = now()): void {
-  if (!directEditing && !draftHasFocus()) return;
+  if (!isWriting() && !draftHasFocus()) return;
   lastActivity = at;
   for (const listener of listeners) { try { listener(); } catch { /* keep typing */ } }
 }
@@ -68,19 +68,32 @@ export function keyTargetOf(target: EventTarget | null): KeyTarget {
   return 'other';
 }
 export function editingGuardDebug() {
-  return { writing: directEditing, editorFocused: editorHasFocus(), routes: routeLog.slice(-20) };
+  return { writing: isWriting(), editorFocused: editorHasFocus(), routes: routeLog.slice(-20) };
 }
 export function installEditingGuard(): void {
   if (installed || typeof document === 'undefined') return;
   installed = true;
   document.addEventListener('compositionstart', () => { composing = true; }, true);
   document.addEventListener('compositionend', () => { composing = false; }, true);
+  const refreshMode = () => setDirectEditing(editorHasFocus());
+  if (EDIT_SESSION_POLICY.caretDefinesWriting) {
+    document.addEventListener('focusin', refreshMode, true);
+    document.addEventListener('focusout', () => queueMicrotask(refreshMode), true);
+  }
   document.addEventListener('keydown', (event: KeyboardEvent) => {
     const target = keyTargetOf(event.target);
+    if (target === 'editor' && event.key === 'Escape' && !event.isComposing && EDIT_SESSION_POLICY.escapeReturnsToReview) {
+      event.preventDefault(); event.stopPropagation();
+      (document.activeElement as HTMLElement | null)?.blur();
+      const list = document.querySelector<HTMLElement>('.anv-issues');
+      list?.focus({ preventScroll: true });
+      refreshMode();
+      return;
+    }
     const route = routeKey({
       key: event.key, ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey,
       isComposing: composing || event.isComposing || event.keyCode === 229,
-      target, writing: directEditing, letterShortcuts: letterShortcutsEnabled(),
+      target, writing: isWriting(), letterShortcuts: letterShortcutsEnabled(),
     });
     routeLog.push({ key: event.key, route, target, writing: directEditing });
     if (routeLog.length > 40) routeLog.shift();
@@ -91,7 +104,7 @@ export function installEditingGuard(): void {
   }, true);
   // Also stop paste, drop, phone input and dictation in the review document.
   for (const type of ['beforeinput', 'paste', 'cut', 'drop']) document.addEventListener(type, event => {
-    if (keyTargetOf(event.target) === 'editor' && !directEditing) event.preventDefault();
+    if (keyTargetOf(event.target) === 'editor' && !isWriting()) event.preventDefault();
   }, true);
   for (const type of ['keydown', 'beforeinput', 'input', 'pointerdown', 'compositionstart']) document.addEventListener(type, event => {
     if (keyTargetOf(event.target) === 'editor' || draftHasFocus()) noteEditingActivity();

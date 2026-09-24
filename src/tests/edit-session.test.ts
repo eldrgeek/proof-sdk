@@ -15,7 +15,14 @@ const lines = extractLines(doc as unknown as LineSourceNode);
 const draft = beginDraft(lines[1], 'same');
 test('only the explicit submit doors publish; all other exits keep every character', () => {
   assert.deepEqual(EDIT_SESSION_POLICY.publishDoors, ['propose', 'cmd-enter']);
-  assert.equal(EDIT_SESSION_POLICY.convertDirectEditsToProposals, false);
+  assert.equal(EDIT_SESSION_POLICY.liveProposals, true);
+  assert.equal(EDIT_SESSION_POLICY.privateDrafts, false);
+  assert.equal(EDIT_SESSION_POLICY.withdrawOwnInsert, true);
+  assert.equal(EDIT_SESSION_POLICY.deleteProposalRejects, true);
+  assert.equal(EDIT_SESSION_POLICY.editOtherProposalsInPlace, false);
+  assert.equal(EDIT_SESSION_POLICY.caretDefinesWriting, true);
+  assert.equal(EDIT_SESSION_POLICY.escapeReturnsToReview, true);
+  assert.equal(EDIT_SESSION_POLICY.showMarkProgress, false);
   const texts = ['', 'a', '  double  spaces  ', '🙂 é\t\n', '# heading\n\nbody', 'safe → unsafe'];
   const doors: EditDoor[] = ['propose', 'cmd-enter', 'escape', 'click-outside', 'scrolled-away', 'hover', 'blur', 'reload', 'cancel'];
   for (const proposed of texts) for (const door of doors) {
@@ -92,6 +99,12 @@ Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
   getItem: (key: string) => saved.get(key) ?? null, setItem: (key: string, value: string) => saved.set(key, value), removeItem: (key: string) => saved.delete(key),
 } });
 try {
+  const disabled = new EditGestureUI({ view: () => null } as any);
+  assert.equal(disabled.open(0), false, 'production cannot open private drafts');
+  disabled.start();
+  assert.equal(disabled.debugState().started, false);
+  // Exercise the retained rollback code explicitly; production never enables it.
+  (EDIT_SESSION_POLICY as any).privateDrafts = true;
   const { alice, bob } = peers;
   const stack = new UndoStack();
   let allowed = true, writes = 0;
@@ -173,5 +186,5 @@ try {
     assert.equal(lost.length, 1);
     assert.equal(lost[0].proposed, original);
   });
-} finally { peers.close(); }
+} finally { (EDIT_SESSION_POLICY as any).privateDrafts = false; peers.close(); }
 console.log(`\n${passed} edit-session tests passed`);

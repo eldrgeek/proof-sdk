@@ -1,9 +1,8 @@
 /**
  * The reading layout and reading walk.
- * Mike, 2026-09-23 (usability brief): a click selects a passage. S and Suggest change open
- * a local draft. Only Propose change or Cmd/Ctrl+Enter publishes. Direct Editing is the
- * labelled control. Hover changes nothing. Scrolling records Seen only. It never commits a
- * proposal and it never changes the selected passage.
+ * Mike, 2026-09-24, Accord yfbqrau4: clicking text edits it as a live proposal.
+ * S and Suggest change put the caret in the selected passage. Hover changes nothing.
+ * Scrolling records Seen only; it never accepts a proposal or changes the selected passage.
  *
  * Authorship: requirements by Mike Wolf ("Reading and marking", 2026-09-18) with the COS's
  * decisions for the gaps; built by Claude Opus 5 (worker reading-walk), 2026-09-18.
@@ -13,10 +12,8 @@
  * Phones (<= 700 px): one column; the rails open as bottom sheets from the ⋯ menu, and a margin
  * dot opens the same answer group in the Margin sheet.
  *
- * The selected passage is where A, R, S and the Margin act. Scrolling moves the reading position
- * used to record Seen. It does not move the selected passage. A heading mark covers the heading only.
- * Keys run only while nobody is typing and letter shortcuts are on: A agree, R reject, J / ↓ next,
- * K / ↑ back, S opens a draft, E explains. Direct Editing and draft fields never run letter commands.
+ * Review owns A, J, K and Delete only while its list has focus. In the text those keys edit.
+ * Escape leaves the text. Outside text and fields, S edits the selected passage and E explains.
  *
  * Accord layout stage 3 (Ren's proposal, Mike ruled 2026-09-21; decisions 4, 6, 7, 8, 11;
  * policies in src/shared/layout-panels.ts): the left rail is the Navigator (Outline · Issues ·
@@ -703,8 +700,8 @@ export class ReadingWalkUI {
     // Reading keys act only on the explicitly selected passage.
     // Mike, 2026-09-24, yfbqrau4: A belongs only to Review; R no longer marks lines.
     if (/^[ar]$/i.test(key)) { event.preventDefault(); return; }
-    if (key === 'j' || key === 'J' || key === 'ArrowDown') { event.preventDefault(); this.next(); return; }
-    if (key === 'k' || key === 'K' || key === 'ArrowUp') { event.preventDefault(); this.previous(); return; }
+    if (key === 'ArrowDown') { event.preventDefault(); this.next(); return; }
+    if (key === 'ArrowUp') { event.preventDefault(); this.previous(); return; }
     // Line tiers: D flips the focus line between decision and context (an explicit action).
     if (key.toLowerCase() === TIER_POLICY.flipKey) { event.preventDefault(); this.flipFocusTier(); return; }
     // Step B4f: E asks the AI collaborators to explain the focus line (never a rejection).
@@ -951,9 +948,8 @@ export class ReadingWalkUI {
   private renderMode(): void {
     const writing = isWriting();
     this.modeEl.dataset.mode = writing ? 'editing' : 'reading';
-    this.modeEl.textContent = writing ? 'Editing' : 'Reading';
-    this.modeEl.title = writing ? 'Typing changes the document directly. Use Leave Editing to return to review.'
-      : 'Select a passage. Suggest change or S opens a local draft.';
+    this.modeEl.textContent = writing ? 'Writing' : 'Reading';
+    this.modeEl.title = writing ? 'Typing proposes changes. Escape returns to Review.' : 'Click text to edit it.';
     this.modeEl.setAttribute('aria-label', this.modeEl.textContent);
     document.body.classList.toggle('prw-editing', writing);
     const suggest = this.boxHost.querySelector<HTMLButtonElement>('.plm-suggest');
@@ -1061,7 +1057,7 @@ export class ReadingWalkUI {
     return true;
   }
 
-  private focusDocument(index: number): void {
+  focusDocument(index: number): void {
     if (isPhone()) this.closeSheets();
     this.host.lineMarks().revealLine(index);
     this.focusLine(index);
@@ -1070,7 +1066,7 @@ export class ReadingWalkUI {
     if (!view || !line) return;
     const pos = Math.min(line.pos + 1, view.state.doc.content.size);
     view.dispatch(view.state.tr.setSelection(TextSelection.near(view.state.doc.resolve(pos))));
-    view.focus(); // Selection only: S still opens the local proposal draft.
+    view.focus(); // Step 3: the next key proposes a change at this caret.
   }
 
   /** Exactly the card's call, including bundle preflight and the existing undo entry. */
@@ -1944,7 +1940,7 @@ export class ReadingWalkUI {
     this.sbNotice.setAttribute('role', 'status');
     this.completionEl.dataset.accordReviewCompleteStatus = '';
     this.completionEl.setAttribute('role', 'status');
-    bar.append(this.sbLine, sep(), this.sbMarked, sep(), this.sbIssues, this.completionEl, this.sbProvisional, this.sbNotice, this.modeEl);
+    bar.append(this.sbLine, sep(), ...(EDIT_SESSION_POLICY.showMarkProgress ? [this.sbMarked, sep()] : []), this.sbIssues, this.completionEl, this.sbProvisional, this.sbNotice, this.modeEl);
     this.ruleEl.setAttribute('aria-hidden', 'true');
     this.ruleEl.hidden = true;
   }
@@ -1953,13 +1949,13 @@ export class ReadingWalkUI {
     const walk = this.walk;
     if (!walk) return;
     const lm = this.host.lineMarks();
-    const completion = personalCompletionText({ status: lm.participantStatus(), viewer: lm.me(), name: actor => lm.displayName(actor) });
+    const completion = EDIT_SESSION_POLICY.showMarkProgress ? personalCompletionText({ status: lm.participantStatus(), viewer: lm.me(), name: actor => lm.displayName(actor) }) : null;
     this.completionEl.textContent = completion ?? '';
     this.completionEl.hidden = !completion;
     const completionHost = this.touchMode() ? this.strip : this.statusBar;
     if (this.completionEl.parentElement !== completionHost) completionHost.append(this.completionEl);
     const target = this.cursorLine();
-    const marked = lm.isLoaded() ? lm.markedUpTo() : null;
+    const marked = EDIT_SESSION_POLICY.showMarkProgress && lm.isLoaded() ? lm.markedUpTo() : null;
     const needs = lm.isLoaded() ? lm.needsYouLines().length : null;
     const ago = marked ? formatAgo(marked.at, Date.now()) : '';
     const sig = JSON.stringify([target, walk.lineCount, marked?.line ?? null, ago, needs]);
@@ -1969,7 +1965,8 @@ export class ReadingWalkUI {
     const strong = el('b', undefined, `Line ${target + 1}`);
     this.sbLine.replaceChildren(strong, ` of ${walk.lineCount}`);
     this.sbLine.dataset.line = String(target);
-    if (marked) {
+    if (!EDIT_SESSION_POLICY.showMarkProgress) { this.sbMarked.replaceChildren(); }
+    else if (marked) {
       const link = el('button', 'pst-marked-link', `line ${marked.line + 1}`);
       link.type = 'button';
       link.title = `Go to line ${marked.line + 1}, the last line you marked`;
@@ -2003,7 +2000,7 @@ export class ReadingWalkUI {
     const view = this.view();
     const container = this.ruleEl.parentElement;
     const lm = this.host.lineMarks();
-    const marked = lm.isLoaded() ? lm.markedUpTo() : null;
+    const marked = EDIT_SESSION_POLICY.showMarkProgress && lm.isLoaded() ? lm.markedUpTo() : null;
     const line = marked ? this.lines[marked.line] : null;
     const dom = line && view ? view.nodeDOM(line.pos) as HTMLElement | null : null;
     if (!marked || !container || !view || !dom || typeof dom.getBoundingClientRect !== 'function' || dom.getBoundingClientRect().height === 0) {

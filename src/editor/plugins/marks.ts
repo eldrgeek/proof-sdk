@@ -1,3 +1,4 @@
+import { makeLiveSuggestionInput, syncLiveSuggestionInputs } from '../live-suggestion-input';
 /**
  * Unified Marks Plugin for ProseMirror/Milkdown
  *
@@ -348,6 +349,7 @@ type AnchorInfo = {
   from: number;
   to: number;
   attrMeta?: Partial<StoredMark>;
+  coveredText?: string;
 };
 
 function getMarkTypeForKind(state: EditorState, kind: MarkKind): MarkType | null {
@@ -1172,13 +1174,15 @@ function buildAnchorMarks(
           const attrMeta = extractSuggestionMetaFromAttrs(mark.attrs as Record<string, unknown>);
           const existing = anchors.get(id);
           if (existing) {
+            const separator = doc.resolve(existing.to).sameParent(doc.resolve(from)) ? '' : '\n';
+            existing.coveredText = (existing.coveredText ?? '') + separator + node.text;
             existing.from = Math.min(existing.from, from);
             existing.to = Math.max(existing.to, to);
             existing.attrMeta = existing.attrMeta
               ? { ...existing.attrMeta, ...attrMeta }
               : attrMeta;
           } else {
-            anchors.set(id, { id, kind, by, from, to, attrMeta });
+            anchors.set(id, { id, kind, by, from, to, attrMeta, coveredText: node.text ?? '' });
           }
           break;
         }
@@ -1267,7 +1271,7 @@ function buildAnchorMarks(
     if (anchor.kind === 'comment') {
       data = buildCommentData(anchor.id, pluginMeta);
     } else if (anchor.kind === 'insert' || anchor.kind === 'delete' || anchor.kind === 'replace') {
-      data = buildSuggestionData(anchor.kind, meta as StoredMark | undefined, text, anchor.by);
+      data = buildSuggestionData(anchor.kind, meta as StoredMark | undefined, anchor.kind === 'insert' ? anchor.coveredText ?? text : text, anchor.by);
     } else if (anchor.kind === 'flagged') {
       data = pluginMeta?.note ? { note: pluginMeta.note } : undefined;
     }
@@ -1387,6 +1391,9 @@ function resolveActionRanges(doc: ProseMirrorNode, mark: Mark): MarkRange[] {
   if (ranges.length <= 1) return ranges;
 
   const sorted = [...ranges].sort((a, b) => a.from - b.from);
+  // Click edits can split a suggestion around another person's words. A decision
+  // may span paragraph boundaries, but must never consume intervening unmarked text.
+  if (sorted.some((range, i) => i > 0 && doc.textBetween(sorted[i - 1].to, range.from).length > 0)) return sorted;
   const composite: MarkRange = { from: sorted[0].from, to: sorted[sorted.length - 1].to };
   const compositeQuote = normalizeQuote(doc.textBetween(composite.from, composite.to, '\n', '\n'));
   if (compositeQuote && compositeQuote === mark.quote) {
@@ -3116,6 +3123,9 @@ export function accept(view: EditorView, markId: string, parser?: MarkdownParser
     case 'insert': {
       const markType = getMarkTypeForKind(view.state, 'insert');
       if (!markType) return false;
+      const content = (mark.data as InsertData | undefined)?.content;
+      const materializedPieces = ranges.length > 1 && typeof content === 'string'
+        && [...ranges].reverse().map(range => getTextForRange(view.state.doc, range)).join('') === content;
       for (const range of ranges) {
         tr = tr.removeMark(range.from, range.to, markType);
         const data = mark.data as InsertData | undefined;
@@ -3135,7 +3145,7 @@ export function accept(view: EditorView, markId: string, parser?: MarkdownParser
           effectiveParser,
           (text) => view.state.schema.text(text),
         );
-        if ((coveredContentMatches && !needsReparse) || (isAppliedInsert && coveredQuoteMatches)) {
+        if (materializedPieces || (coveredContentMatches && !needsReparse) || (isAppliedInsert && coveredQuoteMatches)) {
           tr = addAuthoredMarkToTransaction(view.state, tr, range, mark.by);
         } else if (!coveredContentMatches) {
           const result = applyMarkdownInsertAfterRange(view, tr, range, content, mark.by, effectiveParser);
@@ -3223,7 +3233,7 @@ export function accept(view: EditorView, markId: string, parser?: MarkdownParser
   return true;
 }
 
-export function reject(view: EditorView, markId: string, preview = false): boolean {
+export function reject(view: EditorView, markId: string, preview = false, retainStatus = false): boolean {
   const marks = getMarks(view.state);
   const mark = marks.find(item => item.id === markId);
   if (!mark) return false;
@@ -3291,7 +3301,7 @@ export function reject(view: EditorView, markId: string, preview = false): boole
       return false;
   }
 
-  const updatedMetadata = hasLiveMarksMap(view.state)
+  const updatedMetadata = (retainStatus || hasLiveMarksMap(view.state))
     ? { ...metadata, [markId]: suggestionWithStatus(metadata[markId], 'rejected', getCurrentActor()) }
     : removeMetadataEntries(metadata, [markId]);
   if (!preview) markResolvedMarkIds([markId], Date.now(), RESOLVED_MARK_TOMBSTONE_TTL_MS, 'resolved');
@@ -3700,7 +3710,7 @@ export function createDecorations(
         decorations.push(
           Decoration.widget(
             widgetPos,
-            () => {
+            (view) => {
               const span = document.createElement('span');
               span.className = ['mark-replace-insert', 'mark-insert', glowClass].filter(Boolean).join(' ');
               span.style.cssText = `${STYLES.insert} --review-author: ${getMarkColor(mark.by)};`;
@@ -3708,9 +3718,15 @@ export function createDecorations(
               span.setAttribute('data-mark-kind', mark.kind);
               if (suggestionTitle) span.title = suggestionTitle;
               span.textContent = suggestedInsertContent ?? '';
-              return span;
+              makeLiveSuggestionInput(span, view, mark.id, suggestedInsertContent ?? '');
+              // A false outer host makes the inner span its own editing surface. Without
+              // it Select All and browser input would belong to the whole ProseMirror doc.
+              const widget = document.createElement('span');
+              widget.contentEditable = 'false';
+              widget.append(span);
+              return widget;
             },
-            { side: 1, key: `${mark.kind}-insert-${mark.id}` }
+            { side: 1, key: `${mark.kind}-insert-${mark.id}`, stopEvent: () => true, ignoreSelection: true }
           )
         );
       }
@@ -4042,6 +4058,7 @@ export const marksPlugin = $prose(() => {
       },
     },
 
+    view: () => ({ update: view => syncLiveSuggestionInputs(view, getMarkMetadata(view.state)) }),
     props: {
       decorations(state) {
         const pluginState = marksPluginKey.getState(state);

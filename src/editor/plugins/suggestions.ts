@@ -7,17 +7,21 @@
 
 import { $ctx, $prose } from '@milkdown/kit/utils';
 import { Plugin, PluginKey, TextSelection, type EditorState, type Transaction } from '@milkdown/kit/prose/state';
-import type { MarkType, Node as ProseMirrorNode } from '@milkdown/kit/prose/model';
 
 import {
   marksPluginKey,
   proofMarkActionMeta,
-  getMarkMetadata,
   buildSuggestionMetadata,
   getMarks,
   stampSuggestionMetadataOnDocument,
+  reject,
+  getMarkMetadataWithQuotes,
 } from './marks';
 import { generateMarkId, type InsertData, type MarkRange } from '../../formats/marks';
+import { EDIT_SESSION_POLICY } from '../../shared/edit-session';
+import { suggestionWithStatus, isPendingSuggestion } from '../../shared/suggestion-status';
+import { Mapping, ReplaceStep } from '@milkdown/kit/prose/transform';
+import type { EditorView } from '@milkdown/kit/prose/view';
 import { getCurrentActor } from '../actor';
 
 // Suggestion state
@@ -44,15 +48,6 @@ const COALESCE_WINDOW_MS = 750;
 type InsertCoalesceState = { id: string; from: number; to: number; by: string; updatedAt: number };
 
 const lastInsertByActor = new Map<string, InsertCoalesceState>();
-
-function normalizeSuggestionKind(kind: unknown): SuggestionKind {
-  if (kind === 'insert' || kind === 'delete' || kind === 'replace') return kind;
-  return 'replace';
-}
-
-function isWhitespaceOnly(text: string): boolean {
-  return /^[\s\u00A0]+$/.test(text);
-}
 
 function getCoalescableInsertCandidate(
   state: EditorState,
@@ -114,29 +109,6 @@ function collectSliceText(nodes?: SliceNode[]): { text: string; hasNonText: bool
   return { text, hasNonText };
 }
 
-function detectSuggestionKinds(
-  doc: ProseMirrorNode,
-  from: number,
-  to: number,
-  suggestionType: MarkType
-): { hasInsert: boolean; hasDelete: boolean; hasReplace: boolean } {
-  const found = { hasInsert: false, hasDelete: false, hasReplace: false };
-
-  doc.nodesBetween(from, to, (node) => {
-    if (!node.isText) return true;
-    for (const mark of node.marks) {
-      if (mark.type !== suggestionType) continue;
-      const kind = normalizeSuggestionKind(mark.attrs.kind);
-      if (kind === 'insert') found.hasInsert = true;
-      if (kind === 'delete') found.hasDelete = true;
-      if (kind === 'replace') found.hasReplace = true;
-    }
-    return !(found.hasInsert && found.hasDelete && found.hasReplace);
-  });
-
-  return found;
-}
-
 /**
  * Wrap a transaction to convert edits to suggestions when enabled.
  * This intercepts the transaction and converts direct edits into tracked changes:
@@ -144,337 +116,160 @@ function detectSuggestionKinds(
  * - Deletions get marked with proofSuggestion kind=delete instead of being removed
  * - Replacements become proofSuggestion kind=replace with content stored in metadata
  */
-export function wrapTransactionForSuggestions(
-  tr: Transaction,
-  state: EditorState,
-  enabled: boolean
-): Transaction {
-  if (!enabled || !tr.docChanged) {
-    return tr;
-  }
-  if (tr.getMeta('y-sync$')) {
-    return tr;
-  }
-  if (tr.getMeta(marksPluginKey) !== undefined || tr.getMeta(proofMarkActionMeta) !== undefined) {
-    return tr;
-  }
+/** The interceptor captures these through the same decision history as Reject. */
+export const clickEditDecisionsMeta = 'proofClickEditDecisions';
+export function rejectionTransaction(state: EditorState, id: string): Transaction | null {
+  let result: Transaction | null = null;
+  const preview = { state, dispatch(tr: Transaction) { result = tr; } } as EditorView;
+  // The very same Reject implementation, without side effects during preparation.
+  if (!reject(preview, id, true, true)) return null;
+  result!.setMeta(clickEditDecisionsMeta, [id]);
+  return result;
+}
 
-  const suggestionType = state.schema.marks.proofSuggestion;
-
-  if (!suggestionType) {
-    console.warn('[suggestions] Missing proofSuggestion mark type');
-    return tr;
-  }
-
-  // Check for structural changes (paragraph splits, etc). Pass through unchanged.
-  for (const step of tr.steps) {
-    const stepJson = step.toJSON() as { stepType?: string; slice?: { content?: SliceNode[] } };
-    if (stepJson.stepType === 'replace' && stepJson.slice?.content) {
-      const { hasNonText } = collectSliceText(stepJson.slice.content);
-      if (hasNonText) {
-        return tr;
-      }
-    }
-  }
-
+export function wrapTransactionForSuggestions(tr: Transaction, state: EditorState, enabled: boolean): Transaction {
+  if (!enabled || !tr.docChanged || tr.getMeta('y-sync$') || tr.getMeta(marksPluginKey) !== undefined
+    || tr.getMeta(proofMarkActionMeta) !== undefined) return tr;
+  const type = state.schema.marks.proofSuggestion;
+  if (!type) return tr;
   const actor = getCurrentActor();
-  let metadata = getMarkMetadata(state);
-  let metadataChanged = false;
-
-  // Build a new transaction that converts edits to tracked changes.
-  let newTr = state.tr;
-  let writeOffset = 0;
+  let metadata = getMarkMetadataWithQuotes(state);
+  let out = state.tr;
+  const decisions = new Set<string>();
+  const originalMapping = new Mapping();
+  const anchoredBefore = new Set<string>();
+  state.doc.descendants(node => { for (const mark of node.marks) if (mark.type === type) anchoredBefore.add(mark.attrs.id); });
+  const currentState = () => state.apply(out.setMeta(marksPluginKey, { type: 'SET_METADATA', metadata }));
+  const rejectOne = (id: string) => {
+    const rejected = rejectionTransaction(currentState(), id);
+    if (!rejected) return false;
+    for (const step of rejected.steps) out.step(step);
+    metadata = rejected.getMeta(marksPluginKey).metadata;
+    decisions.add(id);
+    return true;
+  };
+  const add = (kind: SuggestionKind, from: number, to: number, content: string | null) => {
+    const id = generateMarkId();
+    out.addMark(from, to, type.create({ id, kind, by: actor }));
+    metadata[id] = buildSuggestionMetadata(kind, actor, content);
+    return id;
+  };
+  const refreshInserts = () => {
+    const runs = new Map<string, string>();
+    const ends = new Map<string, number>();
+    out.doc.descendants((node, pos) => {
+      if (!node.isText) return;
+      for (const mark of node.marks) if (mark.type === type && mark.attrs.kind === 'insert') {
+        const end = ends.get(mark.attrs.id);
+        const separator = end !== undefined && !out.doc.resolve(end).sameParent(out.doc.resolve(pos)) ? '\n' : '';
+        runs.set(mark.attrs.id, (runs.get(mark.attrs.id) ?? '') + separator + node.text);
+        ends.set(mark.attrs.id, pos + node.nodeSize);
+      }
+    });
+    for (const [id, text] of runs) if (isPendingSuggestion(metadata[id])) metadata[id] = { ...metadata[id], content: text };
+  };
 
   for (const step of tr.steps) {
-    const stepJson = step.toJSON() as {
-      stepType?: string;
-      from?: number;
-      to?: number;
-      slice?: { content?: SliceNode[] };
-    };
-
-    if (stepJson.stepType === 'replace') {
-      const origFrom = stepJson.from ?? 0;
-      const origTo = stepJson.to ?? 0;
-      const from = origFrom + writeOffset;
-      const to = origTo + writeOffset;
-      const slice = stepJson.slice;
-
-      const { text: insertedText } = collectSliceText(slice?.content);
-      const deletedText = state.doc.textBetween(origFrom, origTo, '');
-
-      const docSize = newTr.doc.content.size;
-      const safeFrom = Math.max(0, Math.min(from, docSize));
-      const safeTo = Math.max(safeFrom, Math.min(to, docSize));
-
-      // CASE 1: Pure deletion (no insertion)
-      if (deletedText && !insertedText) {
-        lastInsertByActor.delete(actor);
-        const existing = detectSuggestionKinds(newTr.doc, safeFrom, safeTo, suggestionType);
-
-        if (existing.hasDelete || existing.hasInsert) {
-          // Already tracked: accept deletion or reject insertion
-          newTr.delete(safeFrom, safeTo);
-          writeOffset -= deletedText.length;
-        } else if (existing.hasReplace) {
-          // Remove replace suggestion and keep content
-          newTr.removeMark(safeFrom, safeTo, suggestionType);
-        } else {
-          const suggestionId = generateMarkId();
-          const createdAt = new Date().toISOString();
-
-          newTr.addMark(safeFrom, safeTo, suggestionType.create({
-            id: suggestionId,
-            kind: 'delete',
-            by: actor,
-          }));
-
-          metadata = {
-            ...metadata,
-            [suggestionId]: buildSuggestionMetadata('delete', actor, null, createdAt),
-          };
-          metadataChanged = true;
-
-          // Move cursor to start of deletion (don't leave it inside deleted text)
-          newTr.setSelection(TextSelection.create(newTr.doc, safeFrom));
+    const json = step.toJSON();
+    // Map from this input step's document to our tracked-change document. Kept deletions
+    // occupy space only in ours; an offset based on inserted/deleted lengths cannot do this.
+    const mapping = originalMapping.invert();
+    mapping.appendMapping(out.mapping);
+    const from = typeof json.from === 'number' ? mapping.map(json.from, 1) : 0;
+    const to = json.from === json.to ? from : typeof json.to === 'number' ? mapping.map(json.to, -1) : from;
+    const { text: inlineText, hasNonText } = collectSliceText(json.slice?.content);
+    const text = hasNonText && step instanceof ReplaceStep
+      ? step.slice.content.textBetween(0, step.slice.content.size, '\n') : inlineText;
+    if (json.stepType !== 'replace' || (from === to && !text)) {
+      // Keep formatting and empty paragraph-boundary operations in the engine's native
+      // path. Pasted words (including multiple paragraphs) take the tracked text path.
+      const mapped = step.map(mapping);
+      if (mapped) out.step(mapped);
+      originalMapping.appendMap(step.getMap());
+      continue;
+    }
+    const marks = getMarks(currentState()).filter(m => isPendingSuggestion(metadata[m.id]) && m.range);
+    const containing = marks.find(m => m.kind === 'insert' && m.range!.from <= from && m.range!.to >= to
+      && (from < to || (m.range!.from < from && from < m.range!.to)));
+    if (containing && text && containing.by === actor) {
+      out.insertText(text, from, to);
+      out.addMark(from, from + text.length, type.create({ id: containing.id, kind: 'insert', by: actor }));
+    } else if (from === to && text) {
+      const candidate = getCoalescableInsertCandidate(currentState(), from, actor, Date.now());
+      out.insertText(text, from);
+      const id = candidate?.id ?? add('insert', from, from + text.length, text);
+      if (candidate) out.addMark(from, from + text.length, type.create({ id, kind: 'insert', by: actor }));
+      lastInsertByActor.set(actor, { id, from, to: from + text.length, by: actor, updatedAt: Date.now() });
+    } else if (from < to && !text) {
+      lastInsertByActor.delete(actor);
+      const complete = marks.filter(m => m.range!.from >= from && m.range!.to <= to
+        && (m.kind === 'insert' || m.kind === 'replace')
+        && (m.by === actor ? EDIT_SESSION_POLICY.withdrawOwnInsert : EDIT_SESSION_POLICY.deleteProposalRejects));
+      // Work right to left. Agreed text is struck through; deleting inserted words actually
+      // removes those words. A complete proposal uses Reject and keeps its decision record.
+      const segments: Array<{ from: number; to: number; id?: string; kind?: string }> = [];
+      out.doc.nodesBetween(from, to, (node, pos) => {
+        if (!node.isText) return;
+        const mark = node.marks.find(m => m.type === type && isPendingSuggestion(metadata[m.attrs.id]));
+        segments.push({ from: Math.max(from, pos), to: Math.min(to, pos + node.nodeSize), id: mark?.attrs.id, kind: mark?.attrs.kind });
+      });
+      const segmentMappingStart = out.mapping.maps.length;
+      const handled = new Set<string>();
+      let deletionId: string | undefined;
+      for (const segment of segments.reverse()) {
+        const segmentMapping = out.mapping.slice(segmentMappingStart);
+        const segmentFrom = segmentMapping.map(segment.from, 1);
+        const segmentTo = segmentMapping.map(segment.to, -1);
+        if (segment.id && complete.some(m => m.id === segment.id)) {
+          if (!handled.has(segment.id)) { rejectOne(segment.id); handled.add(segment.id); }
+        } else if (segment.kind === 'insert') out.delete(segmentFrom, segmentTo);
+        else if (!segment.kind) {
+          if (!deletionId) deletionId = add('delete', segmentFrom, segmentTo, null);
+          else out.addMark(segmentFrom, segmentTo, type.create({ id: deletionId, kind: 'delete', by: actor }));
         }
+        // Already struck-through originals remain until an explicit decision. Backspace
+        // must neither accept a pending deletion nor erase a replacement's original.
       }
-      // CASE 2: Pure insertion (no deletion)
-      else if (insertedText && !deletedText) {
-        const now = Date.now();
-        const whitespaceOnly = isWhitespaceOnly(insertedText);
-        const candidate = getCoalescableInsertCandidate(state, safeFrom, actor, now);
-
-        if (candidate && whitespaceOnly) {
-          // Whitespace with active candidate: extend the mark to include it.
-          // This keeps "Proof is" as one suggestion instead of splitting at the space.
-          const existingMeta = metadata[candidate.id];
-          const existingContent = typeof existingMeta?.content === 'string' ? existingMeta.content : '';
-          const updatedContent = candidate.direction === 'append'
-            ? `${existingContent}${insertedText}`
-            : `${insertedText}${existingContent}`;
-
-          newTr.insertText(insertedText, safeFrom);
-          newTr.addMark(
-            safeFrom,
-            safeFrom + insertedText.length,
-            suggestionType.create({ id: candidate.id, kind: 'insert', by: actor })
-          );
-          writeOffset += insertedText.length;
-
-          metadata = {
-            ...metadata,
-            [candidate.id]: {
-              ...existingMeta,
-              content: updatedContent,
-            },
-          };
-          metadataChanged = true;
-
-          lastInsertByActor.set(actor, {
-            id: candidate.id,
-            from: candidate.range.from,
-            to: candidate.range.to + insertedText.length,
-            by: actor,
-            updatedAt: now,
-          });
-        } else if (candidate) {
-          // Non-whitespace with active candidate: coalesce into existing mark
-          const existingMeta = metadata[candidate.id];
-          const existingContent = typeof existingMeta?.content === 'string' ? existingMeta.content : '';
-          const updatedContent = candidate.direction === 'append'
-            ? `${existingContent}${insertedText}`
-            : `${insertedText}${existingContent}`;
-
-          newTr.insertText(insertedText, safeFrom);
-          newTr.addMark(
-            safeFrom,
-            safeFrom + insertedText.length,
-            suggestionType.create({ id: candidate.id, kind: 'insert', by: actor })
-          );
-          writeOffset += insertedText.length;
-
-          metadata = {
-            ...metadata,
-            [candidate.id]: {
-              ...existingMeta,
-              kind: 'insert',
-              by: actor,
-              content: updatedContent,
-              status: existingMeta?.status ?? 'pending',
-              createdAt: existingMeta?.createdAt ?? new Date().toISOString(),
-            },
-          };
-          metadataChanged = true;
-
-          lastInsertByActor.set(actor, {
-            id: candidate.id,
-            from: candidate.range.from,
-            to: candidate.range.to + insertedText.length,
-            by: actor,
-            updatedAt: now,
-          });
-        } else if (whitespaceOnly) {
-          // Standalone whitespace, no active candidate: create a tracked suggestion mark.
-          const suggestionId = generateMarkId();
-          const createdAt = new Date().toISOString();
-
-          newTr.insertText(insertedText, safeFrom);
-          newTr.addMark(
-            safeFrom,
-            safeFrom + insertedText.length,
-            suggestionType.create({ id: suggestionId, kind: 'insert', by: actor })
-          );
-          writeOffset += insertedText.length;
-
-          metadata = {
-            ...metadata,
-            [suggestionId]: buildSuggestionMetadata('insert', actor, insertedText, createdAt),
-          };
-          metadataChanged = true;
-
-          lastInsertByActor.set(actor, {
-            id: suggestionId,
-            from: safeFrom,
-            to: safeFrom + insertedText.length,
-            by: actor,
-            updatedAt: now,
-          });
-        } else {
-          // New non-whitespace text, no candidate: create fresh suggestion mark
-          const suggestionId = generateMarkId();
-          const createdAt = new Date().toISOString();
-
-          newTr.insertText(insertedText, safeFrom);
-          newTr.addMark(
-            safeFrom,
-            safeFrom + insertedText.length,
-            suggestionType.create({ id: suggestionId, kind: 'insert', by: actor })
-          );
-          writeOffset += insertedText.length;
-
-          metadata = {
-            ...metadata,
-            [suggestionId]: buildSuggestionMetadata('insert', actor, insertedText, createdAt),
-          };
-          metadataChanged = true;
-
-          lastInsertByActor.set(actor, {
-            id: suggestionId,
-            from: safeFrom,
-            to: safeFrom + insertedText.length,
-            by: actor,
-            updatedAt: now,
-          });
-        }
-      }
-      // CASE 3: Replacement (deletion + insertion)
-      else if (deletedText && insertedText) {
-        lastInsertByActor.delete(actor);
-        const existing = detectSuggestionKinds(newTr.doc, safeFrom, safeTo, suggestionType);
-
-        if (existing.hasDelete) {
-          // Accept deletion and re-insert as an insertion suggestion.
-          newTr.delete(safeFrom, safeTo);
-          writeOffset -= deletedText.length;
-
-          const suggestionId = generateMarkId();
-          const createdAt = new Date().toISOString();
-          newTr.insertText(insertedText, safeFrom);
-          newTr.addMark(
-            safeFrom,
-            safeFrom + insertedText.length,
-            suggestionType.create({ id: suggestionId, kind: 'insert', by: actor })
-          );
-          writeOffset += insertedText.length;
-
-          metadata = {
-            ...metadata,
-            [suggestionId]: buildSuggestionMetadata('insert', actor, insertedText, createdAt),
-          };
-          metadataChanged = true;
-        } else if (existing.hasInsert) {
-          // Replace inside a pending insertion - keep it as an insertion suggestion.
-          const suggestionId = generateMarkId();
-          const createdAt = new Date().toISOString();
-
-          newTr.replaceWith(safeFrom, safeTo, state.schema.text(insertedText));
-          newTr.addMark(
-            safeFrom,
-            safeFrom + insertedText.length,
-            suggestionType.create({ id: suggestionId, kind: 'insert', by: actor })
-          );
-          writeOffset += insertedText.length - deletedText.length;
-
-          metadata = {
-            ...metadata,
-            [suggestionId]: buildSuggestionMetadata('insert', actor, insertedText, createdAt),
-          };
-          metadataChanged = true;
-        } else {
-          // Replace: keep original text, store replacement content in metadata.
-          const suggestionId = generateMarkId();
-          const createdAt = new Date().toISOString();
-
-          newTr.removeMark(safeFrom, safeTo, suggestionType);
-          newTr.addMark(safeFrom, safeTo, suggestionType.create({
-            id: suggestionId,
-            kind: 'replace',
-            by: actor,
-          }));
-
-          metadata = {
-            ...metadata,
-            [suggestionId]: buildSuggestionMetadata('replace', actor, insertedText, createdAt),
-          };
-          metadataChanged = true;
-
-          newTr.setSelection(TextSelection.create(newTr.doc, safeTo));
-        }
-      }
-      // CASE 4: Structural-only change (e.g., paragraph join/split with no text content).
-      // Both deletedText and insertedText are empty — this isn't a text edit.
-      // Pass through directly and adjust writeOffset for any doc size change.
-      else {
-        try {
-          const sizeBefore = newTr.doc.content.size;
-          newTr.step(step);
-          writeOffset += newTr.doc.content.size - sizeBefore;
-        } catch (e) {
-          console.warn('[suggestions] Could not apply structural step:', e);
-        }
-      }
-    } else if (stepJson.stepType === 'replaceAround' || stepJson.stepType === 'addMark' || stepJson.stepType === 'removeMark') {
-      // Pass through structural and mark changes directly
-      try {
-        newTr.step(step);
-      } catch (e) {
-        console.warn('[suggestions] Could not apply step:', stepJson.stepType, e);
-      }
-    } else {
-      // For other step types, try to apply them directly
-      try {
-        const result = step.apply(newTr.doc);
-        if (result.doc && result.doc !== newTr.doc) {
-          const sizeDiff = result.doc.content.size - newTr.doc.content.size;
-          newTr.step(step);
-          writeOffset += sizeDiff;
-        }
-      } catch (e) {
-        console.warn('[suggestions] Could not apply step:', stepJson.stepType, e);
+      // A forward Delete moves past the retained strike so the next Delete reaches
+      // the next character. Backspace and range deletion keep the start position.
+      const forward = state.selection.empty && state.selection.head <= json.from;
+      const caret = out.mapping.slice(segmentMappingStart).map(forward ? to : from, forward ? -1 : 1);
+      out.setSelection(TextSelection.near(out.doc.resolve(Math.min(caret, out.doc.content.size))));
+    } else if (from < to && text) {
+      lastInsertByActor.delete(actor);
+      if (containing && !EDIT_SESSION_POLICY.editOtherProposalsInPlace) {
+        // Rollback policy for P2 ownership transfer: the engine makes a new insertion by
+        // the editor. The untouched part of the first insertion keeps its author and id.
+        out.insertText(text, from, to);
+        out.removeMark(from, from + text.length, type);
+        add('insert', from, from + text.length, text);
+      } else {
+        // A replacement's original stays anchored; its new words live in content metadata.
+        // Do not strip overlapping proposals: they remain independently reviewable.
+        add('replace', from, to, text);
+        out.setSelection(TextSelection.near(out.doc.resolve(to)));
       }
     }
+    refreshInserts();
+    originalMapping.appendMap(step.getMap());
   }
-
-  if (metadataChanged) {
-    newTr.setMeta(marksPluginKey, { type: 'SET_METADATA', metadata });
-    newTr = stampSuggestionMetadataOnDocument(state, newTr, metadata);
+  // Every explicit edit that consumes a pending anchor records an end, including structural
+  // paste/joins and the legacy competing-insert path. Passive snapshots never run this code.
+  const surviving = new Set<string>();
+  out.doc.descendants(node => { for (const mark of node.marks) if (mark.type === type) surviving.add(mark.attrs.id); });
+  for (const id of anchoredBefore) {
+    if (!isPendingSuggestion(metadata[id]) || surviving.has(id)) continue;
+    metadata[id] = suggestionWithStatus(metadata[id], 'rejected', actor);
+    decisions.add(id);
   }
-
-  // Mark this transaction so authorship tracking skips it
-  newTr.setMeta('suggestions-wrapped', true);
-
-  return newTr;
+  refreshInserts();
+  out = stampSuggestionMetadataOnDocument(state, out, metadata);
+  out.setMeta(marksPluginKey, { type: 'SET_METADATA', metadata });
+  out.setMeta('suggestions-wrapped', true);
+  if (decisions.size) out.setMeta(clickEditDecisionsMeta, [...decisions]);
+  // Only explicit typing asks the browser to follow its caret; remote changes do not.
+  if (tr.scrolledIntoView) out.scrollIntoView();
+  return out;
 }
 
 /**

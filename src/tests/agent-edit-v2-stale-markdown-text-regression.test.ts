@@ -43,7 +43,7 @@ async function waitFor(
 }
 
 const CLIENT_HEADERS = {
-  'X-Proof-Client-Version': '0.32.0',
+  'X-Proof-Client-Version': '0.33.0',
   'X-Proof-Client-Build': 'tests',
   'X-Proof-Client-Protocol': '3',
 };
