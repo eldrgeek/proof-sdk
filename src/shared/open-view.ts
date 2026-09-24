@@ -380,7 +380,7 @@ export function openLayout(lineCount: number, itemLines: readonly number[], expa
 
 export interface AccordReader {
   actor: string;
-  /** They have agreed to every line of the document as it now reads. Approved is not agreement. */
+  /** They have current Agreed or Approved on every line of the document. */
   agreed: boolean;
   /** Every passage is Approved: the owner's ruling, named apart from agreement. */
   approved: boolean;
@@ -403,14 +403,14 @@ export interface AccordReader {
 export interface AccordHeader {
   /** "Agreed by you and Izzy. Eric has not read from line 40 on." Empty when `settled`. */
   text: string;
-  /** Everyone who has agreed to the whole document, viewer first. Approved is not in this list. */
+  /** The "Agreed by" label, viewer first. Those who Approved every passage use "Approved by". */
   agreed: string[];
   /** Everyone who has Approved every passage, viewer first. Not the same list as `agreed`. */
   approved: string[];
   /** Everyone who has not agreed, with where they stop and what they rejected. */
   behind: AccordReader[];
   /**
-   * Everyone has agreed to every line. Approved does not settle the header. The header goes away
+   * Everyone has Agreed or Approved every line. The header goes away
    * and what is left is a clean document (brief 3 and 7: "when it is zero for EVERYONE, the
    * header goes too").
    */
@@ -450,9 +450,9 @@ export function emptyAccordHeader(): AccordHeader {
  * Mike, 2026-09-23 (usability brief): the header never says someone "has not read it" when they
  * have a Rejected mark. It says how many lines they rejected. `clauses[].lines` and
  * `rejectedLines` are the passages a link points at. Seen is never listed under "Agreed by".
- * Approved is "Approved by", and it does not settle the header.
+ * Approved is "Approved by" and counts as the owner's own agreement, not the team's.
  *
- * A line only counts as agreed when that person's mark on it is current Agreed — a mark carried
+ * A line counts as agreed when that person's mark on it is current Agreed or Approved — a mark carried
  * over a cosmetic edit counts, a lapsed one does not (that is the point of the lapse rule).
  */
 export function accordHeader(input: {

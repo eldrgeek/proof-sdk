@@ -460,6 +460,32 @@ const call = async (url: string, method = 'GET', body?: unknown, headers: Record
 };
 
 try {
+  await test('/state: one open comment prevents zero Issues but does not prevent participant alignment', async () => {
+    const slug = 'status-open-comment';
+    const markdown = 'We will review the delivery schedule on Friday.';
+    db.createDocument(slug, markdown, {}, 'Status meanings', 'status-owner', 'status-owner-secret');
+    const key = db.createDocumentAccessToken(slug, 'editor', undefined, { label: 'Status reader', requestedBy: 'test', requestedFrom: '127.0.0.1' });
+    const agent = { 'x-share-token': key.secret };
+    const owner = { 'x-share-token': 'status-owner-secret' };
+    const comment = await call(`/api/agent/${slug}/marks/comment`, 'POST', { quote: markdown, text: 'Please discuss the schedule.' }, agent);
+    assert.equal(comment.status, 200, JSON.stringify(comment.body));
+    const before = await call(`/api/agent/${slug}/state`, 'GET', undefined, agent);
+    assert.equal(before.status, 200);
+    for (const member of before.body.alignment.team as string[]) {
+      const marked = await call(`/api/agent/${slug}/marks/line`, 'POST', { by: member, status: 'seen', lineIndex: 0 }, owner);
+      assert.equal(marked.status, 200, JSON.stringify(marked.body));
+    }
+    const state = await call(`/api/agent/${slug}/state`, 'GET', undefined, agent);
+    assert.equal(state.status, 200);
+    assert.equal(state.body.issues.length, 1);
+    assert.equal(state.body.issues[0].type, 'comment');
+    assert.equal(state.body.alignment.aligned, false);
+    assert.equal(state.body.participantStatus.aligned, true);
+    assert.equal(state.body.participantStatus.agreed, false);
+    assert.ok(state.body.participantStatus.participants.every((person: { rejections: unknown[] }) => person.rejections.length === 0));
+    assert.deepEqual(state.body.participantStatus, statusFromStateBody(state.body));
+  });
+
   // The document already carries the edits; the marks are made on the old text (as if the
   // readers marked before the edit).
   const slug = 'honest-test';

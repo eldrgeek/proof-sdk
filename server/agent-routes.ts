@@ -118,7 +118,7 @@ import { blindViewFor, redactIssues, serializeExplain, termsReport } from './pro
 import { getProofSettings, listExplains, listPicks } from './proof-extras-store.js';
 import { BUNDLE_POLICY } from '../src/shared/bundles.js';
 import { ALT_POLICY } from '../src/shared/alternatives.js';
-import { BLIND_POLICY } from '../src/shared/blind.js';
+import { BLIND_POLICY, objectionLinesRevealed } from '../src/shared/blind.js';
 import { EXPLAIN_POLICY, TERM_POLICY } from '../src/shared/explain.js';
 import { TTL_POLICY } from '../src/shared/ttl.js';
 import { getChatMessage, listChatMessages, mentionCandidates, postChatMessage, serializeChatMessage } from './chat.js';
@@ -2277,7 +2277,16 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
           const view = blindViewFor({ lines, lineMarks: report.lineMarks, viewer: viewer ?? '', answeredLines: answered, picks: listPicks(slug) });
           revealedLines = view.revealed;
           body.lineMarks = view.lineMarks;
-          body.issues = redactIssues(report.issues, view.revealed);
+          // Mike, 2026-09-23 (usability brief): the status and the rest of /state must not
+          // disclose a hidden rejection through an objection's reason, condition or Issue.
+          const visibleObjections = report.objections.filter(objection => {
+            const covered = objection.lines as Array<{ lineIndex: number | null }>;
+            return objectionLinesRevealed(covered.map(line => line.lineIndex), view.revealed);
+          });
+          const visibleObjectionIds = new Set(visibleObjections.map(objection => objection.id));
+          body.objections = visibleObjections;
+          body.issues = redactIssues(report.issues, view.revealed).filter(issue =>
+            issue.type !== 'objection' || visibleObjectionIds.has(issue.objectionId));
           body.asks = (body.asks as Array<Record<string, unknown>>).map(ask => redactAsk(ask, view.revealed, viewer ?? ''));
           body.alternatives = redactAltSets(report.alternatives, view.revealed, viewer ?? '');
           body.disagreementLines = report.disagreementLines.filter(index => view.revealed.has(index));
@@ -2306,13 +2315,17 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
         body.lineMarks = (body.lineMarks as Array<Record<string, unknown>>).map(mark => (isClaimedMark(mark as { by: string; hidden?: boolean; evidence?: string | null }) ? { ...mark, claimed: true } : mark));
       }
       // Mike, 2026-09-23 (usability brief): additive. Existing alignment fields are unchanged.
-      // Under blind marking this is recomputed from the marks this caller is allowed to see.
+      /**
+       * Under blind marking this is recomputed from the marks this caller is allowed to see.
+       * participantStatus.aligned answers: has everyone seen the current text, with nobody rejecting it?
+       */
       body.participantStatus = viewerParticipantStatus(
         report,
         Array.isArray(body.lineMarks) ? body.lineMarks as typeof report.lineMarks : report.lineMarks,
         revealedLines,
       );
       body.alignment = {
+        /** alignment.aligned answers: are there zero Issues, including open comments and proposals? */
         aligned: report.aligned,
         team: report.team,
         owners: report.owners,

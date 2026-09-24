@@ -19,6 +19,7 @@ const explain = await import('../shared/explain');
 const ttl = await import('../shared/ttl');
 const walkMod = await import('../shared/reading-walk');
 const serverLines = await import('../../server/line-marks');
+const { blindViewFor } = await import('../../server/proof-extras-eval');
 const db = await import('../../server/db');
 const { apiRoutes } = await import('../../server/routes');
 const { agentRoutes } = await import('../../server/agent-routes');
@@ -308,6 +309,68 @@ try {
     assert.equal(lm.data.blind, true);
     assert.equal(lm.data.status, undefined);
     await call(`/api/agent/${slug}/settings`, 'POST', { blind: false, by: 'human:owner@x.co' }, OWNER);
+  });
+
+  await test('blind status: rejection and objection details stay hidden until each covered line is revealed', async () => {
+    const slug = 'blind-participant-status';
+    const markdown = 'The launch date is Friday.\n\nThe budget is fixed.\n\nThe review is complete.';
+    db.createDocument(slug, markdown, {}, 'Blind status', 'blind-owner', 'blind-owner-secret');
+    const owner = { 'x-share-token': 'blind-owner-secret' };
+    const key = db.createDocumentAccessToken(slug, 'editor', undefined, { label: 'Blind viewer', requestedBy: 'test', requestedFrom: '127.0.0.1' });
+    const viewer = { 'x-share-token': key.secret };
+    const other = 'human:owner@x.co';
+    const rejectionReason = 'PRIVATE_REJECTION_REASON';
+    const objectionReason = 'PRIVATE_OBJECTION_REASON';
+    const condition = 'PRIVATE_RESOLUTION_CONDITION';
+    const on = await call(`/api/agent/${slug}/settings`, 'POST', { blind: true, by: other }, owner);
+    assert.equal(on.status, 200);
+    const rejection = await call(`/api/agent/${slug}/marks/line`, 'POST', { lineIndex: 0, status: 'rejected', reason: rejectionReason, by: other }, owner);
+    assert.equal(rejection.status, 200, JSON.stringify(rejection.body));
+    const objection = await call(`/api/agent/${slug}/objections`, 'POST', {
+      lines: [{ lineIndex: 1 }, { lineIndex: 2 }], by: other, reason: objectionReason, condition,
+    }, owner);
+    assert.equal(objection.status, 200, JSON.stringify(objection.body));
+
+    const read = async () => {
+      const state = await call(`/api/agent/${slug}/state`, 'GET', undefined, viewer);
+      assert.equal(state.status, 200);
+      const report = await serverLines.buildIssueReport(slug, markdown, {});
+      const view = blindViewFor({ lines: report.docLines!, lineMarks: report.lineMarks, viewer: 'ai:blind-viewer', picks: [] });
+      const direct = serverLines.viewerParticipantStatus(report, view.lineMarks, view.revealed);
+      assert.deepEqual(state.body.participantStatus, direct, '/state must publish the redacted computation');
+      const person = direct.participants.find(person => person.actor === other)!;
+      assert.ok(person);
+      return { state, direct, person };
+    };
+    let result = await read();
+    assert.deepEqual(result.person.passages.map(passage => passage.state), ['unseen', 'unseen', 'unseen']);
+    assert.deepEqual(result.person.rejections, []);
+    assert.equal(result.person.counts.rejected, 0);
+    for (const secret of [rejectionReason, objectionReason, condition]) {
+      assert.ok(!JSON.stringify(result.direct).includes(secret));
+      assert.ok(!JSON.stringify(result.state.body).includes(secret), `blind /state leaked ${secret}`);
+    }
+    assert.ok(!result.state.body.issues.some((issue: { type: string }) => issue.type === 'objection'));
+    const admin = await call(`/api/agent/${slug}/state`, 'GET', undefined, owner);
+    assert.equal(admin.body.participantStatus.participants.find((person: { actor: string }) => person.actor === other).counts.rejected, 3, 'owner credential without a viewer keeps its administrative view');
+
+    // Revealing one passage must not reveal a different passage or a multi-line condition.
+    for (const lineIndex of [0, 1, 2]) {
+      const marked = await call(`/api/agent/${slug}/marks/line`, 'POST', { lineIndex, status: 'seen' }, viewer);
+      assert.equal(marked.status, 200, JSON.stringify(marked.body));
+      result = await read();
+      assert.equal(result.person.passages[0].state, 'rejected');
+      assert.equal(result.person.passages[0].reason, rejectionReason);
+      if (lineIndex < 2) {
+        assert.ok(!JSON.stringify(result.state.body).includes(objectionReason));
+        assert.ok(!JSON.stringify(result.state.body).includes(condition));
+        assert.equal(result.person.counts.rejected, 1);
+      }
+    }
+    assert.equal(result.person.counts.rejected, 3);
+    assert.deepEqual(result.person.rejections.slice(1), [1, 2].map(lineIndex => ({ lineIndex, reason: objectionReason, condition })));
+    assert.equal(result.state.body.objections[0].condition, condition);
+    assert.equal(result.state.body.issues.find((issue: { type: string }) => issue.type === 'objection').reason, objectionReason);
   });
 
   await test('agent: a time-to-live: set, lazily expired in /state, "still true" checks are an AI\'s, a yes renews it', async () => {
