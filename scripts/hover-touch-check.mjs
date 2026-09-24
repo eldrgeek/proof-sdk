@@ -21,7 +21,7 @@ const shots = arg('--shots') || path.join(root, '.preview');
 mkdirSync(shots, { recursive: true });
 const styles = arg('--style') ? [arg('--style')] : ['playmaker', 'proof'];
 
-const clientHeaders = { 'X-Proof-Client-Version': '0.31.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const clientHeaders = { 'X-Proof-Client-Version': '0.32.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 let failures = 0;
 const results = [];
 let activePage = null;
@@ -121,10 +121,11 @@ async function runDesktop(browser, base, tag) {
   await check(`${tag}: hover preserves the selected passage and every element box`, async () => {
     await selectPassage(page, 3); await hoverChangesNothing(page, 5);
   });
-  await check(`${tag}: A after hover marks the selected passage and never folds it`, async () => {
-    await selectPassage(page, 3); await hoverChangesNothing(page, 5); await page.keyboard.press('a');
-    await page.waitForFunction(() => window.__proofLineMarks.myStatus(3) === 'agreed');
-    assert.notEqual(await page.evaluate(() => window.__proofLineMarks.myStatus(5)), 'agreed');
+  await check(`${tag}: A and R after hover never mark or fold a passage`, async () => {
+    await selectPassage(page, 3); await hoverChangesNothing(page, 5);
+    const before = await page.evaluate(() => window.__proofLineMarks.myStatus(3));
+    await page.keyboard.press('a'); await page.keyboard.press('r');
+    assert.equal(await page.evaluate(() => window.__proofLineMarks.myStatus(3)), before);
     await expandedStaysExpanded(page);
   });
   await check(`${tag}: while editing, the caret owns the focus (hover does not move it)`, async () => {
@@ -163,7 +164,7 @@ async function runPhone(browser, base, tag) {
   activePage = page;
   const strip = page.locator('.prw-strip');
 
-  await check(`${tag}: the current-line strip is visible and names the reading line and its mark`, async () => {
+  await check(`${tag}: the strip is visible and names the selected passage and open count`, async () => {
     await strip.waitFor({ state: 'visible', timeout: 4000 });
     const state = await walk(page);
     assert.equal(state.touch, true);
@@ -183,29 +184,24 @@ async function runPhone(browser, base, tag) {
     await page.screenshot({ path: path.join(shots, `${tag}-strip.png`) });
   });
 
-  await check(`${tag}: Agree in the sheet marks the selected passage and leaves it visible`, async () => {
+  await check(`${tag}: Review opens and closes without marking or folding the selected passage`, async () => {
     await selectPassage(page, 3);
-    if (!(await page.locator('.prw-right.prw-sheet-open').count())) await page.locator('.prw-strip-where').tap();
-    await page.locator('.prw-right .plm-primary-row [data-status="agreed"]').tap();
-    await page.locator('.prw-strip-grab').tap();
-    await page.waitForFunction(() => window.__proofLineMarks.myStatus(3) === 'agreed');
+    await page.locator('.prw-strip-review').tap();
+    assert.equal(await page.locator('.prw-right .plm-box').count(), 0);
+    await page.locator('.prw-right .prw-collapse').tap();
     await expandedStaysExpanded(page);
     await selectPassage(page, 3);
   });
 
   // Accord layout stage 3 (decision 11): ⋯ opens the Margin sheet on the Line tab with More showing.
-  await check(`${tag}: ⋯ opens the Margin sheet with the line's More marks`, async () => {
-    await page.evaluate(() => document.activeElement?.blur());
-    await page.waitForTimeout(200);
-    await page.locator('.prw-strip-more').tap();
+  await check(`${tag}: the count opens Review with no Line tab or More marks`, async () => {
+    await page.locator('.prw-strip-review').tap();
     const sheet = page.locator('.prw-right.prw-sheet-open');
-    await sheet.waitFor({ state: 'visible', timeout: 3000 });
-    await sheet.locator('.plm-more').waitFor({ state: 'visible', timeout: 3000 });
-    const focus = (await walk(page)).target;
-    assert.equal(await sheet.locator('.plm-box').getAttribute('data-line'), String(focus));
-    await page.screenshot({ path: path.join(shots, `${tag}-more-sheet.png`) });
-    await page.locator('.prw-strip-grab').tap();
-    await page.waitForFunction(() => !document.querySelector('.prw-right.prw-sheet-open'), null, { timeout: 2000 });
+    await sheet.waitFor({ state: 'visible' });
+    assert.equal(await sheet.locator('.plm-more, .plm-box').count(), 0);
+    assert.equal(await sheet.locator('.anv-issues').count(), 1);
+    await page.screenshot({ path: path.join(shots, `${tag}-review-sheet.png`) });
+    await sheet.locator('.prw-collapse').tap();
   });
 
   await check(`${tag}: a tap selects the passage while Reading, and the strip stays`, async () => {

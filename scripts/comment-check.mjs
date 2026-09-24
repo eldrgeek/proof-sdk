@@ -22,7 +22,7 @@ const styleArg = process.argv.indexOf('--style');
 const styles = styleArg > 0 ? [process.argv[styleArg + 1]] : ['playmaker', 'proof'];
 const viewports = [{ width: 1280, height: 800 }, { width: 1440, height: 900 }];
 
-const clientHeaders = { 'X-Proof-Client-Version': '0.31.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const clientHeaders = { 'X-Proof-Client-Version': '0.32.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 let failures = 0;
 async function check(name, fn) {
   let line;
@@ -261,7 +261,7 @@ async function run(browser, base, style, viewport) {
     // show twice — also in "Changes on this line", which now carries only proposals. Same
     // behaviour, same rail, one card instead of two.
     await page.evaluate(() => window.__proofReadingWalk.openReviewItem(window.__proofReadingWalk.focusIndex()));
-    const card = page.locator(`.prw-left .amg-thread[data-thread="${mark.id}"]`);
+    const card = page.locator(`.prw-right .amg-thread[data-thread="${mark.id}"]`);
     await card.first().waitFor({ state: 'visible', timeout: 3000 });
     assert.ok((await card.first().innerText()).includes(commentText), 'the rail does not show the comment');
     assert.equal(await page.locator(`.prw-changes .prw-card[data-mark-id="${mark.id}"]`).count(), 0,
@@ -280,7 +280,7 @@ async function run(browser, base, style, viewport) {
 
   await check(`${tag}: the comment can be resolved from the rail`, async () => {
     const thread = await openThread();
-    await page.waitForFunction(({ id, r }) => document.querySelector(`.prw-left .amg-thread[data-thread="${id}"]`)?.textContent?.includes(r),
+    await page.waitForFunction(({ id, r }) => document.querySelector(`.prw-right .amg-thread[data-thread="${id}"]`)?.textContent?.includes(r),
       { id: (await localComment(page, commentText)).id, r: replyText }, { timeout: 5000 });
     // A comment thread closes with "Done" (src/shared/threads.ts resolutionsFor): the same act,
     // and the same result on the mark (data.resolved === true), asserted below exactly as before.

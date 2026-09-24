@@ -14,7 +14,7 @@ const shots = arg('--shots') || path.join(root, '.preview');
 mkdirSync(shots, { recursive: true });
 const styles = arg('--style') ? [arg('--style')] : ['proof', 'playmaker'];
 
-const clientHeaders = { 'X-Proof-Client-Version': '0.31.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const clientHeaders = { 'X-Proof-Client-Version': '0.32.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 let failures = 0;
 const results = [];
 let activePage = null;
@@ -147,8 +147,7 @@ async function run(browser, base, style, phone) {
   const open = async () => {
     await page.evaluate(i => window.__proofReadingWalk.focusLine(i), TARGET_LINE);
     // S is the keyboard entry; phone uses Suggest change in the passage sheet.
-    if (phone) { await page.locator(`.plm-dot[data-line="${TARGET_LINE}"]`).click(); await page.locator('[data-accord-suggest-change]').click(); }
-    else { await page.evaluate(() => document.activeElement?.blur()); await page.keyboard.press('s'); }
+    await page.evaluate(() => document.activeElement?.blur()); await page.keyboard.press('s');
     await page.locator('.accord-draft textarea').waitFor();
   };
   await check(`${tag}: click selects, typing does not edit, S or the visible control opens a prefilled draft`, async () => {

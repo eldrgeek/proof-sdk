@@ -25,7 +25,7 @@ mkdirSync(shots, { recursive: true });
 const styles = arg('--style') ? [arg('--style')] : ['playmaker', 'proof'];
 const widths = arg('--width') ? [Number(arg('--width'))] : [1440, 1280];
 
-const clientHeaders = { 'X-Proof-Client-Version': '0.31.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const clientHeaders = { 'X-Proof-Client-Version': '0.32.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 let failures = 0;
 const results = [];
 let activePage = null;
@@ -114,7 +114,7 @@ async function openDoc(browser, base, slug, name, contextOptions = {}) {
 
 const walk = page => page.evaluate(() => window.__proofReadingWalk.debugState());
 const pendingIds = page => page.evaluate(() => (window.proof?.getAllMarks?.() ?? []).filter(m => m.data?.status === 'pending').map(m => m.id));
-const dotStatus = (page, line) => page.evaluate(i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.status ?? null, line);
+const dotStatus = (page, line) => page.evaluate(i => window.__proofLineMarks.myStatus(i), line);
 const waitFor = (page, fn, arg, timeout = 8000) => page.waitForFunction(fn, arg, { timeout, polling: 100 });
 const rect = (page, selector) => page.evaluate(s => document.querySelector(s)?.getBoundingClientRect().toJSON() ?? null, selector);
 async function gesture(page, dy, events = 1) {
@@ -161,14 +161,14 @@ async function desktop(browser, base, style, width) {
         const panel = document.querySelector('.pm-review-panel');
         const t = document.querySelector('.ProseMirror').getBoundingClientRect();
         const p = panel?.getBoundingClientRect();
-        return { inRail: !!panel?.closest('.prw-left .anv-pane[data-tab="issues"]'), hidden: panel?.hidden, pRight: p?.right, tLeft: t.left };
+        return { inRail: !!panel?.closest('.prw-right .anv-pane[data-tab="issues"]'), hidden: panel?.hidden, pLeft: p?.left, tRight: t.right };
       });
       assert.ok(info.inRail, 'panel not in the Navigator');
       assert.equal(info.hidden, false, 'panel hidden');
-      assert.ok(info.pRight <= info.tLeft, 'panel overlaps the text');
+      assert.ok(info.pLeft >= info.tRight, 'panel overlaps the text');
     });
   }
-  await check(`${tag}: on open the first line is the focus line, highlighted, with its mark box in the right rail`, async () => {
+  await check(`${tag}: on open the first line is the focus line, highlighted, without a mark box`, async () => {
     const state = await walk(page);
     assert.equal(state.focus, 0);
     const info = await page.evaluate(() => {
@@ -181,38 +181,28 @@ async function desktop(browser, base, style, width) {
     });
     assert.ok(info.f, 'no focus highlight');
     assert.ok(info.f.top <= info.h.top && info.f.bottom >= info.h.bottom, 'highlight does not cover the first line');
-    assert.equal(info.box, '0', 'mark box is not for line 1');
-    assert.ok(info.boxRect.left > info.h.right, 'box is not beside the text');
+    assert.equal(info.box, null, 'retired Line tab rendered');
     assert.equal(info.popover, false, 'a popover is open');
     await page.screenshot({ path: path.join(shots, `${tag}-1-open.png`) });
   });
   await check(`${tag}: dwelling on the first line marks it Seen`, async () => {
-    await waitFor(page, () => document.querySelector('.plm-dot[data-line="0"]')?.dataset.status === 'seen');
+    await waitFor(page, () => window.__proofLineMarks.myStatus(0) === 'seen');
   });
-  await check(`${tag}: J moves the focus; A agrees with the focus line`, async () => {
+  await check(`${tag}: J moves the passage; A and R never mark it`, async () => {
     await page.keyboard.press('j');
     await waitFor(page, () => window.__proofReadingWalk.debugState().focus === 1);
-    await page.keyboard.press('a');
-    await waitFor(page, () => document.querySelector('.plm-dot[data-line="1"]')?.dataset.status === 'agreed');
+    await page.keyboard.press('a'); await page.keyboard.press('r');
+    assert.ok(!['agreed', 'rejected'].includes(await dotStatus(page, 1)));
+    assert.equal(await page.locator('.plm-dot').count(), 0);
   });
   await check(`${tag}: keys typed into an input do not mark or move`, async () => {
-    // (Typing into the document itself is checked at the end: it needs a press on the text,
-    // which starts writing — see scripts/mike-0921-check.mjs for every entry path.)
-    let state = await walk(page);
-    assert.equal(state.focus, 1);
-    assert.equal(await dotStatus(page, 1), 'agreed');
-    await page.keyboard.press('j'); // line 2
-    await page.keyboard.press('r');
-    const input = page.locator('.prw-right .plm-reason input:not(.plm-condition)');
-    await input.waitFor({ state: 'visible' });
-    assert.ok(await input.evaluate(e => e === document.activeElement), 'R did not focus the reason field');
-    await page.keyboard.type('Needs a source, ask Jake');
-    state = await walk(page);
-    assert.equal(state.focus, 2, 'typing the reason moved the focus');
-    assert.equal(await input.inputValue(), 'Needs a source, ask Jake');
-    await page.keyboard.press('Enter');
-    await waitFor(page, () => document.querySelector('.plm-dot[data-line="2"]')?.dataset.status === 'rejected');
-    await page.evaluate(() => document.activeElement?.blur());
+    const before = (await walk(page)).focus;
+    const input = page.locator('.prw-chat-bottom .pch-input');
+    await input.fill('arjk');
+    assert.equal((await walk(page)).focus, before);
+    assert.equal(await input.inputValue(), 'arjk');
+    await input.fill(''); await page.evaluate(() => document.activeElement?.blur());
+    await selectPassage(page, 2);
   });
   await check(`${tag}: scrolling at reading pace marks lines Seen after the dwell`, async () => {
     // line 2 -> 3 -> 4, pausing longer than line 3's reading time (Step B3b: its words at the
@@ -244,7 +234,7 @@ async function desktop(browser, base, style, width) {
     assert.deepEqual(await pendingIds(bob.page), await pendingIds(page));
   });
 
-  await check(`${tag}: a later explicit Agree accepts no earlier proposal`, async () => {
+  await check(`${tag}: A outside Review accepts no earlier proposal`, async () => {
     await selectPassage(page, DELTA + 1);
     const before = await pendingIds(page);
     await page.keyboard.press('a'); await page.waitForTimeout(400);
@@ -265,13 +255,13 @@ async function desktop(browser, base, style, width) {
     assert.ok(focusTop !== null && focusTop >= 0, 'the selected passage is not visible');
     assert.equal(Number(await page.locator('.anv-issue[aria-current="true"]').getAttribute('data-line')), after);
   });
-  await check(`${tag}: a margin dot focuses its line and keeps the box in the rail (no popover)`, async () => {
-    await page.evaluate(() => window.scrollTo(0, 0));
-    await page.waitForTimeout(150);
-    await page.locator('.plm-dot[data-line="3"]').click();
-    await waitFor(page, () => window.__proofReadingWalk.debugState().readingFocus === 3);
-    assert.equal(await page.locator('.plm-menu').count(), 0);
-    assert.equal(await page.locator('.prw-right .plm-box').getAttribute('data-line'), '3');
+  await check(`${tag}: an amber dot selects its Review item without a popover`, async () => {
+    const dot = page.locator('.plm-open-dot').first();
+    const line = Number(await dot.getAttribute('data-line'));
+    await dot.click();
+    assert.equal((await walk(page)).focus, line);
+    assert.equal(await page.locator('.plm-menu, .plm-box').count(), 0);
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset.line), String(line));
   });
   await check(`${tag}: both rails collapse and the text re-centres`, async () => {
     await page.locator('.prw-left .prw-collapse').click();
@@ -333,19 +323,21 @@ async function phone(browser, base, style) {
     assert.ok(info.focus, 'no focus highlight');
     await page.screenshot({ path: path.join(shots, `${tag}-1-open.png`) });
   });
-  await check(`${tag}: a dot opens the one Margin answer sheet`, async () => {
-    await page.locator('.plm-dot[data-line="1"]').tap();
+  await check(`${tag}: the strip opens Review without a Line tab`, async () => {
+    await page.locator('.prw-strip-review').tap();
     await page.locator('.prw-right.prw-sheet-open').waitFor({ state: 'visible' });
-    await page.locator('.prw-strip-grab').tap();
+    assert.equal(await page.locator('.plm-box').count(), 0);
+    await page.locator('.prw-right .prw-collapse').tap();
   });
-  await check(`${tag}: the ⋯ menu opens "This line" as a bottom sheet with the mark box`, async () => {
+  await check(`${tag}: the menu opens Review above the permanent chat`, async () => {
     await page.locator('#share-banner .share-pill-overflow').tap();
-    await page.getByRole('menuitem', { name: /This line/ }).tap();
+    await page.getByRole('menuitem', { name: /Review panel/ }).tap();
     const sheet = page.locator('.prw-right.prw-sheet-open');
     await sheet.waitFor({ state: 'visible' });
     const r = await rect(page, '.prw-right.prw-sheet-open');
-    assert.ok(Math.abs(r.bottom - 844) <= 2 && r.width >= 388, `sheet ${JSON.stringify(r)}`);
-    assert.ok(await sheet.locator('.plm-box').count() === 1, 'no mark box');
+    const chat = await rect(page, '.prw-chat-bottom');
+    assert.ok(Math.abs(r.bottom - chat.top) <= 2 && r.width >= 388);
+    assert.equal(await sheet.locator('.anv-issues').count(), 1);
     await page.screenshot({ path: path.join(shots, `${tag}-2-sheet.png`) });
     await sheet.locator('.prw-collapse').tap();
   });

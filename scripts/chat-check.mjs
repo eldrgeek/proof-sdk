@@ -23,7 +23,7 @@ const shots = arg('--shots') || path.join(root, '.preview');
 mkdirSync(shots, { recursive: true });
 const styles = arg('--style') ? [arg('--style')] : ['playmaker', 'proof'];
 
-const clientHeaders = { 'X-Proof-Client-Version': '0.31.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const clientHeaders = { 'X-Proof-Client-Version': '0.32.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 const MIKE_EMAIL = 'mw@mike-wolf.com';
 const ERIC_EMAIL = 'eric@example.test';
 let failures = 0;
@@ -111,10 +111,7 @@ const chatState = page => page.evaluate(() => window.__proofChat.debugState());
 // Accord round 2, stage D: talk about a line belongs to the document, so the Room folds it behind
 // one control. Everything below still tests what it always tested — it just opens that control
 // first, the way a person would.
-const showLineTalk = async (page) => {
-  const bar = page.locator('.pch-line-talk-summary').first();
-  if (await bar.count() && await page.evaluate(() => window.__proofChat.debugState().lineTalkOpen) === false) await bar.click();
-};
+const showLineTalk = async page => { if (!(await chatState(page)).visible) await page.locator('.prw-chat-bottom .pch-toggle').click(); };
 const docText = page => page.evaluate(() => window.proof.getMarkdownSnapshot()?.content);
 
 async function run(browser, style) {
@@ -148,47 +145,37 @@ async function run(browser, style) {
     await openDoc(eric, base, slug);
 
     // Accord layout stage 3 (decision 6): the chat is the Margin's Room tab (the Line tab is the line's thread).
-    await check(`${tag}: the chat is the Margin's Room tab, full height, and says it is empty`, async () => {
-      assert.equal(await mike.evaluate(() => window.__proofChat.debugState().visible), false, 'the chat shows while the Line tab is selected');
-      for (const page of [mike, eric]) await page.locator('.prw-right .amg-tab[data-tab="room"]').click();
-      const info = await mike.evaluate(() => {
-        const rail = document.querySelector('.prw-right');
-        const pane = document.querySelector('.prw-right .amg-pane[data-tab="room"]');
-        const input = document.querySelector('.prw-right .pch-input').getBoundingClientRect();
-        return { inRoom: !!document.querySelector('.prw-right .amg-pane[data-tab="room"] .prw-chat .pch'), paneHeight: pane.getBoundingClientRect().height, inputBottom: input.bottom, railBottom: rail.getBoundingClientRect().bottom, empty: document.querySelector('.prw-right .pch-empty')?.textContent, visible: !!document.querySelector('.prw-right .pch-input')?.offsetParent, lineHidden: document.querySelector('.prw-right .amg-pane[data-tab="line"]').hidden };
-      });
-      assert.ok(info.inRoom, 'the chat is not in the Room tab');
-      assert.equal(info.lineHidden, true);
-      assert.ok(info.paneHeight >= 600, `the Room is not full height (${info.paneHeight})`);
-      assert.ok(info.inputBottom <= info.railBottom, 'the composer is in view without scrolling the rail');
-      assert.match(info.empty, /No messages yet/);
-      assert.equal(info.visible, true);
-      assert.equal(await mike.evaluate(() => window.__proofChat.debugState().visible), true);
+    await check(`${tag}: the composer is permanent and the empty conversation expands upward`, async () => {
+      assert.equal(await mike.locator('.prw-chat-bottom .pch-input').isVisible(), true);
+      assert.match(await mike.locator('.prw-chat-bottom .pch-empty').innerText(), /No messages yet/);
+      for (const page of [mike, eric]) await page.locator('.prw-chat-bottom .pch-toggle').click();
+      assert.equal((await chatState(mike)).visible, true);
+      assert.equal(await mike.locator('.amg-tab').count(), 0);
     });
 
     await check(`${tag}: typing in the composer never fires the reading keys (A R J K Y N T E 1-9)`, async () => {
       await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.BUDGET);
       const before = { walk: await mike.evaluate(() => window.__proofReadingWalk.debugState()), marks: (await mike.evaluate(() => window.__proofLineMarks.debugState())).marks.length };
-      await mike.locator('.prw-right .pch-input').click();
+      await mike.locator('.prw-chat-bottom .pch-input').click();
       await mike.keyboard.type('arjkyntE19 ARJK');
       await mike.waitForTimeout(400);
       const after = { walk: await mike.evaluate(() => window.__proofReadingWalk.debugState()), marks: (await mike.evaluate(() => window.__proofLineMarks.debugState())).marks.length };
       assert.equal(after.walk.focus, L.BUDGET, 'J/K moved the focus');
       assert.equal(after.walk.explained.length, before.walk.explained.length, 'E asked for an explanation');
       assert.equal(after.marks, before.marks, 'A marked the line');
-      assert.equal(await mike.locator('.prw-right .pch-input').inputValue(), 'arjkyntE19 ARJK');
-      await mike.locator('.prw-right .pch-input').fill('');
+      assert.equal(await mike.locator('.prw-chat-bottom .pch-input').inputValue(), 'arjkyntE19 ARJK');
+      await mike.locator('.prw-chat-bottom .pch-input').fill('');
       assert.equal(await mike.locator('.prw-right .plm-reason:visible').count(), 0, 'R opened the reason field');
     });
 
     await check(`${tag}: 📍 attaches the focus line; @ suggests the AI; Enter sends; the message points at the line`, async () => {
-      await mike.locator('.prw-right .pch-pin').click();
-      assert.equal(await mike.locator('.prw-right .pch-chip').count(), 1);
-      assert.equal(await mike.locator('.prw-right .pch-chip').getAttribute('data-line'), String(L.BUDGET));
-      const input = mike.locator('.prw-right .pch-input');
+      await mike.locator('.prw-chat-bottom .pch-pin').click();
+      assert.equal(await mike.locator('.prw-chat-bottom .pch-chip').count(), 1);
+      assert.equal(await mike.locator('.prw-chat-bottom .pch-chip').getAttribute('data-line'), String(L.BUDGET));
+      const input = mike.locator('.prw-chat-bottom .pch-input');
       await input.click();
       await mike.keyboard.type('Is this right, @Cla');
-      const option = mike.locator('.prw-right .pch-suggest-item').first();
+      const option = mike.locator('.prw-chat-bottom .pch-suggest-item').first();
       await option.waitFor({ state: 'visible' });
       assert.match(await option.innerText(), /Claude COS/);
       await mike.screenshot({ path: path.join(shots, `${tag}-1-mention.png`) });
@@ -202,7 +189,7 @@ async function run(browser, style) {
       assert.deepEqual(s.messages[0].mentions, ['ai:claude-cos']);
       assert.equal(s.messages[0].by, 'human:mw@mike-wolf.com');
       await showLineTalk(mike);
-      const msg = mike.locator('.prw-right .pch-msg').first();
+      const msg = mike.locator('.prw-chat-bottom .pch-msg').first();
       assert.equal(await msg.locator('.pch-text strong').innerText(), 'check');
       assert.equal(await msg.locator('.pch-text code').innerText(), 'budget');
       assert.match(await msg.locator('.pch-who').innerText(), /Mike Wolf\s*✓/);
@@ -214,14 +201,14 @@ async function run(browser, style) {
       await waitFor(eric, () => window.__proofChat.debugState().messages.length === 1, null, 15000);
       await eric.evaluate(() => window.__proofReadingWalk.focusLine(0));
       await showLineTalk(eric);
-      await eric.locator('.prw-right .pch-msg .pch-pointer').first().click();
+      await eric.locator('.prw-chat-bottom .pch-msg .pch-pointer').first().click();
       await waitFor(eric, l => window.__proofReadingWalk.debugState().focus === l, L.BUDGET);
-      assert.match(await eric.locator('.prw-right .pch-msg .pch-who').first().innerText(), /Mike Wolf/);
+      assert.match(await eric.locator('.prw-chat-bottom .pch-msg .pch-who').first().innerText(), /Mike Wolf/);
     });
 
     await check(`${tag}: Eric replies (Shift+Enter is a new line); the reply quotes Mike's message`, async () => {
       await showLineTalk(eric);
-      await eric.locator('.prw-right .pch-msg .pch-reply').first().click();
+      await eric.locator('.prw-chat-bottom .pch-msg .pch-reply').first().click();
       await eric.keyboard.type('Looks right to me.');
       await eric.keyboard.press('Shift+Enter');
       await eric.keyboard.type('Second line.');
@@ -231,7 +218,7 @@ async function run(browser, style) {
       const reply = s.messages.find(m => m.by === 'human:eric@example.test');
       assert.equal(reply.text, 'Looks right to me.\nSecond line.');
       assert.equal(reply.replyTo, s.messages[0].id);
-      assert.match(await eric.locator('.prw-right .pch-msg').last().locator('.pch-quote').innerText(), /Mike Wolf: Is this right/);
+      assert.match(await eric.locator('.prw-chat-bottom .pch-msg').last().locator('.pch-quote').innerText(), /Mike Wolf: Is this right/);
     });
 
     await check(`${tag}: chat has not changed the document's text (everyone's page)`, async () => {
@@ -248,13 +235,13 @@ async function run(browser, style) {
       assert.equal(r.status, 200, JSON.stringify(r.body));
       markId = r.body.message.suggestion.markId;
       await waitFor(mike, () => window.__proofChat.debugState().messages.length === 3, null, 15000);
-      const card = mike.locator('.prw-right .pch-proposal');
+      const card = mike.locator('.prw-chat-bottom .pch-proposal');
       await card.waitFor({ state: 'visible' });
       assert.match(await card.innerText(), /Claude COS proposed a change/);
       assert.match(await card.innerText(), /ten thousand\s*→\s*twelve thousand/);
       assert.match(await card.innerText(), /Why: The finance sheet was updated on Monday\./);
       await waitFor(mike, id => !!document.querySelector(`.ProseMirror [data-mark-id="${id}"]`), markId, 15000);
-      const ai = mike.locator('.prw-right .pch-msg').last();
+      const ai = mike.locator('.prw-chat-bottom .pch-msg').last();
       assert.match(await ai.locator('.pch-who').innerText(), /Claude COS\s*AI/);
       await mike.evaluate(() => window.__proofReadingWalk.focusLine(0));
       await card.locator('.pch-view').click();
@@ -267,19 +254,18 @@ async function run(browser, style) {
       assert.equal(await mike.locator('.prw-right .prw-collapse .prw-badge').count(), 0);
     });
 
-    await check(`${tag}: with Eric's Margin closed, an @mention of Eric is a badge on its toggle; opening it on Room reads it`, async () => {
-      await eric.locator('.prw-right .prw-collapse').click();
-      await waitFor(eric, () => document.body.classList.contains('prw-right-collapsed'));
+    await check(`${tag}: a collapsed conversation keeps its mention badge until expanded`, async () => {
+      await eric.locator('.prw-chat-bottom .pch-toggle').click();
+      assert.equal((await chatState(eric)).collapsed, true);
       const r = await agentCall(base, slug, KEY, 'POST', '/chat', { text: '@Eric can you confirm the Middle paragraph?', lines: [{ lineIndex: 3 }] });
       assert.equal(r.status, 200, JSON.stringify(r.body));
       assert.deepEqual(r.body.message.mentions, ['human:eric@example.test']);
-      await waitFor(eric, () => document.querySelector('.prw-right .prw-collapse .prw-badge')?.textContent === '1', null, 15000);
-      assert.match(await eric.locator('.prw-right .prw-collapse').getAttribute('aria-label'), /1 unread chat mention/);
+      await waitFor(eric, () => window.__proofChat.debugState().unread === 1, null, 15000);
+      assert.equal(await eric.locator('.prw-chat-bottom .pch-count').isVisible(), true);
       await eric.screenshot({ path: path.join(shots, `${tag}-3-badge.png`) });
-      await eric.locator('.prw-right .prw-collapse').click();
-      await waitFor(eric, () => window.__proofChat.debugState().unread === 0 && !document.querySelector('.prw-right .prw-collapse .prw-badge'));
-      assert.equal(await eric.locator('.prw-right .amg-tab[data-tab="room"] .amg-badge').isVisible(), false, 'the Room badge stayed');
-      assert.equal((await chatState(eric)).messages.find(m => m.text.startsWith('@Eric')).mentions[0], 'human:eric@example.test');
+      await eric.locator('.prw-chat-bottom .pch-toggle').click();
+      await waitFor(eric, () => window.__proofChat.debugState().unread === 0);
+      assert.equal(await eric.locator('.prw-chat-bottom .pch-count').getAttribute('data-unread'), 'false');
     });
 
     await check(`${tag}: E on the focus line posts the Explain thread and mirrors it into the chat`, async () => {
@@ -291,13 +277,13 @@ async function run(browser, style) {
       const ex = s.messages.find(m => m.kind === 'explain');
       assert.ok(ex.commentMarkId, 'linked to the comment thread');
       assert.deepEqual(ex.mentions, ['ai:claude-cos']);
-      const item = mike.locator(`.prw-right .pch-msg[data-id="${ex.id}"]`);
+      const item = mike.locator(`.prw-chat-bottom .pch-msg[data-id="${ex.id}"]`);
       await item.waitFor({ state: 'visible' });
       assert.match(await item.locator('.pch-kind').innerText(), /Explain/);
       // The thread still works: the AI answers on it, and the chat shows the reply.
       const reply = await agentCall(base, slug, KEY, 'POST', '/marks/reply', { markId: ex.commentMarkId, by: 'ai:claude-cos', text: 'It closes the document.' });
       assert.equal(reply.status, 200, JSON.stringify(reply.body));
-      await waitFor(mike, id => /It closes the document/.test(document.querySelector(`.prw-right .pch-msg[data-id="${id}"] .pch-thread`)?.textContent ?? ''), ex.id, 15000);
+      await waitFor(mike, id => /It closes the document/.test(document.querySelector(`.prw-chat-bottom .pch-msg[data-id="${id}"] .pch-thread`)?.textContent ?? ''), ex.id, 15000);
     });
 
     await check(`${tag}: a speech bubble in the margin opens the chat at the newest message about that line`, async () => {
@@ -313,8 +299,11 @@ async function run(browser, style) {
       await openDoc(mike, base, slug);
       const after = (await chatState(mike)).messages.map(m => m.id);
       assert.deepEqual(after, before);
-      assert.equal(await mike.locator('.prw-right .pch-msg').count(), before.length);
-      assert.equal(await mike.locator('.prw-right .pch-proposal').count(), 1);
+      // The bottom conversation keeps the reader's collapsed choice across a reload (2026-09-24);
+      // open it before counting what it shows.
+      if (await mike.locator('.prw-chat-bottom[data-expanded="true"]').count() === 0) await mike.locator('.prw-chat-bottom .pch-toggle').click();
+      assert.equal(await mike.locator('.prw-chat-bottom .pch-msg').count(), before.length);
+      assert.equal(await mike.locator('.prw-chat-bottom .pch-proposal').count(), 1);
     });
     await ericCtx.close();
     await mikeCtx.close();
@@ -337,17 +326,17 @@ async function run(browser, style) {
       await phone.screenshot({ path: path.join(shots, `${ptag}-1-menu.png`) });
       await item.tap();
     });
-    // Accord layout stage 3 (decision 11): the chat opens as the Margin sheet on its Room tab.
-    await check(`${ptag}: Room opens the Margin sheet on its Room tab: it fits the screen, with touch-sized controls; the mention is read`, async () => {
-      const sheet = phone.locator('.prw-right.prw-sheet-open');
+    // Accord layout stage 3 (decision 11): the same chat expands upward above its permanent composer (Mike, 2026-09-24).
+    await check(`${ptag}: Room expands the bottom conversation: it fits the screen, with touch-sized controls; the mention is read`, async () => {
+      const sheet = phone.locator('.prw-chat-bottom[data-expanded="true"]');
       await sheet.waitFor({ state: 'visible' });
       await waitFor(phone, () => window.__proofChat.debugState().unread === 0);
       const info = await phone.evaluate(() => {
         const r = (sel) => document.querySelector(sel)?.getBoundingClientRect().toJSON();
         return {
-          sheet: r('.prw-right.prw-sheet-open'), input: r('.prw-sheet-open .pch-input'), send: r('.prw-sheet-open .pch-send'), pin: r('.prw-sheet-open .pch-pin'),
-          sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, font: getComputedStyle(document.querySelector('.prw-sheet-open .pch-input')).fontSize,
-          tab: document.querySelector('.prw-sheet-open .amg-tab[aria-selected="true"]')?.dataset.tab,
+          sheet: r('.prw-chat-bottom[data-expanded="true"]'), input: r('.prw-chat-bottom .pch-input'), send: r('.prw-chat-bottom .pch-send'), pin: r('.prw-chat-bottom .pch-pin'),
+          sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, font: getComputedStyle(document.querySelector('.prw-chat-bottom .pch-input')).fontSize,
+          expanded: document.querySelector('.prw-chat-bottom')?.dataset.expanded,
         };
       });
       assert.ok(info.sw <= info.cw + 1, `no sideways scroll ${info.sw}`);
@@ -355,28 +344,28 @@ async function run(browser, style) {
       assert.ok(info.input.bottom <= 844 && info.send.bottom <= 844, 'the composer is on screen');
       assert.ok(info.send.height >= 44 && info.pin.height >= 44, `touch targets ${info.send.height} ${info.pin.height}`);
       assert.equal(info.font, '16px', 'no zoom-on-focus on iOS');
-      assert.equal(info.tab, 'room');
+      assert.equal(info.expanded, 'true');
       assert.equal(await phone.locator('#share-banner .share-pill-overflow .pch-overflow-badge').count(), 0);
       await phone.screenshot({ path: path.join(shots, `${ptag}-2-sheet.png`) });
     });
     await check(`${ptag}: with the keyboard up, the composer stays above it (--proof-keyboard-offset)`, async () => {
       await phone.evaluate(() => document.documentElement.style.setProperty('--proof-keyboard-offset', '300px'));
-      const r = await phone.evaluate(() => ({ sheet: document.querySelector('.prw-right.prw-sheet-open').getBoundingClientRect().toJSON(), input: document.querySelector('.prw-sheet-open .pch-input').getBoundingClientRect().toJSON() }));
+      const r = await phone.evaluate(() => ({ sheet: document.querySelector('.prw-chat-bottom[data-expanded="true"]').getBoundingClientRect().toJSON(), input: document.querySelector('.prw-chat-bottom .pch-input').getBoundingClientRect().toJSON() }));
       assert.ok(Math.abs(r.sheet.bottom - (844 - 300)) <= 1, `sheet bottom ${r.sheet.bottom}`);
       assert.ok(r.input.bottom <= 844 - 300 && r.input.top >= 0, `input ${JSON.stringify(r.input)}`);
       await phone.screenshot({ path: path.join(shots, `${ptag}-3-keyboard.png`) });
       await phone.evaluate(() => document.documentElement.style.setProperty('--proof-keyboard-offset', '0px'));
     });
     await check(`${ptag}: a message sent from the phone; tapping a pointer closes the sheet and moves the focus line`, async () => {
-      await phone.locator('.prw-sheet-open .pch-input').tap();
+      await phone.locator('.prw-chat-bottom .pch-input').tap();
       await phone.keyboard.type('Sent from my phone');
-      await phone.locator('.prw-sheet-open .pch-send').tap();
+      await phone.locator('.prw-chat-bottom .pch-send').tap();
       await waitFor(phone, () => window.__proofChat.debugState().sent.length === 1);
       await showLineTalk(phone);
-      const pointer = phone.locator(`.prw-sheet-open .pch-pointer[data-line="${L.MIDDLE}"]`).first();
+      const pointer = phone.locator(`.prw-chat-bottom .pch-pointer[data-line="${L.MIDDLE}"]`).first();
       await pointer.scrollIntoViewIfNeeded();
       await pointer.tap();
-      await waitFor(phone, () => !document.querySelector('.prw-right.prw-sheet-open'));
+      await waitFor(phone, () => !document.querySelector('.prw-chat-bottom[data-expanded="true"]'));
       await waitFor(phone, l => window.__proofReadingWalk.debugState().focus === l, L.MIDDLE);
       await phone.screenshot({ path: path.join(shots, `${ptag}-4-pointer.png`) });
     });

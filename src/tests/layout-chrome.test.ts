@@ -86,7 +86,7 @@ test('the keys list and the legend name what the menus and the page use', () => 
   assert.ok(!KEYBOARD_SHORTCUTS.some(k => k.does === 'Start writing at the end of the line'));
   assert.ok(KEYBOARD_SHORTCUTS.some(k => k.keys === 'Alt+/'));
   assert.ok(KEYBOARD_SHORTCUTS.some(k => k.keys === 'F10'));
-  assert.ok(KEYBOARD_SHORTCUTS.some(k => k.keys === 'A' && /Agree/.test(k.does)));
+  assert.ok(KEYBOARD_SHORTCUTS.some(k => k.keys === 'A' && k.group === 'Review list' && /Accept/.test(k.does)));
   assert.deepEqual(MARKS_LEGEND.slice(0, 2).map(m => m.label), ['Blue bar', 'Amber dot']);
 });
 

@@ -23,6 +23,8 @@
  * Since you, src/ui/navigator.ts), the right rail is the Margin (Line N · Room).
  * Phones: a position strip opens the one answer group in the Margin sheet.
  */
+import { TextSelection } from '@milkdown/kit/prose/state';
+import { productIdentity } from '../shared/product-identity';
 import type { Mark, CommentData, ReplaceData } from '../formats/marks';
 import { getActorName, getMarkColor } from '../formats/marks';
 import { actorKey, isAiActor, type DocLine } from '../shared/line-marks';
@@ -48,7 +50,7 @@ import { setReadingAnchor } from '../editor/caret-anchor';
 import { SCROLL_CAMERA_POLICY, anchoredScroll, bandFractionFor, cameraScroll, deadZone, type CameraView } from '../shared/scroll-camera';
 import { TIER_POLICY } from '../shared/line-tiers';
 import { HIGHLIGHT_POLICY, MARKED_UP_TO_POLICY, formatAgo, issuesLeftText } from '../shared/layout-status';
-import { MARGIN_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY, parseRailState, type MarginTab, type RailState } from '../shared/layout-panels';
+import { ACCORDS_LIST_POLICY, BOTTOM_CHAT_POLICY, OPEN_ITEMS_POLICY, MARGIN_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY, parseRailState, type MarginTab, type RailState } from '../shared/layout-panels';
 import { NavigatorUI } from './navigator';
 import { personalCompletionText } from '../shared/participant-status';
 import { reviewStorageKey } from '../shared/review-list';
@@ -82,13 +84,9 @@ export const TOUCH_FOCUS_POLICY = {
   hideWhileEditing: true,
 } as const;
 
-const STATUS_WORDS: Record<string, string> = {
-  unseen: 'Not marked yet', seen: 'Seen', agreed: 'Agreed', approved: 'Approved', rejected: 'Rejected',
-  skimmed: 'Skimmed', changed: 'Changed since you marked it', stale: 'Marked long ago',
-};
-
 export interface ReadingWalkHost {
   slug(): string | null;
+  newDocument(): void;
   suggestChange(line: number): boolean;
   canSuggest(): boolean;
   actor(): string;
@@ -178,8 +176,12 @@ export class ReadingWalkUI {
   /** Accord stage D: the threads anchored to the line the Margin shows. */
   private threads: ThreadsPanel | null = null;
   private readonly dockHost = el('div', 'prw-dock');
-  /** Step B7: the chat pane's place in the right rail (below the line's box and changes). */
-  readonly chatSlot = el('div', 'prw-chat');
+  /** Mike, 2026-09-24, yfbqrau4: the same chat at the foot of the centre column. */
+  readonly chatSlot = el('div', 'prw-chat prw-chat-bottom');
+  readonly documentsToggle = el('button', 'prw-documents-toggle');
+  private readonly docsBody = el('div', 'prw-rail-body prw-documents-body');
+  private docsSig = '';
+  private chatExpanded = BOTTOM_CHAT_POLICY.initiallyExpanded as boolean;
   private rightHeadEl: HTMLElement | null = null;
   /** Step B7: unread @mentions of the viewer in the chat (a badge on the rail toggle). */
   private chatUnread = 0;
@@ -257,24 +259,14 @@ export class ReadingWalkUI {
   private stripSig = '';
   private stripTouch: { y: number; at: number } | null = null;
 
-  /** Accord layout stage 3 (decision 7): the Navigator, the left side's three tabs. */
+  /** Review, Outline and Since you, now on the right (Mike, 2026-09-24, yfbqrau4). */
   readonly navigator: NavigatorUI;
-  /** Accord layout stage 3 (decision 6): the Margin's two tabs, Line N and Room. */
-  private readonly marginTabs = el('div', 'amg-tabs');
-  private readonly lineTabBtn = el('button', 'amg-tab');
-  private readonly roomTabBtn = el('button', 'amg-tab');
-  private readonly roomBadge = el('span', 'amg-badge');
-  private readonly linePane = el('div', 'amg-pane');
-  private readonly roomPane = el('div', 'amg-pane');
-  /** Phones: the one Undo sits at the top of the Line tab (desktop: the toolbar). */
+  /** Phones: the one Undo sits at the top of Review (desktop: the toolbar). */
   private readonly lineTools = el('div', 'amg-tools');
   /** The Familiar's note (folded) and everyone's marks on the line, after the line's changes. */
   private readonly tailHost = el('div', 'amg-tail');
   /** Who the viewer's marks name, and My Familiar: the Line tab's footer. */
-  private readonly meRow = el('div', 'amg-me');
-  private marginTab: MarginTab = MARGIN_POLICY.defaultTab;
   private tailSig = '';
-  private lineTabSig = '';
   /** Familiar proxy marks: My Familiar (header), the brief (top of the rail), the phone pill. */
   readonly proxy: ProxyMarksUI;
   /** Accord layout stage 2 (decision 10): reading speed and This sitting live in View › Reading settings. */
@@ -286,21 +278,23 @@ export class ReadingWalkUI {
       focusLine: (index) => { this.host.lineMarks().revealLine(index); this.focusLine(index); if (isPhone()) this.closeSheets(); },
       openBrief: () => { if (isPhone()) this.openSheet('right'); else this.setCollapsed('right', false); this.proxy.briefEl.scrollIntoView({ block: 'nearest' }); },
     });
-    this.left.setAttribute('aria-label', 'Review panel');
-    this.left.id = 'anv-panel';
-    this.right.setAttribute('aria-label', 'Margin: this line, and the room');
+    this.left.setAttribute('aria-label', `${productIdentity().documentNounPlural} list`);
+    this.left.id = 'prw-documents-panel';
+    this.right.id = 'anv-panel';
+    this.right.setAttribute('aria-label', 'Review panel');
     this.focusEl.setAttribute('aria-hidden', 'true');
     this.styleEl.id = 'prw-dynamic-style';
     const saved = this.railState();
-    if (saved.rightTab) this.marginTab = saved.rightTab;
     this.navigator = new NavigatorUI({
       lineMarks: () => this.host.lineMarks(),
       folding: () => this.host.folding?.() ?? null,
       cursor: () => this.cursorLine(),
       go: (index) => { this.host.lineMarks().revealLine(index); this.focusLine(index); },
-      toggle: () => this.toggleRailFromMenu('left'),
-      tabChanged: (tab) => this.saveRailState({ leftTab: tab }),
-    }, saved.leftTab, this.sinceHost);
+      toggle: () => this.toggleRailFromMenu('right'),
+      tabChanged: (tab) => this.saveRailState({ reviewTab: tab }),
+      decide: (line, action) => this.decideReviewLine(line, action),
+      focusDocument: (line) => this.focusDocument(line),
+    }, saved.reviewTab ?? saved.leftTab, this.sinceHost);
     this.buildRails();
   }
 
@@ -325,7 +319,11 @@ export class ReadingWalkUI {
     document.body.classList.add('prw-on');
     this.applyRailState();
     document.head.append(this.styleEl);
-    document.body.append(this.left, this.right);
+    document.body.append(this.left, this.right, this.chatSlot);
+    document.body.style.setProperty('--prw-left-size', `${ACCORDS_LIST_POLICY.widthPx}px`);
+    document.body.style.setProperty('--prw-right-size', `${NAVIGATOR_POLICY.widthPx}px`);
+    document.body.style.setProperty('--prw-chat-compact', `${BOTTOM_CHAT_POLICY.compactHeightPx}px`);
+    document.body.style.setProperty('--prw-chat-expanded', `${BOTTOM_CHAT_POLICY.expandedHeightShare * 100}dvh`);
     // Rail scrolling: a wheel over a rail scrolls that rail's lists only, never the page.
     this.railWheelCleanups.push(containRailWheel(this.left), containRailWheel(this.right));
     window.addEventListener('scroll', this.onScroll, { passive: true });
@@ -353,8 +351,7 @@ export class ReadingWalkUI {
     // Line tiers: decision / context counts and "Show only decisions" sit with the Outline's tools.
     const tiers = this.host.lineMarks().tierEl;
     if (tiers.parentElement !== this.navigator.toolsEl) this.navigator.toolsEl.append(tiers);
-    // Familiar proxy marks: the brief is the first thing in the Line tab (folded to its headline).
-    this.rightBody.prepend(this.proxy.briefEl);
+    // Keep proxy state available, but the retired Line tab and its brief render nowhere.
     this.proxy.start();
     (window as unknown as { __proofProxy?: ProxyMarksUI }).__proofProxy = this.proxy;
     this.unsubscribe = this.host.lineMarks().subscribe(() => this.sync());
@@ -398,7 +395,7 @@ export class ReadingWalkUI {
     for (const cleanup of this.railWheelCleanups.splice(0)) cleanup();
     this.resizeObserver?.disconnect();
     this.host.playmaker()?.dock(null);
-    this.left.remove(); this.right.remove(); this.focusEl.remove(); this.styleEl.remove();
+    this.left.remove(); this.right.remove(); this.chatSlot.remove(); this.documentsToggle.remove(); this.focusEl.remove(); this.styleEl.remove();
     this.settings.remove();
   }
 
@@ -611,7 +608,9 @@ export class ReadingWalkUI {
     const height = window.innerHeight;
     const doc = Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0);
     return {
-      viewportHeight: isPhone() && this.left.classList.contains('prw-sheet-open') ? this.left.getBoundingClientRect().top : height,
+      viewportHeight: Math.max(chrome + 1, Math.min(
+        this.chatSlot.isConnected ? this.chatSlot.getBoundingClientRect().top : height,
+        isPhone() && this.right.classList.contains('prw-sheet-open') ? this.right.getBoundingClientRect().top : height)),
       topInset: Math.min(Math.max(0, chrome), Math.max(0, height - 1)),
       scrollY: window.scrollY,
       maxScroll: Math.max(0, doc - height),
@@ -702,8 +701,8 @@ export class ReadingWalkUI {
       event.preventDefault(); this.host.suggestChange(this.cursorLine()); return;
     }
     // Reading keys act only on the explicitly selected passage.
-    if (key === 'a' || key === 'A') { event.preventDefault(); this.markFocus('agreed'); return; }
-    if (key === 'r' || key === 'R') { event.preventDefault(); this.openReason(); return; }
+    // Mike, 2026-09-24, yfbqrau4: A belongs only to Review; R no longer marks lines.
+    if (/^[ar]$/i.test(key)) { event.preventDefault(); return; }
     if (key === 'j' || key === 'J' || key === 'ArrowDown') { event.preventDefault(); this.next(); return; }
     if (key === 'k' || key === 'K' || key === 'ArrowUp') { event.preventDefault(); this.previous(); return; }
     // Line tiers: D flips the focus line between decision and context (an explicit action).
@@ -804,12 +803,8 @@ export class ReadingWalkUI {
 
   /** Step B3: Y / N / T on the focus line's ask. */
   private answerFocus(choice: AskChoice): void {
-    if (ASK_POLICY.reasonRequired[choice]) {
-      if (isPhone()) this.openSheet('right');
-      else if (document.body.classList.contains('prw-right-collapsed')) this.setCollapsed('right', false);
-    }
-    this.renderNow();
-    this.box?.ask?.choose(choice);
+    if (isPhone()) this.closeSheets();
+    this.host.lineMarks().answerInlineAsk(this.targetLine(), choice);
   }
 
   /** Step B4f: E on the focus line posts the default question to the AI collaborators. */
@@ -825,19 +820,6 @@ export class ReadingWalkUI {
   private typingInRail(): boolean {
     const active = document.activeElement as HTMLElement | null;
     return Boolean(active && this.right.contains(active) && (['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName) || active.isContentEditable));
-  }
-
-  /**
-   * The rail body's scrollTop that puts the end of the focus line's material (its box, then its
-   * changes) at the bottom of the rail: the newest thing about the line is in view.
-   */
-  private railEndTop(): number {
-    const body = this.rightBody;
-    const last = this.boxHost;
-    if (!last.isConnected || !last.childElementCount) return body.scrollHeight;
-    const bottom = last.getBoundingClientRect().bottom - body.getBoundingClientRect().top + body.scrollTop;
-    const pad = parseFloat(getComputedStyle(body).paddingBottom) || 0;
-    return bottom + pad - body.clientHeight;
   }
 
   /** Step B4d: the cursor (shift-click ranges in the margin start here; the chat's 📍 points here). */
@@ -1008,55 +990,23 @@ export class ReadingWalkUI {
     document.body.style.setProperty('--prw-strip-h', `${TOUCH_FOCUS_POLICY.stripHeightPx}px`);
     this.strip.hidden = !show;
     if (!show) return;
-    // Mike, 2026-09-23 (usability brief): the strip opens the sheet; it has no duplicate answers.
+    // Mike, 2026-09-24, yfbqrau4: position and an open-item count, no line-mark controls.
     const index = this.cursorLine();
-    const line = this.lines[index];
-    const status = lm.myStatus(index);
-    const marked = lm.markedUpTo();
+    const count = lm.reviewViews()['needs-you'].count;
     const sheetOpen = this.right.classList.contains('prw-sheet-open');
-    const sig = `${index}|${this.lines.length}|${line?.hash ?? ''}|${status}|${Boolean(lm.askForLine(index))}|${marked?.line ?? ''}|${sheetOpen}`;
-    // A mark updates the position strip without introducing another answer group.
+    const sig = `${index}|${this.lines.length}|${count}|${sheetOpen}`;
     if (sig === this.stripSig) return;
     this.stripSig = sig;
     this.strip.dataset.line = String(index);
-    this.strip.dataset.status = status;
     this.strip.setAttribute('role', 'region');
-    this.strip.setAttribute('aria-label', `Current line ${index + 1}`);
-    const grab = el('button', 'prw-strip-grab');
-    grab.type = 'button';
-    grab.setAttribute('aria-label', sheetOpen ? 'Close the Margin' : 'Open the Margin (this line and the room)');
-    grab.setAttribute('aria-expanded', String(sheetOpen));
-    grab.onclick = () => { if (this.right.classList.contains('prw-sheet-open')) this.closeSheets(); else this.openSheet('right'); };
-    const info = el('div', 'prw-strip-info');
-    const where = el('button', 'prw-strip-where');
-    where.type = 'button';
-    where.append(el('b', undefined, `Line ${index + 1}`), ` of ${this.lines.length}`);
-    where.setAttribute('aria-label', `Line ${index + 1} of ${this.lines.length}: ${sheetOpen ? 'close' : 'open'} the Margin`);
-    where.onclick = grab.onclick;
-    info.append(where);
-    if (marked) {
-      const back = el('button', 'prw-strip-marked', `Marked up to line ${marked.line + 1} ↑`);
-      back.type = 'button';
-      back.setAttribute('aria-label', `Go to line ${marked.line + 1}, the last line you marked`);
-      back.onclick = () => this.gotoMarkedUpTo();
-      info.append(back);
-    } else {
-      const state = el('span', 'prw-strip-status', STATUS_WORDS[status] ?? status);
-      state.dataset.status = status;
-      info.append(state);
-    }
-    const buttons = el('div', 'prw-strip-actions');
-    const more = el('button', 'prw-strip-more', '⋯');
-    more.type = 'button';
-    more.setAttribute('aria-label', `More marks for line ${index + 1}`);
-    // ⋯ More opens the Margin sheet on the Line tab with the line's More marks shown.
-    more.onclick = () => {
-      if (this.right.classList.contains('prw-sheet-open') && this.marginTab === 'line') { this.box?.toggleMore?.(); return; }
-      this.selectMarginTab('line');
-      this.openSheet('right', { more: true });
-    };
-    buttons.append(more);
-    this.strip.replaceChildren(grab, info, buttons);
+    this.strip.setAttribute('aria-label', 'Reading position and Review');
+    const where = el('span', 'prw-strip-where', `Line ${index + 1} of ${this.lines.length}`);
+    const review = el('button', 'prw-strip-review', `${count} open ${count === 1 ? 'item' : 'items'}`);
+    review.type = 'button';
+    review.setAttribute('aria-controls', 'anv-panel');
+    review.setAttribute('aria-expanded', String(sheetOpen));
+    review.onclick = () => { this.navigator.select('issues'); this.toggleRailFromMenu('right'); };
+    this.strip.replaceChildren(where, review);
   }
 
   // --------------------------------------------------------------------------
@@ -1104,30 +1054,37 @@ export class ReadingWalkUI {
     return true;
   }
 
-  /** A margin dot on desktop: focus that line and put the keyboard in its box. */
+  /** Mike, 2026-09-24, yfbqrau4: an amber dot selects the passage in Review. */
   activateDot(index: number): boolean {
     if (!this.walk) return false;
-    this.selectMarginTab('line');
-    if (document.body.classList.contains('prw-right-collapsed')) this.setCollapsed('right', false);
-    this.focusLine(index);
-    if (isPhone()) this.openSheet('right');
-    this.renderNow();
-    (this.boxHost.querySelector('.plm-actions button:not(:disabled)') as HTMLButtonElement | null)?.focus({ preventScroll: true });
+    this.openReviewItem(index);
     return true;
   }
 
-  private markFocus(status: 'agreed' | 'seen'): void {
-    this.renderNow();
-    this.box?.choose(status, 'key');
+  private focusDocument(index: number): void {
+    if (isPhone()) this.closeSheets();
+    this.host.lineMarks().revealLine(index);
+    this.focusLine(index);
+    const view = this.view();
+    const line = this.lines[index];
+    if (!view || !line) return;
+    const pos = Math.min(line.pos + 1, view.state.doc.content.size);
+    view.dispatch(view.state.tr.setSelection(TextSelection.near(view.state.doc.resolve(pos))));
+    view.focus(); // Selection only: S still opens the local proposal draft.
   }
 
-  private openReason(): void {
-    // Step B4d: a text selection across several lines makes the Reject cover them.
-    if (this.host.lineMarks().selectFromEditor()) this.boxSig = '';
-    if (isPhone()) this.openSheet('right');
-    else if (document.body.classList.contains('prw-right-collapsed')) this.setCollapsed('right', false);
-    this.renderNow();
-    this.box?.openReason();
+  /** Exactly the card's call, including bundle preflight and the existing undo entry. */
+  private decideReviewLine(index: number, action: 'accept' | 'reject'): void {
+    const pending = new Map(this.pendingMarks().map(mark => [mark.id, mark]));
+    const item = this.walk?.marksOn(index).find(item => {
+      const mark = pending.get(item.id);
+      return mark && ['insert', 'replace', 'delete'].includes(mark.kind);
+    });
+    const mark = item && pending.get(item.id);
+    if (!mark) { this.lastError = 'This proposal is no longer pending.'; this.renderNow(); return; }
+    const bundle = this.host.lineMarks().bundleForMark(mark.id);
+    if (bundle) this.decideBundle(bundle.bundle.id, action);
+    else this.decide(mark, action);
   }
 
   private decide(mark: Mark, action: ReviewAction, text?: string): void {
@@ -1444,7 +1401,7 @@ export class ReadingWalkUI {
     this.renderMe();
     const restoreDetailAnchor = Number(this.boxHost.dataset.line) === this.targetLine() ? this.navigator.holdDetailAnchor() : () => {};
     const railSig = `${this.boxSig}\n${this.changesSig}`;
-    this.renderBox();
+    if (MARGIN_POLICY.renderLineTab) this.renderBox();
     this.renderChanges();
     this.threads?.render();
     // The focus line changed, or its box or changes did: keep them in view at the rail's bottom.
@@ -1454,7 +1411,8 @@ export class ReadingWalkUI {
     this.renderStatusBar();
     this.renderRule();
     this.renderMarginTabs();
-    this.renderTail();
+    if (MARGIN_POLICY.renderLineTab) this.renderTail();
+    this.renderDocuments();
     this.navigator.render();
     restoreDetailAnchor();
     this.host.focusChanged?.(this.cursorLine());
@@ -1485,18 +1443,17 @@ export class ReadingWalkUI {
     this.host.lineMarks().revealLine(index);
     this.focusLine(index);
     this.navigator.select('issues');
-    if (isPhone()) this.openSheet('left');
-    else this.setCollapsed('left', false);
+    if (isPhone()) this.openSheet('right');
+    else this.setCollapsed('right', false);
     this.renderNow();
-    const first = this.navigator.detailEl.querySelector<HTMLElement>('button, input, textarea');
-    first?.focus({ preventScroll: true });
+    this.navigator.selectLine(index);
   }
 
   /** View › Marks panel: shows the Navigator on its Issues tab, where the panel lives. */
   showMarksPanel(): void {
     if (isPhone()) return;
     this.navigator.select('issues');
-    if (document.body.classList.contains('prw-left-collapsed')) this.setCollapsed('left', false);
+    if (document.body.classList.contains('prw-right-collapsed')) this.setCollapsed('right', false);
   }
 
   private renderFocus(): void {
@@ -1878,139 +1835,86 @@ export class ReadingWalkUI {
   // --------------------------------------------------------------------------
 
   private buildRails(): void {
-    // Accord layout stage 3 (decision 7): the Navigator (Outline · Issues · Since you) and its
-    // collapse button. The documents list moved to File › Open (stage 2).
-    const leftHead = el('div', 'prw-rail-head anv-head');
+    // Mike, 2026-09-24, yfbqrau4: documents left, Review right, conversation below the page.
+    const noun = productIdentity().documentNounPlural;
+    const leftHead = el('div', 'prw-rail-head prw-documents-head');
+    const newButton = el('button', 'prw-new', 'New');
+    newButton.type = 'button';
+    newButton.onclick = () => this.host.newDocument();
     const leftToggle = el('button', 'prw-collapse');
     leftToggle.type = 'button';
     leftToggle.onclick = () => this.toggleRail('left');
-    leftHead.append(this.navigator.tabsEl, leftToggle);
-    this.left.append(leftHead, ...Object.values(this.navigator.panes));
+    leftHead.append(el('strong', undefined, noun));
+    if (ACCORDS_LIST_POLICY.showNew) leftHead.append(newButton);
+    leftHead.append(leftToggle);
+    const all = el('a', 'prw-all', `All ${noun}`);
+    all.href = ACCORDS_LIST_POLICY.allHref;
+    this.left.append(leftHead, this.docsBody);
+    if (ACCORDS_LIST_POLICY.showAll) this.left.append(all);
+    this.documentsToggle.type = 'button';
+    this.documentsToggle.textContent = '☰';
+    this.documentsToggle.setAttribute('aria-label', `${noun} list`);
+    this.documentsToggle.setAttribute('aria-controls', this.left.id);
+    this.documentsToggle.onclick = () => this.toggleRailFromMenu('left');
 
-    // Accord layout stage 3 (decision 6): the Margin, Line N and Room, no third tab.
-    const rightHead = el('div', 'prw-rail-head amg-head');
+    const rightHead = el('div', 'prw-rail-head anv-head');
     const rightToggle = el('button', 'prw-collapse');
     rightToggle.type = 'button';
     rightToggle.onclick = () => this.toggleRail('right');
-    this.marginTabs.setAttribute('role', 'tablist');
-    this.marginTabs.setAttribute('aria-label', 'Margin');
-    const specs: Array<[MarginTab, HTMLButtonElement, HTMLElement]> = [['line', this.lineTabBtn, this.linePane], ['room', this.roomTabBtn, this.roomPane]];
-    for (const [tab, btn, pane] of specs) {
-      btn.type = 'button';
-      btn.id = `amg-tab-${tab}`;
-      btn.dataset.tab = tab;
-      btn.setAttribute('role', 'tab');
-      btn.setAttribute('aria-controls', `amg-pane-${tab}`);
-      btn.onclick = () => this.selectMarginTab(tab);
-      btn.onkeydown = (event) => {
-        if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
-        event.preventDefault();
-        const to: MarginTab = tab === 'line' ? 'room' : 'line';
-        this.selectMarginTab(to);
-        (to === 'line' ? this.lineTabBtn : this.roomTabBtn).focus();
-      };
-      pane.id = `amg-pane-${tab}`;
-      pane.dataset.tab = tab;
-      pane.setAttribute('role', 'tabpanel');
-      pane.setAttribute('aria-labelledby', btn.id);
-      this.marginTabs.append(btn);
-    }
-    this.lineTabBtn.textContent = 'Line 1';
-    this.roomTabBtn.append(el('span', 'amg-tab-label', 'Room'), this.roomBadge);
-    this.roomBadge.setAttribute('aria-hidden', 'true');
-    this.roomBadge.hidden = true;
-    // Accord layout stage 1: "Line N of M" and Reading / Writing moved to the status bar.
-    this.buildStatusBar();
-    rightHead.append(this.marginTabs, rightToggle);
+    rightHead.append(this.navigator.tabsEl, rightToggle);
     this.rightHeadEl = rightHead;
-    this.meEl.setAttribute('aria-live', 'polite');
-    this.meRow.append(this.meEl, this.proxy.familiarEl);
     this.provisionalEl.hidden = true;
     this.provisionalEl.setAttribute('aria-live', 'polite');
     this.sinceHost.hidden = true;
     this.sinceHost.setAttribute('aria-label', 'Since you last marked');
     this.buildRate();
-    // The Line tab: the line's quote and marks, its changes, the Familiar's note and everyone's
-    // marks, a reply box, then who the viewer's marks name.
+    this.buildStatusBar();
     this.threads = this.buildThreads();
-    this.rightBody.append(this.lineTools, this.boxHost, this.tailHost, this.meRow);
     this.navigator.detailEl.append(this.changesHost, this.threads.element);
-    // The line notice sits under the tabs, outside the scrolling body: it stays in view and
-    // does not move when the pane scrolls or the line's box changes size (2026-09-21).
-    this.linePane.append(this.provisionalEl, this.rightBody);
-    // The Room tab: the document chat, full height (it pushes nothing off screen).
-    this.roomPane.append(this.chatSlot);
-    this.right.append(rightHead, this.linePane, this.roomPane);
-    this.railFollow = new ScrollFollower({ scroller: this.rightBody, endTop: () => this.railEndTop(), name: 'rail' });
-    this.rightBody.append(this.railFollow.pillElement);
+    this.right.append(rightHead, this.lineTools, this.provisionalEl, ...Object.values(this.navigator.panes));
     this.right.setAttribute('role', 'complementary');
     this.left.setAttribute('role', 'navigation');
-    this.applyMarginTab();
+    this.chatSlot.dataset.expanded = String(this.chatExpanded);
     this.buildStripGestures();
+    this.renderDocuments();
   }
 
-  /** The Margin's tab (the viewer's choice; it never switches itself). */
-  selectMarginTab(tab: MarginTab, remember = true): void {
-    if (tab === this.marginTab && this.right.dataset.tab === tab) return;
-    this.marginTab = tab;
-    if (remember) this.saveRailState({ rightTab: tab });
-    this.applyMarginTab();
-    this.renderNow();
-  }
-
-  marginTabShown(): MarginTab { return this.marginTab; }
-
-  private applyMarginTab(): void {
-    const line = this.marginTab === 'line';
-    this.right.dataset.tab = this.marginTab;
-    this.lineTabBtn.setAttribute('aria-selected', String(line));
-    this.roomTabBtn.setAttribute('aria-selected', String(!line));
-    this.lineTabBtn.tabIndex = line ? 0 : -1;
-    this.roomTabBtn.tabIndex = line ? -1 : 0;
-    this.linePane.hidden = !line;
-    this.roomPane.hidden = line;
-    // The chat marks @mentions read when it is on screen: tell it.
-    this.roomShownListener?.();
+  private renderDocuments(): void {
+    const data = this.documentsList();
+    const sig = JSON.stringify(data);
+    if (sig === this.docsSig) return;
+    this.docsSig = sig;
+    const list = el('ul', 'prw-docs');
+    for (const doc of data.docs ?? []) {
+      const row = el('li');
+      const link = el('a', 'prw-doc');
+      link.href = `/d/${encodeURIComponent(doc.slug)}`;
+      if (doc.current) link.setAttribute('aria-current', 'page');
+      link.append(el('span', 'prw-doc-title', doc.title), el('span', 'prw-doc-count', String(doc.count)));
+      row.append(link);
+      list.append(row);
+    }
+    this.docsBody.replaceChildren(data.docs?.length ? list : el('p', 'prw-empty', data.message));
   }
 
   private roomShownListener: (() => void) | null = null;
-  /** The chat asks to hear when the Room tab may have come on screen (it marks @mentions read then). */
   onRoomShown(listener: () => void): void { this.roomShownListener = listener; }
-
-  /** The Room tab is on screen (desktop: the Margin open on Room; phones: the Margin sheet on Room). */
-  isRoomVisible(): boolean {
-    if (this.marginTab !== 'room') return false;
-    if (isPhone()) return this.right.classList.contains('prw-sheet-open');
-    return !document.body.classList.contains('prw-right-collapsed');
-  }
-
-  /** Opens the Margin on its Room tab (an explicit act: a speech bubble, the ⋯ menu's Room). */
-  openRoom(): void {
-    if (MARGIN_POLICY.explicitChatOpensRoom) this.selectMarginTab('room');
-    if (isPhone()) { if (!this.right.classList.contains('prw-sheet-open')) this.openSheet('right'); }
-    else if (document.body.classList.contains('prw-right-collapsed')) this.setCollapsed('right', false);
+  isRoomVisible(): boolean { return this.chatExpanded; }
+  openRoom(): void { if (isPhone()) this.closeSheets(); this.setRoomExpanded(true); }
+  closeRoom(): void { this.setRoomExpanded(false); }
+  private setRoomExpanded(expanded: boolean): void {
+    this.chatExpanded = expanded;
+    this.chatSlot.dataset.expanded = String(expanded);
     this.roomShownListener?.();
   }
 
-  /** The Line tab's label names the line A and R hit ("Line 41"). */
-  private renderMarginTabs(): void {
-    const walk = this.walk;
-    if (!walk) return;
-    const shown = this.targetLine();
-    const preview = false;
-    const sig = `${shown}|${preview}|${this.chatUnread}`;
-    if (sig === this.lineTabSig) return;
-    this.lineTabSig = sig;
-    this.lineTabBtn.replaceChildren(el('span', 'amg-tab-label', `Line ${shown + 1}`));
-    if (preview) this.lineTabBtn.append(el('span', 'amg-preview', 'preview'));
-    this.lineTabBtn.dataset.line = String(shown);
-    this.lineTabBtn.dataset.preview = String(preview);
-    this.right.dataset.preview = String(preview);
-    this.lineTabBtn.title = `Line ${shown + 1}: A and R act on this selected passage.`;
-    this.roomBadge.textContent = this.chatUnread > 0 ? String(this.chatUnread) : '';
-    this.roomBadge.hidden = this.chatUnread <= 0;
-    this.roomTabBtn.setAttribute('aria-label', this.chatUnread > 0 ? `Room (${this.chatUnread} unread chat ${this.chatUnread === 1 ? 'mention' : 'mentions'})` : 'Room');
+  /** Compatibility for explicit callers: Room expands the conversation; Line opens Review. */
+  selectMarginTab(tab: MarginTab): void {
+    if (tab === 'room') this.openRoom();
+    else this.openReviewItem(this.cursorLine());
   }
+  marginTabShown(): MarginTab { return this.chatExpanded ? 'room' : 'line'; }
+  private renderMarginTabs(): void { /* The Line and Room tabs no longer render. */ }
 
   /** After the line's changes: the Familiar's note (folded) and everyone's marks on the line. */
   private renderTail(): void {
@@ -2159,25 +2063,22 @@ export class ReadingWalkUI {
 
   private applyRailState(): void {
     const saved = this.railState();
-    this.navigator.select(saved.leftTab ?? NAVIGATOR_POLICY.defaultTab, false);
-    // Default: both open when the window has room; the Navigator starts closed on narrower
-    // desktops so the text keeps a readable width (NAVIGATOR_POLICY.closedBelowPx).
-    const wide = window.innerWidth >= NAVIGATOR_POLICY.closedBelowPx;
+    this.navigator.select(saved.reviewTab ?? saved.leftTab ?? NAVIGATOR_POLICY.defaultTab, false);
+    // Mike, 2026-09-24: the documents list defaults closed below 1100; Review defaults open.
+    const wide = window.innerWidth >= ACCORDS_LIST_POLICY.closedBelowPx;
     const leftCollapsed = saved.left ?? !wide;
-    const rightCollapsed = saved.right ?? false;
+    const rightCollapsed = saved.right ?? !OPEN_ITEMS_POLICY.defaultOpen;
     document.body.classList.toggle('prw-left-collapsed', leftCollapsed);
     document.body.classList.toggle('prw-right-collapsed', rightCollapsed);
-    if (isPhone() && saved.left === false && !this.left.classList.contains('prw-sheet-open')) this.openSheet('left');
-    this.navigator.setPanelOpen((!leftCollapsed && !isPhone()) || this.left.classList.contains('prw-sheet-open'));
+    this.navigator.setPanelOpen((!rightCollapsed && !isPhone()) || this.right.classList.contains('prw-sheet-open'));
     this.updateToggleLabels();
   }
 
   private setCollapsed(side: 'left' | 'right', collapsed: boolean): void {
     this.saveRailState({ [side]: collapsed } as RailState);
-    if (side === 'left') this.navigator.setPanelOpen(!collapsed);
+    if (side === 'right') this.navigator.setPanelOpen(!collapsed);
     document.body.classList.toggle(`prw-${side}-collapsed`, collapsed);
     this.updateToggleLabels();
-    if (side === 'right') this.roomShownListener?.();
     requestAnimationFrame(() => { this.measure(); this.queueRender(); });
   }
 
@@ -2188,20 +2089,15 @@ export class ReadingWalkUI {
 
   private updateToggleLabels(): void {
     const phone = isPhone();
+    this.documentsToggle.setAttribute('aria-expanded', String(this.railShown('left')));
     for (const [side, rail] of [['left', this.left], ['right', this.right]] as const) {
       const btn = rail.querySelector('.prw-collapse') as HTMLButtonElement | null;
       if (!btn) continue;
       const collapsed = document.body.classList.contains(`prw-${side}-collapsed`);
-      const name = side === 'left' ? 'Review panel' : 'Margin';
+      const name = side === 'left' ? `${productIdentity().documentNounPlural} list` : 'Review panel';
       if (phone) { btn.textContent = '×'; btn.setAttribute('aria-label', `Close the ${name}`); btn.removeAttribute('aria-expanded'); continue; }
       btn.textContent = side === 'left' ? (collapsed ? '»' : '«') : (collapsed ? '«' : '»');
-      btn.setAttribute('aria-label', `${collapsed ? 'Show' : 'Hide'} the ${name}${side === 'right' && this.chatUnread > 0 ? ` (${this.chatUnread} unread chat ${this.chatUnread === 1 ? 'mention' : 'mentions'})` : ''}`);
-      // Collapsed, the Margin's toggle carries the Room's unread badge (its tab is out of sight).
-      if (side === 'right' && this.chatUnread > 0 && collapsed) {
-        const badge = el('span', 'prw-badge', String(this.chatUnread));
-        badge.setAttribute('aria-hidden', 'true');
-        btn.append(badge);
-      }
+      btn.setAttribute('aria-label', `${collapsed ? 'Show' : 'Hide'} the ${name}`);
       btn.setAttribute('aria-expanded', String(!collapsed));
       rail.dataset.collapsed = String(collapsed);
     }
@@ -2229,24 +2125,24 @@ export class ReadingWalkUI {
     this.closeSheets();
     const rail = side === 'left' ? this.left : this.right;
     rail.classList.add('prw-sheet-open');
-    if (side === 'left') { this.saveRailState({ left: false }); this.navigator.setPanelOpen(true); }
-    if (side === 'right' && this.touchMode()) {
-      this.right.prepend(this.strip);
-      document.body.classList.add('prw-margin-sheet');
-    }
+    this.saveRailState({ [side]: false });
+    if (side === 'right') this.navigator.setPanelOpen(true);
     this.updateToggleLabels();
     this.renderNow();
-    if (side === 'right') this.roomShownListener?.();
     if (options.more) this.box?.openMore?.();
     else (rail.querySelector('.prw-collapse') as HTMLButtonElement | null)?.focus({ preventScroll: true });
   }
 
   closeSheets(): void {
-    if (this.left.classList.contains('prw-sheet-open')) { this.saveRailState({ left: true }); this.navigator.setPanelOpen(false); }
+    for (const [side, rail] of [['left', this.left], ['right', this.right]] as const) {
+      if (rail.classList.contains('prw-sheet-open')) this.saveRailState({ [side]: true });
+    }
+    if (this.right.classList.contains('prw-sheet-open')) this.navigator.setPanelOpen(false);
     this.left.classList.remove('prw-sheet-open');
     this.right.classList.remove('prw-sheet-open');
     document.body.classList.remove('prw-margin-sheet');
     if (this.strip.parentElement !== document.body && this.started) document.body.append(this.strip);
+    this.updateToggleLabels();
   }
 
   /** Phones: a swipe up on the strip opens the Margin sheet; a swipe down closes it (PHONE_STRIP_POLICY). */
@@ -2279,6 +2175,7 @@ export class ReadingWalkUI {
     } catch {
       this.docsMessage = 'Could not load the documents list.';
     }
+    this.renderDocuments();
   }
 
   // --------------------------------------------------------------------------
@@ -2293,10 +2190,10 @@ export class ReadingWalkUI {
       readingFocus: walk?.focus ?? -1,
       target: walk ? this.targetLine() : -1,
       cursor: walk ? this.cursorLine() : -1,
-      marginTab: this.marginTab,
+      chatExpanded: this.chatExpanded,
       navigator: this.navigator.debugState(),
       replies: [],
-      sheet: this.right.classList.contains('prw-sheet-open') ? 'margin' : this.left.classList.contains('prw-sheet-open') ? 'navigator' : null,
+      sheet: this.right.classList.contains('prw-sheet-open') ? 'review' : this.left.classList.contains('prw-sheet-open') ? 'documents' : null,
       touch: this.touchMode(),
       strip: this.strip.hidden ? null : { line: Number(this.strip.dataset.line), status: this.strip.dataset.status ?? '' },
       lines: walk?.lineCount ?? 0,

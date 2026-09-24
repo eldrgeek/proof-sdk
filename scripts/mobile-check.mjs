@@ -19,7 +19,7 @@ mkdirSync(shots, { recursive: true });
 const styleArg = process.argv.indexOf('--style');
 const style = styleArg > 0 ? process.argv[styleArg + 1] : 'playmaker';
 
-const clientHeaders = { 'X-Proof-Client-Version': '0.31.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const clientHeaders = { 'X-Proof-Client-Version': '0.32.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 let failures = 0;
 const results = [];
 async function check(name, fn) {
@@ -163,19 +163,19 @@ async function phone(browser, base, name, viewport) {
   if (style === 'playmaker') await check(`${tag}: overflow menu opens Review as a bottom sheet with a close button`, async () => {
     await page.getByRole('button', { name: 'More options', exact: true }).click();
     await page.getByRole('menuitem', { name: /Review panel/ }).click();
-    await page.locator('.prw-left.prw-sheet-open').waitFor({ state: 'visible', timeout: 5000 });
-    const r = await page.evaluate(() => ({ ...document.querySelector('.prw-left.prw-sheet-open').getBoundingClientRect().toJSON(), vh: innerHeight, vw: innerWidth }));
+    await page.locator('.prw-right.prw-sheet-open').waitFor({ state: 'visible', timeout: 5000 });
+    const r = await page.evaluate(() => ({ ...document.querySelector('.prw-right.prw-sheet-open').getBoundingClientRect().toJSON(), vh: document.querySelector('.prw-chat-bottom').getBoundingClientRect().top, vw: innerWidth }));
     assert.ok(Math.abs(r.bottom - r.vh) <= 2 && r.width >= r.vw - 2, `panel rect ${JSON.stringify(r)}`);
     await page.screenshot({ path: path.join(shots, `${tag}-2-marks-sheet.png`) });
-    assert.equal(await chipOnTop(page, '.prw-left.prw-sheet-open'), false, 'feedback chip covers the Review sheet');
-    await page.locator('.prw-left.prw-sheet-open .prw-collapse').click();
-    assert.equal(await visible(page, '.prw-left.prw-sheet-open'), false, 'panel did not close');
+    assert.equal(await chipOnTop(page, '.prw-right.prw-sheet-open'), false, 'feedback chip covers the Review sheet');
+    await page.locator('.prw-right.prw-sheet-open .prw-collapse').click();
+    assert.equal(await visible(page, '.prw-right.prw-sheet-open'), false, 'panel did not close');
   });
   await check(`${tag}: Review opens and closes the same list without hiding text`, async () => {
     const review = page.locator('[data-accord-review-toggle]');
     const folded = await page.evaluate(() => window.__proofFolding.debugState().folded);
     await review.tap();
-    await page.locator('.prw-left.prw-sheet-open').waitFor({ state: 'visible' });
+    await page.locator('.prw-right.prw-sheet-open').waitFor({ state: 'visible' });
     assert.equal(await review.getAttribute('aria-expanded'), 'true');
     assert.match(await page.locator('.plm-issues-count').innerText(), /^\d+ need you$/);
     await page.locator('[data-accord-review-scope="all-open"]').tap();
@@ -207,7 +207,7 @@ async function phone(browser, base, name, viewport) {
     await page.getByRole('button', { name: 'Add comment on selected text' }).click();
     const field = page.locator('.mark-popover textarea:visible').first();
     await field.waitFor({ state: 'visible', timeout: 3000 });
-    const r = await page.evaluate(() => ({ ...document.querySelector('.mark-popover').getBoundingClientRect().toJSON(), vh: innerHeight, vw: innerWidth }));
+    const r = await page.evaluate(() => ({ ...document.querySelector('.mark-popover').getBoundingClientRect().toJSON(), vh: document.querySelector('.prw-chat-bottom').getBoundingClientRect().top, vw: innerWidth }));
     assert.ok(r.bottom >= r.vh - 2 && r.width >= r.vw - 2, `composer rect ${JSON.stringify(r)}`);
     assert.equal(await chipOnTop(page, '.mark-popover'), false, 'feedback chip covers the composer');
     await field.fill(commentText);
@@ -242,16 +242,15 @@ async function phone(browser, base, name, viewport) {
       const sel = getSelection();
       return !!sel && !!sel.anchorNode && !!document.querySelector('.ProseMirror')?.contains(sel.anchorNode);
     }), 'the tap did not place the caret in the text');
-    await page.getByRole('button', { name: 'More options', exact: true }).click();
-    await page.getByRole('menuitem', { name: /This line/ }).click();
+    // Step 1 (2026-09-24): the Line sheet is gone; the item opens straight in the open-items list.
     await page.evaluate(() => window.__proofReadingWalk.openReviewItem(window.__proofReadingWalk.focusIndex()));
     // Accord round 2 stage C: a comment is a THREAD, and it shows once — in Discussion. It used to
     // show there AND in "Changes on this line", which now carries only proposals. Same sheet, same
     // reply, one card.
-    const card = page.locator(`.prw-left .amg-thread[data-thread="${id}"]`);
+    const card = page.locator(`.prw-right .amg-thread[data-thread="${id}"]`);
     await card.waitFor({ state: 'visible', timeout: 3000 }).catch(async () => {
       const why = await page.evaluate(() => ({
-        rightHidden: !document.querySelector('.prw-right') || getComputedStyle(document.querySelector('.prw-right')).display === 'none',
+        rightHidden: !document.querySelector('.prw-left') || getComputedStyle(document.querySelector('.prw-left')).display === 'none',
         sheetOpen: document.querySelector('.prw-right')?.className,
         threads: [...document.querySelectorAll('.amg-thread')].map(n => n.dataset.thread),
         focus: window.__proofReadingWalk?.debugState().cursor,
@@ -266,7 +265,7 @@ async function phone(browser, base, name, viewport) {
     const reply = card.locator('.amg-thread-reply-input').first();
     await reply.fill('Reply from the phone');
     await page.screenshot({ path: path.join(shots, `${tag}-6-thread.png`) });
-    assert.equal(await chipOnTop(page, `.prw-left .amg-thread[data-thread="${id}"] .amg-thread-reply-input`), false, 'feedback chip covers the reply box');
+    assert.equal(await chipOnTop(page, `.prw-right .amg-thread[data-thread="${id}"] .amg-thread-reply-input`), false, 'feedback chip covers the reply box');
   });
   await context.close();
 }

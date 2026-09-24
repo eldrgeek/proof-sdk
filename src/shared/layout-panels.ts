@@ -7,9 +7,74 @@ import { actorKey, type ProofIssue } from './line-marks';
 import type { ThreadView } from './threads';
 import { openView, type OpenKind } from './open-view';
 
+/** Mike, 2026-09-24, “The Accord editor” (yfbqrau4), step 1: layout only; writes stay unchanged. */
+export const ACCORDS_LIST_POLICY = {
+  side: 'left', widthPx: 240, closedBelowPx: 1100, phonePresentation: 'drawer',
+  showNew: true, showAll: true, allHref: '/',
+} as const;
+
+/** Mike, 2026-09-24, yfbqrau4: Review moves right; Outline and Since you survive this step. */
+export const OPEN_ITEMS_POLICY = {
+  side: 'right', defaultOpen: true, phonePresentation: 'sheet',
+  clickKeepsListFocus: true, enterFocusesDocument: true,
+} as const;
+
+/** Mike, 2026-09-24, yfbqrau4: the same chat, with a permanent composer and an upward expansion. */
+export const BOTTOM_CHAT_POLICY = {
+  position: 'centre-bottom', composerAlwaysVisible: true, collapsedMessages: 1,
+  initiallyExpanded: false, expandedHeightShare: 0.6, compactHeightPx: 230,
+  explicitOpenExpands: true, badge: 'mentions',
+} as const;
+
+/** Mike, 2026-09-24, yfbqrau4: stored marks survive; mark circles and line-mark shortcuts retire. */
+export const GUTTER_POLICY = { showLineMarks: false, showOpenDots: true, dotOpensReview: true } as const;
+
+/** Mike, 2026-09-24, yfbqrau4: commands belong to the focused list, never a typing surface. */
+export const REVIEW_KEYS_POLICY = {
+  accept: 'a', reject: ['Delete', 'Backspace'], next: 'j', previous: 'k', enter: 'Enter',
+  proposalsOnly: true, bundlesAsUnit: true, lineMarkKeys: false, wrapNavigation: false,
+} as const;
+
+export type ReviewListAction = 'accept' | 'reject' | 'next' | 'previous' | 'document';
+export function reviewListKey(input: {
+  key: string; listFocused: boolean; typing: boolean; isComposing?: boolean;
+  ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean; letterShortcuts?: boolean;
+}): ReviewListAction | null {
+  if (!input.listFocused || input.typing || input.isComposing || input.ctrlKey || input.metaKey || input.altKey) return null;
+  const key = input.key.length === 1 ? input.key.toLowerCase() : input.key;
+  if (input.letterShortcuts === false && /^[a-z]$/.test(key)) return null;
+  if (key === REVIEW_KEYS_POLICY.accept) return 'accept';
+  if ((REVIEW_KEYS_POLICY.reject as readonly string[]).includes(key)) return 'reject';
+  if (key === REVIEW_KEYS_POLICY.next) return 'next';
+  if (key === REVIEW_KEYS_POLICY.previous) return 'previous';
+  return key === REVIEW_KEYS_POLICY.enter ? 'document' : null;
+}
+
+/** Passage rows retain their existing kinds. Never accept a proposal behind an ask or objection. */
+export function reviewItemHint(kind: OpenKind | undefined): string | null {
+  if (kind === 'suggestion') return null;
+  const hints: Record<OpenKind, string> = {
+    ask: 'Ask: answer Yes, Not yet or No under its question in the document.',
+    comment: 'Comment: reply or resolve it in the discussion below.',
+    thread: 'Discussion: reply or resolve it in the discussion below.',
+    objection: 'Objection: discuss a change with its author in the conversation.',
+    do: 'Action to approve: use its controls under the action in the document.',
+    alternative: 'Competing wordings: choose a wording under the passage in the document.',
+    uncertain: 'Uncertain passage: discuss it with its author in the conversation.',
+    ttl: 'Claim needing a re-check: ask its author to check it in the conversation.',
+    lapsed: 'Earlier agreement: propose a change with S or discuss it in the conversation.',
+    unread: 'Unread passage: read it; there is no proposal to accept or reject.',
+    changed: 'Changed passage: propose a change with S or discuss it in the conversation.',
+    suggestion: '',
+  };
+  return kind ? hints[kind] : 'No open proposal is selected.';
+}
+
 /** The Margin (decision 6): two tabs only, the line and the room. */
 export type MarginTab = 'line' | 'room';
 export const MARGIN_POLICY = {
+  /** Mike, 2026-09-24, yfbqrau4: the entire Line tab is retired on every screen size. */
+  renderLineTab: false,
   tabs: ['line', 'room'] as readonly MarginTab[],
   /** The tab a first visit opens on. The tab never switches itself (proposal: "The tab does not switch itself"). */
   defaultTab: 'line' as MarginTab,
@@ -83,6 +148,8 @@ export function markedByFold(statuses: readonly string[], hasOpenObjection: bool
 /** Review, Outline and Since you. Mike, 2026-09-23 (usability brief). The issues id stays compatible. */
 export type NavigatorTab = 'outline' | 'issues' | 'since';
 export const NAVIGATOR_POLICY = {
+  /** Mike, 2026-09-24, yfbqrau4: this panel now occupies the former Margin. */
+  side: OPEN_ITEMS_POLICY.side,
   tabs: [
     { id: 'issues', label: 'Review' },
     { id: 'outline', label: 'Outline' },
@@ -91,7 +158,7 @@ export const NAVIGATOR_POLICY = {
   /** The panel opens on Review. */
   defaultTab: 'issues' as NavigatorTab,
   /** Width on desktop (px), per the mockup. */
-  widthPx: 240,
+  widthPx: 340,
   /** Closed by default under this width (proposal: "It closes by default under 1100 px"). */
   closedBelowPx: 1100,
   /** Outline rows indent this much per heading level below the top one (px). */
@@ -102,6 +169,9 @@ export const NAVIGATOR_POLICY = {
 
 /** The phone (decision 11): one column, a bottom strip, the Margin as a sheet. */
 export const PHONE_STRIP_POLICY = {
+  /** Mike, 2026-09-24, yfbqrau4: a count opens Review; the left list has a top-left toggle. */
+  opens: 'review',
+  showLineMarks: false,
   /** The strip's height (px), per the proposal. */
   heightPx: 56,
   /** The status bar folds into the strip: it shows only while the strip steps aside (the caret in the text). */
@@ -206,7 +276,7 @@ export function outlineRows(
 }
 
 /** The remembered rail state: open or closed, and the tab each rail shows. */
-export interface RailState { left?: boolean; right?: boolean; leftTab?: NavigatorTab; rightTab?: MarginTab }
+export interface RailState { left?: boolean; right?: boolean; leftTab?: NavigatorTab; rightTab?: MarginTab; reviewTab?: NavigatorTab }
 
 export function parseRailState(raw: string | null): RailState {
   try {
@@ -216,6 +286,8 @@ export function parseRailState(raw: string | null): RailState {
     if (typeof value.right === 'boolean') out.right = value.right;
     if (NAVIGATOR_POLICY.tabs.some(t => t.id === value.leftTab)) out.leftTab = value.leftTab as NavigatorTab;
     if (MARGIN_POLICY.tabs.includes(value.rightTab as MarginTab)) out.rightTab = value.rightTab as MarginTab;
+    // Old leftTab is read for compatibility, but new selections belong to Review on the right.
+    if (NAVIGATOR_POLICY.tabs.some(t => t.id === value.reviewTab)) out.reviewTab = value.reviewTab as NavigatorTab;
     return out;
   } catch {
     return {};

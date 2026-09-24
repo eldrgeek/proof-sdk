@@ -114,7 +114,7 @@ export class OpenViewUI {
         this.host.lineMarks().revealLine(line);
         const walk = (window as unknown as { __proofReadingWalk?: { focusLine?: (index: number) => boolean } }).__proofReadingWalk;
         if (walk?.focusLine) walk.focusLine(line);
-        else document.querySelector<HTMLElement>(`.plm-dot[data-line="${line}"]`)?.scrollIntoView({ block: 'center' });
+        else document.querySelector<HTMLElement>(`.plm-open-dot[data-line="${line}"]`)?.scrollIntoView({ block: 'center' });
       });
       this.headerText.append(link);
     });
@@ -128,7 +128,7 @@ export class OpenViewUI {
       view: this.view, clean: this.chosen && this.view === 'accord', chosen: this.chosen ? this.view : null,
       open: this.lastOpen,
       pill: Number(document.querySelector<HTMLElement>('.plm-issues-count')?.dataset.viewerCount ?? -1),
-      dots: [...document.querySelectorAll<HTMLElement>('.plm-dot[data-needs-you="true"]')].map(d => Number(d.dataset.line)).sort((a,b) => a-b),
+      dots: [...document.querySelectorAll<HTMLElement>('.plm-open-dot[data-needs-you="true"]')].map(d => Number(d.dataset.line)).sort((a,b) => a-b),
       navigator: [...document.querySelectorAll<HTMLElement>('.anv-issue[data-settled="false"]')].map(b => Number(b.dataset.line)).sort((a,b) => a-b),
       amberFromLineMarks: [...lm.needsYouLines()],
       header: { text: this.lastHeader.text, settled: this.lastHeader.settled, hidden: this.headerText.hidden },

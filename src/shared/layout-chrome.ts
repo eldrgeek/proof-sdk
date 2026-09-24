@@ -163,8 +163,10 @@ export function menuForKey(input: { code: string; altKey: boolean; ctrlKey: bool
 
 /** Keyboard shortcuts (Help › Keyboard shortcuts). One list, so the dialog and the docs agree. */
 export const KEYBOARD_SHORTCUTS: ReadonlyArray<{ group: string; keys: string; does: string }> = [
-  { group: 'Reading (caret out of the text)', keys: 'A', does: 'Agree with the line you are on' },
-  { group: 'Reading (caret out of the text)', keys: 'R', does: 'Reject it (with a reason)' },
+  { group: 'Review list', keys: 'A', does: 'Accept the selected proposal' },
+  { group: 'Review list', keys: 'Delete / Backspace', does: 'Reject the selected proposal' },
+  { group: 'Review list', keys: 'J / K', does: 'Select the next / previous open item' },
+  { group: 'Review list', keys: 'Enter', does: 'Focus the document at the selected item' },
   { group: 'Reading (caret out of the text)', keys: 'J / ↓', does: 'Next line' },
   { group: 'Reading (caret out of the text)', keys: 'K / ↑', does: 'Previous line' },
   { group: 'Reading (caret out of the text)', keys: 'Y / T / N', does: 'Answer the ask on this line: Yes / Not yet / No' },
@@ -183,13 +185,13 @@ export const KEYBOARD_SHORTCUTS: ReadonlyArray<{ group: string; keys: string; do
 
 /** Help › What the marks mean. */
 export const MARKS_LEGEND: ReadonlyArray<{ swatch: 'here' | 'need' | 'settled' | 'change' | 'status'; label: string; means: string }> = [
-  { swatch: 'here', label: 'Blue bar', means: 'You are here: the keys and the rail act on this line.' },
+  { swatch: 'here', label: 'Blue bar', means: 'The selected passage. S opens a proposal draft here.' },
   { swatch: 'need', label: 'Amber dot', means: 'Needs you: an ask to answer or a change to decide. Each one is an Issue.' },
-  { swatch: 'settled', label: 'Grey check', means: 'Settled: marked by you, or decided.' },
+  { swatch: 'settled', label: 'Done', means: 'A completed Review item. It stays in the list until you clear it.' },
   { swatch: 'change', label: 'Green / struck words', means: 'A pending change: green is inserted, struck out is deleted.' },
   { swatch: 'status', label: 'Seen', means: 'You read the line (scrolling reads). It is not agreement.' },
-  { swatch: 'status', label: 'Agreed', means: 'You agree with the line as written.' },
-  { swatch: 'status', label: 'Rejected', means: 'You do not agree; your reason goes to the team.' },
-  { swatch: 'status', label: 'Approved', means: 'An Owner signed off on the line (Approve is under More).' },
+  { swatch: 'status', label: 'Agreed', means: 'A stored agreement with an earlier version of this line.' },
+  { swatch: 'status', label: 'Rejected', means: 'A stored rejection and its reason from an earlier review.' },
+  { swatch: 'status', label: 'Approved', means: 'A stored Owner approval from an earlier review.' },
   { swatch: 'status', label: 'Changed since you marked it', means: 'Your mark is out of date: the line changed after you marked it.' },
 ];

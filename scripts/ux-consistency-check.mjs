@@ -25,7 +25,7 @@ const shots = arg('--shots') || path.join(root, '.preview');
 mkdirSync(shots, { recursive: true });
 const styles = arg('--style') ? [arg('--style')] : ['proof', 'playmaker'];
 
-const clientHeaders = { 'X-Proof-Client-Version': '0.31.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const clientHeaders = { 'X-Proof-Client-Version': '0.32.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 let failures = 0;
 const results = [];
 let activePage = null;
@@ -151,7 +151,8 @@ async function runDesktop(browser, base, tag) {
   await check(`${tag}: item 1 — the Undo names the action it would reverse (its name and tooltip)`, async () => {
     await selectPassage(page, 5);
     await page.waitForFunction(() => window.__proofReadingWalk.debugState().target === 5, null, { timeout: 1500 });
-    await page.keyboard.press('a');
+    // Historical fixture only: nobody is offered line marking in the UI.
+    await page.evaluate(() => window.__proofLineMarks.setLineStatus(window.__proofReadingWalk.focusIndex(), 'agreed', undefined, 'click'));
     await page.waitForFunction(i => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i && m.status === 'agreed'), 5, { timeout: 4000 });
     const button = page.locator('.pundo-btn').first();
     await button.waitFor({ state: 'visible', timeout: 3000 });
@@ -162,7 +163,7 @@ async function runDesktop(browser, base, tag) {
     await page.screenshot({ path: path.join(shots, `${tag}-undo-button.png`) });
   });
 
-  await check(`${tag}: item 1 — the Undo button reverses a line mark and says what it undid`, async () => {
+  await check(`${tag}: item 1 — the Undo button can still reverse a historical line-mark entry and says what it undid`, async () => {
     await page.locator('.pundo-btn').first().click();
     await page.waitForFunction(i => !window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i && m.status === 'agreed'), 5, { timeout: 5000 });
     const notice = page.locator('.pundo-notice');
@@ -175,7 +176,8 @@ async function runDesktop(browser, base, tag) {
     await page.evaluate(() => document.activeElement?.blur());
     await selectPassage(page, 6);
     await page.waitForFunction(() => window.__proofReadingWalk.debugState().target === 6, null, { timeout: 1500 });
-    await page.keyboard.press('a');
+    // Historical fixture only: nobody is offered line marking in the UI.
+    await page.evaluate(() => window.__proofLineMarks.setLineStatus(window.__proofReadingWalk.focusIndex(), 'agreed', undefined, 'click'));
     await page.waitForFunction(i => window.__proofLineMarks.debugState().marks.some(m => m.by === window.__proofLineMarks.me() && m.anchor.ordinal === i && m.status === 'agreed'), 6, { timeout: 5000 });
     const depth = (await undoState(page)).depth;
     await page.evaluate(() => document.activeElement?.blur());
@@ -317,11 +319,9 @@ async function runPhone(browser, base, tag) {
   activePage = page;
 
   await check(`${tag}: the Undo button is reachable and full-width in the rail`, async () => {
-    if (!(await page.locator('.prw-right.prw-sheet-open').count())) await page.locator('.prw-strip-where').tap();
-    await page.locator('.prw-right .plm-primary-row [data-status="agreed"]').tap();
-    await page.locator('.prw-strip-grab').tap();
+    await page.evaluate(() => window.__proofLineMarks.setLineStatus(window.__proofReadingWalk.focusIndex(), 'agreed', undefined, 'click'));
+    await page.locator('.prw-strip-review').tap();
     await page.waitForFunction(() => window.__proofUndo.debugState().depth > 0, null, { timeout: 6000 });
-    await page.locator('.prw-sheet-open, .prw-right-open, .prw-strip-more').first().tap().catch(() => {});
     await page.waitForTimeout(400);
     const button = page.locator('.pundo-btn').first();
     if (await button.count() && await button.isVisible()) {

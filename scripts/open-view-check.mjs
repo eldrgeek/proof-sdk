@@ -2,6 +2,7 @@
 // Review beside the full document; counts, scopes, completion and the explicit agreed copy.
 // Mike, 2026-09-23 (usability brief). Local fixtures only.
 import assert from 'node:assert/strict';
+import { showReview } from './review-ui.mjs';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
@@ -15,7 +16,7 @@ const arg = (name) => { const i = process.argv.indexOf(name); return i > 0 ? pro
 const shots = arg('--shots') || path.join(root, '.preview');
 mkdirSync(shots, { recursive: true });
 
-const clientHeaders = { 'X-Proof-Client-Version': '0.31.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const clientHeaders = { 'X-Proof-Client-Version': '0.32.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 let failures = 0;
 const results = [];
 let activePage = null;
@@ -223,8 +224,9 @@ async function main() {
       const open = (await state(mike.page)).open.lines;
       await mike.page.evaluate(line => window.__proofReadingWalk.focusLine(line), open[0]);
       await mike.page.waitForTimeout(150);
-      // J steps to the next open item, not the next line: the collapsed lines are hidden, and the
-      // reading walk steps over hidden lines. No second keymap was invented.
+      // Step 1 (Mike, 2026-09-24, Accord yfbqrau4 P1): J, K, A and Delete act in the open-items
+      // list, so the list takes focus first; the document follows the selected item.
+      await mike.page.locator(`.anv-issue[data-line="${open[0]}"]`).focus();
       await mike.page.keyboard.press('j');
       await mike.page.waitForTimeout(250);
       const afterJ = await mike.page.evaluate(() => window.__proofReadingWalk.focusIndex());
@@ -235,13 +237,10 @@ async function main() {
       assert.ok(afterK <= afterJ, `K did not move back (${afterJ} -> ${afterK})`);
       const textAfter = await mike.page.evaluate(() => window.__proofLineMarks.lineList().map(l => l.text).join('\n'));
       assert.equal(textAfter, textBefore, 'a reading key typed into the document');
-      // A agrees on the focus line, from the keyboard, in the list.
-      const focus = await mike.page.evaluate(() => window.__proofReadingWalk.focusIndex());
+      // A outside the Review list no longer marks or decides anything.
+      const marksBefore = await mike.page.evaluate(() => window.__proofLineMarks.debugState().marks.filter(m => ['agreed', 'rejected'].includes(m.status)));
       await mike.page.keyboard.press('a');
-      await waitFor(mike.page, line => {
-        const entry = window.__proofLineMarks.lineState(line)?.marks?.get(window.__proofLineMarks.me().toLowerCase());
-        return Boolean(entry && ['agreed', 'approved'].includes(entry.mark.status));
-      }, focus);
+      assert.deepEqual(await mike.page.evaluate(() => window.__proofLineMarks.debugState().marks.filter(m => ['agreed', 'rejected'].includes(m.status))), marksBefore);
       assert.equal(
         await mike.page.evaluate(() => window.__proofLineMarks.lineList().map(l => l.text).join('\n')),
         textBefore, 'A typed an "a" into the document');
@@ -374,12 +373,11 @@ async function main() {
       // The three still agree about it.
       assert.deepEqual(s.dots, s.open.lines);
       assert.equal(s.pill, s.open.count);
-      // And the margin says so in those words, beside the new wording.
-      await mike.page.evaluate(line => window.__proofReadingWalk.focusLine(line), L.SHIP);
-      await mike.page.waitForTimeout(500);
-      const margin = await mike.page.evaluate(() => document.querySelector('.prw-linebox')?.textContent ?? '');
-      assert.ok(/agreed to an earlier version/i.test(margin), `the Margin does not say the agreement lapsed: ${margin.slice(0, 300)}`);
-      assert.ok(/Monday/.test(margin), `the Margin does not show the earlier wording: ${margin.slice(0, 300)}`);
+      // The retired Line tab does not render; the Review row retains the lapsed kind.
+      assert.equal(await mike.page.locator('.prw-linebox').count(), 0);
+      await showReview(mike.page);
+      assert.match(await mike.page.locator(`.anv-issue[data-line="${L.SHIP}"]`).innerText(), /earlier|agreement|changed/i);
+
     });
 
     // ------------------------------------------------------------------ 8
@@ -445,7 +443,7 @@ async function main() {
         const box = await button.boundingBox();
         assert.ok(box && box.height >= 44 && box.x >= 0 && box.x + box.width <= 375);
         await button.click();
-        await phone.page.locator('.prw-left.prw-sheet-open').waitFor({ state: 'visible' });
+        await phone.page.locator('.prw-right.prw-sheet-open').waitFor({ state: 'visible' });
         await phone.page.locator(`.anv-issue[data-line="${L.CLAIM}"]`).click();
         assert.equal(await button.getAttribute('aria-expanded'), 'true');
         assert.equal((await state(phone.page)).hiddenLines.length, 0);

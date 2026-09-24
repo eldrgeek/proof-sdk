@@ -1,7 +1,8 @@
 /** Review, Outline and Since you beside the full document.
  * Mike, 2026-09-23 (usability brief). Existing selectors keep their machine names.
  */
-import { NAVIGATOR_POLICY, needsYouLabel, outlineRows, type NavigatorTab } from '../shared/layout-panels';
+import { NAVIGATOR_POLICY, reviewListKey, reviewItemHint, needsYouLabel, outlineRows, type NavigatorTab } from '../shared/layout-panels';
+import { isWriting, isInputComposing, letterShortcutsEnabled } from '../editor/editing-guard';
 import { REVIEW_LIST_POLICY, reviewCountLabel, reconcileReview, emptyReviewSession,
   clearCompleted, nextReviewRow, anchoredReviewScroll, type ReviewScope } from '../shared/review-list';
 import type { LineMarksUI } from './line-marks';
@@ -17,6 +18,8 @@ export interface NavigatorHost {
   /** The tab changed (the host remembers it). */
   tabChanged(tab: NavigatorTab): void;
   toggle?(): void;
+  decide(line: number, action: 'accept' | 'reject'): void;
+  focusDocument(line: number): void;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -54,6 +57,8 @@ export class NavigatorUI {
   private outlineSig = '';
   private reader = '';
   private panelOpen = false;
+  private selectedKey: string | null = null;
+  private readonly keyHint = el('p', 'anv-key-hint');
 
   constructor(private readonly host: NavigatorHost, initial: NavigatorTab | undefined, sinceHost: HTMLElement) {
     this.tab = initial ?? NAVIGATOR_POLICY.defaultTab;
@@ -80,6 +85,10 @@ export class NavigatorUI {
     this.outlineList.setAttribute('aria-label', 'Headings');
     this.issuesList.setAttribute('aria-label', 'Review items');
     this.issuesList.dataset.accordReviewList = '';
+    this.issuesList.tabIndex = 0;
+    this.issuesList.addEventListener('keydown', this.onListKey);
+    this.keyHint.setAttribute('role', 'status');
+    this.keyHint.setAttribute('aria-live', 'polite');
     this.panes.outline.append(this.toolsEl, this.outlineList);
     this.reviewButton.type = 'button';
     this.reviewButton.dataset.accordReviewToggle = '';
@@ -106,7 +115,7 @@ export class NavigatorUI {
     this.nextBtn.onclick = () => this.next();
     this.scopeTools.append(this.nextBtn, this.clearSettledBtn);
     this.detailEl.setAttribute('aria-label', 'Selected passage discussion and proposals');
-    this.panes.issues.append(this.scopeTools, this.detailEl, this.issuesEmpty, this.issuesList);
+    this.panes.issues.append(this.scopeTools, this.keyHint, this.detailEl, this.issuesEmpty, this.issuesList);
     this.panes.since.append(this.sinceEmpty, sinceHost);
     this.outlineList.addEventListener('focusout', () => queueMicrotask(() => this.render()));
     this.applyTab();
@@ -146,7 +155,7 @@ export class NavigatorUI {
   setPanelOpen(open: boolean): void {
     if (!open) {
       this.clearDone();
-      if (this.tabsEl.closest('.prw-left')?.contains(document.activeElement)) this.reviewButton.focus({ preventScroll: true });
+      if (this.tabsEl.closest('.prw-right')?.contains(document.activeElement)) this.reviewButton.focus({ preventScroll: true });
     }
     this.panelOpen = open;
     this.reviewButton.setAttribute('aria-expanded', String(open));
@@ -157,10 +166,65 @@ export class NavigatorUI {
     for (const scope of ['needs-you', 'all-open'] as const) this.sessions[scope] = clearCompleted(this.sessions[scope]);
   }
 
+  /** A selected row keeps the keyboard even when the document scrolls or the row settles. */
+  selectLine(line: number): void {
+    this.render();
+    const row = this.session.rows.find(row => row.line === line && !row.done)
+      ?? this.session.rows.find(row => row.line === line);
+    if (!row) { this.issuesList.focus({ preventScroll: true }); return; }
+    this.selectedKey = row.key;
+    row.fresh = false;
+    this.host.go(row.line);
+    this.render();
+    this.focusSelected();
+  }
+
+  private focusSelected(): void {
+    const li = [...this.issuesList.children].find(node => (node as HTMLElement).dataset.key === this.selectedKey);
+    const button = li?.querySelector('button');
+    (button ?? this.issuesList).focus({ preventScroll: true });
+    button?.scrollIntoView({ block: 'nearest' });
+  }
+
+  private onListKey = (event: KeyboardEvent): void => {
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    const active = document.activeElement;
+    const typing = (node: Element | null) => Boolean(node?.closest('input, textarea, select, .accord-draft, .ProseMirror, [contenteditable="true"]'));
+    const action = reviewListKey({ ...event, key: event.key, ctrlKey: event.ctrlKey, metaKey: event.metaKey,
+      altKey: event.altKey, isComposing: event.isComposing || event.keyCode === 229 || isInputComposing(),
+      listFocused: this.issuesList.contains(active) && this.issuesList.contains(target),
+      typing: isWriting() || typing(target) || typing(active), letterShortcuts: letterShortcutsEnabled() });
+    if (!action) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.render(); // Re-check current pending state, including any just-arrived remote decision.
+    const focused = target?.closest('li[data-key]') as HTMLElement | null;
+    if (focused) this.selectedKey = focused.dataset.key ?? null;
+    const selected = this.session.rows.find(row => row.key === this.selectedKey);
+    if (action === 'next' || action === 'previous') {
+      const rows = this.session.rows;
+      const at = rows.findIndex(row => row.key === this.selectedKey);
+      const candidates = action === 'next' ? rows.slice(at + 1) : (at < 0 ? rows : rows.slice(0, at)).slice().reverse();
+      const next = candidates.find(row => !row.done && row.line >= 0);
+      if (next) this.selectLine(next.line);
+      return;
+    }
+    if (!selected || selected.line < 0) { this.keyHint.textContent = 'Select an open item with J or K.'; return; }
+    if (action === 'document') { this.host.focusDocument(selected.line); return; }
+    if (selected.done) { this.keyHint.textContent = 'This item is done. Select an open item with J or K.'; return; }
+    const hint = reviewItemHint(selected.kinds[0]);
+    this.keyHint.textContent = hint ?? '';
+    if (hint) return;
+    this.host.decide(selected.line, action);
+    this.render();
+    // Do not advance automatically: completed rows stay until the reader chooses to move.
+    this.focusSelected();
+  };
+
   next(): void {
     const next = nextReviewRow(this.session, this.host.cursor());
     this.clearDone();
-    if (next && this.host.lineMarks().visitReviewItem(next.key, next.line)) this.host.go(next.line);
+    if (next && this.host.lineMarks().visitReviewItem(next.key, next.line)) this.selectLine(next.line);
     this.render();
   }
 
@@ -238,9 +302,8 @@ export class NavigatorUI {
         b.dataset.label = title + label;
       }
       b.onclick = () => {
-        row.fresh = false;
-        if (row.line >= 0) this.host.go(row.line);
-        this.render();
+        this.keyHint.textContent = '';
+        if (row.line >= 0) this.selectLine(row.line);
       };
       if (b.parentElement !== li) li.append(b);
       // Inserting above a focused button preserves that button's DOM node.

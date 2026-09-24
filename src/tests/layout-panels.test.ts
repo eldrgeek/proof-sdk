@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import type { ProofIssue } from '../shared/line-marks';
 import { needsYouLines } from '../shared/layout-status';
 import {
-  passageMarkers, stableReviewOrder, resolveSettledIndex, MARGIN_POLICY, MARKED_BY_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY,
+  ACCORDS_LIST_POLICY, BOTTOM_CHAT_POLICY, OPEN_ITEMS_POLICY, GUTTER_POLICY, REVIEW_KEYS_POLICY, reviewListKey, reviewItemHint, passageMarkers, stableReviewOrder, resolveSettledIndex, MARGIN_POLICY, MARKED_BY_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY,
   markedByFold, needsYouItems, needsYouLabel, outlineRows, parseRailState,
 } from '../shared/layout-panels';
 
@@ -28,13 +28,11 @@ const ask = (line: number, openFor: string[], by = 'ai:cos'): ProofIssue => ({
 const suggestion = (line: number, by: string | null): ProofIssue => ({ type: 'suggestion', markId: `s${line}`, pos: line * 10 + 2, kind: 'replace', by, excerpt: '' });
 const comment = (line: number, by: string | null): ProofIssue => ({ type: 'comment', markId: `c${line}`, pos: line * 10 + 3, kind: 'comment', by, excerpt: '' });
 
-test('policy: two Margin tabs, three Navigator tabs, Agree and Reject primary, selection owns the target', () => {
-  assert.deepEqual(MARGIN_POLICY.tabs, ['line', 'room']);
+test('layout v2 retires the Line tab and moves the three Review tabs right', () => {
+  assert.equal(MARGIN_POLICY.renderLineTab, false);
+  assert.equal(NAVIGATOR_POLICY.side, 'right');
   assert.deepEqual(NAVIGATOR_POLICY.tabs.map(t => t.label), ['Review', 'Outline', 'Since you']);
-  assert.deepEqual(MARGIN_POLICY.primaryActions, ['Agree', 'Suggest change', 'Discuss', 'Reject']);
-  assert.deepEqual(MARGIN_POLICY.primaryMarks, ['agreed', 'rejected']);
-  for (const item of ['approved', 'seen', 'clear', 'uncertain', 'alternative', 'explain', 'ttl', 'tier']) assert.ok(MARGIN_POLICY.moreItems.includes(item), item);
-  assert.equal(NAVIGATOR_POLICY.widthPx, 240);
+  assert.equal(NAVIGATOR_POLICY.widthPx, 340);
   assert.equal(MARGIN_POLICY.widthPx, 340);
   assert.equal(NAVIGATOR_POLICY.closedBelowPx, 1100);
   assert.equal(PHONE_STRIP_POLICY.heightPx, 56);
@@ -140,5 +138,44 @@ test('margin counts remain for resolved history, deduplicate threads and cover e
   assert.deepEqual(markers.get(1), { text: '2 comments', ids: ['c'] });
   assert.deepEqual(markers.get(2), { text: '2 comments · 1 proposal', ids: ['c', 'p'] });
   assert.equal(markers.get(4)?.text, '1 comment');
+});
+test('layout v2 policies: independent panels, permanent composer, proposals only', () => {
+  assert.deepEqual(ACCORDS_LIST_POLICY, { side: 'left', widthPx: 240, closedBelowPx: 1100,
+    phonePresentation: 'drawer', showNew: true, showAll: true, allHref: '/' });
+  assert.deepEqual(OPEN_ITEMS_POLICY, { side: 'right', defaultOpen: true, phonePresentation: 'sheet',
+    clickKeepsListFocus: true, enterFocusesDocument: true });
+  assert.deepEqual(BOTTOM_CHAT_POLICY, { position: 'centre-bottom', composerAlwaysVisible: true,
+    collapsedMessages: 1, initiallyExpanded: false, expandedHeightShare: 0.6, compactHeightPx: 230,
+    explicitOpenExpands: true, badge: 'mentions' });
+  assert.deepEqual(GUTTER_POLICY, { showLineMarks: false, showOpenDots: true, dotOpensReview: true });
+  assert.equal(REVIEW_KEYS_POLICY.proposalsOnly, true);
+  assert.equal(REVIEW_KEYS_POLICY.bundlesAsUnit, true);
+  assert.equal(REVIEW_KEYS_POLICY.lineMarkKeys, false);
+  assert.equal(REVIEW_KEYS_POLICY.wrapNavigation, false);
+  assert.equal(PHONE_STRIP_POLICY.opens, 'review');
+  assert.equal(PHONE_STRIP_POLICY.showLineMarks, false);
+  assert.deepEqual(parseRailState('{"left":true,"right":false,"reviewTab":"since"}'),
+    { left: true, right: false, reviewTab: 'since' });
+});
+
+test('list keys: A, Delete, Backspace, J, K and Enter; no line-mark R', () => {
+  const route = (key: string, extra = {}) => reviewListKey({ key, listFocused: true, typing: false, ...extra });
+  for (const [key, action] of [['a', 'accept'], ['A', 'accept'], ['Delete', 'reject'], ['Backspace', 'reject'],
+    ['j', 'next'], ['J', 'next'], ['k', 'previous'], ['K', 'previous'], ['Enter', 'document']]) {
+    assert.equal(route(key), action);
+    assert.equal(route(key, { typing: true }), null, key + ' while typing');
+    assert.equal(route(key, { listFocused: false }), null, key + ' outside list');
+    for (const modifier of ['ctrlKey', 'metaKey', 'altKey', 'isComposing']) assert.equal(route(key, { [modifier]: true }), null);
+  }
+  for (const key of ['a', 'j', 'k']) assert.equal(route(key, { letterShortcuts: false }), null);
+  for (const key of ['r', 'R', 'Process', 'Unidentified', 'Tab']) assert.equal(route(key), null);
+});
+
+test('non-proposals explain how to answer instead of accepting or rejecting', () => {
+  assert.equal(reviewItemHint('suggestion'), null);
+  assert.match(reviewItemHint('ask')!, /Yes, Not yet or No under its question/);
+  for (const kind of ['do', 'objection', 'comment', 'thread', 'alternative', 'uncertain', 'ttl', 'lapsed', 'changed', 'unread'] as const)
+    assert.ok(reviewItemHint(kind), kind);
+  assert.ok(reviewItemHint(undefined));
 });
 console.log(`\n${passed} layout-panels tests passed`);

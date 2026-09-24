@@ -3829,6 +3829,7 @@ class ProofEditorImpl implements ProofEditor {
     const hidden = group('hidden', syncStatusSep, this.createReviewStyleControl(), suggestionReview);
     hidden.setAttribute('aria-hidden', 'true');
     banner.replaceChildren(
+      ...(this.readingWalk ? [this.readingWalk.documentsToggle] : []),
       group('center', title, syncStatusInline),
       group('right', reviewControl, suggestToggle, lineMarksUi.alignedEl, peopleBtn, shareBtn),
       hidden,
@@ -4063,8 +4064,8 @@ class ProofEditorImpl implements ProofEditor {
         }
         if (walk) {
           items.push(
-            { id: 'view-navigator', label: 'Review panel', kind: 'checkbox', checked: walk.railShown('left'), keywords: 'left rail documents', run: () => walk.toggleRailFromMenu('left') },
-            { id: 'view-margin', label: 'Margin', kind: 'checkbox', checked: walk.railShown('right'), keywords: 'right rail this line', run: () => walk.toggleRailFromMenu('right') },
+            { id: 'view-navigator', label: `${productIdentity().documentNounPlural} list`, kind: 'checkbox', checked: walk.railShown('left'), keywords: 'left rail documents', run: () => walk.toggleRailFromMenu('left') },
+            { id: 'view-margin', label: 'Review panel', kind: 'checkbox', checked: walk.railShown('right'), keywords: 'right rail open items', run: () => walk.toggleRailFromMenu('right') },
           );
         }
         if (folding && sections.length > 0) {
@@ -4077,12 +4078,8 @@ class ProofEditorImpl implements ProofEditor {
         if (walk) {
           items.push({ id: 'view-letter-shortcuts', label: 'Letter shortcuts', kind: 'checkbox', checked: walk.letterShortcutsEnabled(), run: () => walk.toggleLetterShortcuts() });
           items.push({ id: 'view-reading-settings', label: 'Reading settings…', keywords: 'reading speed sitting budget words per second', separatorBefore: !lm, run: () => walk.openReadingSettings() });
-          const proxy = walk.proxy;
-          items.push({ id: 'view-brief', label: 'Familiar’s brief', kind: 'checkbox', checked: proxy.isBriefOpen(), enabled: proxy.hasBrief(), keywords: 'proxy familiar ratify', run: () => {
-            const open = !proxy.isBriefOpen();
-            proxy.setBriefOpen(open);
-            if (open) { if (!walk.railShown('right') || window.innerWidth <= 700) walk.toggleRailFromMenu('right'); proxy.briefEl.scrollIntoView({ block: 'nearest' }); }
-          } });
+          // Mike, 2026-09-24, yfbqrau4: the retired Line tab no longer hosts a Familiar brief.
+
         }
         if (style === 'playmaker' && this.playmakerReview) {
           const review = this.playmakerReview;
@@ -4202,6 +4199,7 @@ class ProofEditorImpl implements ProofEditor {
       });
       (window as unknown as { __proofFolding?: FoldingUI }).__proofFolding = this.folding;
       this.readingWalk = new ReadingWalkUI({
+        newDocument: () => { void this.newDocument(); },
         slug: () => shareClient.getSlug(),
         suggestChange: (line) => this.editGesture?.open(line) ?? false,
         canSuggest: () => this.shareAllowLocalEdits,
@@ -4321,7 +4319,7 @@ class ProofEditorImpl implements ProofEditor {
         inMargin: () => true,
         railOpen: () => walkUi.isRoomVisible(),
         openRail: () => walkUi.openRoom(),
-        closeRail: () => walkUi.closeSheets(),
+        closeRail: () => walkUi.closeRoom(),
         onUnread: (count) => {
           this.chatUnread = count;
           walkUi.setChatUnread(count);
@@ -4408,13 +4406,13 @@ class ProofEditorImpl implements ProofEditor {
       const phoneItems: MenuItemSpec[] = [];
       if (this.readingWalk) {
         // Accord layout stage 3 (decision 11): the Margin sheet on its Line tab, or its Room tab.
-        phoneItems.push({ id: 'phone-line', label: 'This line', detail: 'Margin · Line', run: () => { this.readingWalk?.selectMarginTab('line'); this.readingWalk?.openSheet('right'); } });
+        phoneItems.push({ id: 'phone-line', label: 'Review panel', detail: 'Review · Outline · Since you', run: () => this.readingWalk?.openSheet('right') });
       }
       if (this.chat) {
         phoneItems.push({ id: 'phone-chat', label: 'Room', detail: this.chatUnread > 0 ? `chat · ${this.chatUnread} @you` : 'chat', run: () => this.chat?.open(true) });
       }
       if (this.readingWalk) {
-        phoneItems.push({ id: 'phone-docs', label: 'Review panel', detail: 'Review · Outline · Since you', run: () => this.readingWalk?.openSheet('left') });
+        phoneItems.push({ id: 'phone-docs', label: `${productIdentity().documentNounPlural} list`, run: () => this.readingWalk?.openSheet('left') });
       }
       if (phoneItems.length && moved.size > 0) {
         const sep = document.createElement('div');

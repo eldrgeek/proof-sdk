@@ -29,7 +29,7 @@ const shots = arg('--shots') || path.join(root, '.preview');
 mkdirSync(shots, { recursive: true });
 const styles = arg('--style') ? [arg('--style')] : ['proof'];
 
-const clientHeaders = { 'X-Proof-Client-Version': '0.31.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const clientHeaders = { 'X-Proof-Client-Version': '0.32.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 let failures = 0;
 const results = [];
 let activePage = null;
@@ -186,7 +186,7 @@ async function desktop(browser, base, style) {
   const tag = `threads-${style}-1440`;
   const { context, page } = await openDoc(browser, base, created.slug, 'Ada', { viewport: { width: 1440, height: 900 } });
   activePage = page;
-  const rail = page.locator('.prw-left');
+  const rail = page.locator('.prw-right');
 
   await check(`${tag}: T with no selection starts a thread on the cursor line, and the closing condition is offered`, async () => {
     await page.evaluate(() => window.getSelection()?.removeAllRanges());
@@ -352,7 +352,7 @@ async function desktop(browser, base, style) {
     assert.equal(after.status, 'open', 'and it is STILL OPEN: a deletion never closes a disagreement');
     assert.notEqual(after.line, null, 'it attached to a surviving line');
     await focusLine(page, after.line);
-    const card = page.locator('.prw-left .amg-thread[data-detached="true"]').first();
+    const card = page.locator('.prw-right .amg-thread[data-detached="true"]').first();
     await card.waitFor({ state: 'visible' });
     const notice = await card.locator('.amg-thread-detached').innerText();
     assert.match(notice, /the text this was about has changed/, notice);
@@ -370,10 +370,10 @@ async function desktop(browser, base, style) {
     await page.screenshot({ path: path.join(shots, `${tag}-5-detached.png`) });
   });
 
-  await check(`${tag}: the Room keeps only what is about no line; talk about the text is a thread`, async () => {
+  await check(`${tag}: the expanded conversation includes line talk while document threads retain their locators`, async () => {
     const roomOnly = `A message about nobody's line ${Date.now()}`;
     await page.evaluate(() => window.__proofReadingWalk.selectMarginTab('room'));
-    const chat = page.locator('.prw-right .pch');
+    const chat = page.locator('.prw-chat-bottom .pch');
     await chat.waitFor({ state: 'visible' });
     await chat.locator('.pch-input').fill(roomOnly);
     await chat.locator('.pch-send').click();
@@ -391,15 +391,9 @@ async function desktop(browser, base, style) {
     assert.ok(state.room.includes(byText[roomOnly]), 'the Room keeps a message about no line');
     assert.ok(!state.room.includes(byText[aboutLine]), 'the Room no longer carries line talk');
     assert.ok(state.lineTalk.includes(byText[aboutLine]), 'that message moved to the document');
-    // Nothing is deleted: it is still readable, behind the one control that names it.
-    const bar = page.locator('.pch-line-talk');
-    await bar.waitFor({ state: 'visible' });
-    const toggle = bar.locator('.pch-line-talk-summary');
-    assert.match(await toggle.innerText(), /about the text/);
-    assert.equal(await page.evaluate(() => window.__proofChat.debugState().lineTalkOpen), false, 'line talk starts folded');
-    await toggle.click();
-    assert.equal(await page.evaluate(() => window.__proofChat.debugState().lineTalkOpen), true);
-    const shown = page.locator('.prw-right .pch-msg.pch-line-talk-msg', { hasText: aboutLine }).first();
+    // Mike 2026-09-24: expanding the conversation shows every message.
+    assert.equal(await page.locator('.pch-line-talk').isVisible(), false);
+    const shown = page.locator('.prw-chat-bottom .pch-msg.pch-line-talk-msg', { hasText: aboutLine }).first();
     await shown.waitFor({ state: 'visible' });
     assert.ok((await shown.innerText()).includes(aboutLine), 'the message is still readable, in its place in the conversation');
     await page.screenshot({ path: path.join(shots, `${tag}-6-room.png`) });

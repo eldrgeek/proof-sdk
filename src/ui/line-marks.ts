@@ -129,7 +129,7 @@ import { HIGHLIGHT_POLICY, issueNeedsViewer, markedUpTo, type MarkedUpTo } from 
 import type { OpenView } from '../shared/open-view';
 import { reviewSurface } from '../shared/review-list';
 import { participantStatus, agreedCopyOffer } from '../shared/participant-status';
-import { MARGIN_POLICY, MARKED_BY_POLICY, markedByFold, passageMarkers, type NeedsYouItem } from '../shared/layout-panels';
+import { GUTTER_POLICY, MARGIN_POLICY, MARKED_BY_POLICY, markedByFold, passageMarkers, type NeedsYouItem } from '../shared/layout-panels';
 import { ISSUES_PILL_POLICY, NEXT_ISSUE_POLICY, issuesPillText, issuesPillTitle } from '../shared/layout-chrome';
 import './line-marks.css';
 
@@ -1112,12 +1112,25 @@ export class LineMarksUI {
   private askAnswers = 0;
 
   private buildAskControlFor(view: AskView, place: 'inline' | 'box'): AskControl {
-    return buildAskControl(view, {
+    const control = buildAskControl(view, {
       actor: this.me(),
       canAnswer: this.canMark && this.loaded,
       place,
       answer: (choice, words) => this.answerAsk(view.ask.id, choice, words),
     });
+    if (place === 'inline') this.inlineAskControls.set(view.ask.id, control);
+    return control;
+  }
+
+  private inlineAskControls = new Map<string, AskControl>();
+
+  /** Mike, 2026-09-24, yfbqrau4: ask shortcuts use the existing control under the question. */
+  answerInlineAsk(index: number, choice: AskChoice): void {
+    const ask = this.askForLine(index);
+    const control = ask && this.inlineAskControls.get(ask.ask.id);
+    if (!control?.root.isConnected) return;
+    control.root.scrollIntoView({ block: 'nearest' });
+    control.choose(choice);
   }
 
   // --------------------------------------------------------------------------
@@ -1171,6 +1184,19 @@ export class LineMarksUI {
     });
   }
 
+  /** Mike, 2026-09-24, yfbqrau4: answers stay under the question, including a table cell.
+   * Resolve a row to its last text block for view-only widgets; never change its stored locator. */
+  private inlineControlBlock(line: { pos: number; nodeSize: number }): { pos: number; nodeSize: number } | null {
+    const node = this.view?.state.doc.nodeAt(line.pos);
+    if (!node) return null;
+    if (node.isTextblock) return line;
+    let block: { pos: number; nodeSize: number } | null = null;
+    node.descendants((child, offset) => {
+      if (child.isTextblock) { block = { pos: line.pos + 1 + offset, nodeSize: child.nodeSize }; return false; }
+    });
+    return block;
+  }
+
   /** Puts the inline `{do}` widgets in the text (view-only decorations), when they changed or went missing. */
   private queueDoDecorations(): void {
     if (this.doDecoQueued) return;
@@ -1183,8 +1209,10 @@ export class LineMarksUI {
       const sigs: string[] = [];
       for (const doView of this.doViews) {
         if (doView.lineIndex === null || doView.state === 'withdrawn') continue;
-        const line = this.lines[doView.lineIndex];
-        if (!line || line.kind === 'table_row') continue; // table rows: the rail and sheet only
+        const source = this.lines[doView.lineIndex];
+        if (!source) continue;
+        const line = this.inlineControlBlock(source);
+        if (!line) continue;
         const sig = doControlSignature(doView, this.me(), this.canApprove);
         sigs.push(`${doView.record.id}@${line.pos}:${line.nodeSize}:${sig}`);
         specs.push({
@@ -1220,8 +1248,10 @@ export class LineMarksUI {
       const sigs: string[] = [];
       for (const askView of this.askViews) {
         if (askView.lineIndex === null) continue;
-        const line = this.lines[askView.lineIndex];
-        if (!line || line.kind === 'table_row') continue; // table rows: the rail and sheet only
+        const source = this.lines[askView.lineIndex];
+        if (!source) continue;
+        const line = this.inlineControlBlock(source);
+        if (!line) continue;
         const sig = askControlSignature(askView, this.me(), this.canMark && this.loaded);
         sigs.push(`${askView.ask.id}@${line.pos}:${line.nodeSize}:${sig}`);
         specs.push({
@@ -1502,6 +1532,26 @@ export class LineMarksUI {
         button.style.top = `${Math.round(rect.top - containerRect.top)}px`;
         button.style.left = `${Math.round(editorRect.right - containerRect.left + 4)}px`;
         button.onclick = () => this.host.openReviewItem?.(line.index);
+      }
+      if (!GUTTER_POLICY.showLineMarks) {
+        used.delete(key);
+        if (GUTTER_POLICY.showOpenDots && this.needsYouSet.has(line.index)) {
+          const openKey = `open:${key}`;
+          used.add(openKey);
+          const dot = existing.get(openKey) ?? document.createElement('button');
+          dot.type = 'button';
+          dot.className = 'plm-open-dot';
+          dot.dataset.key = openKey;
+          dot.dataset.line = String(line.index);
+          dot.dataset.needsYou = 'true';
+          dot.setAttribute('aria-label', `Open item on line ${line.index + 1}: select in Review`);
+          dot.title = 'Select in Review';
+          dot.style.top = `${Math.round(rect.top - containerRect.top)}px`;
+          dot.style.left = `${Math.round(Math.max(0, leftEdge))}px`;
+          dot.onclick = () => { if (GUTTER_POLICY.dotOpensReview) this.host.openReviewItem?.(line.index); };
+          if (!dot.isConnected) this.gutter.append(dot);
+        }
+        continue;
       }
       let dot = existing.get(key);
       if (!dot) {

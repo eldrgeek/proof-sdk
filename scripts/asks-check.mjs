@@ -23,7 +23,7 @@ mkdirSync(shots, { recursive: true });
 const styles = arg('--style') ? [arg('--style')] : ['playmaker', 'proof'];
 const widths = arg('--width') ? [Number(arg('--width'))] : [1440];
 
-const clientHeaders = { 'X-Proof-Client-Version': '0.31.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const clientHeaders = { 'X-Proof-Client-Version': '0.32.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 let failures = 0;
 const results = [];
 let activePage = null;
@@ -205,7 +205,7 @@ async function desktop(browser, base, style, width) {
     assert.equal(ask.status, 'no');
     assert.deepEqual(ask.answers.map(x => [x.by, x.choice, x.words]), [['guest:Ada', 'no', 'Not before Eric has read it.']]);
     await waitFor(page, id => document.querySelector(`.ProseMirror .pask[data-ask-id="${id}"]`)?.dataset.outcome === 'no', created.ask1);
-    await waitFor(page, i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.status === 'seen', L.Q1);
+    await waitFor(page, i => window.__proofLineMarks.myStatus(i) === 'seen', L.Q1);
     assert.equal((await lm(page)).askIssues, 1);
     await page.screenshot({ path: path.join(shots, `${tag}-3-answered-no.png`) });
   });
@@ -220,14 +220,14 @@ async function desktop(browser, base, style, width) {
     assert.equal(answered[0].actor, 'guest:Ada');
   });
 
-  await check(`${tag}: in the right rail the focus line's box carries the same control; T opens its reason field`, async () => {
+  await check(`${tag}: T opens the inline ask reason field`, async () => {
     await page.evaluate(i => window.__proofReadingWalk.focusLine(i), L.Q2);
     await page.evaluate(() => document.activeElement?.blur());
-    const rail = page.locator('.prw-right .prw-linebox .pask');
+    const rail = inline(page, created.ask2);
+    await rail.scrollIntoViewIfNeeded();
     await rail.waitFor({ state: 'visible' });
-    assert.match(await page.locator('.prw-right .prw-keys').innerText(), /Y yes · N no · T not yet/);
     await page.keyboard.press('t');
-    await waitFor(page, () => document.activeElement?.classList.contains('pask-input') && !!document.activeElement.closest('.prw-right'));
+    await waitFor(page, () => document.activeElement?.classList.contains('pask-input') && !!document.activeElement.closest('.ProseMirror'));
     await page.keyboard.type('After the Friday demo.');
     await page.waitForTimeout(250); // the focus band's 120 ms transition
     await page.screenshot({ path: path.join(shots, `${tag}-4-rail-not-yet.png`) });
@@ -303,12 +303,9 @@ async function phone(browser, base, style) {
     await waitFor(page, () => window.__proofLineMarks.debugState().askAnswers >= 1);
     assert.equal((await serverAsk(base, created, created.ask1)).status, 'yes');
   });
-  await check(`${tag}: the dot's bottom sheet carries the ask control; Not yet with a reason works there`, async () => {
-    await page.locator(`.plm-dot[data-line="${L.Q2}"]`).scrollIntoViewIfNeeded();
-    await page.locator(`.plm-dot[data-line="${L.Q2}"]`).tap();
-    const sheet = page.locator('.prw-right.prw-sheet-open');
-    await sheet.waitFor({ state: 'visible' });
-    const control = sheet.locator('.pask');
+  await check(`${tag}: the inline ask supports Not yet with a reason on phone`, async () => {
+    const control = inline(page, created.ask2);
+    await control.scrollIntoViewIfNeeded();
     await control.waitFor({ state: 'visible' });
     const heights = await control.locator('.pask-btn').evaluateAll(bs => bs.map(b => b.getBoundingClientRect().height));
     assert.ok(heights.every(h => h >= 44), `sheet buttons ${heights}`);

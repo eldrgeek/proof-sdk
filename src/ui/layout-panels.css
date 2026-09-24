@@ -6,8 +6,8 @@
  * Authorship: Claude Opus 5 (worker accord-layout3), 2026-09-21.
  */
 body.prw-on {
-  --prw-left: 240px;
-  --prw-right: 340px;
+  --prw-left: var(--prw-left-size, 240px);
+  --prw-right: var(--prw-right-size, 340px);
   --prw-collapsed: 40px;
   --acc-ink: #1c1f24; --acc-mute: #6b7280; --acc-line: #e3e6ea; --acc-here: #2f6fed; --acc-here-tint: #eef3ff;
   --acc-need: #d98c00; --acc-need-tint: #fff6e3;
@@ -234,3 +234,68 @@ body.prw-on.prw-right-collapsed { --prw-right: var(--prw-collapsed); }
 .amg-thread-new-actions { display: flex; gap: 6px; }
 .amg-thread-new-actions button { font-size: 12px; padding: 3px 10px; border: 1px solid var(--proof-rule, #d1d5db); border-radius: 6px; background: transparent; cursor: pointer; }
 .amg-thread-send { background: #2563eb !important; color: #fff; border-color: #2563eb !important; }
+
+/* Mike, 2026-09-24, yfbqrau4: documents left, Review right, chat at the centre's foot. */
+.prw-documents-head { flex-wrap: nowrap; }
+.prw-documents-head strong { flex: 1; min-width: 0; }
+.prw-new { border: 1px solid var(--acc-line); border-radius: 6px; padding: 5px 9px; background: #fff; color: inherit; cursor: pointer; }
+.prw-left > .prw-all { display: block; margin: 0; padding: 14px 18px 72px; border-top: 1px solid var(--acc-line); }
+.prw-documents-toggle { display: none; }
+.anv-key-hint { margin: 0; padding: 6px 12px; font-size: 12px; color: #61521d; }
+.anv-key-hint:empty { display: none; }
+.anv-issues:focus-visible, .anv-issue:focus-visible { outline: 2px solid var(--acc-here); outline-offset: -2px; }
+.prw-right .anv-detail { padding: 0 12px 16px; }
+.prw-right .anv-tabs { overflow-x: auto; }
+.prw-right .anv-tab { white-space: normal; }
+.prw-right .anv-badge { white-space: nowrap; }
+.plm-open-dot { position: absolute; width: 28px; height: 28px; border: none; background: transparent; cursor: pointer; pointer-events: auto; }
+.plm-open-dot::before { content: ''; display: block; width: 8px; height: 8px; margin: auto; border-radius: 50%; background: var(--acc-need, #d98c00); }
+.plm-open-dot:focus-visible { outline: 2px solid var(--acc-here, #2f6fed); border-radius: 6px; }
+body.prw-on .prw-chat-bottom {
+  position: fixed; left: var(--prw-left); right: var(--prw-right); bottom: var(--proof-keyboard-offset, 0px);
+  z-index: 59; height: var(--prw-chat-compact); max-height: calc(100dvh - var(--prw-chrome, 72px) - var(--proof-keyboard-offset, 0px));
+  box-sizing: border-box; display: flex; padding: 8px 14px; background: #fff; border-top: 1px solid var(--acc-line);
+}
+body.prw-on .prw-chat-bottom[data-expanded='true'] { height: var(--prw-chat-expanded); z-index: 10001; }
+body.prw-on .prw-chat-bottom .pch { min-height: 0; }
+body.prw-on .prw-chat-bottom .pch-list { flex: 1; min-height: 0; overflow: auto; }
+body.prw-on .prw-chat-bottom .pch-head, body.prw-on .prw-chat-bottom .pch-composer { flex: none; }
+body.prw-on .prw-chat-bottom .pch-composer { margin-top: auto; }
+body.prw-on .prw-chat-bottom .pch-empty { display: block; }
+body.prw-on .prw-chat-bottom .pch-empty[hidden] { display: none; }
+body.prw-on .prw-chat-bottom .pch-toggle { min-height: 28px; }
+body.prw-on .prw-chat-bottom .pch[data-expanded='false'] .pch-caret::before { content: '▴'; }
+body.prw-on .pst-bar { bottom: var(--prw-chat-compact); }
+@media (min-width: 701px) {
+  body.prw-on #editor-container { max-width: none; width: 100%; }
+  body.prw-right-collapsed .prw-right > :not(.prw-rail-head),
+  body.prw-left-collapsed .prw-left > :not(.prw-rail-head) { display: none !important; }
+  body.prw-right-collapsed .prw-right .anv-tabs { display: none !important; }
+}
+@media (max-width: 700px) {
+  #share-banner .prw-documents-toggle { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; flex: none; border: none; border-radius: 6px; background: transparent; color: inherit; font-size: 22px; }
+  body.prw-on .prw-chat-bottom { left: 0; right: 0; padding: 6px 10px max(8px, env(safe-area-inset-bottom)); }
+  body.prw-on .prw-chat-bottom .pch-input { font-size: 16px; }
+  body.prw-on .prw-chat-bottom .pch-send, body.prw-on .prw-chat-bottom .pch-pin { min-height: 44px; }
+  body.prw-on .prw-strip:not([hidden]) { bottom: calc(var(--prw-chat-compact) + var(--proof-keyboard-offset, 0px)); min-height: 44px; padding: 5px 12px; display: flex; align-items: center; justify-content: space-between; }
+  .prw-strip-review { border: 1px solid var(--acc-line); border-radius: 8px; background: #fff; min-height: 44px; padding: 6px 12px; font: inherit; }
+  body.prw-on .prw-right.prw-sheet-open { bottom: calc(var(--prw-chat-compact) + var(--proof-keyboard-offset, 0px)) !important; height: min(50dvh, 460px); max-height: calc(100dvh - var(--prw-chat-compact) - var(--prw-chrome, 44px)); }
+  body.prw-on .prw-left.prw-sheet-open { top: var(--prw-chrome, 44px) !important; bottom: 0 !important; right: auto !important; width: min(85vw, 320px) !important; height: auto; max-height: none; border-radius: 0; animation: prw-drawer-in .15s ease-out; }
+  body.prw-on .prw-left.prw-sheet-open .prw-documents-body { display: block !important; }
+  body.prw-on .prw-left.prw-sheet-open > .prw-all { display: block; }
+  body.prw-on .prw-left.prw-sheet-open .prw-doc { min-height: 44px; }
+  .plm-open-dot { width: 36px; height: 36px; }
+}
+@keyframes prw-drawer-in { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+@media (prefers-reduced-motion: reduce) { body.prw-on .prw-left.prw-sheet-open { animation: none; } }
+
+/* The drawer's heading must survive a saved desktop collapse. Its toggle never moves. */
+@media (min-width: 701px) {
+  body.prw-on .prw-documents-head { position: relative; min-height: 44px; box-sizing: border-box; padding: 6px 8px 6px 44px; }
+  body.prw-on .prw-documents-head .prw-collapse { position: absolute; left: 4px; top: 6px; }
+}
+@media (max-width: 700px) {
+  body.prw-on .prw-left.prw-sheet-open .prw-documents-head > * { display: revert; }
+  body.prw-on .prw-chat-bottom .pch-toggle { min-height: 44px; }
+  body.pst-on.prw-strip-on .soma-feedback-root { bottom: calc(var(--prw-chat-compact) + var(--prw-strip-h, 56px) + 12px + var(--proof-keyboard-offset, 0px)); }
+}

@@ -16,6 +16,7 @@
  * - An unread @mention of the viewer is a badge on the rail toggle and the phone's ⋯ button. Chat is
  *   never an Issue.
  */
+import { BOTTOM_CHAT_POLICY } from '../shared/layout-panels';
 import type { Mark, CommentData, ReplaceData } from '../formats/marks';
 import { actorKey, actorLabel, anchorForLine, isAiActor, registerActorLabels, resolveLineAnchor, type DocLine, type LineAnchor } from '../shared/line-marks';
 import { actorTrust } from '../shared/identity';
@@ -140,7 +141,7 @@ export class ChatUI {
   private collapsedPref: boolean | null = null;
   private get collapsed(): boolean {
     // The Room tab is the chat's header: it never folds there.
-    if (this.inMargin()) return false;
+    if (this.inMargin()) return !this.host.railOpen();
     if (this.collapsedPref !== null) return this.collapsedPref;
     // Short windows: an empty chat starts folded so the line's box keeps its room.
     return this.loaded && this.messages.length === 0 && window.innerHeight < CHAT_POLICY.foldEmptyChatBelowHeightPx;
@@ -250,6 +251,7 @@ export class ChatUI {
    * New messages offer "New below" instead of jumping. Mike, 2026-09-23 (usability brief).
    */
   roomShown(): void {
+    this.render();
     if (!this.visible()) return;
     this.follower.follow();
     this.markReadIfVisible();
@@ -258,7 +260,8 @@ export class ChatUI {
   private place(): void {
     if (this.inMargin()) {
       if (this.railHost && this.root.parentElement !== this.railHost) this.railHost.append(this.root);
-      this.root.classList.toggle('pch-in-sheet', isPhone());
+      this.root.classList.add('pch-bottom');
+      this.root.classList.remove('pch-in-sheet');
       this.applyCollapsed();
       return;
     }
@@ -394,6 +397,7 @@ export class ChatUI {
   open(focus = false): void {
     if (this.inMargin()) {
       this.host.openRail();
+      this.render();
       if (isPhone()) this.syncKeyboard();
     } else if (isPhone()) {
       this.host.closeOtherSheets?.();
@@ -411,7 +415,8 @@ export class ChatUI {
 
   closeSheet(): void {
     if (this.inMargin()) {
-      if (isPhone() && this.host.railOpen()) this.host.closeRail?.();
+      if (this.host.railOpen()) this.host.closeRail?.();
+      this.render();
       this.closeSuggest();
       return;
     }
@@ -424,6 +429,11 @@ export class ChatUI {
   isSheetOpen(): boolean { return this.inMargin() ? isPhone() && this.host.railOpen() : this.sheetOpen; }
 
   private setCollapsed(collapsed: boolean): void {
+    if (this.inMargin()) {
+      if (collapsed) this.host.closeRail?.(); else this.host.openRail();
+      this.render();
+      return;
+    }
     this.collapsedPref = collapsed;
     try { localStorage.setItem(COLLAPSE_KEY, collapsed ? '1' : '0'); } catch { /* optional */ }
     this.applyCollapsed();
@@ -431,6 +441,13 @@ export class ChatUI {
   }
 
   private applyCollapsed(): void {
+    if (this.inMargin()) {
+      this.root.dataset.collapsed = 'false'; // The composer never folds.
+      this.root.dataset.expanded = String(!this.collapsed);
+      this.toggle.setAttribute('aria-expanded', String(!this.collapsed));
+      this.toggle.setAttribute('aria-label', this.collapsed ? 'Expand conversation' : 'Collapse conversation');
+      return;
+    }
     const collapsed = this.collapsed && !isPhone();
     this.root.dataset.collapsed = String(collapsed);
     this.toggle.setAttribute('aria-expanded', String(!collapsed));
@@ -517,7 +534,7 @@ export class ChatUI {
     const marks = this.safeMarks();
     const markSig = marks.filter(m => this.messages.some(msg => msg.suggestion?.markId === m.id || msg.commentMarkId === m.id))
       .map(m => `${m.id}:${(m.data as { status?: string })?.status ?? ''}:${((m.data as CommentData)?.replies ?? []).length}`).join(',');
-    const sig = `${this.messages.map(m => m.id).join(',')}|${lines.length}:${lines.map(l => l.hash).join('').length}|${markSig}|${this.host.lineMarks().me()}|${this.canPost}|${this.lineTalkOpen}`;
+    const sig = `${this.messages.map(m => m.id).join(',')}|${lines.length}:${lines.map(l => l.hash).join('').length}|${markSig}|${this.host.lineMarks().me()}|${this.canPost}|${this.lineTalkOpen}|${this.collapsed}`;
     this.applyCollapsed();
     // Accord stage D: the Room keeps people, invitations, joins, document-level events and any
     // message about no line. A message that points at a line, mirrors a comment thread or carries a
@@ -531,15 +548,16 @@ export class ChatUI {
       const byId = new Map(this.messages.map(m => [m.id, m]));
       const names = this.mentionNames();
       const isLineTalk = new Set(split.lineTalk.map(m => m.id));
-      this.list.replaceChildren(...this.messages.map(m => {
+      const shown = this.inMargin() && this.collapsed ? this.messages.slice(-BOTTOM_CHAT_POLICY.collapsedMessages) : this.messages;
+      this.list.replaceChildren(...shown.map(m => {
         const li = this.renderMessage(m, byId, names, marks);
         if (isLineTalk.has(m.id)) {
           li.classList.add('pch-line-talk-msg');
-          li.hidden = !this.lineTalkOpen;
+          li.hidden = !this.inMargin() && !this.lineTalkOpen;
         }
         return li;
       }));
-      this.lineTalkBar.hidden = split.lineTalk.length === 0;
+      this.lineTalkBar.hidden = this.inMargin() || split.lineTalk.length === 0;
       const n = split.lineTalk.length;
       this.lineTalkToggle.textContent = this.lineTalkOpen
         ? `Hide the ${n === 1 ? '1 message' : `${n} messages`} about the text`
