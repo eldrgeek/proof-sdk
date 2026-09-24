@@ -13,6 +13,8 @@ process.env.DATABASE_PATH = path.join(temp, 'test.db');
 const change = await import('../shared/line-change');
 const shared = await import('../shared/line-marks');
 const alignment = await import('../shared/alignment');
+const statusMod = await import('../shared/participant-status');
+const openViewMod = await import('../shared/open-view');
 const serverLines = await import('../../server/line-marks');
 const db = await import('../../server/db');
 const { apiRoutes } = await import('../../server/routes');
@@ -26,6 +28,25 @@ async function test(name: string, fn: () => void | Promise<void>): Promise<void>
 }
 
 const kind = (a: string, b: string) => change.classifyLineChange(a, b).kind;
+
+/** Rebuild the /state participantStatus from the fields the response itself publishes. */
+function statusFromStateBody(body: Record<string, any>) {
+  const lines = (body.lines as Array<Record<string, unknown>>).map(line => ({
+    index: Number(line.index),
+    kind: String(line.kind),
+    text: String(line.text ?? ''),
+    hash: String(line.hash),
+    occurrence: Number(line.occurrence ?? 0),
+    pos: 0,
+    nodeSize: 1,
+    block: Number(line.block ?? line.index),
+  }));
+  return statusMod.participantStatus({
+    states: shared.buildLineStates(lines, body.lineMarks),
+    team: body.alignment.team,
+    objections: statusMod.objectionsFromState(body.objections),
+  });
+}
 
 // ---------------------------------------------------------------------------
 // The classifier (src/shared/line-change.ts): server and page call the same function.
@@ -333,6 +354,10 @@ try {
     }
     const aligned = await call(`/api/agent/${slug}/state`, 'GET', undefined, agent);
     assert.equal(aligned.body.alignment.aligned, true, JSON.stringify(aligned.body.issues));
+    // Seen marks make the document aligned and not agreed. /state and a fresh computation match.
+    assert.equal(aligned.body.participantStatus.aligned, true);
+    assert.equal(aligned.body.participantStatus.agreed, false, 'Seen is not agreement');
+    assert.deepEqual(aligned.body.participantStatus, statusFromStateBody(aligned.body));
     const snapshot = aligned.body.alignment.lastSnapshot;
     assert.ok(snapshot && /^snap_/.test(snapshot.id), JSON.stringify(aligned.body.alignment));
     const again = await call(`/api/agent/${slug}/state`, 'GET', undefined, agent);
@@ -369,6 +394,23 @@ try {
     const state = await call(`/api/agent/${slug}/state`, 'GET', undefined, agent);
     assert.equal(state.body.alignment.aligned, false);
     assert.ok(state.body.alignment.lastSnapshot, 'the last snapshot is still reported');
+    assert.deepEqual(state.body.participantStatus, statusFromStateBody(state.body), 'the server status is the shared computation');
+    const rejecter = (state.body.participantStatus.participants as Array<{ actor: string; counts: { rejected: number } }>).find(person => person.counts.rejected > 0);
+    if (!rejecter) throw new Error(`no rejecter in ${JSON.stringify(state.body.participantStatus.participants)}`);
+    const docLines = state.body.lines.map((line: { index: number; kind: string; text?: string; hash: string; occurrence?: number; block?: number }) => ({
+      index: line.index, kind: line.kind, text: line.text ?? '', hash: line.hash, occurrence: line.occurrence ?? 0, pos: 0, nodeSize: 1, block: line.block ?? line.index,
+    }));
+    const header = openViewMod.accordHeader({
+      states: shared.buildLineStates(docLines, state.body.lineMarks),
+      team: state.body.alignment.team,
+      viewer: rejecter.actor,
+      name: (actor: string) => actor,
+      objections: statusMod.objectionsFromState(state.body.objections),
+    });
+    assert.deepEqual(header.status, state.body.participantStatus, 'the header and /state cannot disagree');
+    const clause = header.clauses.find(item => item.actor === rejecter.actor);
+    assert.match(clause?.text ?? '', /rejected/);
+    assert.doesNotMatch(clause?.text ?? '', /has not read/);
     const since = await call(`/api/documents/${slug}/since-you?by=Pat`);
     assert.ok(since.body.rejections.some((item: any) => item.reason === 'Wrong price'));
   });

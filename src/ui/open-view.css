@@ -77,6 +77,8 @@
 
 .aov-header-text { margin: 0; color: #3f3f46; }
 .aov-header-text[hidden] { display: none; }
+.aov-header-link { color: #1d4ed8; text-underline-offset: 2px; }
+.aov-header-link:hover { color: #1e3a8a; }
 
 /* The zero moment: quiet and dignified. A state change, not confetti. */
 .aov-zero {

@@ -40,7 +40,7 @@ import {
   verifyAuthoritativeMutationBaseStable,
 } from './collab.js';
 import { canonicalizeStoredMarks, type StoredMark } from '../src/formats/marks.js';
-import { buildIssueReport, computeServerLines, listCanonicalLineMarks, resolveAgentLineTarget, writeAgentLineMark } from './line-marks.js';
+import { buildIssueReport, computeServerLines, listCanonicalLineMarks, resolveAgentLineTarget, viewerParticipantStatus, writeAgentLineMark } from './line-marks.js';
 import { TIER_POLICY } from '../src/shared/line-tiers.js';
 import { evaluateDocumentTiers, listTierRecords, serializeTierViews, writeTiers } from './line-tiers.js';
 import { bindFamiliar, briefFor, issueReportFor, listFamiliars, proxyStateReport, resolveHuman, serializeBrief, writeAgentProxyMarks } from './proxy-marks.js';
@@ -2265,6 +2265,7 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
       links.settings = { method: 'GET', href: `/api/agent/${slug}/settings` };
       // Step B4f: blind marking. The caller sees other members' positions only on lines it has
       // marked itself (the owner credential with no "by" reads everything).
+      let revealedLines: Set<number> | null = null;
       if (report.settings.blind) {
         const viewer = blindViewer(req, slug, role);
         body.blind = { on: true, viewer: viewer ?? null };
@@ -2274,6 +2275,7 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
             .filter(view => view.lineIndex !== null && view.ask.answers.some(a => actorKeyOf(a.by) === actorKeyOf(viewer ?? '')))
             .map(view => view.lineIndex as number);
           const view = blindViewFor({ lines, lineMarks: report.lineMarks, viewer: viewer ?? '', answeredLines: answered, picks: listPicks(slug) });
+          revealedLines = view.revealed;
           body.lineMarks = view.lineMarks;
           body.issues = redactIssues(report.issues, view.revealed);
           body.asks = (body.asks as Array<Record<string, unknown>>).map(ask => redactAsk(ask, view.revealed, viewer ?? ''));
@@ -2303,6 +2305,13 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
       if (Array.isArray(body.lineMarks)) {
         body.lineMarks = (body.lineMarks as Array<Record<string, unknown>>).map(mark => (isClaimedMark(mark as { by: string; hidden?: boolean; evidence?: string | null }) ? { ...mark, claimed: true } : mark));
       }
+      // Mike, 2026-09-23 (usability brief): additive. Existing alignment fields are unchanged.
+      // Under blind marking this is recomputed from the marks this caller is allowed to see.
+      body.participantStatus = viewerParticipantStatus(
+        report,
+        Array.isArray(body.lineMarks) ? body.lineMarks as typeof report.lineMarks : report.lineMarks,
+        revealedLines,
+      );
       body.alignment = {
         aligned: report.aligned,
         team: report.team,
@@ -3475,7 +3484,7 @@ agentRoutes.post('/:slug/ops', async (req: Request, res: Response) => {
     return;
   }
 
-  let rewriteGate: ReturnType<typeof evaluateRewriteLiveClientGate> | null = null;
+  let rewriteGate: ReturnType<typeof evaluateRewriteLiveClientGateWithOptions> | null = null;
   const preBarrierMutationBase = (
     op === 'rewrite.apply'
     && mutationContext.precondition?.mode === 'token'
@@ -4109,7 +4118,7 @@ agentRoutes.post('/:slug/dos/:doId/revise', async (req: Request, res: Response) 
 });
 
 // Approval is never done through the agent API: an AI, a key or a share token is not a signed-in person.
-agentRoutes.post('/:slug/dos/:doId/approve', (req: Request, res: Response) => {
+agentRoutes.post('/:slug/dos/:doId/approve', (_req: Request, res: Response) => {
   res.status(403).json({ success: false, code: 'SIGNED_IN_PERSON_REQUIRED', error: 'Only a person signed in to this site can approve a {do}, on the page. Ask them (an {ask} line works).' });
 });
 
