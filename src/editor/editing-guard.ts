@@ -1,28 +1,6 @@
 /**
- * Editing first (Mike, 2026-09-19): "When I tried to click before that line it started to make
- * changes but moved the view away from where I was typing."
- *
- * While the person is editing, nothing may move the view: the reading walk's scroll-driven
- * focus, stepping, barrier snaps and scroll-accepts, and any scrollIntoView from plugins reacting
- * to remote updates (agent cursors, marks) all stand down. "Editing" = the caret is in the
- * document and the last keystroke, input, or click-to-edit in it was less than
- * EDITING_GUARD_POLICY.graceMs ago.
- *
- * Authorship: Claude Opus 5 (worker proof-editfix), 2026-09-19, from Mike's report that morning.
- *
- * Writing mode (2026-09-21, src/shared/reading-keys.ts): "editing" now also needs the person to
- * be writing — the caret is in the text because they pressed the text (or Enter), not because a
- * dialog handed focus back. While the editor holds the keyboard without writing, the reading keys
- * are commands and every other text-changing key is swallowed: a key never both types and acts.
- *
- * The edit session (2026-09-22, Accord round 2 stage A, src/shared/edit-session.ts): while the
- * person writes, this module holds ONE session — the line they are in and the text it had when
- * they arrived. Every way out of that line is a door, and every door does the same thing: it ends
- * the session by POSTING what was typed as a proposal. Nothing is discarded by leaving; Undo is
- * the only way to remove a posted proposal. The doors are Cmd+Enter (advertised), a press outside
- * the edited line, Esc, a hover onto another line, the caret scrolling out of view, and focus
- * leaving the text. The posting itself is not here: an EditSessionHost (src/ui/edit-gesture.ts)
- * reads the line and writes the suggestion.
+ * Typing, composition and dictation own their input. Only explicit edit doors end Writing.
+ * Mike, 2026-09-23 (usability brief).
  */
 import { READING_MODE_POLICY, routeKey, type KeyTarget } from '../shared/reading-keys';
 import {
@@ -33,6 +11,17 @@ export const EDITING_GUARD_POLICY = {
   /** How long after the last keystroke, input or click in the text the view stays put. */
   graceMs: 4000,
 } as const;
+
+
+const LETTER_SHORTCUTS_KEY = 'proof:letter-shortcuts';
+export function letterShortcutsEnabled(): boolean {
+  try { return localStorage.getItem(LETTER_SHORTCUTS_KEY) !== 'off'; } catch { return true; }
+}
+export function setLetterShortcutsEnabled(on: boolean): void {
+  try { localStorage.setItem(LETTER_SHORTCUTS_KEY, on ? 'on' : 'off'); } catch { /* optional */ }
+}
+let composing = false;
+export function isInputComposing(): boolean { return composing; }
 
 let lastActivity = Number.NEGATIVE_INFINITY;
 let installed = false;
@@ -267,7 +256,7 @@ export function pressStartsWriting(target: EventTarget | null, altKey = false): 
   if (!el?.closest?.('.ProseMirror')) return false;
   if (el.closest('a[href]') && !altKey) return false;
   // Controls inside the text (fold chips, ask buttons, a folded closed line) act; suggested words shown as widgets are text.
-  if (el.closest('button, input, select, textarea, .pclose-folded, [role="button"]')) return false;
+  if (el.closest('button, input, select, textarea, [role="button"]')) return false;
   return true;
 }
 
@@ -294,13 +283,15 @@ export function onEditingActivity(listener: () => void): () => void {
 export function installEditingGuard(): void {
   if (installed || typeof document === 'undefined') return;
   installed = true;
+  document.addEventListener('compositionstart', () => { composing = true; }, true);
+  document.addEventListener('compositionend', () => { composing = false; }, true);
   // 1. Route every key first (capture, before the editor and every other listener): a key is a
   //    reading command or it types, never both.
   document.addEventListener('keydown', (event: KeyboardEvent) => {
     const target = keyTargetOf(event.target);
     const route = routeKey({
       key: event.key, ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey,
-      isComposing: event.isComposing, target, writing: isWriting(),
+      isComposing: composing || event.isComposing || event.keyCode === 229, target, writing: isWriting(), letterShortcuts: letterShortcutsEnabled(),
     });
     routeLog.push({ key: event.key, route, target, writing: isWriting() });
     if (routeLog.length > 40) routeLog.shift();
@@ -418,4 +409,3 @@ export function resetEditingGuardForTests(): void {
   leaving = false;
   postLog.length = 0;
 }
-

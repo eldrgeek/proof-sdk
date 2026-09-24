@@ -105,31 +105,19 @@ try {
     assert.equal(bundles.isBundleId('no spaces'), false);
   });
 
-  await test('walk: a bundle passes as one unit from its first line; stepping or scrolling back above it reverts every member', () => {
+  await test('walk: scrolling past a bundle only records reading, never a decision', () => {
     const w = new walkMod.ReadingWalk([
-      { key: 'l0', marks: [] },
-      { key: 'l1', marks: [{ id: 'a', kind: 'suggestion', group: 'launch' }] },
+      { key: 'l0', marks: [{ id: 'a', kind: 'suggestion', group: 'launch' }] },
+      { key: 'l1', marks: [{ id: 'b', kind: 'suggestion', group: 'launch' }] },
       { key: 'l2', marks: [] },
-      { key: 'l3', marks: [{ id: 'b', kind: 'suggestion', group: 'launch' }, { id: 'c', kind: 'suggestion' }] },
     ], 0);
-    w.moveTo(1, 10, 'jump');
-    assert.equal(w.stepForward(), true);
-    assert.deepEqual(w.provisionalIds().sort(), ['a', 'b']);
-    assert.equal(w.barrier(2), 3, 'the unbundled suggestion on line 3 still holds the page');
-    w.moveTo(3, 20, 'scroll');
-    assert.equal(w.currentMark()?.id, 'c', 'the bundle member on line 3 is already passed');
-    w.moveTo(2, 30, 'scroll');
-    assert.deepEqual(w.provisionalIds().sort(), ['a', 'b'], 'still at or below the unit line: the unit stays');
-    assert.equal(w.isPassed('b'), true);
-    w.moveTo(1, 40, 'scroll');
-    assert.equal(w.stepBack(), true);
-    assert.deepEqual(w.provisionalIds(), []);
-    w.stepForward();
-    w.moveTo(0, 50, 'scroll');
-    assert.deepEqual(w.provisionalIds(), [], 'above the first member: the whole unit reverts');
-    w.moveTo(1, 60, 'jump');
-    w.stepForward();
-    assert.deepEqual(w.explicitAction(1).sort(), ['a', 'b'], 'an explicit act on the unit line commits both');
+    w.moveTo(2, 1000, 'scroll');
+    w.moveTo(0, 2000, 'jump');
+    assert.deepEqual(w.snapshot().provisional, []);
+    assert.deepEqual(w.snapshot().passed, []);
+    assert.ok(w.drain().every(event => ['seen', 'focus'].includes(event.type)));
+    assert.equal(w.marksOn(0)[0].id, 'a');
+    assert.equal(w.marksOn(1)[0].id, 'b');
   });
 
   // ---------------- alternatives (pure) ----------------

@@ -92,17 +92,10 @@ test('the three doors are one action: same text in, same proposal out', () => {
   }
 });
 
-test('the accidental paths post too: hover away and scrolling the caret out of view', () => {
-  for (const door of ['hover', 'scrolled-away', 'blur'] as EditDoor[]) {
-    const leave = endEditSession(session('before'), 'before and after', door);
-    assert.equal(leave.posted, true, `${door} must post, not drop the text`);
-    if (leave.posted) assert.equal(leave.proposal.proposed, 'before and after');
-  }
-  assert.equal(READING_MODE_POLICY.hoverEndsWriting, true, 'hover still ends the edit');
-  assert.equal(READING_MODE_POLICY.caretOutOfViewEndsWriting, true, 'scrolling away still ends it');
-  assert.equal(READING_MODE_POLICY.escapeEndsWriting, true, 'Esc still ends it');
-  assert.equal(READING_MODE_POLICY.leavingPostsTheEdit, true,
-    'and every one of those paths now posts what was typed');
+test('hover and scrolling are not edit doors; other doors stay for S3', () => {
+  assert.deepEqual(EDIT_SESSION_POLICY.doors, ['cmd-enter', 'click-outside', 'escape', 'blur']);
+  assert.equal(READING_MODE_POLICY.escapeEndsWriting, true);
+  assert.equal(READING_MODE_POLICY.leavingPostsTheEdit, true);
 });
 
 test('nothing changed: leaving posts nothing and says nothing', () => {

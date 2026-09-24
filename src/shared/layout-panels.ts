@@ -1,43 +1,10 @@
 /**
- * Accord layout, stage 3 (Ren's proposal, Mike ruled 2026-09-21: "build the layout that you
- * proposed"; decisions 4, 6, 7, 8 and 11): one cursor, the Margin with two tabs (Line N and Room),
- * the Navigator with three tabs (Outline, Issues, Since you), and the phone's bottom strip. Pure:
- * src/ui/reading-walk.ts, src/ui/navigator.ts and src/ui/line-marks.ts render what these decide.
- *
- * Authorship: Mike Wolf (rulings), Ren (SOMA UI, the proposal), built by Claude Opus 5 (worker
- * accord-layout3), 2026-09-21.
+ * The selected passage owns the Margin and keyboard actions. Hover changes nothing.
+ * Panels open and switch only by a reader action.
+ * Mike, 2026-09-23 (usability brief).
  */
 import { actorKey, type ProofIssue } from './line-marks';
 import { openView, type OpenKind } from './open-view';
-
-/**
- * One cursor (decision 4): the reading focus and the focus line are one line. Scrolling moves it
- * (scrolling reads), a click sets it (the caret's line, a margin dot, a list item), J / K move it,
- * and the keys, the Margin and the status bar all act on or name that one line.
- *
- * Hover (Mike, 2026-09-19: "having to click is extra work"; the proposal: "hover shows a small
- * margin preview only, the text never changes") is a PREVIEW: resting the mouse on another line
- * shows that line in the Margin's Line tab (its tab says "preview"), and puts a ring on its margin
- * dot. The blue bar, the status bar and the reading position stay on the cursor. The first explicit
- * act on the preview commits it: a click inside the Margin, or a reading key (A, R, Y / N / T, E,
- * D, 1-9), moves the cursor to the previewed line (a jump: no scroll, nothing read on the way) and
- * then acts there. So the line A and R hit is always the line the Margin shows.
- */
-export const CURSOR_POLICY = {
-  /** Hover previews the Margin (off: hover does nothing). */
-  hoverPreviews: true,
-  /** A reading key pressed during a preview commits the preview first, then acts on that line. */
-  keyCommitsPreview: true,
-  /** A click in the Margin during a preview commits the preview first. */
-  marginClickCommitsPreview: true,
-  /** The previewed line's margin dot gets a ring (the "small margin preview"). */
-  ringPreviewDot: true,
-  /**
-   * The preview ends when the pointer goes over the chrome (menu bar, toolbar) or the Navigator.
-   * Over the page's empty space or the Margin it stays, so the mouse can travel to the Margin.
-   */
-  endPreviewOver: ['#accord-menubar', '#share-banner', '.prw-left'] as readonly string[],
-} as const;
 
 /** The Margin (decision 6): two tabs only, the line and the room. */
 export type MarginTab = 'line' | 'room';
@@ -257,4 +224,33 @@ export function parseRailState(raw: string | null): RailState {
   } catch {
     return {};
   }
+}
+
+/** Existing review rows keep their order; incoming rows append until the reader leaves the list. */
+export function stableReviewOrder(previous: readonly string[], incoming: readonly string[]): string[] {
+  const present = new Set(incoming);
+  const kept = previous.filter(key => present.has(key));
+  const known = new Set(kept);
+  return [...kept, ...incoming.filter(key => !known.has(key))];
+}
+
+/** Text identity of a passage, captured when a review row settles. Mike, 2026-09-23 (usability brief). */
+export interface SettledIdentity {
+  hash: string;
+  occurrence: number;
+}
+
+/**
+ * The line a settled row names now. A remote insert above the row changes indices.
+ * The hash and occurrence captured at settle time do not, so the row stays on its passage.
+ * Returns null when that passage has left the document.
+ */
+export function resolveSettledIndex(
+  item: SettledIdentity,
+  lines: ReadonlyArray<{ hash: string; occurrence: number; index?: number }>,
+): number | null {
+  const at = lines.findIndex(line => line.hash === item.hash && line.occurrence === item.occurrence);
+  if (at < 0) return null;
+  const index = lines[at].index;
+  return typeof index === 'number' ? index : at;
 }

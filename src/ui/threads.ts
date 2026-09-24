@@ -1,4 +1,6 @@
 /**
+ * Remote updates preserve focused controls; resolving stays expanded until explicit navigation.
+ * Mike, 2026-09-23 (usability brief).
  * Accord round 2, stage D — the discussion on a line, in the Margin's Line tab.
  *
  * Mike, 2026-09-22: discussion happens in the document, not in the chat. This is where it shows:
@@ -83,6 +85,7 @@ export class ThreadsPanel {
   readonly log: Array<{ action: string; id?: string }> = [];
 
   constructor(private readonly host: ThreadsHost) {
+    this.list.addEventListener('focusout', () => queueMicrotask(() => this.render()));
     this.element.hidden = true;
     this.startButton.type = 'button';
     this.startButton.textContent = 'Start a thread';
@@ -183,23 +186,28 @@ export class ThreadsPanel {
   // Showing them
   // --------------------------------------------------------------------------
 
-  render(): void {
+  private shownLine = -1;
+  private readonly shownOpen = new Set<string>();
+  render(force = false): void {
     const line = this.host.focusLine();
     const me = this.host.me();
+    if (line !== this.shownLine) { this.shownLine = line; this.shownOpen.clear(); }
     const views = line >= 0 ? this.host.threadsOnLine(line) : [];
+    for (const view of views) if (view.thread.status === 'open') this.shownOpen.add(view.thread.id);
     const sig = JSON.stringify([line, me, this.composer.hidden, [...this.unfolded].sort(), views.map(view => [
       view.thread.id, view.thread.status, view.thread.asks, view.thread.replies.length, view.detached, view.changed,
     ])]);
-    if (sig === this.sig) return;
+    if (sig === this.sig || (!force && this.list.contains(document.activeElement))) return;
     this.sig = sig;
     this.element.hidden = views.length === 0 && this.composer.hidden;
     (this.head.querySelector('strong') as HTMLElement).textContent = views.length
       ? `Discussion (${views.length})`
       : 'Discussion';
     this.startButton.disabled = !this.host.canComment();
+    // Mike, 2026-09-23 (usability brief): resolution stays expanded until the reader leaves.
     this.list.replaceChildren();
     for (const view of views) {
-      const folded = view.thread.status !== 'open' && threadFoldsFor(view, me) && !this.unfolded.has(view.thread.id);
+      const folded = !this.shownOpen.has(view.thread.id) && view.thread.status !== 'open' && threadFoldsFor(view, me) && !this.unfolded.has(view.thread.id);
       this.list.append(folded ? this.foldedMark(view) : this.card(view));
     }
   }
@@ -215,7 +223,7 @@ export class ThreadsPanel {
       this.unfolded.add(view.thread.id);
       this.log.push({ action: 'unfold', id: view.thread.id });
       this.sig = '';
-      this.render();
+      this.render(true);
     };
     return mark;
   }
@@ -317,7 +325,7 @@ export class ThreadsPanel {
       actions.append(reopen);
       const fold = el('button', 'amg-thread-fold', 'Fold');
       fold.type = 'button';
-      fold.onclick = () => { this.unfolded.delete(thread.id); this.sig = ''; this.render(); };
+      fold.onclick = () => { this.unfolded.delete(thread.id); this.shownOpen.delete(thread.id); this.sig = ''; this.render(true); };
       if (threadFoldsFor(view, me)) actions.append(fold);
     }
     if (actions.childElementCount) card.append(actions);
@@ -344,7 +352,7 @@ export class ThreadsPanel {
         replies: view.thread.replies.length,
         openForMe: threadOpenFor(view, this.host.me(), { team: this.host.team() }).open,
         because: threadOpenFor(view, this.host.me(), { team: this.host.team() }).because,
-        folded: view.thread.status !== 'open' && threadFoldsFor(view, this.host.me()) && !this.unfolded.has(view.thread.id),
+        folded: !this.shownOpen.has(view.thread.id) && view.thread.status !== 'open' && threadFoldsFor(view, this.host.me()) && !this.unfolded.has(view.thread.id),
       })),
       log: this.log.slice(-20),
     };

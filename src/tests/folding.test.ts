@@ -112,12 +112,61 @@ try {
     assert.deepEqual(folding.foldedAncestors(sections, both, DETAIL + 1).map(s => s.headingIndex), [TITLE, DETAIL]);
   });
 
-  await test('fold to level: level 2 shows H1s and H2s; level 1 only H1s', () => {
-    const keyOf = (i: number) => folding.sectionByHeading(sections, i)!.key;
-    assert.deepEqual([...folding.foldToLevel(sections, 2)].sort(), [keyOf(GOALS), keyOf(PLAN)].sort());
-    assert.deepEqual([...folding.foldToLevel(sections, 1)].sort(), [keyOf(TITLE), keyOf(APPENDIX)].sort());
-    assert.deepEqual([...folding.foldToLevel(sections, 3)], [keyOf(DETAIL)]);
-    assert.deepEqual(folding.headingLevels(sections), [1, 2, 3]);
+  await test('section agreement captures text identities and excludes new or changed lines', () => {
+    const section = folding.sectionByHeading(sections, GOALS)!;
+    const scope = folding.captureSectionScope(section, lines);
+    const inserted = { ...lines[GOALS + 1], text: 'New line', hash: 'new-identity' };
+    const now = [...lines.slice(0, GOALS + 1), inserted, ...lines.slice(GOALS + 1)]
+      .map((line, index) => ({ ...line, index }));
+    const duplicate = [...lines, { ...lines[GOALS + 1], index: lines.length, occurrence: 2 }];
+    assert.ok(!folding.resolveSectionScope(scope, duplicate).includes(GOALS + 1), 'ambiguous duplicate text must not gain agreement');
+    const resolved = folding.resolveSectionScope(scope, now);
+    assert.equal(resolved.length, scope.lines.length);
+    assert.ok(!resolved.includes(GOALS + 1), 'concurrent insertion cannot be agreed implicitly');
+    now[GOALS + 2] = { ...now[GOALS + 2], text: 'Changed', hash: 'changed' };
+    assert.equal(folding.resolveSectionScope(scope, now).length, scope.lines.length - 1);
+  });
+
+  await test('a renamed heading keeps its fold when position mapping does not land on it', async () => {
+    const goals = lines.find(line => line.text === 'Goals')!;
+    const renamedDoc = doc.replace('## Goals', '## Goals renamed');
+    const after = await serverLines.computeServerLines(renamedDoc);
+    const folded = new Set([`${goals.hash}:${goals.occurrence}`]);
+    const next = folding.remapFoldedKeys(folded, lines, after, () => 999999);
+    const renamed = after.find(line => line.text === 'Goals renamed')!;
+    assert.ok(next.has(`${renamed.hash}:${renamed.occurrence}`), 'the fold must follow the renamed heading');
+    assert.equal(next.size, 1);
+    const shifted = folding.remapFoldedKeys(folded, lines, after, pos => pos);
+    assert.ok(shifted.has(`${renamed.hash}:${renamed.occurrence}`));
+    const kept = folding.remapFoldedKeys(folded, [], after, () => 0);
+    assert.ok(kept.has(`${goals.hash}:${goals.occurrence}`), 'a load that does not contain the heading must not drop its fold');
+  });
+
+  await test('section agreement is offered only when every line of the section is visible', () => {
+    const goals = folding.sectionByHeading(sections, GOALS)!;
+    const detail = folding.sectionByHeading(sections, DETAIL)!;
+    const open = folding.sectionAgreementOffer(goals, sections, new Set());
+    assert.equal(open.allVisible, true);
+    assert.equal(open.lineCount, folding.sectionLineIndices(goals).length);
+    assert.deepEqual(open.collapsedHeadings, []);
+    const detailFolded = new Set([detail.key]);
+    const hiddenDetail = folding.sectionAgreementOffer(goals, sections, detailFolded);
+    assert.equal(hiddenDetail.allVisible, false, 'a collapsed subsection hides lines the reader has not seen');
+    assert.deepEqual(hiddenDetail.collapsedHeadings, [DETAIL]);
+    assert.equal(hiddenDetail.lineCount, open.lineCount, 'the count names every line, including the hidden ones');
+    const whole = new Set([goals.key, detail.key]);
+    const hiddenGoals = folding.sectionAgreementOffer(goals, sections, whole);
+    assert.equal(hiddenGoals.allVisible, false);
+    assert.deepEqual(hiddenGoals.collapsedHeadings, [GOALS, DETAIL]);
+    const shown = new Set(whole);
+    for (const heading of hiddenGoals.collapsedHeadings) {
+      const key = folding.sectionByHeading(sections, heading)!.key;
+      shown.delete(key);
+    }
+    assert.equal(folding.sectionAgreementOffer(goals, sections, shown).allVisible, true);
+    // The capture still lists hidden lines. The offer is what stops them being agreed unseen.
+    const captured = folding.captureSectionScope(goals, lines);
+    assert.equal(captured.lines.length, hiddenDetail.lineCount);
   });
 
   await test('section Issue count: the same Issues as the top bar, restricted to the section (review marks by position)', () => {
@@ -146,7 +195,7 @@ try {
     assert.deepEqual(plan.apply, [0, 4, 5]);
     assert.deepEqual(plan.skipped, [{ lineIndex: 1, reason: 'rejected' }, { lineIndex: 2, reason: 'stronger' }, { lineIndex: 3, reason: 'same' }]);
     assert.equal(folding.FOLDING.allowSectionReject, false);
-    assert.equal(folding.FOLDING.foldedHeadingScope, 'section');
+    assert.equal(folding.FOLDING.foldedHeadingScope, 'heading');
     assert.equal(folding.FOLDING.unfoldedHeadingScope, 'heading');
   });
 
@@ -160,12 +209,11 @@ try {
       { key: 'd', marks: [] },
     ];
     const walk = new ReadingWalk(walkLines, 0);
-    assert.equal(walk.barrier(0), null, 'a hidden suggestion does not hold the page');
     assert.equal(walk.nextVisible(1), 4);
     walk.moveTo(4, 1000, 'scroll', [20, 20, 20, 20, 20]);
     const events = walk.drain();
     assert.deepEqual(events.filter(e => e.type === 'seen').map(e => (e as any).line), [0], 'only the heading was read');
-    assert.equal(walk.provisionalCount, 0, 'a hidden suggestion was not provisionally accepted');
+    assert.equal(walk.snapshot().provisional.length, 0, 'a hidden suggestion was not provisionally accepted');
     assert.equal(walk.nextVisible(-1), 0);
   });
 

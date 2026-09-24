@@ -161,8 +161,6 @@ body.prw-on.prw-right-collapsed { --prw-right: var(--prw-collapsed); }
 .amg-pane[data-tab="room"] .pch-head { display: none; }
 .amg-pane[data-tab="room"] .pch[data-collapsed="true"] > :not(.pch-head) { display: revert; }
 
-/* The hover preview: a ring on the previewed line's margin dot (the text never changes). */
-.plm-dot[data-preview="true"] .plm-glyph { box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--acc-here, #2f6fed); }
 
 /* Phones (decision 11): the strip, and the Margin as a sheet under it. */
 .prw-strip-grab { display: none; }

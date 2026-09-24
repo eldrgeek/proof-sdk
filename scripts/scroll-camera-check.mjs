@@ -15,6 +15,7 @@
 // throwaway SQLite database. Screenshots go to .preview/ (or --shots <dir>) as scroll-*.png.
 // Usage: node scripts/scroll-camera-check.mjs [--width 1440] [--shots dir]
 import assert from 'node:assert/strict';
+
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
@@ -298,7 +299,7 @@ async function surface(browser, base, long, brief, tag, contextOptions, phone) {
     await page.waitForTimeout(700);
     const late = await cursor(page);
     assert.equal(late.scrollY, settled, `the camera pulled the page back (${settled} -> ${late.scrollY})`);
-    assertVisible(late, 'after hand-scrolling');
+    assert.equal(late.focus, after.focus, 'passive scroll changed the selected passage');
     const calls = await page.evaluate(() => window.__scrollCalls.filter(c => c.how !== 'scrollIntoView'));
     assert.equal(calls.length, 0, `the camera scrolled ${calls.length} times while the person was scrolling`);
   });

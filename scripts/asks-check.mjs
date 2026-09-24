@@ -244,24 +244,16 @@ async function desktop(browser, base, style, width) {
     await waitFor(page, () => window.__proofLineMarks.debugState().askIssues === 1, null, 12000);
   });
 
-  await check(`${tag}: Y answers Yes; answering commits the scroll-accepts above it (explicit action)`, async () => {
-    // Step past the suggestion on the Alpha line with J: a provisional accept.
-    await page.evaluate(i => window.__proofReadingWalk.focusLine(i), L.ALPHA);
-    await page.evaluate(() => document.activeElement?.blur());
-    for (let i = 0; i < 6; i += 1) {
-      const s = await walk(page);
-      if (s.provisional.length === 1 && s.focus > L.ALPHA) break;
-      await page.keyboard.press('j');
-      await page.waitForTimeout(60);
-    }
-    assert.equal((await walk(page)).provisional.length, 1, 'no provisional accept');
+  await check(`${tag}: Y answers Yes without accepting proposals passed earlier`, async () => {
+    const pending = () => page.evaluate(() => (window.proof.getAllMarks() ?? []).filter(m => m.kind !== 'comment' && (m.data?.status ?? 'pending') === 'pending').map(m => m.id).sort());
+    const before = await pending();
+    assert.ok(before.length > 0);
+    await page.evaluate(i => { document.activeElement?.blur(); window.__proofReadingWalk.focusLine(i); }, L.ALPHA);
+    await page.keyboard.press('j');
     await page.evaluate(i => window.__proofReadingWalk.focusLine(i), L.Q2);
-    await page.evaluate(() => document.activeElement?.blur());
-    assert.equal((await walk(page)).provisional.length, 1);
     await page.keyboard.press('y');
     await waitFor(page, () => window.__proofLineMarks.debugState().askAnswers >= 3);
-    await waitFor(page, () => (window.proof?.getAllMarks?.() ?? []).filter(m => m.data?.status === 'pending').length === 0);
-    assert.equal((await walk(page)).provisional.length, 0);
+    assert.deepEqual(await pending(), before, 'answering an ask accepted an unrelated proposal');
     const ask = await serverAsk(base, created, created.ask2);
     assert.equal(ask.status, 'yes');
     await waitFor(page, () => window.__proofLineMarks.debugState().askIssues === 0);
