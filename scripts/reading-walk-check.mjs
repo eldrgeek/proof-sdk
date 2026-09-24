@@ -342,6 +342,13 @@ async function desktop(browser, base, style, width) {
   await check(`${tag}: keys typed into the document (writing) do not mark or move`, async () => {
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.waitForTimeout(200);
+    // Direct Editing is the labelled control. A click while Reading only selects.
+    // Mike, 2026-09-23 (usability brief).
+    await page.evaluate(() => {
+      const btn = document.querySelector('.share-pill-suggest-toggle');
+      if (btn && btn.getAttribute('aria-label') !== 'Leave Editing') btn.click();
+    });
+    await page.waitForFunction(() => document.querySelector('.pst-mode')?.textContent === 'Editing');
     // Line 5 was only skimmed (a line already agreed may be folded, and a click on a fold opens it).
     const line5 = await page.locator('.ProseMirror > *').nth(5).boundingBox();
     await page.mouse.click(line5.x + line5.width - 20, line5.y + 8);

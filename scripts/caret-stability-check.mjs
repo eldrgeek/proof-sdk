@@ -306,16 +306,28 @@ const jitter = () => 60 + Math.floor(Math.random() * 61);
  */
 async function runDraft(page, created, tag, phone) {
   await page.evaluate(i => { window.__caretTarget = i; window.__proofReadingWalk.focusLine(i); }, TARGET_LINE);
-  if (phone) await page.locator('.plm-edit-pencil').click();
+  if (phone) {
+    await page.waitForFunction(i => document.querySelector('.plm-edit-pencil')?.dataset.line === String(i), TARGET_LINE, { timeout: 5000 });
+    await page.locator('.plm-edit-pencil').click();
+  }
   else {
     await page.evaluate(() => document.activeElement?.blur());
     await page.keyboard.press('s');
   }
   const field = page.locator('.accord-draft textarea');
   await field.waitFor();
+  await page.waitForFunction(needle => {
+    const el = document.querySelector('.accord-draft textarea');
+    return Boolean(el && el.value.includes(needle));
+  }, CLICK_BEFORE, { timeout: 3000 }).catch(() => {});
   const original = await field.inputValue();
   const offset = original.indexOf(CLICK_BEFORE);
-  assert.ok(offset > 0, 'target text not found in the draft');
+  if (offset <= 0) {
+    await check(`${tag}: the draft is the target passage`, async () => {
+      assert.fail(`draft text was ${JSON.stringify(original.slice(0, 160))}`);
+    });
+    return;
+  }
   const expected = original.slice(0, offset) + TYPED + original.slice(offset);
   await field.evaluate((el, at) => { el.focus(); el.setSelectionRange(at, at); }, offset);
   const peerContext = await page.context().browser().newContext(phone ? { ...devices['iPhone 13'], viewport: { width: 390, height: 844 } } : { viewport: { width: 1440, height: 900 } });
