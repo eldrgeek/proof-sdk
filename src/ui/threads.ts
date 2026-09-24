@@ -191,13 +191,17 @@ export class ThreadsPanel {
   render(force = false): void {
     const line = this.host.focusLine();
     const me = this.host.me();
-    if (line !== this.shownLine) { this.shownLine = line; this.shownOpen.clear(); }
+    const lineChanged = line !== this.shownLine;
+    if (lineChanged) { this.shownLine = line; this.shownOpen.clear(); }
     const views = line >= 0 ? this.host.threadsOnLine(line) : [];
     for (const view of views) if (view.thread.status === 'open') this.shownOpen.add(view.thread.id);
     const sig = JSON.stringify([line, me, this.composer.hidden, [...this.unfolded].sort(), views.map(view => [
       view.thread.id, view.thread.status, view.thread.asks, view.thread.replies.length, view.detached, view.changed,
     ])]);
-    if (sig === this.sig || (!force && this.list.contains(document.activeElement))) return;
+    // A focused reply stays put while this same line updates. Moving to another passage redraws.
+    const threadFocus = document.activeElement;
+    const threadTyping = threadFocus instanceof HTMLInputElement || threadFocus instanceof HTMLTextAreaElement;
+    if (sig === this.sig || (!force && !lineChanged && threadTyping && this.list.contains(threadFocus))) return;
     this.sig = sig;
     this.element.hidden = views.length === 0 && this.composer.hidden;
     (this.head.querySelector('strong') as HTMLElement).textContent = views.length

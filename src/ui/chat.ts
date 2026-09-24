@@ -245,10 +245,13 @@ export class ChatUI {
 
   private inMargin(): boolean { return this.host.inMargin?.() === true; }
 
-  /** The Room tab came on screen (or may have): show the newest message and mark @mentions read. */
+  /**
+   * The Room tab came on screen. The reader's scroll position stays.
+   * New messages offer "New below" instead of jumping. Mike, 2026-09-23 (usability brief).
+   */
   roomShown(): void {
     if (!this.visible()) return;
-    this.scrollToEnd();
+    this.follower.follow();
     this.markReadIfVisible();
   }
 

@@ -215,7 +215,9 @@ export class NavigatorUI {
     this.issueOrder = stableReviewOrder(this.issueOrder, rows.map(row => row.key));
     rows.sort((a, b) => this.issueOrder.indexOf(a.key) - this.issueOrder.indexOf(b.key));
     const sig = JSON.stringify([rows.map(r => [r.key, r.line, r.settled, r.kinds, r.label, r.text]), cursor]);
-    if (sig === this.issuesSig || this.issuesList.contains(document.activeElement)) return;
+    const issuesFocus = document.activeElement;
+    const issuesTyping = issuesFocus instanceof HTMLInputElement || issuesFocus instanceof HTMLTextAreaElement;
+    if (sig === this.issuesSig || (issuesTyping && this.issuesList.contains(issuesFocus))) return;
     this.issuesSig = sig;
     this.issuesEmpty.hidden = rows.length > 0 || !lm.isLoaded();
     const n = this.settled.size;
@@ -259,7 +261,9 @@ export class NavigatorUI {
     let here = -1;
     for (const row of rows) if (row.headingIndex <= cursor) here = row.headingIndex;
     const sig = JSON.stringify([rows, here, lm.isLoaded()]);
-    if (sig === this.outlineSig || (!force && this.outlineList.contains(document.activeElement))) return;
+    const outlineFocus = document.activeElement;
+    const outlineTyping = outlineFocus instanceof HTMLInputElement || outlineFocus instanceof HTMLTextAreaElement;
+    if (sig === this.outlineSig || (!force && outlineTyping && this.outlineList.contains(outlineFocus))) return;
     this.outlineSig = sig;
     this.outlineList.replaceChildren();
     if (rows.length === 0) {

@@ -1613,9 +1613,11 @@ export class ReadingWalkUI {
     const marks = state ? [...state.marks.values()].map(e => `${e.mark.id}:${e.mark.status}:${e.current}:${e.mark.reason ?? ''}`).join(',') : '';
     const sig = `${focus}|${line.hash}|${line.occurrence}|${marks}|${summary?.team.join(',') ?? ''}|${lm.isLoaded()}|${lm.askSignature(focus)}|${lm.aidsSignature(focus)}`;
     if (sig === this.boxSig && this.box) return;
-    // Keep the box while the reader types a reason for this same line.
+    // Keep the box while the reader types in it. A focused button must not freeze the box:
+    // Seen, Confirm, and Clear are drawn from the mark that the click just wrote.
     const active = document.activeElement;
-    if (this.box && (this.boxHost.contains(active) || this.tailHost.contains(active)) && Number(this.boxHost.dataset.line) === focus) return;
+    const typing = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement;
+    if (typing && this.box && (this.boxHost.contains(active) || this.tailHost.contains(active)) && Number(this.boxHost.dataset.line) === focus) return;
     this.boxSig = sig;
     this.boxHost.dataset.line = String(focus);
     // Accord layout stage 3 (decision 8): the Margin's layout — the quote, Agree and Reject, ⋯ More.
@@ -1652,7 +1654,8 @@ export class ReadingWalkUI {
       onLine.map(m => { const b = lm.bundleForMark(m.id); return b ? [b.bundle.id, b.pending.length, b.stale.join(','), b.status] : null; }),
       this.bundleDecisions.length, this.lastError]);
     if (sig === this.changesSig) return;
-    if (this.changesHost.contains(document.activeElement)) return;
+    const changesFocus = document.activeElement;
+    if ((changesFocus instanceof HTMLInputElement || changesFocus instanceof HTMLTextAreaElement) && this.changesHost.contains(changesFocus)) return;
     this.changesSig = sig;
     this.changesHost.replaceChildren();
     this.changesHost.hidden = onLine.length === 0;
