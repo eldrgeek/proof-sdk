@@ -260,6 +260,10 @@ async function run(browser, base, style, viewport) {
     // Accord round 2 stage C: a comment is a THREAD, and it shows once, in Discussion. It used to
     // show twice — also in "Changes on this line", which now carries only proposals. Same
     // behaviour, same rail, one card instead of two.
+    await page.waitForFunction(() => {
+      const lm = window.__proofLineMarks, view = lm.editorView();
+      return window.__proofReadingWalk.focusIndex() === lm.lineAtPos(view.state.selection.head);
+    });
     await page.evaluate(() => window.__proofReadingWalk.openReviewItem(window.__proofReadingWalk.focusIndex()));
     const card = page.locator(`.prw-right .amg-thread[data-thread="${mark.id}"]`);
     await card.first().waitFor({ state: 'visible', timeout: 3000 });

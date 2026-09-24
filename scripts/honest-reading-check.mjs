@@ -145,93 +145,19 @@ async function desktop(browser, base, style) {
   activePage = page;
   const rail = page.locator('.prw-right');
 
-  await check(`${tag}: a line's reading time scales with its words; View › Reading settings changes it`, async () => {
-    // Accord layout stage 2 (decision 10): Reading speed left the rail for View › Reading settings.
-    const settings = page.locator('#reading-settings');
-    const rate = settings.locator('.prw-rate select');
-    assert.equal(await rate.inputValue(), '8', 'default rate is 8 words/s');
-    await page.keyboard.press('j'); await page.keyboard.press('j');
-    await waitFor(page, i => window.__proofReadingWalk.debugState().readingFocus === i, L.LONG);
-    let s = await walk(page);
-    assert.equal(s.dwellMs, 3000, `24 words at the default 8 words/s take 3 s (got ${s.dwellMs})`);
-    await page.waitForTimeout(1200);
-    assert.notEqual(await dotStatus(page, L.LONG), 'seen', 'a 24-word line was Seen after 1.2 s');
-    await page.locator('#accord-menubar .amb-top[data-menu="view"]').click();
-    await page.locator('.amb-menu .amb-item', { hasText: 'Reading settings…' }).click();
-    await settings.waitFor({ state: 'visible' });
-    await rate.selectOption('12');
-    s = await walk(page);
-    assert.equal(s.rate, 12);
-    assert.equal(s.dwellMs, 2000, `24 words at 12 words/s (got ${s.dwellMs})`);
-    assert.equal(await page.evaluate(() => localStorage.getItem('proof:reading-rate')), '12', 'the rate is kept per browser');
-    assert.match(await settings.locator('.prw-rate-need').innerText(), /this line: 2\.0 s/);
-    await settings.getByRole('button', { name: 'Close reading settings' }).click();
-    await waitFor(page, i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.status === 'seen', L.LONG, 4000);
-    const mine = await myMark(page, L.LONG);
-    assert.equal(mine.via, 'dwell');
-    await page.screenshot({ path: path.join(shots, `${tag}-1-rate.png`) });
-  });
-
-  await check(`${tag}: lines passed too fast stay unmarked; reading never records agreement`, async () => {
-    // J past lines 3 and 4 at once (well under their reading time), then fling to the end.
-    await page.keyboard.press('j');
-    await page.keyboard.press('j');
-    await page.keyboard.press('j');
-    await page.mouse.move(700, 500);
-    await page.mouse.wheel(0, 3000);
-    await waitFor(page, () => window.__proofReadingWalk.debugState().readingFocus >= 12);
-    await page.waitForTimeout(900);
-    const s = await walk(page);
-    for (const line of [L.TYPO, L.PRICE, 5, 6, 7, 8]) {
-      assert.ok(!s.seenWrites.includes(line), `line ${line} was marked Seen while skimming`);
-      assert.equal(await dotStatus(page, line), 'unseen', `line ${line}`);
-    }
-    assert.equal(await page.evaluate(() => window.__proofLineMarks.debugState().skimWrites), 0);
-    await page.evaluate(() => window.scrollTo(0, 0));
-    await page.screenshot({ path: path.join(shots, `${tag}-2-skimmed.png`) });
-  });
-
-  await check(`${tag}: the rail says how a Seen was earned: "by scrolling" vs "marked"`, async () => {
-    await page.locator(`.plm-dot[data-line="${L.LONG}"]`).click();
-    await waitFor(page, i => window.__proofReadingWalk.debugState().readingFocus === i, L.LONG);
-    // Polish pass: everyone's marks fold into "Marked by N"; open it (a person's click, kept for the line).
-    await waitFor(page, () => { document.querySelectorAll('.prw-right .plm-team-fold:not([open]) > summary').forEach(s => s.click()); return /Seen \(by scrolling\)/.test(document.querySelector('.prw-right .plm-team')?.innerText ?? ''); });
-    await page.locator(`.plm-dot[data-line="${L.SHORT}"]`).click();
-    await waitFor(page, i => window.__proofReadingWalk.debugState().readingFocus === i, L.SHORT);
-    // Accord layout stage 3 (decision 8): Seen is under the line's ⋯ More.
-    await rail.locator('.plm-box .plm-more-btn').click();
-    await rail.locator('.plm-box .plm-more').getByRole('button', { name: /^Seen$/ }).click();
-    await waitFor(page, () => { document.querySelectorAll('.prw-right .plm-team-fold:not([open]) > summary').forEach(s => s.click()); return /Seen \(marked\)/.test(document.querySelector('.prw-right .plm-team')?.innerText ?? ''); });
-    assert.equal((await myMark(page, L.SHORT)).via, 'click');
-  });
-
-  await check(`${tag}: a spelling fix carries marks forward (tilde, "Was:", Mark unseen); a number change resets them`, async () => {
-    for (const line of [L.TYPO, L.PRICE]) {
-      await page.locator(`.plm-dot[data-line="${line}"]`).click();
-      await waitFor(page, i => window.__proofReadingWalk.debugState().readingFocus === i, line);
-      await rail.locator('.plm-box').getByRole('button', { name: /Agree/ }).click();
-      await waitFor(page, i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.status === 'agreed', line);
-    }
-    // An AI fixes the typo and changes the price.
+  await check(`${tag}: historical marks survive a spelling fix and become outdated after a number change`, async () => {
+    // Legacy data remains readable after the retirement of reader mark controls.
+    for (const line of [L.TYPO, L.PRICE]) await agent(base, created, '/marks/line', { by: 'guest:Ada', status: 'agreed', lineIndex: line });
     await editBlocks(base, created, [['b4', TYPO.replace('teh', 'the')], ['b5', PRICE.replace('$10', '$100')]]);
     await waitFor(page, () => document.querySelector('.ProseMirror')?.textContent.includes('$100'), null, 12000);
-    await waitFor(page, i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.carried === 'true', L.TYPO);
-    assert.equal(await dotStatus(page, L.TYPO), 'agreed', 'the carried mark still counts');
-    await waitFor(page, i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.status === 'changed', L.PRICE);
-    const badge = await page.evaluate(i => getComputedStyle(document.querySelector(`.plm-dot[data-line="${i}"]`), '::after').content, L.TYPO);
-    assert.match(badge, /~/);
-    await page.locator(`.plm-dot[data-line="${L.TYPO}"]`).click();
-    const carried = rail.locator('.plm-carried');
-    await carried.waitFor({ state: 'visible' });
-    assert.match(await carried.innerText(), /carried over a small edit/);
-    assert.match(await carried.locator('.plm-carried-was').innerText(), /teh budget/);
-    await page.waitForTimeout(300); // let the focus highlight settle after the scroll
-    await page.screenshot({ path: path.join(shots, `${tag}-3-carried.png`) });
-    await carried.getByRole('button', { name: 'Mark unseen' }).click();
-    await waitFor(page, i => { const d = document.querySelector(`.plm-dot[data-line="${i}"]`); return d && d.dataset.carried !== 'true' && d.dataset.status !== 'agreed'; }, L.TYPO);
+    await waitFor(page, i => window.__proofLineMarks.myStatus(i) === 'agreed', L.TYPO);
+    await waitFor(page, i => window.__proofLineMarks.myStatus(i) === 'changed', L.PRICE);
+    assert.equal(await page.locator('.plm-dot, .plm-carried').count(), 0);
+    await page.screenshot({ path: path.join(shots, `${tag}-3-historical-marks.png`) });
   });
 
-  await check(`${tag}: "Since you last marked" lists edits, rejections and suggestions, with the ringer list; an item moves the focus`, async () => {
+  await check(`${tag}: Since you lists historical edits, rejections and new suggestions; an item moves the focus`, async () => {
+    await agent(base, created, '/marks/line', { by: 'guest:Ada', status: 'seen', lineIndex: L.LONG, via: 'dwell' });
     // Since Ada's last explicit mark: an AI rejects a line and suggests a change on the long
     // line (which Ada only saw by scrolling: a ringer).
     await agent(base, created, '/marks/line', { by: 'ai:check', status: 'rejected', reason: 'Wrong number of words', lineIndex: L.P7 });
@@ -239,8 +165,8 @@ async function desktop(browser, base, style) {
     await page.reload();
     await page.waitForFunction(() => window.__proofReadingWalk?.debugState().since !== null, null, { timeout: 15_000 });
     // Accord layout stage 3 (decision 7): Since you is the Navigator's third tab.
-    await page.locator('.prw-left .anv-tab[data-tab="since"]').click();
-    const since = page.locator('.prw-left .prw-since');
+    await page.locator('.prw-right .anv-tab[data-tab="since"]').click();
+    const since = page.locator('.prw-right .prw-since');
     await since.waitFor({ state: 'visible' });
     const text = await since.innerText();
     assert.match(text, /Since you last marked/);
@@ -249,8 +175,7 @@ async function desktop(browser, base, style) {
     assert.match(text, /Rejected by others/);
     assert.match(text, /Wrong number of words/);
     assert.match(text, /Suggestions added/);
-    assert.match(text, /Ringer list/);
-    assert.ok(await since.locator('.prw-ringers .prw-since-item[data-line="2"]').count() === 1, 'the long line (seen by scrolling, then a suggestion) is a ringer');
+    // No new inferred assent is created by this visit.
     await page.screenshot({ path: path.join(shots, `${tag}-4-since-you.png`) });
     await since.locator('.prw-since-item[data-type="rejection"]').first().click();
     await waitFor(page, i => window.__proofReadingWalk.debugState().readingFocus === i, L.P7);
@@ -303,16 +228,14 @@ async function phone(browser, base, style) {
   });
   activePage = page;
   await check(`${tag}: a quick scroll leaves skipped lines unmarked; no sideways scroll`, async () => {
-    await page.evaluate(() => window.scrollBy(0, 1400));
-    await waitFor(page, () => window.__proofReadingWalk.debugState().readingFocus >= 6);
-    await page.waitForTimeout(900);
-    const unseen = await page.evaluate(() => [...document.querySelectorAll('.plm-dot[data-status="unseen"]')].length);
-    assert.ok(unseen >= 3, `unseen dots ${unseen}`);
-    const info = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));
-    assert.ok(info.sw <= info.cw + 1, `scrollWidth ${info.sw}`);
-    await page.screenshot({ path: path.join(shots, `${tag}-1-skimmed.png`) });
+    await page.mouse.wheel(0, 3000); await page.waitForTimeout(1000);
+    assert.deepEqual((await walk(page)).seenWrites, []);
+    assert.equal(await page.locator('.plm-dot').count(), 0);
+    const size = await page.evaluate(() => [document.documentElement.scrollWidth, innerWidth]);
+    assert.ok(size[0] <= size[1] + 1);
+    await page.screenshot({ path: path.join(shots, `${tag}-1-no-marks.png`) });
   });
-  await check(`${tag}: ⋯ › Reading settings holds the reading speed; the Navigator sheet holds Since you; items are big enough to tap`, async () => {
+  await check(`${tag}: ⋯ › Reading settings holds the sitting budget; the Navigator sheet holds Since you; items are big enough to tap`, async () => {
     // Pat marks a line on purpose, then an AI edits and rejects: Since you has items on reload.
     await agent(base, created, '/marks/line', { by: 'guest:Pat', status: 'agreed', lineIndex: L.PRICE });
     await new Promise(r => setTimeout(r, 30));
@@ -324,11 +247,11 @@ async function phone(browser, base, style) {
     await page.getByRole('menuitem', { name: /Reading settings/ }).tap();
     const settings = page.locator('#reading-settings');
     await settings.waitFor({ state: 'visible' });
-    assert.ok(await settings.locator('.prw-rate select').isVisible(), 'no reading speed in Reading settings');
+    assert.ok(await settings.locator('.plm-budget select').isVisible(), 'no sitting budget in Reading settings');
     await settings.getByRole('button', { name: 'Close reading settings' }).tap();
     await page.locator('#share-banner .share-pill-overflow').tap();
     await page.getByRole('menuitem', { name: /Review panel/ }).tap();
-    const sheet = page.locator('.prw-left.prw-sheet-open');
+    const sheet = page.locator('.prw-right.prw-sheet-open');
     await sheet.waitFor({ state: 'visible' });
     await sheet.locator('.anv-tab[data-tab="since"]').tap();
     const since = sheet.locator('.prw-since');
@@ -340,7 +263,7 @@ async function phone(browser, base, style) {
     await page.screenshot({ path: path.join(shots, `${tag}-2-since-sheet.png`) });
     await item.tap();
     await waitFor(page, () => window.__proofReadingWalk.debugState().readingFocus === 5);
-    assert.equal(await page.locator('.prw-left.prw-sheet-open').count(), 0, 'the sheet closes after moving the focus');
+    assert.equal(await page.locator('.prw-right.prw-sheet-open').count(), 0, 'the sheet closes after moving the focus');
   });
   await context.close();
 }

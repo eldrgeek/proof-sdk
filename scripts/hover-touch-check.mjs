@@ -133,7 +133,7 @@ async function runDesktop(browser, base, tag) {
     // A click while Reading only selects. Direct Editing is the labelled control.
     // Mike, 2026-09-23 (usability brief).
     await page.evaluate(() => document.querySelector('.share-pill-suggest-toggle').click());
-    await page.waitForFunction(() => document.querySelector('.pst-mode')?.textContent === 'Editing');
+    await page.waitForFunction(() => document.querySelector('.pst-mode')?.textContent === 'Writing');
     const target = block(page, 14);
     await target.evaluate(el => el.scrollIntoView({ block: 'center', behavior: 'instant' }));
     await page.waitForTimeout(300);
@@ -204,18 +204,18 @@ async function runPhone(browser, base, tag) {
     await sheet.locator('.prw-collapse').tap();
   });
 
-  await check(`${tag}: a tap selects the passage while Reading, and the strip stays`, async () => {
-    // A tap does not put a caret in the text, so the strip does not step aside.
-    // Mike, 2026-09-23 (usability brief).
-    const focus = (await walk(page)).focus;
-    const next = focus + 1;
+  await check(`${tag}: a tap places the caret; the strip returns after Escape`, async () => {
+    const next = (await walk(page)).focus + 1;
     const target = block(page, next);
-    const box = await target.boundingBox();
-    await page.touchscreen.tap(box.x + 20, box.y + box.height / 2);
-    await page.waitForFunction(i => window.__proofReadingWalk.debugState().focus === i, next);
-    assert.equal(await page.locator('.pst-mode').evaluate(el => el.textContent), 'Reading');
-    assert.notEqual(await page.locator('.ProseMirror').getAttribute('contenteditable'), 'true');
-    assert.equal(await page.locator('.prw-strip').isVisible(), true, 'the strip stepped aside');
+    await target.scrollIntoViewIfNeeded();
+    await page.waitForTimeout(300);
+    await target.tap();
+    await page.waitForFunction(i => window.__proofReadingWalk.focusIndex() === i, next);
+    assert.equal(await page.evaluate(() => window.__proofEditingGuard().writing), true);
+    assert.equal(await page.locator('.prw-strip').isVisible(), false);
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => !document.querySelector('.prw-strip').hidden);
+    assert.equal(await page.evaluate(() => window.__proofEditingGuard().writing), false);
   });
   await context.close();
 }

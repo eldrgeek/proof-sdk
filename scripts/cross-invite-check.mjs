@@ -16,6 +16,7 @@
 // Run `npm run build` first. Screenshots go to .preview/ (or --shots <dir>). Exit 0 only if every
 // check passes.
 // Usage: node scripts/cross-invite-check.mjs [--style playmaker|proof] [--shots dir]
+import { attributedComment } from './identity-check-helpers.mjs';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -134,12 +135,6 @@ const agent = (base, slug, key, method, path, body) => fetch(`${base}/api/agent/
   body: body === undefined ? undefined : JSON.stringify(body),
 }).then(async r => ({ status: r.status, body: await r.json().catch(() => ({})) }));
 
-async function markLine(page, line) {
-  await page.locator(`.plm-dot[data-line="${line}"]`).click();
-  const menu = page.locator(`.prw-right .plm-box[data-line="${line}"], .plm-menu`);
-  await menu.waitFor({ state: 'visible' });
-  await menu.getByRole('button', { name: /Agree/ }).click();
-}
 
 async function openInviteDialog(page, phone) {
   if (phone) {
@@ -236,23 +231,20 @@ async function run(browser, style) {
       await agents.page().locator('#share-dialog').getByRole('button', { name: 'Close share dialog' }).click();
     });
 
-    await check(`${tag}: the AI works, and its marks read "Izzy — added by Eric"`, async () => {
-      const marked = await agent(base, slug, izzyKey, 'POST', '/marks/line', { status: 'seen', lineIndex: 2 });
-      assert.equal(marked.status, 200, JSON.stringify(marked.body).slice(0, 300));
-      await eric.reload();
-      await waitForDoc(eric);
-      const view = await serverView(eric, slug);
-      assert.equal(view.body.agentSponsors['ai:izzy'].sponsorName, 'Eric');
-      assert.equal(view.body.agentSponsors['ai:izzy'].runtime, RUNTIME);
-      await eric.locator('.plm-dot[data-line="2"]').click();
-      const box = eric.locator('.prw-right .plm-box[data-line="2"], .plm-menu').first();
-      await box.waitFor({ state: 'visible' });
-      // Accord layout stage 3: everyone's marks on the line follow the line's changes in the Margin.
-      // Polish pass: they fold into "Marked by N"; open it.
-      await eric.waitForFunction(() => { document.querySelectorAll('.prw-right .plm-team-fold:not([open]) > summary').forEach(s => s.click()); return !!document.querySelector('.plm-menu .plm-team, .prw-right .plm-team-fold[open]'); });
-      await eric.locator('.prw-right .amg-tail .plm-team li, .plm-menu .plm-team li', { hasText: 'added by Eric' }).first().waitFor();
-      await eric.screenshot({ path: path.join(shots, `${tag}-2-sponsor-on-mark.png`) });
-    });
+    await check(`${tag}: the AI works, and its proposal reads "Izzy — added by Eric"`, async () => {
+    const line = await eric.evaluate(() => window.__proofLineMarks.lineList()[2].text);
+    const proposal = await agent(base, slug, izzyKey, 'POST', '/marks/suggest-replace', { quote: line, content: 'Izzy proposes clearer words.', why: 'Make the invitation clear.' });
+    assert.equal(proposal.status, 200, JSON.stringify(proposal.body));
+    await eric.reload(); await waitForDoc(eric);
+    const view = await serverView(eric, slug);
+    assert.equal(view.body.agentSponsors['ai:izzy'].sponsorName, 'Eric');
+    assert.equal(view.body.agentSponsors['ai:izzy'].runtime, RUNTIME);
+    await eric.evaluate(() => window.__proofReadingWalk.openReviewItem(2));
+    const card = eric.locator('.prw-right .prw-card', { hasText: 'Izzy — added by Eric' });
+    await card.waitFor({ state: 'visible' });
+    assert.match(await card.innerText(), /Make the invitation clear/);
+    await eric.screenshot({ path: path.join(shots, `${tag}-2-sponsor-on-proposal.png`) });
+  });
 
     await check(`${tag}: the depth cap — the AI cannot add another AI`, async () => {
       const refused = await fetch(`${base}/api/documents/${slug}/agent-keys`, {
@@ -299,20 +291,17 @@ async function run(browser, style) {
 
     const adaCtx = await newContext(browser, base, desk);
     const ada = await adaCtx.newPage();
-    await check(`${tag}: Ada signs in from that invitation and her marks count`, async () => {
-      activePage = ada;
-      await ada.goto(mails().at(-1).link);
-      await ada.waitForURL(url => url.pathname === `/d/${slug}`, { timeout: 15_000 });
-      await waitForDoc(ada);
-      const me = ada.locator('.prw-right .prw-me');
-      await me.waitFor({ state: 'visible' });
-      assert.equal(await me.getAttribute('data-trust'), 'verified');
-      await markLine(ada, 1);
-      await ada.waitForFunction(() => document.querySelector('.plm-dot[data-line="1"]')?.dataset.status === 'agreed', null, { timeout: 9000 });
-      const view = await serverView(ada, slug);
-      assert.ok(view.body.lineMarks.some(m => m.anchor.ordinal === 1 && m.by === `human:${ADA_EMAIL}`), 'her mark counts as a verified person');
-      await ada.screenshot({ path: path.join(shots, `${tag}-5-ada-marks.png`) });
-    });
+    await check(`${tag}: Ada signs in from that invitation and her comment names her`, async () => {
+    activePage = ada;
+    await ada.goto(mails().at(-1).link);
+    await ada.waitForURL(url => url.pathname === `/d/${slug}`, { timeout: 15_000 });
+    await waitForDoc(ada);
+    const me = ada.locator('#share-banner .prw-me');
+    await me.waitFor({ state: 'visible' });
+    assert.equal(await me.getAttribute('data-trust'), 'verified');
+    await attributedComment(ada, slug, 1, 'Ada accepted the invitation', `human:${ADA_EMAIL}`, CLIENT);
+    await ada.screenshot({ path: path.join(shots, `${tag}-5-ada-comment.png`) });
+  });
 
     // ---- 4: the AI attests to a person --------------------------------------------------------
     const samCtx = await newContext(browser, base, desk);
@@ -334,7 +323,7 @@ async function run(browser, style) {
       await sam.goto(link);
       await sam.waitForURL(url => url.pathname === '/', { timeout: 15_000 });
       await openDoc(sam, base, slug);
-      const me = sam.locator('.prw-right .prw-me');
+      const me = sam.locator('#share-banner .prw-me');
       await me.waitFor({ state: 'visible' });
       assert.match(await me.innerText(), /vouched for by Izzy/);
       const refused = await pagePost(sam, `/api/documents/${slug}/line-marks`, {

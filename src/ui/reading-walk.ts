@@ -1,3 +1,4 @@
+import { REVIEW_SURFACE_POLICY, viewerLabel } from '../shared/review-surface';
 /**
  * The reading layout and reading walk.
  * Mike, 2026-09-24, Accord yfbqrau4: clicking text edits it as a live proposal.
@@ -33,7 +34,7 @@ import { READING_WALK, ReadingWalk, countWords, dwellMsFor, type WalkLine, type 
 import type { SinceItem, SinceYouReport, RingerItem } from '../shared/alignment';
 import type { LineMarksUI, MarkBox } from './line-marks';
 import { isOpenReviewMark, type PlayMakerReview, type ReviewAction } from './playmaker-review';
-import { editingGuardDebug, editingRemainingMs, installEditingGuard, isEditing, isInputComposing, isReadingOwned, isWriting, letterShortcutsEnabled, onEditingActivity, onWritingChange, setLetterShortcutsEnabled } from '../editor/editing-guard';
+import { editingGuardDebug, editingRemainingMs, installEditingGuard, isInputComposing, isReadingOwned, isWriting, letterShortcutsEnabled, onEditingActivity, onWritingChange, setLetterShortcutsEnabled } from '../editor/editing-guard';
 import { EDIT_SESSION_POLICY, postedNoticeText } from '../shared/edit-session';
 import { READING_MODE_POLICY } from '../shared/reading-keys';
 // Accord round 2, stage D: the discussion on a line lives in the document, in the Line tab.
@@ -45,7 +46,6 @@ import { SETTINGS_POLICY } from '../shared/layout-chrome';
 import { ScrollFollower, containRailWheel } from './rail-follow';
 import { setReadingAnchor } from '../editor/caret-anchor';
 import { SCROLL_CAMERA_POLICY, anchoredScroll, bandFractionFor, cameraScroll, deadZone, type CameraView } from '../shared/scroll-camera';
-import { TIER_POLICY } from '../shared/line-tiers';
 import { HIGHLIGHT_POLICY, MARKED_UP_TO_POLICY, formatAgo, issuesLeftText } from '../shared/layout-status';
 import { ACCORDS_LIST_POLICY, BOTTOM_CHAT_POLICY, OPEN_ITEMS_POLICY, MARGIN_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY, parseRailState, type MarginTab, type RailState } from '../shared/layout-panels';
 import { NavigatorUI } from './navigator';
@@ -190,6 +190,7 @@ export class ReadingWalkUI {
    */
   private readonly modeEl = el('span', 'prw-mode pst-mode');
   /** Accord round 2 stage A: "Proposed — Undo" after a leave posts, then it goes quiet. */
+  private readonly guestNotice = el('div', 'prw-guest-notice');
   private readonly sbNotice = el('span', 'pst-notice');
   private noticeTimer: ReturnType<typeof setTimeout> | null = null;
   /**
@@ -327,6 +328,8 @@ export class ReadingWalkUI {
     window.addEventListener('resize', this.onResize);
     document.addEventListener('keydown', this.onKeyDown);
     document.addEventListener('click', this.onDocClick, true);
+    document.addEventListener('beforeinput', this.guestEditAttempt, true);
+    document.addEventListener('keydown', this.guestEditAttempt, true);
     document.addEventListener('visibilitychange', this.onVisibility);
     document.addEventListener('focusin', this.onFocusChange);
     document.addEventListener('focusout', this.onFocusChange);
@@ -341,13 +344,9 @@ export class ReadingWalkUI {
     // Step B4c: "This sitting" (the budget setting and its status) sits under the reading speed,
     // both in View › Reading settings since Accord layout stage 2 (decision 10).
     const budget = this.host.lineMarks().budgetEl;
-    if (SETTINGS_POLICY.readingSettingsInView) this.settings.mount(this.rateEl, budget);
+    if (SETTINGS_POLICY.readingSettingsInView) this.settings.mount(budget);
     else { this.rightHeadEl?.append(this.rateEl); if (budget.parentElement !== this.rightBody) this.rightBody.insertBefore(budget, this.boxHost); }
-    // Step B4f: blind marking (an Owner's switch for the whole document) moved to the Share dialog's
-    // Link tab (Accord layout stage 3, COS): the editor mounts lineMarks().blindEl there.
-    // Line tiers: decision / context counts and "Show only decisions" sit with the Outline's tools.
-    const tiers = this.host.lineMarks().tierEl;
-    if (tiers.parentElement !== this.navigator.toolsEl) this.navigator.toolsEl.append(tiers);
+    // The Accord rules retire reader tier controls. Stored tags remain available to the API.
     // Keep proxy state available, but the retired Line tab and its brief render nowhere.
     this.proxy.start();
     (window as unknown as { __proofProxy?: ProxyMarksUI }).__proofProxy = this.proxy;
@@ -373,11 +372,14 @@ export class ReadingWalkUI {
     window.removeEventListener('resize', this.onResize);
     document.removeEventListener('keydown', this.onKeyDown);
     document.removeEventListener('click', this.onDocClick, true);
+    document.removeEventListener('beforeinput', this.guestEditAttempt, true);
+    document.removeEventListener('keydown', this.guestEditAttempt, true);
     document.removeEventListener('visibilitychange', this.onVisibility);
     document.removeEventListener('focusin', this.onFocusChange);
     document.removeEventListener('focusout', this.onFocusChange);
     window.removeEventListener('proof:follow-in-page-link', this.onInPageLink as EventListener);
     this.strip.remove();
+    this.guestNotice.remove();
     this.statusBar.remove();
     this.ruleEl.remove();
     if (this.agoTimer) clearInterval(this.agoTimer);
@@ -424,7 +426,7 @@ export class ReadingWalkUI {
   /** The editor view updated (cursor, marks, text): re-read pending marks if they changed. */
   notifyViewUpdate(): void {
     if (!this.started) return;
-    if (isEditing()) this.queueFollowCaret();
+    if (isWriting()) this.queueFollowCaret();
     const sig = this.pendingSignature();
     if (sig !== this.marksSig) this.sync();
     else this.queueRender();
@@ -517,7 +519,7 @@ export class ReadingWalkUI {
   private followCaret(): void {
     const walk = this.walk;
     const view = this.view();
-    if (!walk || !view || !this.started || !isWriting() || !isEditing()) return;
+    if (!walk || !view || !this.started || !isWriting()) return;
     const line = this.host.lineMarks().lineAtPos(view.state.selection.head);
     if (line < 0 || walk.isHidden(line)) return;
     this.selectPassage(line);
@@ -605,7 +607,9 @@ export class ReadingWalkUI {
     const height = window.innerHeight;
     const doc = Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0);
     return {
-      viewportHeight: Math.max(chrome + 1, Math.min(
+      viewportHeight: height,
+      bottomInset: height - Math.max(chrome + 1, Math.min(
+        window.visualViewport ? window.visualViewport.offsetTop + window.visualViewport.height : height,
         this.chatSlot.isConnected ? this.chatSlot.getBoundingClientRect().top : height,
         isPhone() && this.right.classList.contains('prw-sheet-open') ? this.right.getBoundingClientRect().top : height)),
       topInset: Math.min(Math.max(0, chrome), Math.max(0, height - 1)),
@@ -700,19 +704,11 @@ export class ReadingWalkUI {
     // Reading keys act only on the explicitly selected passage.
     // Mike, 2026-09-24, yfbqrau4: A belongs only to Review; R no longer marks lines.
     if (/^[ar]$/i.test(key)) { event.preventDefault(); return; }
-    if (key === 'ArrowDown') { event.preventDefault(); this.next(); return; }
-    if (key === 'ArrowUp') { event.preventDefault(); this.previous(); return; }
-    // Line tiers: D flips the focus line between decision and context (an explicit action).
-    if (key.toLowerCase() === TIER_POLICY.flipKey) { event.preventDefault(); this.flipFocusTier(); return; }
+    if (key.toLowerCase() === 'j' || key === 'ArrowDown') { event.preventDefault(); this.next(); return; }
+    if (key.toLowerCase() === 'k' || key === 'ArrowUp') { event.preventDefault(); this.previous(); return; }
     // Step B4f: E asks the AI collaborators to explain the focus line (never a rejection).
     if (key.toLowerCase() === EXPLAIN_POLICY.key) { event.preventDefault(); this.explainFocus(); return; }
-    // Step B4f: 1-9 pick among the focus line's competing wordings (1 is the original).
     const focus = this.targetLine();
-    if (/^[1-9]$/.test(key) && this.host.lineMarks().altSetFor(focus)) {
-      event.preventDefault();
-      void this.host.lineMarks().pickAlternative(focus, key);
-      return;
-    }
     // Step B3: Y / N / T answer the ask on the focus line (only when the line carries one).
     const choice = (Object.keys(ASK_POLICY.keys) as AskChoice[]).find(c => ASK_POLICY.keys[c] === key.toLowerCase());
     if (choice && this.host.lineMarks().askForLine(focus)) {
@@ -792,12 +788,6 @@ export class ReadingWalkUI {
   /** Test hook: the Line tab's discussion panel. */
   threadsPanel(): ThreadsPanel | null { return this.threads; }
 
-  /** Line tiers: D on the focus line. */
-  private flipFocusTier(): void {
-    this.renderNow();
-    this.box?.flipTier?.();
-  }
-
   /** Step B3: Y / N / T on the focus line's ask. */
   private answerFocus(choice: AskChoice): void {
     if (isPhone()) this.closeSheets();
@@ -872,8 +862,26 @@ export class ReadingWalkUI {
   /** Re-reads the documents list (File › Open does before it shows it). */
   reloadDocuments(): Promise<void> { return this.loadDocuments(); }
 
-  /** A click selects the passage. It does not start Editing, and a draft keeps the click. */
+  private guestEditAttempt = (event: Event): void => {
+    const target = event.target as HTMLElement | null;
+    if (!target?.closest('.ProseMirror') || target.closest('button, a[href], input, textarea') || this.host.canSuggest()) return;
+    if (event instanceof KeyboardEvent && (event.ctrlKey || event.metaKey || event.altKey || (event.key.length !== 1 && !['Backspace', 'Delete', 'Enter'].includes(event.key)))) return;
+    const me = this.host.lineMarks().viewerIdentity();
+    if (me.trust !== 'guest' && !me.attestedBy) return;
+    event.preventDefault();
+    this.guestNotice.textContent = REVIEW_SURFACE_POLICY.guestEditNotice;
+    this.guestNotice.setAttribute('role', 'status');
+    document.body.append(this.guestNotice);
+    if (me.signInUrl) {
+      const link = el('a', 'prw-guest-signin', 'Sign in');
+      link.href = me.signInUrl;
+      this.guestNotice.replaceChildren('You can comment as a guest. ', link, ' to edit.');
+    }
+  };
+
+  /** A click places the caret for editors and names the passage for guests. */
   private onDocClick = (event: MouseEvent): void => {
+    this.guestEditAttempt(event);
     if (isWriting()) return;
     const view = this.view();
     const target = event.target as HTMLElement | null;
@@ -1127,9 +1135,8 @@ export class ReadingWalkUI {
     }, wait + 5);
   }
 
-  private enqueueSeen(key: string): void {
-    this.seenQueue.push(key);
-    void this.drainSeen();
+  private enqueueSeen(_key: string): void {
+    if (REVIEW_SURFACE_POLICY.seenByDwell) { this.seenQueue.push(_key); void this.drainSeen(); }
   }
 
   private async drainSeen(): Promise<void> {
@@ -1493,7 +1500,13 @@ export class ReadingWalkUI {
    * Step B6: the right rail header says who the viewer's marks and answers will name. A guest's
    * name is shown as unverified, with a sign-in link when this server has sign-in.
    */
+  identityLabel(): string {
+    return viewerLabel(this.host.lineMarks().viewerIdentity());
+  }
+
   private renderMe(): void {
+    const toolbar = document.querySelector('#share-banner .share-pill-center');
+    if (toolbar && this.meEl.parentElement !== toolbar) toolbar.append(this.meEl);
     const me = this.host.lineMarks().viewerIdentity();
     const sig = JSON.stringify([me.actor, me.trust, me.name, me.email ?? '', me.signInUrl ?? '', me.markNeedsSignIn === true, me.attestedBy?.actor ?? '']);
     if (this.meEl.dataset.sig === sig) return;
@@ -1516,7 +1529,7 @@ export class ReadingWalkUI {
       const badge = el('span', 'prw-me-badge', '✓');
       badge.setAttribute('aria-hidden', 'true');
       const who = el('span', 'prw-me-name', me.name);
-      this.meEl.append(badge, el('span', 'prw-me-label', 'Signed in as '), who);
+      this.meEl.append(badge, el('span', 'prw-me-label', 'Signed in as '), who, el('span', 'prw-me-verified', ' (verified)'));
       this.meEl.title = `Your marks and answers are recorded as ${me.email ?? me.actor}`;
       return;
     }
@@ -1529,10 +1542,10 @@ export class ReadingWalkUI {
     // Invite person (2026-09-19): under the default guest setting a guest reads, comments and
     // chats; marks, answers, picks and approvals need signing in.
     this.meEl.title = me.markNeedsSignIn
-      ? 'You are not signed in: you can read, comment and chat. Sign in to mark lines and answer.'
+      ? 'You can comment as a guest. Sign in to edit.'
       : 'You are not signed in: your marks show your typed name as a guest, and do not answer asks addressed to a signed-in person.';
     if (me.signInUrl) {
-      const link = el('a', 'prw-me-signin', me.markNeedsSignIn ? 'Sign in to mark' : 'Sign in');
+      const link = el('a', 'prw-me-signin', 'Sign in');
       link.href = me.signInUrl;
       link.onclick = () => {
         // Come back here after signing in (read by public/vendor/soma-auth/proof-session.js).
@@ -1683,7 +1696,7 @@ export class ReadingWalkUI {
       list.append(li);
     }
     card.append(list);
-    card.append(el('p', 'prw-bundle-note', BUNDLE_POLICY.acceptNote));
+    card.append(el('p', 'prw-bundle-note', 'Accepting agrees to these changes.'));
     const status = el('p', 'prw-bundle-status', describeBundle(view));
     status.setAttribute('role', 'status');
     card.append(status);
@@ -1764,7 +1777,7 @@ export class ReadingWalkUI {
     if (flags.current) card.dataset.current = 'true';
     card.style.setProperty('--review-author', getMarkColor(mark.by));
     const who = el('div', 'prw-card-who');
-    who.append(el('strong', undefined, getActorName(mark.by)), el('span', undefined, mark.kind === 'comment' ? 'Comment' : 'Suggestion'));
+    who.append(el('strong', undefined, this.host.lineMarks().proposalAuthor(mark.by ?? '')), el('span', undefined, mark.kind === 'comment' ? 'Comment' : 'Suggestion'));
     card.append(who);
     const body = el('div', 'prw-card-body');
     if (mark.kind === 'replace' || mark.kind === 'delete') body.append(el('del', undefined, mark.quote));

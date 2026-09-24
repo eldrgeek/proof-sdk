@@ -8,6 +8,7 @@
 // (desktop) and 390 (phone). Screenshots go to .preview/ (or --shots <dir>).
 // Exit code 0 only if every check passes.
 // Usage: node scripts/identity-check.mjs [--style playmaker|proof] [--shots dir]
+import { attributedComment } from './identity-check-helpers.mjs';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -117,15 +118,6 @@ async function guestPage(browser, base, slug, name, options) {
   return { context, page };
 }
 
-const markBox = (page, line) => page.locator(`.prw-right .plm-box[data-line="${line}"], .plm-menu`);
-async function mark(page, line, label) {
-  await page.locator(`.plm-dot[data-line="${line}"]`).click();
-  const menu = markBox(page, line);
-  await menu.waitFor({ state: 'visible' });
-  await menu.getByRole('button', { name: label }).click();
-  await page.waitForTimeout(150);
-}
-
 const serverMarks = (page, slug) => page.evaluate(async ({ s, h }) => {
   const r = await fetch(`/api/documents/${s}/line-marks`, { credentials: 'same-origin', headers: h });
   return (await r.json());
@@ -148,24 +140,24 @@ async function run(browser, style) {
     const slug = created.body.slug;
     await openDoc(mike, base, slug);
 
-    await check(`${tag}: the right rail header says "Signed in as Mike Wolf" (verified)`, async () => {
-      const me = mike.locator('.prw-right .prw-me');
+    await check(`${tag}: the top bar and People menu say "Signed in as Mike Wolf" (verified)`, async () => {
+      const me = mike.locator('#share-banner .prw-me');
       await me.waitFor({ state: 'visible' });
       assert.equal(await me.getAttribute('data-trust'), 'verified');
       assert.match(await me.innerText(), /Signed in as\s*Mike Wolf/);
       assert.equal(await me.locator('.prw-me-signin').count(), 0);
+      await mike.locator('.amb-top[data-menu="people"]').click();
+      assert.ok(await mike.getByRole('menuitem', { name: 'Signed in as Mike Wolf (verified)', exact: true }).isVisible());
+      await mike.keyboard.press('Escape');
       await mike.screenshot({ path: path.join(shots, `${tag}-1-signed-in.png`) });
     });
 
-    await check(`${tag}: a signed-in mark is attributed to the email`, async () => {
-      await mark(mike, L.INTRO, /Agree/);
-      await waitFor(mike, () => document.querySelector('.plm-dot[data-line="1"]')?.dataset.status === 'agreed');
-      const body = await serverMarks(mike, slug);
-      const m = body.lineMarks.find(x => x.anchor.ordinal === 1);
-      assert.equal(m?.by, 'human:mw@mike-wolf.com', JSON.stringify(body.lineMarks));
-      assert.deepEqual(body.owners, ['human:mw@mike-wolf.com']);
-      assert.equal(body.viewer.canApprove, true, 'the creator is an owner');
-    });
+    await check(`${tag}: a signed-in comment is attributed to the email`, async () => {
+    await attributedComment(mike, slug, L.INTRO, 'Signed-in comment', MIKE, clientHeaders);
+    const state = await serverMarks(mike, slug);
+    assert.deepEqual(state.owners, [MIKE]);
+    assert.equal(state.viewer.canApprove, true);
+  });
 
     // An agent key, minted in Mike's page the way "Add agent" mints it.
     const key = await mike.evaluate(async ({ s, h }) => {
@@ -193,32 +185,12 @@ async function run(browser, style) {
     const g = await guestPage(browser, base, slug, 'Mike Wolf', { viewport: { width: 1440, height: 900 } });
     await check(`${tag}: a guest typing "Mike Wolf" is shown as a guest, unverified, with Sign in`, async () => {
       activePage = g.page;
-      const me = g.page.locator('.prw-right .prw-me');
+      const me = g.page.locator('#share-banner .prw-me');
       await me.waitFor({ state: 'visible' });
       assert.equal(await me.getAttribute('data-trust'), 'guest');
       assert.match(await me.innerText(), /Mike Wolf\s*guest, unverified\s*—\s*Sign in/);
       assert.equal(await me.locator('.prw-me-signin').getAttribute('href'), '/');
       await g.page.screenshot({ path: path.join(shots, `${tag}-2-guest.png`) });
-    });
-
-    await check(`${tag}: a guest's mark is guest:<name> and shows "(guest)" to the team`, async () => {
-      await mark(g.page, L.MIDDLE, /Agree/);
-      await waitFor(g.page, () => document.querySelector('.plm-dot[data-line="2"]')?.dataset.status === 'agreed');
-      const body = await serverMarks(g.page, slug);
-      const m = body.lineMarks.find(x => x.anchor.ordinal === L.MIDDLE && x.by.startsWith('guest:'));
-      assert.equal(m?.by, 'guest:Mike Wolf');
-      assert.ok(!body.lineMarks.some(x => x.anchor.ordinal === L.MIDDLE && x.by === MIKE), 'the guest did not mark as Mike');
-      await mike.evaluate(() => window.__proofLineMarks.refresh());
-      await waitFor(mike, () => window.__proofLineMarks.debugState().team.includes('guest:Mike Wolf'));
-      await mike.locator('.anv-people').click();
-      await mike.getByRole('menuitem', { name: 'Who is here' }).click();
-      await mike.locator('#who-dialog .acd-participant-statuses').waitFor({ state: 'visible', timeout: 8000 });
-      const peopleText = await mike.locator('#who-dialog .acd-participant-statuses').innerText();
-      assert.match(peopleText, /Mike Wolf \(guest\)/);
-      const team = await mike.evaluate(() => window.__proofLineMarks.debugState().team);
-      assert.ok(team.includes('guest:Mike Wolf'), JSON.stringify(team));
-      assert.ok(team.some(actor => actor.includes('claude')), JSON.stringify(team));
-      await mike.locator('#who-dialog .acd-close').click();
     });
 
     await check(`${tag}: an ask to human:<email> is not closed by the guest typing the name; the signed-in person closes it`, async () => {
@@ -259,12 +231,12 @@ async function run(browser, style) {
     const pMike = await signIn(pCtx, cli, base);
     await openDoc(pMike, base, slug);
     activePage = pMike;
-    await check(`${ptag}: the reading sheet's header says who you are (signed in)`, async () => {
-      await pMike.evaluate(() => window.__proofReadingWalk.openSheet('right'));
-      const me = pMike.locator('.prw-right.prw-sheet-open .prw-me');
+    await check(`${ptag}: the top bar says who you are (signed in)`, async () => {
+
+      const me = pMike.locator('#share-banner .prw-me');
       await me.waitFor({ state: 'visible' });
       assert.match(await me.innerText(), /Signed in as\s*Mike Wolf/);
-      const info = await pMike.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, r: document.querySelector('.prw-right .prw-me').getBoundingClientRect().toJSON() }));
+      const info = await pMike.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, r: document.querySelector('#share-banner .prw-me').getBoundingClientRect().toJSON() }));
       assert.ok(info.sw <= info.cw + 1, `no sideways scroll (${info.sw} > ${info.cw})`);
       assert.ok(info.r.right <= info.cw + 1, `the header fits: ${JSON.stringify(info.r)}`);
       await pMike.screenshot({ path: path.join(shots, `${ptag}-1-signed-in.png`) });
@@ -272,21 +244,22 @@ async function run(browser, style) {
     await pCtx.close();
     const pg = await guestPage(browser, base, slug, 'Ada', phoneOpts);
     activePage = pg.page;
-    await check(`${ptag}: a guest on the phone sees "guest, unverified" and Sign in; a tap-mark is guest:Ada`, async () => {
-      await pg.page.evaluate(() => window.__proofReadingWalk.openSheet('right'));
-      const me = pg.page.locator('.prw-right.prw-sheet-open .prw-me');
-      await me.waitFor({ state: 'visible' });
-      assert.match(await me.innerText(), /Ada\s*guest, unverified\s*—\s*Sign in/);
-      await pg.page.screenshot({ path: path.join(shots, `${ptag}-2-guest.png`) });
-      await pg.page.evaluate(() => window.__proofReadingWalk.closeSheets());
-      await pg.page.locator('.plm-dot[data-line="4"]').tap();
-      const sheet = pg.page.locator('.prw-right.prw-sheet-open');
-      await sheet.waitFor({ state: 'visible' });
-      await sheet.getByRole('button', { name: /Agree/ }).tap();
-      await waitFor(pg.page, () => document.querySelector('.plm-dot[data-line="4"]')?.dataset.status === 'agreed');
-      const body = await serverMarks(pg.page, slug);
-      assert.ok(body.lineMarks.some(m => m.anchor.ordinal === 4 && m.by === 'guest:Ada'), JSON.stringify(body.lineMarks.map(m => [m.anchor.ordinal, m.by])));
-    });
+    await check(`${ptag}: a guest on the phone sees "guest, unverified" and Sign in; a comment is attributed to guest:Ada`, async () => {
+    const me = pg.page.locator('#share-banner .prw-me');
+    await me.waitFor({ state: 'visible' });
+    assert.equal(await me.getAttribute('data-trust'), 'guest');
+    assert.match(await me.innerText(), /guest, unverified/);
+    assert.equal(await me.locator('.prw-me-signin').getAttribute('href'), '/');
+    await pg.page.locator('#share-banner .share-pill-overflow').tap();
+    assert.ok(await pg.page.getByRole('menuitem', { name: 'Ada — guest, unverified', exact: true }).isVisible());
+    assert.ok(await pg.page.getByRole('menuitem', { name: 'Sign in', exact: true }).isVisible());
+    await pg.page.keyboard.press('Escape');
+    await pg.page.locator('.ProseMirror p').first().tap();
+    assert.ok(await pg.page.locator('.prw-guest-notice').isVisible());
+    assert.ok(await pg.page.locator('.prw-guest-notice').getByRole('link', { name: 'Sign in' }).isVisible());
+    await attributedComment(pg.page, slug, 4, 'Phone guest comment', 'guest:Ada', clientHeaders);
+    await pg.page.screenshot({ path: path.join(shots, `${ptag}-2-guest.png`) });
+  });
     await pg.context.close();
   } finally {
     await stop();

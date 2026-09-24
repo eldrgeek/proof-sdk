@@ -191,21 +191,15 @@ async function desktop(browser, base) {
     assert.equal(response.status, 200, await response.text());
     await waitFor(page, () => window.__proofLineMarks.debugState().marks.some(m => m.anchor.ordinal === 7 && m.status === 'agreed'));
   });
-  await check(`${tag}: editing a line resets the others' marks on it and gives the changer Agreed`, async () => {
-    // Line 2 ("The second paragraph..."): Ada rejected it; Bob marks it Seen, then edits it directly.
-    await mark(b.page, 2, /Seen/);
-    await b.page.getByRole('button', { name: 'Enter Editing', exact: true }).click();
+  await check(`${tag}: editing a line publishes a proposal without a line agreement`, async () => {
+    const before = await b.page.evaluate(() => window.__proofLineMarks.myStatus(2));
     await b.page.locator('.ProseMirror p', { hasText: 'The second paragraph' }).click();
     await b.page.keyboard.press('End');
-    await b.page.keyboard.insertText(' Edited by Bob.');
-    await waitFor(page, () => document.querySelector('.ProseMirror')?.textContent.includes('Edited by Bob.'), null, 12000);
-    // Ada's Rejected there is now out of date ("changed"). Bob changed the meaning of a line
-    // another person had marked, so his own mark became Agreed (Mike's rule, 2026-09-19; it was
-    // his Seen carried forward before).
-    await waitFor(page, () => window.__proofLineMarks.myStatus(2) === 'changed', null, 12000);
-    await waitFor(b.page, () => window.__proofLineMarks.myStatus(2) === 'agreed', null, 12000);
-    await waitFor(page, () => window.__proofLineMarks.debugState().marks.some(m => m.anchor.ordinal === 2 && m.status === 'agreed'), null, 12000);
-    await page.screenshot({ path: path.join(shots, `${tag}-2-changed.png`) });
+    await b.page.keyboard.type(' Proposed by Bob.');
+    await waitFor(page, () => window.proof.getAllMarks().some(m => m.kind === 'insert' && m.data?.content?.includes('Proposed by Bob.')), null, 12000);
+    assert.equal(await b.page.evaluate(() => window.__proofLineMarks.myStatus(2)) === 'agreed' && before !== 'agreed', false, 'typing must not manufacture line agreement');
+    await b.page.keyboard.press('Escape');
+    await page.screenshot({ path: path.join(shots, `${tag}-2-proposed.png`) });
   });
   await check(`${tag}: Next selects open passages in document order and preserves keyboard focus`, async () => {
     await seedReviewAsks(base, created, page, [3, 5]);

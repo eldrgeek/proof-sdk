@@ -162,27 +162,17 @@ async function desktop(browser, base, style, width) {
     await hoverChangesNothing(page, 4);
   });
   await check(`${tag}: shortcut after hover acts on the selected passage only`, async () => {
-    await selectPassage(page, 3);
-    await hoverChangesNothing(page, 4);
-    await page.keyboard.press('a');
-    await waitFor(page, () => window.__proofLineMarks.myStatus(3) === 'agreed');
-    assert.notEqual(await page.evaluate(() => window.__proofLineMarks.myStatus(4)), 'agreed');
-    assert.equal(await isHiddenLine(page, 3), false, 'Agree hid its passage');
+    await selectPassage(page, 3); await hoverChangesNothing(page, 4);
+    await page.keyboard.press('j');
+    await waitFor(page, () => window.__proofReadingWalk.focusIndex() === 4);
+    await page.keyboard.press('k');
+    assert.equal((await walk(page)).cursor, 3);
+    assert.equal(await isHiddenLine(page, 3), false);
     await expandedStaysExpanded(page);
   });
-  await check(`${tag}: collapsed heading agreement marks only the heading`, async () => {
-    await page.evaluate(() => window.__proofFolding.setFolded(9, true));
-    await selectPassage(page, 9);
-    await hoverChangesNothing(page, 9);
-    const before = await page.evaluate(() => window.__proofLineMarks.debugState().sectionWrites);
-    await page.keyboard.press('a');
-    await waitFor(page, () => window.__proofLineMarks.myStatus(9) === 'agreed');
-    assert.equal(await page.evaluate(() => window.__proofLineMarks.debugState().sectionWrites), before);
-    for (const i of [10, 11, 12, 13]) assert.notEqual(await page.evaluate(i => window.__proofLineMarks.myStatus(i), i), 'agreed');
-    const explicit = page.locator('.prw-right .plm-section-note');
-    assert.equal(await explicit.textContent(), 'Show all 5 lines to agree with this section');
-  });
+
   await check(`${tag}: J/K treat the collapsed section as one passage`, async () => {
+    await page.evaluate(() => window.__proofFolding.setFolded(9, true));
     await selectPassage(page, 9);
     await page.keyboard.press('j');
     assert.equal((await walk(page)).cursor, 14);
@@ -210,27 +200,24 @@ async function desktop(browser, base, style, width) {
   await check(`${tag}: letter shortcuts can be disabled; IME and fields never run them`, async () => {
     await selectPassage(page, 15);
     await page.evaluate(() => window.__proofReadingWalk.toggleLetterShortcuts());
-    await page.keyboard.press('a'); await page.keyboard.press('j');
-    assert.equal((await walk(page)).cursor, 15);
-    assert.notEqual(await page.evaluate(() => window.__proofLineMarks.myStatus(15)), 'agreed');
+    await page.keyboard.press('j'); assert.equal((await walk(page)).cursor, 15);
     await page.evaluate(() => window.__proofReadingWalk.toggleLetterShortcuts());
-    await page.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true, isComposing: true })));
-    assert.notEqual(await page.evaluate(() => window.__proofLineMarks.myStatus(15)), 'agreed');
-    await page.locator('.prw-right .plm-choice[data-status="rejected"]').click();
-    const reason = page.locator('.prw-right .plm-reason input').first();
-    await reason.fill('arjke');
+    await page.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true, isComposing: true })));
     assert.equal((await walk(page)).cursor, 15);
-    assert.notEqual(await page.evaluate(() => window.__proofLineMarks.myStatus(15)), 'agreed');
-    await page.getByRole('button', { name: 'Enter Editing', exact: true }).click();
-    await page.keyboard.press('a'); await page.keyboard.press('j');
-    assert.equal((await walk(page)).cursor, 15, 'direct Editing mode ran a letter shortcut');
-    assert.notEqual(await page.evaluate(() => window.__proofLineMarks.myStatus(15)), 'agreed');
-    await page.getByRole('button', { name: 'Leave Editing', exact: true }).click();
-
+    const input = page.locator('.prw-chat-bottom .pch-input');
+    await input.fill('arjke'); assert.equal((await walk(page)).cursor, 15);
+    await input.fill('');
+    await page.evaluate(() => window.__proofReadingWalk.focusDocument(15));
+    const before = await page.evaluate(() => window.__editorView.state.doc.textContent.length);
+    await page.keyboard.type('aj');
+    assert.equal(await page.evaluate(() => window.__editorView.state.doc.textContent.length), before + 2);
+    assert.equal((await walk(page)).cursor, 15);
+    await page.keyboard.press('Backspace'); await page.keyboard.press('Backspace');
+    await page.keyboard.press('Escape');
   });
   await check(`${tag}: remote comment preserves folds, panels, focus and passage position`, async () => {
     await selectPassage(page, 15);
-    await page.locator('.prw-right .plm-actions button').first().focus();
+    await page.locator('.anv-tab[data-tab="issues"]').focus();
     const state = () => page.evaluate(() => {
       const lm = window.__proofLineMarks, w = window.__proofReadingWalk.debugState();
       return { cursor: w.cursor, top: lm.editorView().nodeDOM(lm.lineList()[15].pos).getBoundingClientRect().top,
@@ -251,7 +238,8 @@ async function desktop(browser, base, style, width) {
     assert.deepEqual({ ...after, top: 0 }, { ...before, top: 0 });
   });
   if (style === 'playmaker') await check(`${tag}: incoming review items preserve list order and keyboard focus`, async () => {
-    await page.locator('.prw-left .anv-tab[data-tab="issues"]').click();
+    await page.evaluate(() => window.__proofReadingWalk.showMarksPanel());
+    await page.locator('.prw-right .anv-tab[data-tab="issues"]').click();
     const rows = page.locator('.pm-review-row');
     const before = await rows.evaluateAll(rows => rows.map(row => row.dataset.reviewRow));
     await rows.first().focus();
@@ -293,34 +281,7 @@ async function desktop(browser, base, style, width) {
     await page.reload(); await ready(page);
     assert.equal(await page.evaluate(() => window.__proofFolding.isFolded(9)), true);
   });
-  await check(`${tag}: a collapsed subsection must be shown before the section can be agreed`, async () => {
-    await page.evaluate(() => window.__proofFolding.setFolded(6, true));
-    await selectPassage(page, 2);
-    const note = page.locator('.prw-right .plm-section-note');
-    assert.equal(await note.textContent(), 'Show all 7 lines to agree with this section');
-    await note.click();
-    await waitFor(page, () => window.__proofFolding.isFolded(6) === false && window.__proofFolding.isFolded(2) === false);
-    assert.equal(await note.textContent(), 'Agree with this section (7 lines)');
-    assert.notEqual(await page.evaluate(() => window.__proofLineMarks.myStatus(8)), 'agreed', 'showing the lines agreed a hidden line');
-  });
-  await check(`${tag}: captured section agreement excludes a concurrent insertion`, async () => {
-    await selectPassage(page, 14);
-    await page.evaluate(() => {
-      const action = document.querySelector('.prw-right .plm-section-note');
-      window.__s1SectionAction = action;
-    });
-    await agentEdit(base, created, [
-      { op: 'insert_after', ref: 'b16', blocks: [{ markdown: 'A newly inserted sentence is not consented to.' }] },
-    ], `s1-scope-${Date.now()}-${Math.random()}`);
-    await waitFor(page, () => window.__proofLineMarks.lineList().some(l => l.text.startsWith('A newly inserted')));
-    await page.evaluate(() => window.__s1SectionAction.click());
-    await waitFor(page, () => window.__proofLineMarks.myStatus(14) === 'agreed');
-    const insertedStatus = await page.evaluate(() => {
-      const lm = window.__proofLineMarks;
-      return lm.myStatus(lm.lineList().find(l => l.text.startsWith('A newly inserted')).index);
-    });
-    assert.notEqual(insertedStatus, 'agreed');
-  });
+
   await page.screenshot({ path: path.join(shots, `${tag}.png`) });
   await context.close();
 }
@@ -331,15 +292,14 @@ async function phone(browser, base, style) {
     ...devices['iPhone 13'], viewport: { width: 375, height: 812 }, screen: { width: 375, height: 812 },
   });
   activePage = page;
-  await check(`usability-s1-${style}-phone: tap disclosure and Agree keep hidden text out of scope`, async () => {
-    await chip(page, 9).scrollIntoViewIfNeeded(); await chip(page, 9).tap();
-    assert.equal(await chip(page, 9).getAttribute('aria-expanded'), 'false');
-    await page.locator('.plm-dot[data-line="9"]').tap();
-    const sheet = page.locator('.prw-right.prw-sheet-open');
-    await sheet.getByRole('button', { name: /^Agree$/ }).tap();
-    await waitFor(page, () => window.__proofLineMarks.myStatus(9) === 'agreed');
-    assert.notEqual(await page.evaluate(() => window.__proofLineMarks.myStatus(10)), 'agreed');
-    assert.equal(await isHiddenLine(page, 9), false);
+  await check(`usability-s1-${style}-phone: tap disclosure hides and reveals text without mark controls`, async () => {
+    await page.locator('.pfold-chip[data-heading="9"]').tap();
+    await waitFor(page, () => window.__proofFolding.isFolded(9));
+    assert.equal(await isHiddenLine(page, 10), true);
+    assert.equal(await page.locator('.plm-section-note, .plm-box').count(), 0);
+    await page.locator('.pfold-chip[data-heading="9"]').tap();
+    await waitFor(page, () => !window.__proofFolding.isFolded(9));
+    assert.equal(await isHiddenLine(page, 10), false);
   });
   await check(`usability-s1-${style}-phone: scrolling accepts nothing and sections remain expanded`, async () => {
     await expandedStaysExpanded(page); await scrollAcceptsNothing(page);

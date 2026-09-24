@@ -1,3 +1,4 @@
+import { REVIEW_SURFACE_POLICY, viewerLabel, sectionPendingChanges } from '../shared/review-surface';
 /** Review scopes, completion, ordering and anchoring. Mike, 2026-09-23 (usability brief). */
 import assert from 'node:assert/strict';
 import { openView, type OpenView, type OpenViewInput } from '../shared/open-view';
@@ -127,3 +128,12 @@ test('many documents keep the count, item lines and Open computation consistent'
   }
 });
 console.log(`\n${passed} review-list tests passed`);
+
+assert.equal(viewerLabel({ actor: 'human:mike@example.test', name: 'Mike Wolf', trust: 'verified', signInUrl: null }), 'Signed in as Mike Wolf (verified)');
+assert.equal(viewerLabel({ actor: 'guest:Mike Wolf', name: 'Mike Wolf', trust: 'guest', signInUrl: '/' }), 'Mike Wolf — guest, unverified');
+assert.equal(REVIEW_SURFACE_POLICY.seenByDwell, false);
+assert.equal(REVIEW_SURFACE_POLICY.alternativeStacks, false);
+assert.deepEqual(REVIEW_SURFACE_POLICY.identityHomes, ['toolbar', 'people']);
+
+assert.equal(sectionPendingChanges(2, 6, [0, 2, 4, 4, 6]), 3);
+assert.equal(sectionPendingChanges(7, 9, [0, 2, 4, 4, 6]), 0);

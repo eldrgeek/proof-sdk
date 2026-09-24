@@ -155,8 +155,9 @@ function assertVisible(c, where) {
   assert.ok(c.top !== null, `${where}: no cursor line`);
   assert.ok(c.highlighted, `${where}: the cursor line ${c.focus} is not the highlighted one`);
   assert.ok(c.top >= c.view.topInset - 1, `${where}: the cursor's top ${Math.round(c.top)} is under the chrome (${Math.round(c.view.topInset)})`);
-  const fits = c.bottom - c.top <= c.height - c.view.topInset;
-  if (fits) assert.ok(c.bottom <= c.height + 1, `${where}: the cursor's bottom ${Math.round(c.bottom)} is off the window (${c.height}) [line ${c.focus} measured top ${Math.round(c.measuredTop)} h ${Math.round(c.measuredHeight)}, scrollY ${c.scrollY}, readingY ${Math.round(c.readingY)}]`);
+  const bottom = c.view.viewportHeight - (c.view.bottomInset ?? 0);
+  const fits = c.bottom - c.top <= bottom - c.view.topInset;
+  if (fits) assert.ok(c.bottom <= c.view.viewportHeight - (c.view.bottomInset ?? 0) + 1, `${where}: the cursor's bottom ${Math.round(c.bottom)} is behind the chat (${bottom}) [line ${c.focus} measured top ${Math.round(c.measuredTop)} h ${Math.round(c.measuredHeight)}, scrollY ${c.scrollY}, readingY ${Math.round(c.readingY)}]`);
   else assert.ok(c.top <= c.band.bottom + 1, `${where}: a line taller than the window did not show its top in the band`);
 }
 
@@ -208,7 +209,9 @@ async function surface(browser, base, long, brief, tag, contextOptions, phone) {
 
   await check(`${tag}: the band is a share of the reading area, and the phone's is taller`, async () => {
     const c = await cursor(page);
-    const reading = c.height - c.view.topInset;
+    const chatTop = await page.locator('.prw-chat-bottom').evaluate(el => el.getBoundingClientRect().top);
+    assert.ok(c.view.viewportHeight - (c.view.bottomInset ?? 0) <= chatTop + 1, 'camera extends behind bottom chat');
+    const reading = c.view.viewportHeight - (c.view.bottomInset ?? 0) - c.view.topInset;
     assert.ok(c.view.bandFraction === (phone ? 0.3 : 0.2), `band fraction ${c.view.bandFraction}`);
     assert.ok(Math.abs(c.band.height - reading * c.view.bandFraction) <= 1, `band ${c.band.height} of ${reading}`);
     assert.ok(Math.abs(c.band.centre - (c.view.topInset + reading / 2)) <= 1, 'the band is not centred');
@@ -264,7 +267,7 @@ async function surface(browser, base, long, brief, tag, contextOptions, phone) {
     if (phone) {
       await page.locator('#share-banner .share-pill-overflow').tap();
       await page.getByRole('menuitem', { name: /Review panel/ }).tap();
-      await page.locator('.prw-left.prw-sheet-open').waitFor({ state: 'visible' });
+      await page.locator('.prw-right.prw-sheet-open').waitFor({ state: 'visible' });
     }
     const outlineTab = page.locator('.anv-tab[data-tab="outline"]');
     if (await outlineTab.count()) await (phone ? outlineTab.tap() : outlineTab.click());
@@ -317,7 +320,7 @@ async function surface(browser, base, long, brief, tag, contextOptions, phone) {
         await brief$.page.keyboard.press('j');
         await brief$.page.waitForTimeout(90);
         const c = await cursor(brief$.page);
-        assert.ok(c.bottom <= c.height + 1, `the whole document does not fit the window (line ${c.focus} ends at ${Math.round(c.bottom)} of ${c.height})`);
+        assert.ok(c.bottom <= c.view.viewportHeight - (c.view.bottomInset ?? 0) + 1, `the whole document does not fit the window (line ${c.focus} ends at ${Math.round(c.bottom)} of ${c.height})`);
         assert.equal(c.scrollY, 0, `a document that fits the window scrolled (line ${c.focus})`);
         assertVisible(c, 'a document that fits the window');
         seen.push(c.focus);

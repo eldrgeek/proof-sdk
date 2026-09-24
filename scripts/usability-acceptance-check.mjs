@@ -708,6 +708,8 @@ async function runViewportCases(browser, base, created, label, viewport) {
 
   // 12 — primary actions without hover; focus visible; statuses have text.
   await check(`ac12-actions-a11y@${label}`, async () => {
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(200);
     assert.equal(await page.locator('.plm-dot, .plm-box, .plm-primary-row').count(), 0);
     const review = page.locator(SEL.reviewPanelToggle);
     await review.focus();

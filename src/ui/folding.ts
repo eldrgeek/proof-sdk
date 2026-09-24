@@ -1,8 +1,9 @@
 /**
  * Sections stay as the reader left them. Hover and Issue closure never fold text.
- * Section agreement is offered only when every line of the section is visible.
- * Mike, 2026-09-23 (usability brief).
+ * Badges count pending changes only (the Accord rules, 2026-09-24).
+ * Stored section-mark APIs remain available for compatibility.
  */
+import { sectionPendingChanges } from '../shared/review-surface';
 import type { EditorView } from '@milkdown/kit/prose/view';
 import type { Transaction } from '@milkdown/kit/prose/state';
 import { actorKey, extractLines, type DocLine } from '../shared/line-marks';
@@ -17,7 +18,6 @@ import {
   hiddenLineSet,
   sectionAgreementOffer,
   sectionByHeading,
-  sectionIssueCount,
   visibleLineFor,
   type DocSection,
   type SectionAgreementOffer,
@@ -199,7 +199,9 @@ export class FoldingUI {
   sectionIssues(headingIndex: number): number {
     const section = sectionByHeading(this.sections, headingIndex);
     if (!section) return 0;
-    return sectionIssueCount(section, this.lines, this.host.lineMarks().issueSummary()).total;
+    const lm = this.host.lineMarks();
+    return sectionPendingChanges(section.headingIndex, section.lineEnd,
+      this.lines.flatMap(line => lm.suggestionsOnLine(line.index).map(() => line.index)));
   }
   hiddenLines(): ReadonlySet<number> { return this.hidden; }
   isHidden(lineIndex: number): boolean { return this.hidden.has(lineIndex); }
@@ -348,7 +350,6 @@ export class FoldingUI {
     const view = this.view();
     if (!view || !this.layer.isConnected) return;
     const lm = this.host.lineMarks();
-    const summary = lm.issueSummary();
     const loaded = lm.isLoaded();
     const container = this.layer.parentElement!.getBoundingClientRect();
     const phone = isPhone();
@@ -374,13 +375,13 @@ export class FoldingUI {
       const stored = this.folded.has(section.key);
 
       const folded = stored;
-      const count = sectionIssueCount(section, this.lines, summary);
+      const total = this.sectionIssues(section.headingIndex);
       const bodyLines = section.lineEnd - section.headingIndex - 1;
       chip.dataset.heading = String(section.headingIndex);
       chip.dataset.folded = String(stored);
-      chip.dataset.state = !loaded ? 'loading' : (count.total === 0 ? 'resolved' : 'issues');
+      chip.dataset.state = !loaded ? 'loading' : (total === 0 ? 'resolved' : 'issues');
       chip.setAttribute('aria-expanded', String(!folded));
-      const countText = !loaded ? '…' : (count.total === 0 ? '✓' : String(count.total));
+      const countText = !loaded ? '…' : (total === 0 ? '✓' : String(total));
       const sig = `${folded}|${countText}|${bodyLines}`;
       if (chip.dataset.sig !== sig) {
         chip.dataset.sig = sig;
@@ -392,9 +393,8 @@ export class FoldingUI {
         badge.textContent = countText;
         chip.replaceChildren(caret, badge);
       }
-      const issuesText = !loaded ? 'Issues loading' : (count.total === 0
-        ? 'no Issues: resolved'
-        : `${count.total} ${count.total === 1 ? 'Issue remains' : 'Issues remain'} (${count.lines} ${count.lines === 1 ? 'line' : 'lines'}, ${count.reviewMarks} open ${count.reviewMarks === 1 ? 'comment or suggestion' : 'comments or suggestions'}${count.asks ? `, ${count.asks} open ${count.asks === 1 ? 'ask' : 'asks'}` : ''})`);
+      const issuesText = !loaded ? 'Issues loading' : total === 0 ? 'no Issues: resolved'
+        : `${total} open ${total === 1 ? 'change' : 'changes'}`;
       chip.setAttribute('aria-label', `${folded ? 'Unfold' : 'Fold'} section “${line.text.slice(0, 60)}”: ${issuesText}`);
       chip.title = `${stored ? `Collapsed: ${bodyLines} lines hidden. Click to expand.` : 'Click to collapse this section.'}
 ${issuesText}`;

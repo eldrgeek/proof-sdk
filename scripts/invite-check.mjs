@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Browser check for Invite person (Mike Wolf, 2026-09-19): an Owner invites a person to one
 // document from the Share menu (the ⋯ menu on a phone); the invitation email (captured, never
-// sent) signs the person in and opens the document; their marks count as a verified person. A
-// guest can read and comment but cannot edit or mark ("Sign in to mark"); the private setting
+// sent) signs the person in and opens the document; their comments carry their verified identity. A
+// guest can read and comment but cannot edit or mark ("Sign in"); the private setting
 // shuts guests out; the invited person cannot open another document; removal revokes at once.
 // Authorship: Claude Opus 5 (worker proof-invite), 2026-09-19, in the style of identity-check.mjs.
 // Starts an isolated local server on the current dist/ build (run `npm run build` first) with the
@@ -10,6 +10,7 @@
 // identity-check). Both review styles at 1440 (desktop) and 390 (phone). Screenshots go to
 // .preview/ (or --shots <dir>). Exit code 0 only if every check passes.
 // Usage: node scripts/invite-check.mjs [--style playmaker|proof] [--shots dir]
+import { attributedComment } from './identity-check-helpers.mjs';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -25,6 +26,7 @@ const shots = arg('--shots') || path.join(root, '.preview');
 mkdirSync(shots, { recursive: true });
 const styles = arg('--style') ? [arg('--style')] : ['playmaker', 'proof'];
 
+const clientHeaders = { 'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 const MIKE_EMAIL = 'mw@mike-wolf.com';
 let failures = 0;
 const results = [];
@@ -118,12 +120,6 @@ const pagePost = (page, url, body) => page.evaluate(async ({ u, b }) => {
   return { status: r.status, body: await r.json().catch(() => ({})) };
 }, { u: url, b: body });
 
-async function markLine(page, line) {
-  await page.locator(`.plm-dot[data-line="${line}"]`).click();
-  const menu = page.locator(`.prw-right .plm-box[data-line="${line}"], .plm-menu`);
-  await menu.waitFor({ state: 'visible' });
-  await menu.getByRole('button', { name: /Agree/ }).click();
-}
 
 async function openInviteDialog(page, phone) {
   if (phone) {
@@ -197,19 +193,16 @@ async function run(browser, style) {
       await eric.goto(mails().at(-1).link);
       await eric.waitForURL(url => url.pathname === `/d/${slug}`, { timeout: 15_000 });
       await waitForDoc(eric);
-      const me = eric.locator('.prw-right .prw-me');
+      const me = eric.locator('#share-banner .prw-me');
       await me.waitFor({ state: 'visible' });
       assert.equal(await me.getAttribute('data-trust'), 'verified');
       assert.match(await me.innerText(), /Signed in as\s*Eric/);
       await eric.screenshot({ path: path.join(shots, `${tag}-2-eric-signed-in.png`) });
     });
 
-    await check(`${tag}: Eric's mark counts as human:eric@example.test`, async () => {
-      await markLine(eric, 1);
-      await waitFor(eric, () => document.querySelector('.plm-dot[data-line="1"]')?.dataset.status === 'agreed');
-      const view = await serverView(eric, slug);
-      assert.ok(view.body.lineMarks.some(m => m.anchor.ordinal === 1 && m.by === 'human:eric@example.test'), JSON.stringify(view.body.lineMarks.map(m => m.by)));
-    });
+    await check(`${tag}: Eric's comment is attributed to human:eric@example.test`, async () => {
+    await attributedComment(eric, slug, 1, 'Eric joined and commented', 'human:eric@example.test', clientHeaders);
+  });
 
     await check(`${tag}: Eric's Documents list shows only his document; Mike's dialog shows him joined`, async () => {
       const list = await eric.evaluate(async () => (await fetch('/library/api/documents')).json());
@@ -222,16 +215,20 @@ async function run(browser, style) {
     const guestCtx = await newContext(browser, base, desk);
     await guestCtx.addInitScript(() => { try { localStorage.setItem('proof-share-viewer-name', 'Visitor'); } catch {} });
     const guest = await guestCtx.newPage();
-    await check(`${tag}: a guest reads and comments, cannot edit, and is told "Sign in to mark"`, async () => {
+    await check(`${tag}: a guest reads and comments, cannot edit, and is told "Sign in"`, async () => {
       activePage = guest;
       await openDoc(guest, base, slug);
-      const me = guest.locator('.prw-right .prw-me');
+      const me = guest.locator('#share-banner .prw-me');
       await me.waitFor({ state: 'visible' });
-      assert.match(await me.innerText(), /Sign in to mark/);
+      assert.match(await me.innerText(), /Sign in/);
       assert.equal(await guest.locator('#share-banner').getByRole('button', { name: 'Share', exact: true }).count() >= 0, true);
       // Editing: typing changes nothing on the server.
       await guest.locator('.ProseMirror p').first().click();
       await guest.keyboard.type('GUESTTYPED');
+      const notice = guest.locator('.prw-guest-notice');
+      assert.ok(await notice.isVisible());
+      assert.equal(await notice.innerText(), 'You can comment as a guest. Sign in to edit.');
+      assert.ok(await notice.getByRole('link', { name: 'Sign in' }).getAttribute('href'));
       await guest.waitForTimeout(800);
       const md = await fetch(`${base}/api/documents/${slug}`, { headers: { 'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' } }).then(r => r.json());
       assert.ok(!String(md.markdown).includes('GUESTTYPED'), 'guest typing never reaches the document');
@@ -311,31 +308,25 @@ async function run(browser, style) {
     const adaCtx = await newContext(browser, base, phoneOpts);
     const ada = await adaCtx.newPage();
     activePage = ada;
-    await check(`${ptag}: Ada opens the emailed link on her phone and marks as a verified person`, async () => {
-      await ada.goto(mails().at(-1).link);
-      await ada.waitForURL(url => url.pathname === `/d/${phoneSlug}`, { timeout: 15_000 });
-      await waitForDoc(ada);
-      const view = await serverView(ada, phoneSlug);
-      assert.equal(view.body.identity.me.actor, 'human:ada@example.test');
-      await ada.locator('.plm-dot[data-line="2"]').tap();
-      const sheet = ada.locator('.prw-right.prw-sheet-open');
-      await sheet.waitFor({ state: 'visible' });
-      await sheet.getByRole('button', { name: /Agree/ }).tap();
-      await waitFor(ada, () => document.querySelector('.plm-dot[data-line="2"]')?.dataset.status === 'agreed');
-      const after = await serverView(ada, phoneSlug);
-      assert.ok(after.body.lineMarks.some(m => m.anchor.ordinal === 2 && m.by === 'human:ada@example.test'));
-      await ada.screenshot({ path: path.join(shots, `${ptag}-2-ada.png`) });
-    });
+    await check(`${ptag}: Ada opens the emailed link and comments as a verified person`, async () => {
+    await ada.goto(mails().at(-1).link);
+    await ada.waitForURL(url => url.pathname === `/d/${phoneSlug}`, { timeout: 15_000 });
+    await waitForDoc(ada);
+    const view = await serverView(ada, phoneSlug);
+    assert.equal(view.body.identity.me.actor, 'human:ada@example.test');
+    await attributedComment(ada, phoneSlug, 2, 'Ada joined on phone', 'human:ada@example.test', clientHeaders);
+    await ada.screenshot({ path: path.join(shots, `${ptag}-2-ada.png`) });
+  });
     await adaCtx.close();
     const pgCtx = await newContext(browser, base, phoneOpts);
     const pg = await pgCtx.newPage();
     activePage = pg;
-    await check(`${ptag}: a guest on the phone sees "Sign in to mark" and cannot mark`, async () => {
+    await check(`${ptag}: a guest on the phone sees "Sign in" and cannot mark`, async () => {
       await openDoc(pg, base, phoneSlug);
-      await pg.evaluate(() => window.__proofReadingWalk.openSheet('right'));
-      const me = pg.locator('.prw-right.prw-sheet-open .prw-me');
+
+      const me = pg.locator('#share-banner .prw-me');
       await me.waitFor({ state: 'visible' });
-      assert.match(await me.innerText(), /Sign in to mark/);
+      assert.match(await me.innerText(), /Sign in/);
       const info = await pg.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));
       assert.ok(info.sw <= info.cw + 1, 'no sideways scroll');
       await pg.screenshot({ path: path.join(shots, `${ptag}-3-guest.png`) });

@@ -139,3 +139,16 @@ test('layout anchoring compensates additions and removals but permits manual scr
 });
 
 console.log(`\n${passed} scroll camera tests passed`);
+
+test('chat and keyboard reduce the reading area and keep a fitting passage wholly above them', () => {
+  for (const bottomInset of [230, 540, 650]) {
+    const at = view({ bottomInset, scrollY: 1000 });
+    const band = deadZone(at);
+    assert.equal(band.centre, (at.topInset + at.viewportHeight - bottomInset) / 2);
+    assert.ok(band.bottom <= at.viewportHeight - bottomInset);
+    const line = { top: 1800, height: 100 };
+    const offset = cameraScroll(line, at);
+    assert.ok(line.top - offset >= at.topInset);
+    assert.ok(line.top + line.height - offset <= at.viewportHeight - bottomInset);
+  }
+});

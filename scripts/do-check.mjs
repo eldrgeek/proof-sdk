@@ -193,14 +193,6 @@ async function run(browser, style) {
       assert.equal(await mike.evaluate(() => window.__proofReadingWalk.focusIndex()), L.DO);
     });
 
-    await check(`${tag}: the right rail's box for the {do} line carries the same control, Run disabled`, async () => {
-      await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.DO);
-      const rail = mike.locator('.prw-right .pdo');
-      await rail.waitFor({ state: 'visible' });
-      assert.equal(await rail.locator('.pdo-tag').innerText(), 'Do');
-      assert.equal(await rail.locator('[data-action="run"]').isDisabled(), true);
-    });
-
     // A guest on the same document.
     const guestCtx = await newContext(browser, base, { viewport: { width: 1280, height: 900 } });
     await guestCtx.addInitScript(() => { try { localStorage.setItem('proof-share-viewer-name', 'Mike Wolf'); } catch {} });
@@ -300,20 +292,17 @@ async function run(browser, style) {
       for (const b of info.buttons) assert.ok(b.height >= 44, `button ${b.label} ${b.width}x${b.height}`);
       await phone.screenshot({ path: path.join(shots, `${ptag}-1-inline.png`) });
     });
-    await check(`${ptag}: the dot's bottom sheet carries the control; a tap on Approve approves`, async () => {
-      await phone.locator(`.plm-dot[data-line="${L.DO}"]`).scrollIntoViewIfNeeded();
-      await phone.locator(`.plm-dot[data-line="${L.DO}"]`).tap();
-      const sheet = phone.locator('.prw-right.prw-sheet-open');
-      await sheet.waitFor({ state: 'visible' });
-      const control = sheet.locator('.pdo');
-      await control.waitFor({ state: 'visible' });
+    await check(`${ptag}: inline Approve works on phone; the retired action box stays absent`, async () => {
+      const control = inline(phone);
+      await control.scrollIntoViewIfNeeded();
+      assert.equal(await phone.locator('.prw-right .pdo').count(), 0, 'retired action box');
       assert.equal(await control.locator('[data-action="run"]').isDisabled(), true);
-      await phone.screenshot({ path: path.join(shots, `${ptag}-2-sheet.png`) });
+      await phone.screenshot({ path: path.join(shots, `${ptag}-2-inline-approve.png`) });
       await control.locator('[data-action="approve"]').tap();
       await waitFor(phone, () => window.__proofLineMarks.debugState().doWrites >= 1);
       const list = await agentCall(base, slug, KEY, 'GET', '/dos');
       assert.equal(list.body.dos[0].state, 'approved');
-    });
+  });
     await phoneCtx.close();
   } finally {
     await stop();

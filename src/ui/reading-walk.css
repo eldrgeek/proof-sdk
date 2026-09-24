@@ -338,3 +338,11 @@ body.prw-on { overflow-anchor: none; }
 .prw-strip .pst-completion { flex: 0 0 100%; font-size: 12px; }
 .anv-detail { padding: 8px; border-bottom: 1px solid #dde2ea; }
 .anv-detail:has(> [hidden]):not(:has(> :not([hidden]))) { display: none; }
+
+/* Identity remains reachable in the compact toolbar and in People. */
+#share-banner .prw-me { margin: 0; padding: 0; border: 0; font-size: 10px; line-height: 12px; min-width: 0; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+#share-banner .prw-me span + span { margin-left: 3px; }
+#share-banner .prw-me-signin { color: #1d4ed8; }
+.prw-guest-signin { color: #1d4ed8; text-decoration: underline; }
+
+.prw-guest-notice { position: fixed; top: calc(var(--prw-chrome, 60px) + 4px); left: 50%; transform: translateX(-50%); z-index: 9000; max-width: calc(100vw - 24px); width: max-content; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; color: #334155; box-shadow: 0 2px 8px #0001; font: 12px/1.4 system-ui; }

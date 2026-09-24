@@ -204,11 +204,11 @@ async function run(browser, style) {
 
     await openDoc(mike, base, slug);
 
-    await check(`${tag}: the rail shows the bundle as one card: title, why, every passage with its result, and the not-agreement note`, async () => {
+    await check(`${tag}: the rail shows the bundle as one card: title, why, every passage with its result, and the agreement note`, async () => {
       await waitFor(mike, () => window.__proofLineMarks.debugState().extras.bundles.some(b => b.id === 'launch'));
       await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.LAUNCH);
       await mike.evaluate(() => window.__proofReadingWalk.openReviewItem(window.__proofReadingWalk.focusIndex()));
-      const card = mike.locator('.prw-left .prw-bundle[data-bundle-id="launch"]');
+      const card = mike.locator('.prw-right .prw-bundle[data-bundle-id="launch"]');
       await card.waitFor({ state: 'visible' });
       assert.equal(await card.locator('.prw-bundle-title').innerText(), 'Move launch to October');
       assert.match(await card.locator('.prw-why').innerText(), /vendor slipped two weeks/);
@@ -216,7 +216,7 @@ async function run(browser, style) {
       assert.equal(await passages.count(), 2);
       assert.match(await passages.nth(0).locator('.prw-bundle-result').innerText(), /Launch moves to October 14 for every customer\./);
       assert.match(await passages.nth(1).locator('.prw-bundle-result').innerText(), /milestone review happens on October 7/);
-      assert.match(await card.locator('.prw-bundle-note').innerText(), /not agreement with the resulting lines/);
+      assert.match(await card.locator('.prw-bundle-note').innerText(), /Accepting agrees to these changes/);
       await mike.waitForTimeout(200);
       await mike.screenshot({ path: path.join(shots, `${tag}-1-bundle-card.png`) });
     });
@@ -231,9 +231,9 @@ async function run(browser, style) {
       assert.ok(launchIds.every(id => pending.includes(id)), 'navigation accepted the bundle');
     });
 
-    await check(`${tag}: Accept bundle applies both changes in one step; the lines still need their own marks`, async () => {
+    await check(`${tag}: Accept bundle applies both changes in one step; no line-mark work follows`, async () => {
       await mike.evaluate(() => window.__proofReadingWalk.openReviewItem(window.__proofReadingWalk.focusIndex()));
-      const card = mike.locator('.prw-left .prw-bundle[data-bundle-id="launch"]');
+      const card = mike.locator('.prw-right .prw-bundle[data-bundle-id="launch"]');
       await card.locator('.prw-bundle-accept').click();
       await waitFor(mike, n => window.__proofLineMarks.lineList()[n]?.text.includes('October 14'), L.LAUNCH);
       assert.match(await lineText(mike, L.MILESTONE), /October 7/);
@@ -246,69 +246,24 @@ async function run(browser, style) {
       }
       assert.equal(recorded?.status, 'accepted', JSON.stringify(recorded));
       assert.ok((await events()).some(e => e.type === 'bundle.accepted'), 'bundle.accepted event');
-      const s = await lm(mike);
-      const mine = s.marks.find(m => m.by === MIKE && m.anchor.excerpt.startsWith('Launch moves'));
-      assert.ok(!mine || mine.status !== 'agreed', 'accepting the bundle must not mark the line agreed');
+      assert.equal(await mike.locator('.plm-box, .plm-section-note').count(), 0);
     });
 
     await check(`${tag}: a stale bundle refuses on the page too; its changes fall back to one-by-one review, the stale one marked`, async () => {
       await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.ALPHA);
       await mike.evaluate(() => window.__proofReadingWalk.openReviewItem(window.__proofReadingWalk.focusIndex()));
-      const card = mike.locator('.prw-left .prw-bundle[data-bundle-id="second"]');
+      const card = mike.locator('.prw-right .prw-bundle[data-bundle-id="second"]');
       await card.waitFor({ state: 'visible' });
       assert.equal(await card.getAttribute('data-stale'), 'true');
       assert.equal(await card.locator('.prw-bundle-passage[data-stale="true"]').count(), 1);
       await card.locator('.prw-bundle-accept').click();
       await waitFor(mike, () => window.__proofReadingWalk.debugState().bundleDecisions.some(d => d.id === 'second' && !d.ok));
       assert.match(await mike.locator('.prw-right .prw-error').innerText(), /changed since they were bundled\. Nothing was accepted/);
-      assert.ok(await mike.locator('.prw-left .prw-card[data-mark-id]').count() >= 1, 'individual change cards');
+      assert.ok(await mike.locator('.prw-right .prw-card[data-mark-id]').count() >= 1, 'individual change cards');
       assert.match(await lineText(mike, L.ALPHA), /alpha words/);
       await mike.screenshot({ path: path.join(shots, `${tag}-2-bundle-stale.png`) });
       const rejected = await agent('POST', '/bundles/second/reject', {});
       assert.equal(rejected.status, 200, JSON.stringify(rejected.body));
-    });
-
-    await check(`${tag}: an AI offers another wording; it shows stacked under the line (original first) and is an Issue`, async () => {
-      const offered = await agent('POST', '/alternatives', { quote: 'Budget line stays', text: 'Budget line rises 5 percent for the quarter.' });
-      assert.equal(offered.status, 200, JSON.stringify(offered.body));
-      await waitFor(mike, i => window.__proofLineMarks.debugState().extras.alternatives.some(a => a.line === i), L.BUDGET);
-      await waitFor(mike, () => document.querySelectorAll('.ProseMirror .pdx-alts .pdx-alt').length === 2);
-      const stack = await mike.locator('.ProseMirror .pdx-alts .pdx-alt').allInnerTexts();
-      assert.match(stack[0], /Original wording/);
-      assert.match(stack[1], /Budget line rises 5 percent/);
-      const s = await lm(mike);
-      assert.equal(s.extras.alternativeIssues, 1);
-      await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.BUDGET);
-      const alts = mike.locator('.prw-right .plm-box .plm-alts');
-      await alts.waitFor({ state: 'visible' });
-      assert.equal(await alts.locator('.plm-alt').count(), 2);
-      assert.match(await mike.locator('.prw-right .prw-keys').innerText(), /1–2 pick/);
-      await mike.waitForTimeout(200);
-      await mike.screenshot({ path: path.join(shots, `${tag}-3-alternatives.png`) });
-    });
-
-    await check(`${tag}: key 2 picks the AI's wording; everyone picked it, so it becomes the line and the original goes to history`, async () => {
-      await mike.evaluate(() => document.activeElement?.blur());
-      await mike.keyboard.press('2');
-      await waitFor(mike, i => /rises 5 percent/.test(window.__proofLineMarks.lineList()[i]?.text ?? ''), L.BUDGET, 15000)
-        .catch(async (error) => { throw new Error(`${error.message} ${JSON.stringify((await events()).filter(e => e.type.startsWith('alternative')).map(e => [e.type, e.data]))} ${JSON.stringify((await lm(mike)).extras.alternatives)} team=${JSON.stringify((await lm(mike)).team)}`); });
-      await waitFor(mike, () => window.__proofLineMarks.debugState().extras.alternatives.length === 0, null, 10000)
-        .catch(async (error) => { throw new Error(`A ${error.message} ${JSON.stringify((await lm(mike)).extras.alternatives)} ${JSON.stringify((await agent("GET", "/alternatives?closed=1")).body).slice(0, 800)}`); });
-      await waitFor(mike, () => document.querySelector('.prw-right .plm-alt-history summary')?.textContent?.includes('Earlier wordings'), null, 20000)
-        .catch(async (error) => { throw new Error(`B ${error.message} ${await mike.evaluate(() => document.querySelector('.prw-right .plm-box')?.dataset.line)} focus=${(await walk(mike)).focus} closed=${JSON.stringify((await agent('GET', '/alternatives?closed=1')).body.closed?.map(a => [a.status, a.anchor.excerpt, a.anchor.ordinal]))} html=${(await mike.evaluate(() => document.querySelector('.prw-right .plm-box')?.innerHTML ?? '')).slice(0, 300)}`); });
-      assert.ok((await events()).some(e => e.type === 'alternative.resolved' && e.data.how === 'unanimous'), 'alternative.resolved');
-    });
-
-    await check(`${tag}: picks that differ keep it open; an Owner decides (the original stays and the offer folds)`, async () => {
-      const offered = await agent('POST', '/alternatives', { quote: 'Support hours are', text: 'Support hours are eight to six on weekdays.' });
-      assert.equal(offered.status, 200, JSON.stringify(offered.body));
-      await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.SUPPORT);
-      await mike.locator('.prw-right .plm-alts .plm-alt[data-key="1"] input').check();
-      await waitFor(mike, i => window.__proofLineMarks.debugState().extras.alternatives.some(a => a.line === i && a.disagree), L.SUPPORT);
-      await mike.locator('.prw-right .plm-alts .plm-alt[data-key="1"] .plm-alt-decide').click();
-      await waitFor(mike, i => !window.__proofLineMarks.debugState().extras.alternatives.some(a => a.line === i), L.SUPPORT, 10000);
-      assert.match(await lineText(mike, L.SUPPORT), /nine to five/);
-      assert.ok((await events()).some(e => e.type === 'alternative.resolved' && e.data.how === 'owner'), 'owner decision');
     });
 
     await check(`${tag}: Explain (E) posts a thread to the AI tagged explain; it is not an Issue and marks nothing`, async () => {
@@ -349,87 +304,6 @@ async function run(browser, style) {
       await waitFor(mike, () => !document.querySelector('.ProseMirror .pdx-term'));
     });
 
-    await check(`${tag}: blind marking: the AI's reject is hidden until Mike marks the line; the reveal puts the disagreement first`, async () => {
-      // Accord layout stage 3: blind marking (an Owner's document setting) is in Share › Link.
-      await mike.getByRole('button', { name: 'Share', exact: true }).click();
-      const box = mike.locator('#share-dialog #share-panel-link .plm-blind .plm-blind-setting input');
-      await box.check();
-      await mike.getByRole('button', { name: 'Close share dialog' }).click();
-      await waitFor(mike, () => window.__proofLineMarks.debugState().extras.blind === true);
-      const rej = await agent('POST', '/marks/line', { quote: 'Every open Issue shows', status: 'rejected', reason: 'The count lags a minute' });
-      assert.equal(rej.status, 200, JSON.stringify(rej.body));
-      const lastMark = (await events()).filter(e => e.type === 'line_mark.updated').pop();
-      assert.equal(lastMark.data.blind, true);
-      assert.equal(lastMark.data.status, undefined, 'blind events omit the status');
-      await waitFor(mike, () => window.__proofLineMarks.debugState().extras.hiddenMarks >= 1, null, 10000);
-      await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.USE);
-      await mike.locator('.prw-right .plm-box .plm-blind-note').waitFor({ state: 'visible' });
-      const claude = mike.locator('.prw-right .plm-team li', { hasText: 'claude' }).locator('.plm-team-status');
-      assert.equal(await claude.getAttribute('data-status'), 'hidden');
-      await mike.screenshot({ path: path.join(shots, `${tag}-5-blind-hidden.png`) });
-      await mike.evaluate(() => document.activeElement?.blur());
-      await mike.keyboard.press('a');
-      await waitFor(mike, i => window.__proofLineMarks.debugState().extras.disagreement.includes(i), L.USE, 10000);
-      await waitFor(mike, i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.disagreement === 'true', L.USE);
-      await mike.locator('.prw-right .plm-box .plm-disagree').waitFor({ state: 'visible' });
-      const s = await lm(mike);
-      assert.equal(s.aids.ranked[0].rule, 'disagreement', JSON.stringify(s.aids.ranked.slice(0, 3)));
-      await mike.waitForTimeout(200);
-      await mike.screenshot({ path: path.join(shots, `${tag}-6-blind-reveal.png`) });
-    });
-
-    await check(`${tag}: the AI is blind through /state too: Mike's mark is hidden until the AI marks that line`, async () => {
-      await mike.evaluate(i => window.__proofLineMarks.setLineStatus(i, 'agreed'), L.LAST);
-      await mike.waitForTimeout(400);
-      const before = await agent('GET', '/state');
-      assert.equal(before.body.blind?.on, true);
-      const hidden = before.body.lineMarks.find(m => m.by === MIKE && m.anchor.excerpt.startsWith('Last paragraph'));
-      assert.ok(hidden?.hidden === true && hidden.status === 'seen', JSON.stringify(hidden));
-      const marked = await agent('POST', '/marks/line', { quote: 'Last paragraph closes', status: 'seen' });
-      assert.equal(marked.status, 200, JSON.stringify(marked.body));
-      const after = await agent('GET', '/state');
-      const shown = after.body.lineMarks.find(m => m.by === MIKE && m.anchor.excerpt.startsWith('Last paragraph'));
-      assert.equal(shown?.status, 'agreed', JSON.stringify(shown));
-    });
-
-    await check(`${tag}: a time-to-live runs out: Mike's Agree goes stale, the AI re-checks first; "no longer true" reopens it for Mike`, async () => {
-      await mike.getByRole('button', { name: 'Share', exact: true }).click();
-      await mike.locator('#share-dialog #share-panel-link .plm-blind .plm-blind-setting input').uncheck();
-      await waitFor(mike, () => window.__proofLineMarks.debugState().extras.blind === false);
-      await mike.getByRole('button', { name: 'Close share dialog' }).click();
-      await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.PRICING);
-      await mike.evaluate(() => document.activeElement?.blur());
-      await mike.keyboard.press('a');
-      await waitFor(mike, i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.status === 'agreed', L.PRICING);
-      await mike.waitForTimeout(300);
-      const box = mike.locator('.prw-right .plm-box');
-      // Accord layout stage 3 (decision 8): Time-to-live is under the line's ⋯ More.
-      await box.locator('.plm-more-btn').click();
-      await box.locator('.plm-ttl-open').click();
-      await box.locator('.plm-ttl-form input').fill('2s');
-      await box.locator('.plm-ttl-form button[type="submit"]').click();
-      await waitFor(mike, i => window.__proofLineMarks.debugState().extras.ttls.some(t => t.line === i), L.PRICING);
-      await mike.waitForTimeout(2600);
-      await mike.evaluate(() => window.__proofLineMarks.refresh());
-      await waitFor(mike, i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.status === 'stale', L.PRICING, 10000);
-      const st = await agent('GET', '/state');
-      const ttl = st.body.ttls.find(t => /Pricing/.test(t.text));
-      assert.equal(ttl.expired, true, JSON.stringify(ttl));
-      assert.ok(st.body.evaluatedAt);
-      const issue = st.body.issues.find(i => i.type === 'ttl');
-      assert.deepEqual(issue?.openFor, ['ai:claude'], JSON.stringify(issue));
-      assert.equal(issue.priorityRule, 'ttl-check');
-      assert.ok((await events()).some(e => e.type === 'ttl.expired'), 'ttl.expired');
-      await box.locator('.plm-ttl-status[data-state="expired"]').waitFor({ state: 'visible' });
-      await mike.screenshot({ path: path.join(shots, `${tag}-7-ttl-stale.png`) });
-      const no = await agent('POST', `/ttl/${ttl.id}/check`, { stillTrue: false, why: 'Prices rose in September' });
-      assert.equal(no.status, 200, JSON.stringify(no.body));
-      await mike.evaluate(() => window.__proofLineMarks.refresh());
-      await waitFor(mike, i => window.__proofLineMarks.debugState().extras.ttls.some(t => t.line === i && t.reason === 'not-true' && t.openFor.length === 1), L.PRICING, 10000);
-      await mike.evaluate(() => document.activeElement?.blur());
-      await mike.keyboard.press('a');
-      await waitFor(mike, i => !window.__proofLineMarks.debugState().extras.ttls.some(t => t.line === i && t.openFor.length > 0), L.PRICING, 10000);
-    });
     await ctx.close();
 
     // ---------------------------------------------------------------- phone 390
@@ -438,35 +312,17 @@ async function run(browser, style) {
     const pctx = await newContext(browser, base, { ...devices['iPhone 13'], viewport, screen: viewport, hasTouch: true, isMobile: true });
     const phone = await signIn(pctx, cli, base);
     activePage = phone;
-    const offered = await agent('POST', '/alternatives', { quote: 'Phone line offers', text: 'Phone line gives a place for another wording.' });
-    assert.equal(offered.status, 200, JSON.stringify(offered.body));
     const pb1 = await suggest('Ops rotation', 'On-call rotation', { bundle: { id: 'phone', title: 'Rename the rotation', why: 'Matches the handbook' } });
     assert.equal(pb1.status, 200, JSON.stringify(pb1.body));
     await openDoc(phone, base, slug);
-    await check(`${ptag}: the line sheet shows the wordings as 44px radios; tapping one picks it; no sideways scroll`, async () => {
-      await waitFor(phone, i => window.__proofLineMarks.debugState().extras.alternatives.some(a => a.line === i), L.PHONE);
-      const dot = phone.locator(`.plm-dot[data-line="${L.PHONE}"]`);
-      await dot.scrollIntoViewIfNeeded();
-      await dot.tap();
-      const sheet = phone.locator('.prw-right.prw-sheet-open');
-      await sheet.waitFor({ state: 'visible' });
-      const rows = sheet.locator('.plm-alts .plm-alt');
-      assert.equal(await rows.count(), 2);
-      const heights = await rows.evaluateAll(els => els.map(e => e.getBoundingClientRect().height));
-      assert.ok(heights.every(h => h >= 44), `rows ${heights}`);
-      const sw = await phone.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
-      assert.ok(sw[0] <= sw[1] + 1, `scrollWidth ${sw}`);
-      await phone.screenshot({ path: path.join(shots, `${ptag}-1-alternatives.png`) });
-      await rows.nth(0).tap();
-      await waitFor(phone, (me) => window.__proofLineMarks.debugState().extras.alternatives.some(a => a.picks.some(p => p.by === me && p.choice === 'original')), MIKE);
-    });
+
     await check(`${ptag}: the rail sheet shows a bundle card with Accept bundle / Reject bundle at touch size`, async () => {
       await waitFor(phone, () => window.__proofLineMarks.debugState().extras.bundles.some(b => b.id === 'phone'));
       await phone.keyboard.press('Escape');
       await phone.locator('.prw-right.prw-sheet-open').waitFor({ state: 'detached' }).catch(() => {});
       await phone.evaluate(i => window.__proofReadingWalk.focusLine(i), L.OPS);
       await phone.evaluate(() => window.__proofReadingWalk.openReviewItem(window.__proofReadingWalk.focusIndex()));
-      const card = phone.locator('.prw-left.prw-sheet-open .prw-bundle[data-bundle-id="phone"]');
+      const card = phone.locator('.prw-right.prw-sheet-open .prw-bundle[data-bundle-id="phone"]');
       await card.waitFor({ state: 'visible' });
       await card.scrollIntoViewIfNeeded();
       const h = await card.locator('.prw-bundle-accept').evaluate(el => el.getBoundingClientRect().height);

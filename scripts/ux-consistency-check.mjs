@@ -221,7 +221,7 @@ async function runDesktop(browser, base, tag) {
       const btn = document.querySelector('.share-pill-suggest-toggle');
       if (btn && btn.getAttribute('aria-label') !== 'Leave Editing') btn.click();
     });
-    await page.waitForFunction(() => document.querySelector('.pst-mode')?.textContent === 'Editing');
+    await page.waitForFunction(() => document.querySelector('.pst-mode')?.textContent === 'Writing');
     await page.mouse.click(box.x + box.width - 30, box.y + box.height / 2);
     await page.waitForTimeout(250);
     await page.keyboard.press('End');

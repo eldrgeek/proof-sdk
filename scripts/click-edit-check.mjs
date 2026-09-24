@@ -108,7 +108,19 @@ async function run(browser, server, style, width) {
   try {
     assert.equal(await a.page.evaluate(() => window.proof.isSuggestionsEnabled()), true);
     await clickAt(a.page, 'Agreed words stay here.');
+    await poll(async () => a.page.evaluate(() => {
+      const lm = window.__proofLineMarks;
+      return window.__proofReadingWalk.focusIndex() === lm.lineAtPos(window.__editorView.state.selection.head);
+    }), 'Click did not select the caret passage');
+    const beforeTypingY = await a.page.evaluate(() => scrollY);
     await a.page.keyboard.type(' live', { delay: 50 });
+    assert.ok(Math.abs(await a.page.evaluate(() => scrollY) - beforeTypingY) <= 2, 'Typing moved the view');
+    const focusBeforeScroll = await a.page.evaluate(() => window.__proofReadingWalk.focusIndex());
+    await a.page.evaluate(() => scrollBy(0, 80));
+    const scrolledY = await a.page.evaluate(() => scrollY);
+    await a.page.waitForTimeout(200);
+    assert.equal(await a.page.evaluate(() => window.__proofReadingWalk.focusIndex()), focusBeforeScroll, 'Scrolling while writing moved the passage');
+    assert.equal(await a.page.evaluate(() => scrollY), scrolledY, 'Scrolling while writing snapped back');
     await poll(async () => (await pending(b.page)).some(m => m.by === 'human:Alice' && m.data.content === ' live'), 'Typing did not reach Bob in two seconds', 2000);
     assert.equal(await a.page.locator('.accord-draft').count(), 0);
     assert.equal(await a.page.locator('.pst-mode').textContent(), 'Writing');

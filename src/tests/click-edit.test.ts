@@ -10,6 +10,7 @@ import { getMarks, clearResolvedMarkTombstones, modifySuggestionContent, marksPl
 import { wrapTransactionForSuggestions, clickEditDecisionsMeta, rejectionTransaction } from '../editor/plugins/suggestions';
 import { installLocalWriteResyncPolicy } from '../editor/local-write-resync';
 import { isPendingSuggestion } from '../shared/suggestion-status';
+import { commitLiveTextInput } from '../editor/live-suggestion-input';
 import { EDIT_SESSION_POLICY } from '../shared/edit-session';
 installLocalWriteResyncPolicy();
 let passed = 0;
@@ -39,6 +40,48 @@ await test('live typing is one attributed insert; each character and every ancho
   assert.equal(pending(peers.alice)[0].by, 'human:Alice');
   assert.equal(peers.alice.map.get(pending(peers.alice)[0].id).content, ' words A');
   converge(peers);
+});
+await test('beforeinput keeps every letter ordered across interleaved remote writes', peers => {
+  const view = peers.alice.view;
+  view.editable = true;
+  view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, 9)));
+  const dispatch = view.dispatch;
+  view.dispatch = (tr: any) => peers.alice.edit(() => dispatch(wrapTransactionForSuggestions(tr, view.state, true)));
+  const phrase = 'caret stays put while others write';
+  let published = '';
+  for (const char of phrase) {
+    setCurrentActor('human:Alice');
+    let prevented = false;
+    assert.equal(commitLiveTextInput(view, {
+      inputType: 'insertText', data: char, cancelable: true, isComposing: false,
+      preventDefault() { prevented = true; }, target: null,
+    } as unknown as InputEvent, true), true);
+    assert.equal(prevented, true);
+    published += char;
+    assert.equal(view.state.doc.firstChild.textContent, `Original${published}`);
+    const end = peers.bob.view.state.doc.content.size - 1;
+    edit(peers.bob, 'human:Bob', end, end, '!');
+    assert.equal(view.state.doc.firstChild.textContent, `Original${published}`);
+    assert.equal(view.state.selection.head, 9 + published.length);
+    converge(peers);
+  }
+  assert.equal(peers.alice.map.get(pending(peers.alice).find(m => m.by === 'human:Alice')!.id).content, phrase);
+});
+await test('native input keeps IME, replacement islands and readonly views on their own paths', peers => {
+  const view = peers.alice.view;
+  const input = { inputType: 'insertText', data: 'x', cancelable: true, isComposing: false,
+    target: null, preventDefault() { throw new Error('must leave native handling alone'); } };
+  view.editable = true;
+  for (const patch of [{ defaultPrevented: true }, { isComposing: true }, { cancelable: false }, { inputType: 'deleteContentBackward' },
+    { data: null }, { target: { closest: () => ({}) } }]) {
+    assert.equal(commitLiveTextInput(view, { ...input, ...patch } as unknown as InputEvent, true), false);
+  }
+  assert.equal(commitLiveTextInput(view, input as unknown as InputEvent, false), false);
+  view.composing = true;
+  assert.equal(commitLiveTextInput(view, input as unknown as InputEvent, true), false);
+  view.composing = false; view.editable = false;
+  assert.equal(commitLiveTextInput(view, input as unknown as InputEvent, true), false);
+  assert.equal(text(peers.alice), 'OriginalSecond');
 });
 await test('five author withdrawals never delete a pending map entry', peers => {
   const deletions: string[] = [];

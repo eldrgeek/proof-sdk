@@ -30,6 +30,7 @@
 export const SCROLL_CAMERA_POLICY = {
   /** Desktop: the dead zone's height, as a share of the reading area (the viewport under the chrome). */
   bandFraction: 0.2,
+  respectBottomOcclusion: true,
   /** Phones: a taller band, because one line is a bigger share of a small screen. */
   phoneBandFraction: 0.3,
   /** A band is never thinner than this, so a tall line still has a dead zone. */
@@ -50,6 +51,8 @@ export interface CameraView {
   viewportHeight: number;
   /** The top of the reading area: the chrome (banner, toolbar) covers everything above it. */
   topInset: number;
+  /** Bottom chat, status strip, sheet or onscreen keyboard covering the window. */
+  bottomInset?: number;
   /** The current scroll offset. */
   scrollY: number;
   /** The largest offset the document allows: max(0, documentHeight - viewportHeight). */
@@ -79,7 +82,7 @@ const clamp = (value: number, low: number, high: number): number => Math.min(Mat
 /** The middle band: centred in the reading area, bandFraction of its height. */
 export function deadZone(view: CameraView): DeadZone {
   const top = Math.max(0, view.topInset);
-  const bottom = Math.max(top, view.viewportHeight);
+  const bottom = Math.max(top, view.viewportHeight - Math.max(0, view.bottomInset ?? 0));
   const reading = bottom - top;
   const fraction = view.bandFraction ?? SCROLL_CAMERA_POLICY.bandFraction;
   const height = Math.min(reading, Math.max(SCROLL_CAMERA_POLICY.minBandPx, reading * fraction));
@@ -109,9 +112,10 @@ export function cameraScroll(line: CameraLine, view: CameraView): number {
   }
 
   // Never partially visible: a line that fits under the chrome is shown whole.
-  const reading = Math.max(0, view.viewportHeight - Math.max(0, view.topInset));
+  const bottom = view.viewportHeight - Math.max(0, view.bottomInset ?? 0);
+  const reading = Math.max(0, bottom - Math.max(0, view.topInset));
   if (height <= reading) {
-    want = clamp(want, line.top + height - view.viewportHeight, line.top - Math.max(0, view.topInset));
+    want = clamp(want, line.top + height - bottom, line.top - Math.max(0, view.topInset));
   }
   return clamp(Math.round(want), 0, max);
 }

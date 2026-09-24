@@ -7,6 +7,7 @@ import { actorKey, anchorForLine, findLapseTarget, type DocLine, type LineAnchor
 export const EDIT_SESSION_POLICY = {
   publishDoors: ['propose', 'cmd-enter'] as const,
   liveProposals: true,
+  synchronousTextInput: true,
   privateDrafts: false,
   // The existing rejected event carries by/resolvedBy; the same author means withdrawal.
   withdrawOwnInsert: true,

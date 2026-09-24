@@ -113,3 +113,16 @@ export function syncLiveSuggestionInputs(view: EditorView, metadata: Record<stri
     }
   }
 }
+
+/** Publish ordinary native text input before MutationObserver delivery can race a remote redraw.
+ * IME composition and replacement islands keep their own input paths.
+ */
+export function commitLiveTextInput(view: EditorView, input: InputEvent, enabled: boolean): boolean {
+  if (!EDIT_SESSION_POLICY.synchronousTextInput || !enabled || !view.editable
+    || input.defaultPrevented || !input.cancelable || input.isComposing || view.composing
+    || input.inputType !== 'insertText' || input.data === null
+    || (input.target as HTMLElement | null)?.closest?.('[data-live-suggestion]')) return false;
+  input.preventDefault();
+  view.dispatch(view.state.tr.insertText(input.data).scrollIntoView());
+  return true;
+}

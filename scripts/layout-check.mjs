@@ -163,7 +163,6 @@ const bar = page => page.evaluate(() => {
   };
 });
 
-
 // Mike, 2026-09-24, yfbqrau4: stages 1 and 3's Margin/mark UI assertions are
 // superseded by layout-v2-check.mjs. Stage 2's menu, Share and toolbar checks stay here.
 const chrome = page => page.evaluate(() => {
@@ -219,7 +218,7 @@ async function desktop2(browser, base, style) {
     assert.equal(await page.locator('.aov-toggle').count(), 0);
     assert.equal(await page.locator('#share-banner .anv-people').isVisible(), true);
     // S2a's toolbar (title, Review, People, Share) plus S3's one labelled control for direct Editing.
-    for (const label of c.controls) assert.match(label, /^(Review|People|Share|Waiting on Mike|Enter Editing|Leave Editing|Undo|Nothing to undo)/, `unexpected toolbar control: ${label}`);
+    for (const label of c.controls) assert.match(label, /^(Review|People|Share|Waiting on Mike|Edit text|Leave text|Enter Editing|Leave Editing|Undo|Nothing to undo)/, `unexpected toolbar control: ${label}`);
     const rails = await page.evaluate(() => ({ left: document.querySelector('.prw-left').getBoundingClientRect().top, right: document.querySelector('.prw-right').getBoundingClientRect().top }));
     assert.ok(rails.left >= c.toolbar.bottom && rails.right >= c.toolbar.bottom, 'a rail sits under the toolbar');
     await page.screenshot({ path: path.join(shots, `${tag}-chrome.png`), clip: { x: 0, y: 0, width: 1440, height: 120 } });
@@ -271,7 +270,8 @@ async function desktop2(browser, base, style) {
     await page.keyboard.press('Control+Alt+KeyV');
     await page.locator('.amb-menu[data-menu="view"]').waitFor();
     const view = (await menuItems(page)).map(i => i.label);
-    for (const label of ['Review panel', 'View agreed copy', 'Accords list', 'Collapse all sections', 'Expand all sections', 'Show only decisions', 'Reading settings…', 'Keyboard shortcuts']) assert.ok(view.includes(label), `View lacks ${label}: ${view}`);
+    assert.ok(!view.includes('Show only decisions'), 'retired tier filter');
+    for (const label of ['Review panel', 'View agreed copy', 'Accords list', 'Collapse all sections', 'Expand all sections', 'Reading settings…', 'Keyboard shortcuts']) assert.ok(view.includes(label), `View lacks ${label}: ${view}`);
     await page.keyboard.press('Escape');
     await reading(page);
     await page.keyboard.press('Alt+Slash');
@@ -283,11 +283,10 @@ async function desktop2(browser, base, style) {
     await search.press('Enter');
     await page.locator('#reading-settings').waitFor({ state: 'visible' });
   });
-  await check(`${tag}: View › Reading settings holds reading speed and This sitting (gone from the rail), and both still work`, async () => {
+  await check(`${tag}: View › Reading settings holds This sitting (gone from the rail), and both still work`, async () => {
     const panel = page.locator('#reading-settings');
     assert.equal(await page.locator('.prw-right .prw-rate, .prw-right .plm-budget').count(), 0, 'a setting is still in the rail');
-    await panel.locator('.prw-rate select').selectOption('4');
-    await waitFor(page, () => window.__proofReadingWalk.debugState().rate === 4);
+    assert.equal(await panel.locator('.prw-rate').count(), 0, 'retired dwell controls');
     await panel.locator('.plm-budget select').selectOption('5');
     await waitFor(page, () => document.querySelector('#reading-settings .plm-budget')?.dataset.state === 'on');
     await page.screenshot({ path: path.join(shots, `${tag}-reading-settings.png`) });
@@ -295,22 +294,25 @@ async function desktop2(browser, base, style) {
     await panel.getByRole('button', { name: 'Close reading settings' }).click();
     assert.equal(await panel.isVisible(), false);
   });
-  await check(`${tag}: Edit and the toolbar expose the same labelled Editing control`, async () => {
+  await check(`${tag}: Edit and the toolbar put the caret in the text; Escape returns to Review`, async () => {
     await page.locator('#accord-menubar .amb-top[data-menu="edit"]').click();
-    const items = await menuItems(page);
-    assert.ok(items.some(i => i.label === 'Enter Editing'));
-    await page.locator('.amb-menu .amb-item', { hasText: 'Enter Editing' }).click();
-    assert.equal(await page.locator('.pst-mode').innerText(), 'Editing');
-    await page.getByRole('button', { name: 'Leave Editing', exact: true }).click();
-    assert.equal(await page.locator('.pst-mode').innerText(), 'Reading');
+    assert.ok((await menuItems(page)).some(i => i.label === 'Edit text'));
+    await page.locator('.amb-menu .amb-item', { hasText: 'Edit text' }).click();
+    await page.waitForFunction(() => window.__proofEditingGuard().writing);
+    await page.keyboard.press('Escape');
+    assert.equal(await page.evaluate(() => window.__proofEditingGuard().writing), false);
+    await page.getByRole('button', { name: 'Edit text', exact: true }).click();
+    await page.waitForFunction(() => window.__proofEditingGuard().writing);
+    await page.keyboard.press('Escape');
   });
-  await check(`${tag}: Edit Undo names and reverses the selected passage's agreement`, async () => {
-    await selectPassage(page, L.S1 + 2);
-    await page.evaluate(i => window.__proofLineMarks.setLineStatus(i, 'agreed', undefined, 'click'), L.S1 + 2); // Historical fixture.
+  await check(`${tag}: Edit Undo reverses live proposal typing`, async () => {
+    await page.evaluate(i => window.__proofReadingWalk.focusDocument(i), L.S1 + 2);
+    const before = await page.evaluate(() => window.__editorView.state.doc.textContent);
+    await page.keyboard.type('Undo this typing ');
+    await page.keyboard.press('Escape');
     await page.locator('#accord-menubar .amb-top[data-menu="edit"]').click();
-    assert.equal((await menuItems(page))[0].label, 'Undo agreed line 5');
-    await page.locator('.amb-menu .amb-item').first().click();
-    await page.waitForFunction(() => window.__proofUndo.debugState().log.some(m => m === 'Undid: agreed line 5'), null, { timeout: 6000 });
+    await page.locator('.amb-menu .amb-item[data-item="edit-undo"]').click();
+    await page.waitForFunction(t => window.__editorView.state.doc.textContent === t, before);
   });
   await check(`${tag}: Share opens one dialog with Link, People and AIs; People › Add agent opens its AIs tab`, async () => {
     await page.getByRole('button', { name: 'Share', exact: true }).click();
@@ -422,15 +424,12 @@ async function phone2(browser, base, style) {
     await page.screenshot({ path: path.join(shots, `${tag}-settings.png`) });
     await panel.getByRole('button', { name: 'Close reading settings' }).tap();
   });
-  await check(`${tag}: the phone menu enters and leaves Editing through one labelled control`, async () => {
+  await check(`${tag}: the phone edit command places the caret; Escape returns to Reading`, async () => {
     await page.getByRole('button', { name: /^More options/ }).tap();
-    const menu = page.locator('.proof-share-overflow-menu');
-    await menu.waitFor();
-    await menu.locator('.apm-mode').getByRole('menuitem', { name: 'Enter Editing' }).tap();
-    assert.equal(await page.locator('.pst-mode').innerText(), 'Editing');
-    await page.getByRole('button', { name: /^More options/ }).tap();
-    await menu.waitFor();
-    await menu.locator('.apm-mode').getByRole('menuitem', { name: 'Leave Editing' }).tap();
+    await page.locator('.proof-share-overflow-menu').getByRole('menuitem', { name: 'Enter Editing' }).tap();
+    await page.waitForFunction(() => window.__proofEditingGuard().writing);
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => !window.__proofEditingGuard().writing);
     assert.equal(await page.locator('.pst-mode').innerText(), 'Reading');
   });
   await check(`${tag}: ⋯ › Share… opens the Share dialog; it fits the phone`, async () => {

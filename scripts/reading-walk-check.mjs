@@ -185,9 +185,7 @@ async function desktop(browser, base, style, width) {
     assert.equal(info.popover, false, 'a popover is open');
     await page.screenshot({ path: path.join(shots, `${tag}-1-open.png`) });
   });
-  await check(`${tag}: dwelling on the first line marks it Seen`, async () => {
-    await waitFor(page, () => window.__proofLineMarks.myStatus(0) === 'seen');
-  });
+
   await check(`${tag}: J moves the passage; A and R never mark it`, async () => {
     await page.keyboard.press('j');
     await waitFor(page, () => window.__proofReadingWalk.debugState().focus === 1);
@@ -204,20 +202,7 @@ async function desktop(browser, base, style, width) {
     await input.fill(''); await page.evaluate(() => document.activeElement?.blur());
     await selectPassage(page, 2);
   });
-  await check(`${tag}: scrolling at reading pace marks lines Seen after the dwell`, async () => {
-    // line 2 -> 3 -> 4, pausing longer than line 3's reading time (Step B3b: its words at the
-    // reader's rate, from debugState().dwellMs).
-    await gesture(page, await lineDelta(page, 2));
-    await waitFor(page, () => window.__proofReadingWalk.debugState().readingFocus === 3);
-    const need = (await walk(page)).dwellMs;
-    assert.ok(need > 1000, `a 20-word line should need more than 1 s at 4 words/s (dwellMs ${need})`);
-    await page.waitForTimeout(need + 200);
-    await gesture(page, await lineDelta(page, 3));
-    await waitFor(page, () => window.__proofReadingWalk.debugState().readingFocus === 4);
-    await waitFor(page, () => window.__proofReadingWalk.debugState().seenWrites.includes(3));
-    assert.equal(await dotStatus(page, 3), 'seen');
-    await page.waitForTimeout(400);
-  });
+
   await check(`${tag}: a fling does not select or accept a proposal`, async () => {
     await scrollAcceptsNothing(page);
   });
@@ -284,7 +269,7 @@ async function desktop(browser, base, style, width) {
       const btn = document.querySelector('.share-pill-suggest-toggle');
       if (btn && btn.getAttribute('aria-label') !== 'Leave Editing') btn.click();
     });
-    await page.waitForFunction(() => document.querySelector('.pst-mode')?.textContent === 'Editing');
+    await page.waitForFunction(() => document.querySelector('.pst-mode')?.textContent === 'Writing');
     // Line 5 was only skimmed (a line already agreed may be folded, and a click on a fold opens it).
     const line5 = await page.locator('.ProseMirror > *').nth(5).boundingBox();
     await page.mouse.click(line5.x + line5.width - 20, line5.y + 8);

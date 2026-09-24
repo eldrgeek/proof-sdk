@@ -243,6 +243,10 @@ async function phone(browser, base, name, viewport) {
       return !!sel && !!sel.anchorNode && !!document.querySelector('.ProseMirror')?.contains(sel.anchorNode);
     }), 'the tap did not place the caret in the text');
     // Step 1 (2026-09-24): the Line sheet is gone; the item opens straight in the open-items list.
+    await page.waitForFunction(() => {
+      const lm = window.__proofLineMarks, view = lm.editorView();
+      return window.__proofReadingWalk.focusIndex() === lm.lineAtPos(view.state.selection.head);
+    });
     await page.evaluate(() => window.__proofReadingWalk.openReviewItem(window.__proofReadingWalk.focusIndex()));
     // Accord round 2 stage C: a comment is a THREAD, and it shows once — in Discussion. It used to
     // show there AND in "Changes on this line", which now carries only proposals. Same sheet, same

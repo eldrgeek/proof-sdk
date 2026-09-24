@@ -128,9 +128,10 @@ async function run(browser, base, style) {
     await check(`${tag}: a replace suggestion shows the old words struck and the new words once`, async () => {
       const struck = page.locator('.ProseMirror .mark-replace.mark-delete');
       assert.equal((await struck.first().innerText()).trim(), 'old phrase');
-      const widgets = page.locator('.ProseMirror .ProseMirror-widget.mark-insert');
+      const widgets = page.locator('.ProseMirror .mark-replace-insert.mark-insert');
       assert.equal(await widgets.count(), 1, 'expected exactly the one replace widget');
       assert.equal((await widgets.first().innerText()).trim(), 'new phrase');
+      assert.equal(occurrences(await editorText(page), 'new phrase'), 1, 'replacement text must appear exactly once');
     });
 
     await check(`${tag}: suggestion spans carry no [object Object] attributes`, async () => {

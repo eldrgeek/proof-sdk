@@ -1,4 +1,4 @@
-import { liveSuggestionInputEvent, focusLiveSuggestion, type LiveSuggestionInput } from './live-suggestion-input';
+import { commitLiveTextInput, liveSuggestionInputEvent, focusLiveSuggestion, type LiveSuggestionInput } from './live-suggestion-input';
 import { EDIT_SESSION_POLICY } from '../shared/edit-session';
 import { markApiView, isOwnHumanMarkChange, withHumanReviewWrite } from './review-mark-origin';
 /**
@@ -4076,12 +4076,9 @@ class ProofEditorImpl implements ProofEditor {
           items.push({ id: 'view-fold-all', label: 'Collapse all sections', keywords: 'outline collapse', separatorBefore: true, run: () => folding.foldAll() });
           items.push({ id: 'view-unfold-all', label: 'Expand all sections', keywords: 'outline expand', run: () => folding.unfoldAll() });
         }
-        if (lm) {
-          items.push({ id: 'view-only-decisions', label: 'Show only decisions', kind: 'checkbox', checked: lm.onlyDecisionsOn(), enabled: lm.tiersTagged(), separatorBefore: true, keywords: 'tiers context fold', run: () => lm.setOnlyDecisions(!lm.onlyDecisionsOn()) });
-        }
         if (walk) {
           items.push({ id: 'view-letter-shortcuts', label: 'Letter shortcuts', kind: 'checkbox', checked: walk.letterShortcutsEnabled(), run: () => walk.toggleLetterShortcuts() });
-          items.push({ id: 'view-reading-settings', label: 'Reading settings…', keywords: 'reading speed sitting budget words per second', separatorBefore: !lm, run: () => walk.openReadingSettings() });
+          items.push({ id: 'view-reading-settings', label: 'Reading settings…', keywords: 'sitting budget', separatorBefore: !lm, run: () => walk.openReadingSettings() });
           // Mike, 2026-09-24, yfbqrau4: the retired Line tab no longer hosts a Familiar brief.
 
         }
@@ -4101,6 +4098,10 @@ class ProofEditorImpl implements ProofEditor {
         return items;
       }),
       menu('people', () => [
+        { id: 'people-identity', label: this.readingWalk?.identityLabel() ?? 'Your identity',
+          run: () => this.openWhoDialog() },
+        ...(this.lineMarks?.viewerIdentity().signInUrl ? [{ id: 'people-signin', label: 'Sign in',
+          run: () => { window.location.href = this.lineMarks!.viewerIdentity().signInUrl!; } }] : []),
         { id: 'people-share', label: 'Share…', keywords: 'link access', run: () => { this.openShareDialog('link'); } },
         { id: 'people-invite', label: 'Invite person…', keywords: 'email team member', enabled: this.teamCanManage === true, run: () => { this.openShareDialog('people'); } },
         { id: 'people-agent', label: 'Add agent…', keywords: 'ai key runtime sponsor', run: () => { this.openShareDialog('ais'); } },
@@ -5561,9 +5562,8 @@ class ProofEditorImpl implements ProofEditor {
       copyLink: () => this.copyLinkWithFallback(this.getCanonicalShareUrl()),
       download: () => { void this.downloadProofDocument(); },
       activity: () => this.openShareActivityModal(),
-      // Accord layout stage 3 (COS): blind marking, an Owner's document setting, left the rail for
-      // the Link tab (it hides itself for everyone else while it is off).
-      linkExtras: this.lineMarks ? [this.lineMarks.blindEl] : [],
+      // The Accord rules retire blind marking controls; stored records remain intact.
+      linkExtras: [],
       invite: owner ? {
         load: () => this.teamRequest<TeamState>('GET', ''),
         invite: (email, name) => this.teamRequest<InviteResult>('POST', '/invites', { email, name }),
@@ -6607,7 +6607,10 @@ class ProofEditorImpl implements ProofEditor {
         handleKeyDown: (_view, event) => this.playmakerReview?.handleHistoryInput(event) ?? false,
         handleDOMEvents: {
           ...view.props.handleDOMEvents,
-          beforeinput: (_view, event) => this.playmakerReview?.handleHistoryInput(event as InputEvent) ?? false,
+          beforeinput: (inputView, event) => {
+            if (this.playmakerReview?.handleHistoryInput(event as InputEvent)) return true;
+            return commitLiveTextInput(inputView, event as InputEvent, this.isSuggestionsEnabled());
+          },
         },
       });
 

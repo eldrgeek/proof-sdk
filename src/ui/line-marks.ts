@@ -347,6 +347,13 @@ export class LineMarksUI {
   private agentKeyLabels: Record<string, string> = {};
   /** Cross invitation: who added each AI and what runs it: ai:<slug> -> { sponsorName, runtime }. */
   private agentSponsors: Record<string, { label: string; sponsorName: string | null; runtime: string | null; suspended: boolean }> = {};
+
+  /** Proposal attribution survives retirement of the line-mark member list. */
+  proposalAuthor(actor: string): string {
+    const sponsor = this.agentSponsors[actor] ?? this.agentSponsors[actorKey(actor)];
+    const name = sponsor?.label || this.aiName(actor);
+    return sponsor?.sponsorName ? `${name} — added by ${sponsor.sponsorName}` : name;
+  }
   private brief: ProxyBrief | null = null;
   private briefByLine = new Map<number, ProxyItem>();
   /** "Review the F flagged": Next issue walks only these lines (document order) until done. */
@@ -3450,14 +3457,6 @@ export class LineMarksUI {
       if (!view) return;
       const alts: AltStackSpec[] = [];
       const sigs: string[] = [];
-      for (const set of this.altViews) {
-        const line = this.lines[set.lineIndex];
-        if (!line || line.kind === 'table_row') continue;
-        const mine = pickOf(set, this.me())?.choice ?? '';
-        const sig = String(hashSig(JSON.stringify([set.options.map(o => [o.id, o.text, o.by]), mine, [...set.picks.values()].map(p => [p.by, p.hidden ? '?' : p.choice])])));
-        sigs.push(`${set.lineIndex}@${line.pos}:${line.nodeSize}:${sig}`);
-        alts.push({ lineIndex: set.lineIndex, pos: line.pos, nodeSize: line.nodeSize, sig, render: () => this.buildAltStack(set) });
-      }
       const terms: TermLinkSpec[] = [];
       for (const use of this.termLinks) {
         const line = this.lines[use.lineIndex];
@@ -3475,35 +3474,6 @@ export class LineMarksUI {
       this.extrasDecoSig = signature;
       try { setProofExtrasDecorations(view, alts, terms); } catch (error) { console.warn('[plm] extras decorations failed', error); }
     });
-  }
-
-  /** The wordings shown under a line in the text (original first; the rail has the controls). */
-  private buildAltStack(set: AltSetView): HTMLElement {
-    const root = document.createElement('div');
-    root.className = 'pdx-alts';
-    root.contentEditable = 'false';
-    root.dataset.line = String(set.lineIndex);
-    root.setAttribute('aria-label', 'Competing wordings for this line');
-    const mine = pickOf(set, this.me())?.choice ?? null;
-    set.options.forEach((option, i) => {
-      const row = document.createElement('div');
-      row.className = 'pdx-alt';
-      row.dataset.choice = option.id;
-      if (mine === option.id) row.dataset.mine = 'true';
-      const key = document.createElement('span');
-      key.className = 'pdx-alt-key';
-      key.textContent = String(i + 1);
-      const text = document.createElement('span');
-      text.className = 'pdx-alt-text';
-      text.textContent = i === 0 ? 'Original wording (above)' : option.text;
-      const by = document.createElement('span');
-      by.className = 'pdx-alt-by';
-      by.textContent = option.by ? actorLabel(option.by) : '';
-      row.append(key, text, by);
-      row.onclick = (event) => { event.preventDefault(); event.stopPropagation(); void this.pickAlternative(set.lineIndex, option.id); };
-      root.append(row);
-    });
-    return root;
   }
 
   /** Clicking a linked term shows its definition, with a way to go and read it. */
@@ -3670,8 +3640,8 @@ export class LineMarksUI {
 
   /** A context line that is not an Issue for this viewer: J / K and Next issue skip it (scrolling still reads it). */
   tierSkippable(index: number): boolean {
-    const v = this.tierEval?.views[index];
-    return Boolean(v?.actsAsContext) && !this.myIssueLines.has(index);
+    void index;
+    return false;
   }
 
   /** Lines "Show only decisions" folds away now. */
@@ -3702,14 +3672,7 @@ export class LineMarksUI {
     }
     this.myIssueLines = mine;
     const folded = new Set<number>();
-    if (this.onlyDecisions && this.tierEval?.anyTagged) {
-      for (const view of this.tierEval.views) {
-        if (!view.actsAsContext || mine.has(view.lineIndex)) continue;
-        const line = this.lines[view.lineIndex];
-        if (!line || (TIER_POLICY.foldKeepsHeadings && line.kind === 'heading')) continue;
-        folded.add(view.lineIndex);
-      }
-    }
+    // Retired tier preferences must never hide document text. Keep their stored values.
     this.tierFolded = folded;
   }
 
@@ -3768,17 +3731,11 @@ export class LineMarksUI {
       const view = this.view;
       if (!view || !this.tierEval) return;
       const specs: TierLineSpec[] = [];
-      for (const v of this.tierEval.views) {
-        const line = this.lines[v.lineIndex];
-        if (!line) continue;
-        const folded = this.tierFolded.has(v.lineIndex);
-        if (v.tier !== 'context' && !folded) continue;
-        specs.push({ lineIndex: v.lineIndex, pos: line.pos, nodeSize: line.nodeSize, context: v.tier === 'context', proposed: v.proposed, folded });
-      }
+      // Archived tiers no longer dim or fold document text.
       const signature = specs.map(s => `${s.lineIndex}@${s.pos}:${s.nodeSize}:${s.proposed ? 'p' : ''}${s.folded ? 'f' : ''}`).join('|');
       // A remote Yjs update replaces the whole document and drops mapped decorations: rebuild then.
       const present = tierViewKey.getState(view.state)?.find().length ?? 0;
-      if (signature === this.tierDecoSig && present >= specs.length) return;
+      if (signature === this.tierDecoSig && present === specs.length) return;
       this.tierDecoSig = signature;
       try { setTierDecorations(view, specs); } catch (error) { console.warn('[plm] tier decorations failed', error); }
       this.queueRender();

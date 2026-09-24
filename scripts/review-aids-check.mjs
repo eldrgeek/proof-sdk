@@ -158,28 +158,10 @@ async function run(browser, style) {
 
     await openDoc(mike, base, slug);
 
-    await check(`${tag}: the flagged line has an amber tick; the rail says who is unsure and why; the walk reads it at 2×`, async () => {
-      await waitFor(mike, i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.uncertain === 'true', L.BETA);
-      await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.BETA);
-      const note = mike.locator('.prw-right .plm-box .plm-flag-note');
-      await note.waitFor({ state: 'visible' });
-      assert.match(await note.innerText(), /claude flagged this line uncertain: Q1 or Q2\? The sheet is unclear\./i);
-      const w = await walk(mike);
-      const words = await mike.evaluate(i => window.__proofLineMarks.lineList()[i].text.split(/\s+/).filter(Boolean).length, L.BETA);
-      const base1 = Math.round(Math.min(w.constants.MAX_DWELL_MS, Math.max(w.constants.MIN_DWELL_MS, (words / w.rate) * 1000)));
-      assert.equal(w.dwellMs, base1 * 2, `dwell ${w.dwellMs} for ${words} words at ${w.rate}/s`);
-      const s = await lm(mike);
-      assert.equal(s.aids.uncertainIssues, 1);
-      // The Issues pill title listed kinds. The Review count names its scope. Mike, 2026-09-23 (usability brief).
-      assert.match(await mike.locator('#share-banner .plm-issues-count').getAttribute('title'), /^\d+ need you; \d+ open for the team/);
-      await mike.waitForTimeout(250);
-      await mike.screenshot({ path: path.join(shots, `${tag}-1-uncertain.png`) });
-    });
-
     await check(`${tag}: the change card shows the AI's why; Ask why replies to the author and records it`, async () => {
       await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.ALPHA);
       await mike.evaluate(() => window.__proofReadingWalk.openReviewItem(window.__proofReadingWalk.focusIndex()));
-      const card = mike.locator('.prw-left .prw-changes .prw-card').first();
+      const card = mike.locator('.prw-right .prw-changes .prw-card').first();
       await card.waitFor({ state: 'visible' });
       assert.match(await card.locator('.prw-why').innerText(), /Why: The style guide spells it this way\./);
       await mike.waitForTimeout(250);
@@ -212,71 +194,7 @@ async function run(browser, style) {
       }
     });
 
-    await check(`${tag}: R on a line opens the reason with chips: the AI author's hints first, then defaults; a chip fills the reason`, async () => {
-      await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.ALPHA);
-      await mike.evaluate(() => document.activeElement?.blur());
-      await mike.keyboard.press('r');
-      const chips = mike.locator('.prw-right .plm-box .plm-chip');
-      await chips.first().waitFor({ state: 'visible' });
-      assert.deepEqual(await chips.allInnerTexts(), ['Keep the old word', 'Style guide is out of date', 'Wrong fact']);
-      assert.equal(await chips.first().getAttribute('data-source'), 'author');
-      await chips.nth(2).click();
-      assert.equal(await mike.locator('.prw-right .plm-box .plm-reason input').first().inputValue(), 'Wrong fact');
-      await mike.screenshot({ path: path.join(shots, `${tag}-3-chips.png`) });
-      await mike.keyboard.press('Escape');
-    });
-
     let objectionId = '';
-    await check(`${tag}: shift-click selects two lines; the Reject covers both and "I'd agree if…" makes an objection`, async () => {
-      await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.GAMMA);
-      await mike.locator(`.plm-dot[data-line="${L.DELTA}"]`).click({ modifiers: ['Shift'] });
-      await waitFor(mike, () => window.__proofLineMarks.debugState().aids.selection.length === 2);
-      await mike.evaluate(() => document.activeElement?.blur());
-      await mike.keyboard.press('r');
-      const box = mike.locator('.prw-right .plm-box');
-      await box.locator('.plm-reject-scope').waitFor({ state: 'visible' });
-      assert.match(await box.locator('.plm-reject-scope').innerText(), /covers lines 5–6 \(2 lines\)/);
-      await box.locator('.plm-chip', { hasText: 'Too strong' }).click();
-      await box.locator('.plm-condition').fill('the interview count and the vendor date are stated');
-      await mike.screenshot({ path: path.join(shots, `${tag}-4-objection-form.png`) });
-      await box.locator('.plm-reason button[type="submit"]').click();
-      await waitFor(mike, () => window.__proofLineMarks.debugState().aids.objections.length === 1);
-      const s = await lm(mike);
-      objectionId = s.aids.objections[0].id;
-      assert.deepEqual(s.aids.objections[0].lines, [L.GAMMA, L.DELTA]);
-      assert.equal(s.aids.objectionIssues, 1);
-      await waitFor(mike, i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.objection === 'true', L.GAMMA);
-      const card = box.locator('.plm-objection');
-      await card.waitFor({ state: 'visible' });
-      assert.match(await card.innerText(), /Your objection: Too strong/);
-      assert.match(await card.innerText(), /You’d agree if: the interview count and the vendor date are stated/);
-      await mike.screenshot({ path: path.join(shots, `${tag}-5-objection.png`) });
-    });
-
-    await check(`${tag}: the AI edits a covered line: "a repair was proposed" (rail + Since you); Keep, then Clear`, async () => {
-      const state = await agent('GET', '/state');
-      const gamma = state.body.lines.find(l => l.text.startsWith('Gamma line'));
-      const edit = await agent('POST', '/edit/v2', {
-        baseRevision: (await agent('GET', '/snapshot')).body.revision,
-        operations: [{ op: 'replace_block', ref: gamma.ref, block: { markdown: 'Gamma line claims 12 of 12 interviewed customers wanted exports.' } }],
-      });
-      assert.equal(edit.status, 200, JSON.stringify(edit.body));
-      await waitFor(mike, () => window.__proofLineMarks.debugState().aids.objections[0]?.repairPending === true, null, 15000);
-      await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.GAMMA);
-      const card = mike.locator('.prw-right .plm-box .plm-objection');
-      await card.locator('.plm-objection-repair').waitFor({ state: 'visible' });
-      const since = await mike.evaluate(async ({ s, h }) => (await (await fetch(`/api/documents/${s}/since-you`, { credentials: 'same-origin', headers: h })).json()), { s: slug, h: clientHeaders });
-      assert.equal(since.counts?.repairs, 1, JSON.stringify(since).slice(0, 300));
-      await mike.screenshot({ path: path.join(shots, `${tag}-6-repair.png`) });
-      await card.locator('.plm-objection-keep').click();
-      await waitFor(mike, () => window.__proofLineMarks.debugState().aids.objections[0]?.repairPending === false, null, 10000);
-      await card.locator('.plm-objection-clear').click();
-      await waitFor(mike, () => window.__proofLineMarks.debugState().aids.objections.length === 0, null, 10000);
-      const events = await agent('GET', '/events/pending?after=0');
-      const types = events.body.events.map(e => e.type);
-      for (const t of ['objection.created', 'objection.repair_proposed', 'objection.kept', 'objection.cleared']) assert.ok(types.includes(t), `missing ${t}: ${types.join(',')}`);
-      assert.ok(objectionId);
-    });
 
     await check(`${tag}: a sitting of 5 issues: after five, Next says what is left and lets the reader stop`, async () => {
       const quotes = await mike.evaluate(() => window.__proofLineMarks.lineList().slice(0, 5).map(line => line.text));
@@ -312,20 +230,6 @@ async function run(browser, style) {
       await mike.getByRole('button', { name: 'Close reading settings' }).click();
     });
 
-    await check(`${tag}: a person flags a line from the rail; the flag is theirs to clear`, async () => {
-      await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.DELTA);
-      // Accord layout stage 3 (decision 8): "Flag uncertain…" is under the line's ⋯ More.
-      const box = mike.locator('.prw-right .plm-box');
-      await box.locator('.plm-more-btn').click();
-      await box.locator('.plm-more .plm-flag-open').click();
-      await box.locator('.plm-more .plm-flag-form input').fill('Is October still true?');
-      await box.locator('.plm-more .plm-flag-form button[type="submit"]').click();
-      const row = mike.locator('.prw-right .plm-box .plm-flag');
-      await waitFor(mike, () => window.__proofLineMarks.debugState().aids.flags.length === 2);
-      await waitFor(mike, i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.uncertain === 'true', L.DELTA);
-      await row.locator('.plm-flag-note', { hasText: 'You flagged' }).locator('.plm-flag-clear').click();
-      await waitFor(mike, () => window.__proofLineMarks.debugState().aids.flags.length === 1);
-    });
     await ctx.close();
 
     // ---------------------------------------------------------------- phone 390
@@ -335,25 +239,16 @@ async function run(browser, style) {
     const phone = await signIn(pctx, cli, base);
     activePage = phone;
     await openDoc(phone, base, slug);
-    await check(`${ptag}: the flagged line's sheet shows the note; Reject shows touch-sized chips and "I'd agree if…"; no sideways scroll`, async () => {
-      await phone.locator(`.plm-dot[data-line="${L.BETA}"]`).scrollIntoViewIfNeeded();
-      assert.equal(await phone.locator(`.plm-dot[data-line="${L.BETA}"]`).getAttribute('data-uncertain'), 'true');
-      await phone.locator(`.plm-dot[data-line="${L.BETA}"]`).tap();
-      const sheet = phone.locator('.prw-right.prw-sheet-open');
-      await sheet.waitFor({ state: 'visible' });
-      assert.match(await sheet.locator('.plm-flag-note').innerText(), /claude flagged this line uncertain/i);
-      await sheet.getByRole('button', { name: /Reject/ }).tap();
-      const chips = sheet.locator('.plm-chip');
-      await chips.first().waitFor({ state: 'visible' });
-      const sizes = await chips.evaluateAll(cs => cs.map(c => c.getBoundingClientRect().height));
-      assert.ok(sizes.length === 3 && sizes.every(h => h >= 44), `chips ${sizes}`);
-      await sheet.locator('.plm-condition').waitFor({ state: 'visible' });
-      const sw = await phone.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
-      assert.ok(sw[0] <= sw[1] + 1, `scrollWidth ${sw}`);
-      await phone.screenshot({ path: path.join(shots, `${ptag}-1-sheet.png`) });
-      await chips.first().tap();
-      await sheet.locator('.plm-reason button[type="submit"]').tap();
-      await waitFor(phone, i => document.querySelector(`.plm-dot[data-line="${i}"]`)?.dataset.status === 'rejected', L.BETA);
+
+    await check(`${ptag}: Why and Ask why stay reachable in the right Review sheet`, async () => {
+      await phone.evaluate(i => { window.__proofReadingWalk.focusLine(i); window.__proofReadingWalk.openReviewItem(i); }, L.ALPHA);
+      const card = phone.locator('.prw-right.prw-sheet-open .prw-changes .prw-card').first();
+      await card.waitFor({ state: 'visible' });
+      assert.match(await card.locator('.prw-why').innerText(), /Why: The style guide spells it this way/);
+      await card.locator('.prw-ask-why').tap();
+      await waitFor(phone, () => window.__proofReadingWalk.debugState().whyAsked.length === 1);
+      await phone.screenshot({ path: path.join(shots, `${ptag}-1-why.png`) });
+      await phone.keyboard.press('Escape');
     });
     await check(`${ptag}: ⋯ › Reading settings carries "This sitting" as a sheet`, async () => {
       await phone.locator('#share-banner .share-pill-overflow').tap();
