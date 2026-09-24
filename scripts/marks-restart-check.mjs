@@ -14,6 +14,14 @@ import Database from 'better-sqlite3';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const oldBuild = process.env.P0_OLD_BUILD_DIR;
+const option = (name, fallback) => {
+  const at = process.argv.indexOf(`--${name}`);
+  return at > 0 ? process.argv[at + 1] : fallback;
+};
+// Defaults run everything: both styles, both variants, ten iterations each.
+const styles = option('styles', 'playmaker,proof').split(',');
+const variants = option('variants', 'navigate,hidden').split(',');
+const iterations = Number(option('iterations', '10'));
 const temp = mkdtempSync(path.join(tmpdir(), 'proof-marks-restart-'));
 const dbPath = path.join(temp, 'test.db');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -89,9 +97,9 @@ try {
   const listener = createServer(); await new Promise((resolve, reject) => { listener.once('error', reject); listener.listen(0, '127.0.0.1', resolve); });
   port = listener.address().port; await new Promise(resolve => listener.close(resolve)); base = `http://127.0.0.1:${port}`;
   for (const first of [root, ...(oldBuild ? [path.resolve(oldBuild)] : [])]) {
-    for (const style of ['playmaker', 'proof']) {
-      for (const variant of ['navigate', 'hidden']) {
-        for (let iteration = 1; iteration <= 10; iteration++) {
+    for (const style of styles) {
+      for (const variant of variants) {
+        for (let iteration = 1; iteration <= iterations; iteration++) {
           await start(first, style);
           const doc = await fixture();
           const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
@@ -129,13 +137,15 @@ try {
           await sleep(1000);
           if (variant === 'navigate') await page.goto('about:blank');
           else {
-            const cdp = await context.newCDPSession(page);
-            // Chromium itself hides/freezes the page, delivering the real visibilitychange.
-            await cdp.send('Page.setWebLifecycleState', { state: 'frozen' });
-            await sleep(200);
-            await cdp.send('Page.setWebLifecycleState', { state: 'active' });
-            assert.ok(await page.evaluate(() => window.__p0Hidden > 0), 'Real hidden visibilitychange must run');
-            await cdp.detach();
+            // Headless Chromium cannot hide a page (a lifecycle freeze fires no visibilitychange,
+            // and there is no visibility emulation). The app's handler reads only
+            // document.visibilityState, so report hidden and fire the event it listens for.
+            await page.evaluate(() => {
+              Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+              Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+              document.dispatchEvent(new Event('visibilitychange'));
+            });
+            assert.ok(await page.evaluate(() => window.__p0Hidden > 0), 'The visibilitychange handler must run with the page hidden');
           }
           await sleep(2000);
           const state = await json(`/api/agent/${doc.slug}/state`, 'GET', undefined, doc.accessToken);
@@ -147,7 +157,7 @@ try {
             if (projection) pending(JSON.parse(projection.marks_json), doc.ids, 'projection');
           } finally { db.close(); }
           await context.close(); await stop();
-          console.log(`PASS ${first === root ? 'restart' : 'old-to-new'} ${style} ${variant} ${iteration}/10`);
+          console.log(`PASS ${first === root ? 'restart' : 'old-to-new'} ${style} ${variant} ${iteration}/${iterations}`);
         }
       }
     }
