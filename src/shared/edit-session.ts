@@ -1,9 +1,12 @@
 /**
  * Proposals stay local until Propose change or Cmd/Ctrl+Enter.
  * Mike, 2026-09-23 (usability brief). Leaving keeps a draft; Cancel discards it.
- * Passage identity is the same hash and occurrence used by line marks. No shared data changes.
+ * A draft follows its passage the way a lapsed mark does: exact text first, then
+ * findLapseTarget. It never attaches to an unrelated line. A draft that cannot
+ * re-attach stays listed for the reader. Mike, 2026-09-23 (usability brief).
+ * No shared data changes.
  */
-import { actorKey, anchorForLine, resolveLineAnchor, type DocLine, type LineAnchor } from './line-marks';
+import { actorKey, anchorForLine, findLapseTarget, type DocLine, type LineAnchor } from './line-marks';
 
 export const EDIT_SESSION_POLICY = {
   publishDoors: ['propose', 'cmd-enter'] as const,
@@ -30,9 +33,29 @@ export function draftAction(draft: EditDraft, door: EditDoor): 'publish' | 'keep
   if (door === 'cancel') return 'discard';
   return (door === 'propose' || door === 'cmd-enter') && draft.proposed !== draft.original ? 'publish' : 'keep';
 }
-export function resolveDraft(draft: EditDraft, lines: DocLine[]): { line: DocLine; changed: boolean } | null {
-  const resolved = resolveLineAnchor(lines, draft.anchor);
-  return resolved ? { line: lines[resolved.lineIndex], changed: !resolved.current } : null;
+/**
+ * The line whose text is still the draft's passage.
+ * Exact hash identity first (the same text, including a duplicate chosen by occurrence).
+ * Else the similarity search a lapsed mark uses. Never the line that merely sits at the old ordinal:
+ * that line can be unrelated after a teammate's edit. Null means the passage is lost.
+ */
+export function resolveDraft(draft: EditDraft, lines: DocLine[], taken?: ReadonlySet<number>): { line: DocLine; changed: boolean } | null {
+  const exact = exactDraftLine(lines, draft.anchor, taken);
+  if (exact) return { line: exact, changed: false };
+  const lapse = findLapseTarget(lines, draft.anchor, taken);
+  return lapse ? { line: lapse, changed: true } : null;
+}
+
+function exactDraftLine(lines: DocLine[], anchor: LineAnchor, taken?: ReadonlySet<number>): DocLine | null {
+  const candidates = lines.filter(line => line.hash === anchor.hash && !taken?.has(line.index));
+  if (candidates.length === 0) return null;
+  const sameOccurrence = candidates.find(line => line.occurrence === anchor.occurrence);
+  if (sameOccurrence) return sameOccurrence;
+  let best = candidates[0];
+  for (const line of candidates) {
+    if (Math.abs(line.index - anchor.ordinal) < Math.abs(best.index - anchor.ordinal)) best = line;
+  }
+  return best;
 }
 export function parseDraft(value: string | null): EditDraft | null {
   try {

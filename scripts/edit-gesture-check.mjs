@@ -123,6 +123,9 @@ const state = page => page.evaluate(() => {
   return { pm, yjs };
 });
 const toggleEditing = page => page.evaluate(() => document.querySelector('.share-pill-suggest-toggle').click());
+// textContent, not innerText: on a phone the status bar is folded into the strip (display:none)
+// and innerText is empty, while the mode word is still the named status.
+const modeText = page => page.locator('.pst-mode').evaluate(el => el.textContent);
 async function run(browser, base, style, phone) {
   const options = phone ? { ...devices['iPhone 13'], viewport: { width: 390, height: 844 } } : { viewport: { width: 1440, height: 900 } };
   const created = await createDoc(base);
@@ -154,7 +157,13 @@ async function run(browser, base, style, phone) {
     await page.locator('.accord-draft textarea').fill(proposed);
     await page.evaluate(() => window.scrollBy(0, 80));
     if (!phone) await page.mouse.move(40, 300);
-    await page.locator('.pst-mode').click();
+    // A click outside the draft keeps it. On a phone the mode chip is not on screen: the status
+    // bar is folded into the strip. Click another passage instead. Mike, 2026-09-23 (usability brief).
+    if (phone) {
+      const other = page.locator('.ProseMirror p').filter({ hasText: 'Paragraph 1 is plain' }).first();
+      await other.evaluate(el => el.scrollIntoView({ block: 'center', behavior: 'instant' }));
+      await other.click({ position: { x: 12, y: 8 } });
+    } else await page.locator('.pst-mode').click();
     assert.equal((await myProposals(page)).length, 0);
     await page.locator('[data-draft-action="resume"]').click();
     assert.equal(await page.locator('.accord-draft textarea').inputValue(), proposed);
@@ -220,16 +229,18 @@ async function run(browser, base, style, phone) {
     await page.locator('[data-draft-action="cancel"]').click();
     assert.equal(await page.locator('.accord-draft').count(), 0);
     await toggleEditing(page);
-    assert.equal(await page.locator('.pst-mode').innerText(), 'Editing');
+    assert.equal(await modeText(page), 'Editing');
     assert.equal(await page.locator('.share-pill-suggest-toggle').getAttribute('aria-label'), 'Leave Editing');
-    await page.locator('.ProseMirror p').filter({ hasText: TARGET }).first().click();
+    const passage = page.locator('.ProseMirror p').filter({ hasText: TARGET }).first();
+    await passage.evaluate(el => el.scrollIntoView({ block: 'center', behavior: 'instant' }));
+    await passage.click({ position: { x: 24, y: 8 } });
     const before = (await state(page)).pm.join('');
     await page.keyboard.type('asj');
     assert.equal((await state(page)).pm.join('').length, before.length + 3);
     await page.keyboard.press('Escape');
-    assert.equal(await page.locator('.pst-mode').innerText(), 'Editing');
+    assert.equal(await modeText(page), 'Editing');
     await toggleEditing(page);
-    assert.equal(await page.locator('.pst-mode').innerText(), 'Reading');
+    assert.equal(await modeText(page), 'Reading');
     assert.equal((await myProposals(page)).length, 0);
   });
   await page.screenshot({ path: path.join(shots, `draft-${tag}.png`) });

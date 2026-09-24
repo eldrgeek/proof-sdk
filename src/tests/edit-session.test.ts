@@ -1,7 +1,7 @@
 /** Local drafts and one attributed proposal. Mike, 2026-09-23 (usability brief). */
 import assert from 'node:assert/strict';
 import { beginDraft, draftAction, draftKey, draftPrefix, parseDraft, resolveDraft, EDIT_SESSION_POLICY, type EditDoor } from '../shared/edit-session';
-import { extractLines, type LineSourceNode } from '../shared/line-marks';
+import { extractLines, hashLine, type DocLine, type LineSourceNode } from '../shared/line-marks';
 import { routeKey } from '../shared/reading-keys';
 import { UndoStack } from '../shared/undo';
 import { EditGestureUI } from '../ui/edit-gesture';
@@ -34,14 +34,45 @@ test('keys isolate documents, readers and repeated passages', () => {
   assert.notEqual(key, draftKey('doc', 'guest:Alice', beginDraft(lines[0], 'same').anchor));
   assert.equal(key, draftKey('doc', 'GUEST:alice', draft.anchor));
 });
-test('a changed passage remains recoverable with a warning; a missing passage is not submitted', () => {
+function rewrite(line: DocLine, text: string): DocLine {
+  return { ...line, text, hash: hashLine(line.kind, text) };
+}
+test('a draft resolves by exact text, then by the lapsed-mark search, and never by an unrelated line', () => {
   assert.equal(resolveDraft(draft, lines)?.line.index, 1);
   assert.equal(resolveDraft(draft, lines)?.changed, false);
-  const changed = lines.map((l, i) => ({ ...l, hash: `new${i}`, text: `changed ${i}` }));
-  assert.equal(resolveDraft(draft, changed)?.changed, true);
-  assert.equal(resolveDraft(draft, []) , null);
+  // The old ordinal fallback attached this unrelated text. It must not.
+  const unrelated = lines.map((l, i) => rewrite(l, `changed ${i}`));
+  assert.equal(resolveDraft(draft, unrelated), null);
+  assert.equal(resolveDraft(draft, []), null);
   assert.equal(parseDraft('{broken'), null);
   assert.equal(parseDraft('{"original":"x","proposed":"y","anchor":{}}'), null);
+
+  const sentence = 'The edit gesture line is long enough to survive a small edit.';
+  const longDoc = schema.node('doc', null, [
+    'An intro paragraph that stays where it is.',
+    sentence,
+    'A closing paragraph that stays where it is.',
+  ].map(t => schema.node('paragraph', null, schema.text(t))));
+  const longLines = extractLines(longDoc as unknown as LineSourceNode);
+  const longDraft = beginDraft(longLines[1], sentence);
+  assert.equal(resolveDraft(longDraft, longLines)?.changed, false);
+  assert.equal(resolveDraft(longDraft, longLines)?.line.text, sentence);
+  const edited = 'The edit gesture line is long enough to survive a larger edit.';
+  const editedLines = longLines.map((l, i) => i === 1 ? rewrite(l, edited) : l);
+  assert.equal(resolveDraft(longDraft, editedLines)?.line.index, 1);
+  assert.equal(resolveDraft(longDraft, editedLines)?.changed, true);
+  assert.equal(resolveDraft(longDraft, editedLines)?.line.text, edited);
+  // A new unrelated paragraph now sits at the old ordinal. The draft follows the edited sentence.
+  const moved = [
+    longLines[0],
+    rewrite({ ...longLines[0], index: 1 }, 'Zebras seldom publish quarterly tax guidance for coastal lighthouses.'),
+    rewrite({ ...longLines[1], index: 2 }, edited),
+  ];
+  assert.equal(resolveDraft(longDraft, moved)?.line.index, 2);
+  assert.equal(resolveDraft(longDraft, moved)?.line.text, edited);
+  assert.equal(resolveDraft(longDraft, moved)?.changed, true);
+  const lost = longLines.map((l, i) => i === 1 ? rewrite(l, 'Zebras seldom publish quarterly tax guidance for coastal lighthouses.') : l);
+  assert.equal(resolveDraft(longDraft, lost), null);
 });
 test('S suggests, E explains, and draft fields and direct Editing never run letter commands', () => {
   for (const key of ['s', 'S', 'e']) assert.equal(routeKey({ key, target: 'editor', writing: false }), 'command');
@@ -127,6 +158,20 @@ try {
     const before = writes; other['submit'](entry, 'cmd-enter');
     assert.equal(writes, before); assert.equal(saved.size, 1);
     assert.equal(other.open(0), false);
+  });
+  test('a small edit stays attached and an unrelated replacement is listed as lost', () => {
+    allowed = true;
+    const ui = new EditGestureUI(host);
+    assert.equal(ui.open(0), true);
+    const openEntry = [...ui['drafts'].values()].find(d => d.open)!;
+    const original = openEntry.draft.original;
+    const end = () => alice.view.state.doc.child(0).nodeSize - 1;
+    alice.view.dispatch(alice.view.state.tr.insertText(`${original} today`, 1, end()));
+    assert.equal(ui.lostDrafts().some(d => d.original === original), false, 'the edited passage still holds the draft');
+    alice.view.dispatch(alice.view.state.tr.insertText('Zebras seldom publish quarterly tax guidance for coastal lighthouses.', 1, end()));
+    const lost = ui.lostDrafts().filter(d => d.original === original);
+    assert.equal(lost.length, 1);
+    assert.equal(lost[0].proposed, original);
   });
 } finally { peers.close(); }
 console.log(`\n${passed} edit-session tests passed`);

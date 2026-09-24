@@ -373,16 +373,19 @@ async function phone(browser, base, style) {
     await page.screenshot({ path: path.join(shots, `${tag}-marked.png`) });
   });
   await check(`${tag}: a tap selects text while Reading; the bar stays on screen`, async () => {
+    // A tap selects the passage. It does not put a caret in the text, so Reading stays Reading
+    // and the phone strip (the bar the reader sees) stays on screen. Mike, 2026-09-23 (usability brief).
     await block(page, L.S1).scrollIntoViewIfNeeded();
     const box = await block(page, L.S1).boundingBox();
     await page.touchscreen.tap(box.x + 60, box.y + 10);
-    await waitFor(page, () => document.querySelector('.pst-bar .pst-mode')?.textContent === 'Reading');
-    await page.locator('.pst-bar').waitFor({ state: 'visible' });
-    const b = await bar(page);
-    assert.ok(b.bottom <= b.innerHeight + 1 && b.top >= 0, 'the bar left the screen');
-    assert.ok(b.height <= 28, `bar height ${b.height}`);
-    const fits = await page.evaluate(() => { const e = document.querySelector('.pst-bar'); return e.scrollWidth <= e.clientWidth + 1; });
-    assert.ok(fits, 'the bar overflows its one line');
+    await waitFor(page, i => window.__proofReadingWalk.debugState().focus === i, L.S1);
+    assert.equal(await page.locator('.pst-mode').evaluate(el => el.textContent), 'Reading');
+    assert.notEqual(await page.locator('.ProseMirror').getAttribute('contenteditable'), 'true', 'a tap started direct editing');
+    const strip = await page.locator('.prw-strip').boundingBox();
+    assert.ok(strip, 'the strip left the screen');
+    assert.ok(Math.abs(strip.y + strip.height - 844) <= 2, `strip bottom ${strip.y + strip.height}`);
+    const fits = await page.evaluate(() => { const e = document.querySelector('.prw-strip'); return e.scrollWidth <= e.clientWidth + 1; });
+    assert.ok(fits, 'the strip overflows');
     await page.screenshot({ path: path.join(shots, `${tag}-writing.png`) });
   });
   await context.close();
