@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, devices } from 'playwright';
+import { hoverChangesNothing, selectPassage } from './usability-s1-assertions.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const arg = (name) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : null; };
@@ -497,9 +498,9 @@ async function runViewportCases(browser, base, created, label, viewport) {
   // 4 — hover another passage; shortcut still targets the selected passage.
   await check(`ac04-hover-shortcut-target@${label}`, async () => {
     await setFolded(page, L.SEC2, false);
-    await focusLine(page, L.SAFE);
     const target = L.SAFE;
-    await hoverBlock(page, L.PROPOSAL);
+    await selectPassage(page, target);
+    await hoverChangesNothing(page, L.PROPOSAL);
     await blurKeys(page);
     await page.keyboard.press('a');
     await waitFor(page, line => {
