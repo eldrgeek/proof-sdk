@@ -22,7 +22,12 @@ async function openEditor(browser: any, url: string, name: string): Promise<any>
     return target.hostname === '127.0.0.1' || target.hostname === 'localhost' ? route.continue() : route.abort();
   });
   const page = await context.newPage();
-  await page.addInitScript((slug: string) => sessionStorage.setItem(`proof_share_welcome_${slug}`, '1'), new URL(url).pathname.split('/').pop());
+  await page.addInitScript((slug: string) => {
+    sessionStorage.setItem(`proof_share_welcome_${slug}`, '1');
+    // The dialog walk's checkbox is not in the review flow. The preference it used to set still
+    // starts on, and a decision would open the next mark. Mike, 2026-09-23 (usability brief).
+    localStorage.setItem('proof:review-walk', 'false');
+  }, new URL(url).pathname.split('/').pop());
   await page.goto(url, { waitUntil: 'domcontentloaded' });
   // The review document is not editable until Enter Editing. Readiness is the editor and the sync, not a caret in the text. Mike, 2026-09-23 (usability brief).
   await page.waitForFunction(() => Boolean(document.querySelector('.ProseMirror')) && (window as any).proof?.collabIsSynced === true);
@@ -103,7 +108,6 @@ async function run(): Promise<void> {
       const alice = await openEditor(browser, url, 'Alice'), bob = await openEditor(browser, url, 'Bob');
       for (const page of [alice, bob]) {
         await page.waitForFunction((n: number) => document.querySelectorAll('.pm-review-row').length === n, ids.length);
-        await page.getByLabel('Go to the next mark after I decide').uncheck();
       }
       async function fetchState() { return await fetch(`${httpBase}/api/agent/${created.slug}/state`, { headers }); }
       return { alice, bob, ids, state: async () => mustJson(await fetchState()) };
@@ -112,9 +116,22 @@ async function run(): Promise<void> {
     const changeRecord = (page: any, id: string, changes: any) => page.evaluate(({ id, changes }: any) => {
       const map = (window as any).proof.getReviewDecisionHistory().doc.getMap('marks'); map.set(id, { ...map.get(id), ...changes });
     }, { id, changes });
-    const accept = async (page: any, id: string) => { await page.locator(`[data-review-row="${id}"]`).click(); await page.getByRole('button', { name: 'Accept (A)', exact: true }).click(); await page.locator(`[data-review-row="${id}"]`).waitFor({ state: 'hidden' }); };
+    // A row selects the passage. It does not open a review dialog. The margin Accept is the same
+    // decision the dialog's Accept button used, so one Undo still removes it. Mike, 2026-09-23 (usability brief).
+    const accept = async (page: any, id: string) => {
+      await page.locator(`[data-review-row="${id}"]`).click();
+      await page.locator(`.prw-card[data-mark-id="${id}"] .prw-accept`).click();
+      await page.locator(`[data-review-row="${id}"]`).waitFor({ state: 'hidden' });
+    };
     const documentText = (page: any) => page.evaluate(() => (window as any).proof.editor.ctx.get('editorView').state.doc.textContent);
-    const history = async (page: any, redo = false) => { await page.getByRole('button', { name: 'Marks', exact: true }).focus(); await page.keyboard.press(redo ? 'Control+Shift+z' : 'Control+z'); };
+    const history = async (page: any, redo = false) => {
+      // Undo while focus is outside the text. The Marks button is not always on screen; the
+      // Editing control is. The key still reaches the one Undo. Mike, 2026-09-23 (usability brief).
+      const marks = page.getByRole('button', { name: 'Marks', exact: true });
+      if (await marks.isVisible()) await marks.focus();
+      else await page.locator('.share-pill-suggest-toggle').focus();
+      await page.keyboard.press(redo ? 'Control+Shift+z' : 'Control+z');
+    };
     tests['2'] = async () => {
       const { alice, bob, ids: [id], state } = await fixture();
       const details = { createdAt: '2026-01-01T00:00:00Z', replies: [{ by: 'human:Bob', text: 'Keep this explanation', at: '2026-01-02T00:00:00Z' }] };
@@ -145,7 +162,11 @@ async function run(): Promise<void> {
       await alice.waitForFunction(() => document.querySelector('.ProseMirror')?.textContent?.includes('OrigBOBinal'));
       await history(alice, true); await alice.waitForTimeout(500);
       for (const page of [alice, bob]) assert((await documentText(page)).includes('OrigBOBinal'), 'Bob’s text must survive redo');
-      assert((await alice.locator('.pm-review-panel').innerText()).includes("Can't redo: someone has changed this text since."), 'Visible one-line refusal');
+      const refusal = "Can't redo: someone has changed this text since.";
+      const shown = await alice.evaluate(() => [...document.querySelectorAll('.pm-review-panel, .pundo-notice, .review-history-notice')]
+        .filter(el => (el as HTMLElement).hidden !== true && getComputedStyle(el).display !== 'none')
+        .map(el => el.textContent || '').join('\n'));
+      assert(shown.includes(refusal), `Visible one-line refusal. saw: ${JSON.stringify(shown)}`);
       assert((await state()).markdown.includes('OrigBOBinal'));
     };
     tests['5'] = async () => {
@@ -167,16 +188,14 @@ async function run(): Promise<void> {
     };
     tests['6'] = async () => {
       const { alice, bob, ids: [id], state } = await fixture();
-      await alice.locator(`[data-review-row="${id}"]`).click();
-      assert.equal(await alice.locator('.pm-review-dialog ins').innerText(), 'Changed');
       await changeRecord(bob, id, { content: 'Refreshed proposal' });
       await alice.waitForFunction((id: string) => (window as any).proof.getAllMarks().find((m: any) => m.id === id)?.data?.content === 'Refreshed proposal', id);
-      await alice.getByRole('button', { name: 'Accept (A)', exact: true }).click();
-      assert((await documentText(alice)).includes('Original'), 'First click must apply nothing');
-      assert.equal(await alice.locator('.pm-review-dialog ins').innerText(), 'Refreshed proposal');
-      assert((await alice.locator('.pm-review-dialog').innerText()).includes('This suggestion changed while it was open.'));
-      await alice.getByRole('button', { name: 'Accept (A)', exact: true }).click();
+      // There is no review dialog holding a stale preview. Accept applies the current proposal.
+      await accept(alice, id);
       await bob.waitForFunction(() => document.querySelector('.ProseMirror')?.textContent?.includes('Refreshed proposal'));
+      const text = await documentText(alice);
+      assert(text.includes('Refreshed proposal'), 'Accept applies the current proposal');
+      assert(!text.includes('Changed'), 'Accept does not apply the proposal Bob already replaced');
       assert((await state()).markdown.includes('Refreshed proposal'));
     };
     tests['history-order'] = async () => {

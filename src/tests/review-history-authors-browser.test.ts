@@ -22,7 +22,10 @@ async function openEditor(browser: any, url: string, name: string): Promise<any>
     return target.hostname === '127.0.0.1' || target.hostname === 'localhost' ? route.continue() : route.abort();
   });
   const page = await context.newPage();
-  await page.addInitScript((slug: string) => sessionStorage.setItem(`proof_share_welcome_${slug}`, '1'), new URL(url).pathname.split('/').pop());
+  await page.addInitScript((slug: string) => {
+    sessionStorage.setItem(`proof_share_welcome_${slug}`, '1');
+    localStorage.setItem('proof:review-walk', 'false');
+  }, new URL(url).pathname.split('/').pop());
   await page.goto(url, { waitUntil: 'domcontentloaded' });
   // The review document is not editable until Enter Editing. Readiness is the editor and the sync, not a caret in the text. Mike, 2026-09-23 (usability brief).
   await page.waitForFunction(() => Boolean(document.querySelector('.ProseMirror')) && (window as any).proof?.collabIsSynced === true);
@@ -102,7 +105,6 @@ async function run(): Promise<void> {
       const alice = await openEditor(browser, url, 'Alice'), bob = await openEditor(browser, url, 'Bob');
       for (const page of [alice, bob]) {
         await page.waitForFunction((n: number) => document.querySelectorAll('.pm-review-row').length === n, ids.length);
-        await page.getByLabel('Go to the next mark after I decide').uncheck();
       }
       async function fetchState() { return await fetch(`${httpBase}/api/agent/${created.slug}/state`, { headers }); }
       return { alice, bob, ids, state: async () => mustJson(await fetchState()), agentReply: async (id: string) => mustJson(await fetch(`${httpBase}/api/agent/${created.slug}/marks/reply`, { method: 'POST', headers, body: JSON.stringify({ markId: id, by: 'ai:Proof', text: 'External reply' }) })) };
