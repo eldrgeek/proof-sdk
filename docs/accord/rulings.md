@@ -16,14 +16,14 @@ Each line is a ruling Mike made, with its date and where it is recorded. A rulin
 - 2026-09-18: Mike's text in the Google Doc "Proof and MDP" is the base of the spec; Claude's changes are suggestions he accepts from the page, never applied for him. Source: the spec page, first line.
 - 2026-09-19, morning: **Yes to all nine asks** (Issue = unseen by someone or rejected; aligned = no objection, agreed is stronger; Agreed personal, Approved Owner-binding; scroll-accepts provisional; proxy marks next; decision lines vs context lines; `[text]{type @source}` plus CriticMarkup; pick our own name and use it in SOMA; delete the "importance" line). Source: `docs/accord/spec-hgff4jxe-2026-09-23.md`, the asks table.
 - 2026-09-19: **"Accord it is, use it everywhere."** The standard, the editor, each document ("an Accord") and the SOMA vocabulary are Accord. The upstream open-source project keeps its name, Proof SDK. User-facing strings only: no API path, header, field, event, error code, table, slug, token, CSS class or test selector changed (`src/shared/product-identity.ts`). Source: ESTATE.md 2026-09-19.
-- 2026-09-19, in chat: he hates the engine's built-in review pop-ups. **Clicking marked text must just edit, Docs-like.** The view must not jump while he types. Scroll is acceptance and agreement, provisional until the next deliberate action. Editing another person's line is treated differently when it changes meaning than when it does not.
+- 2026-09-19, in chat: he hates the engine's built-in review pop-ups. **Clicking marked text must just edit, Docs-like.** The view must not jump while he types. Scroll is acceptance and agreement, provisional until the next deliberate action. Editing another person's line is treated differently when it changes meaning than when it does not. _(Partly superseded 2026-09-23, see the last section: "clicking edits" and "scroll is acceptance and agreement". No pop-ups, a still view and the meaning rule stand.)_
 - 2026-09-19: an ask's questions live in the document; do not echo them in chat.
-- 2026-09-19: when a person closes an Issue it folds for that person. Hovering a line puts its decision mark in the margin; touch surfaces need another way to show the current item. Undo for every user change. "?" after a sentence means clarify. A group with no Issues closes; hover opens it. An explicit unfold is never refolded.
+- 2026-09-19: when a person closes an Issue it folds for that person. Hovering a line puts its decision mark in the margin; touch surfaces need another way to show the current item. Undo for every user change. "?" after a sentence means clarify. A group with no Issues closes; hover opens it. An explicit unfold is never refolded. _(Partly superseded 2026-09-23: closing an Issue no longer folds, a group no longer closes by itself, and hover opens nothing. Undo, "?" and "an explicit unfold is never refolded" stand.)_
 
 ## The layout (2026-09-21)
 
 - **Yes to Ren's twelve decisions**: "build the layout that you proposed." Source: `docs/accord/layout-6ybuxh8e-2026-09-23.md`, its ruled line.
-- **"Yes to both"**: resting the mouse on another line ends Writing mode once typing has paused; Option+click (Alt) edits a link's words, a plain click opens the link. Source: the spec page, "Ruled (Mike, 21 September)".
+- **"Yes to both"**: resting the mouse on another line ends Writing mode once typing has paused; Option+click (Alt) edits a link's words, a plain click opens the link. Source: the spec page, "Ruled (Mike, 21 September)". _(The hover half is superseded 2026-09-23: hover changes nothing. The link half stands.)_
 - His usability findings from the Waiting on Mike Accord (2026-09-21) are in the spec text under "Using the Waiting on Mike Accord" and were fixed in 3474b69: links open on click, A never types into the text, "Save N accepted changes" works, rail and chat scroll independently, tighter top bar.
 
 ## Round 2 (2026-09-22)
@@ -38,3 +38,18 @@ Each line is a ruling Mike made, with its date and where it is recorded. A rulin
 - **Open for Mike:** unread lines are not Open (`OPEN_VIEW_POLICY.unreadLinesAreOpen = false`). One line flips it; the invariant is tested both ways.
 - **Not built, and not to be started without Mike's word:** the room scribe (a standing AI member that drafts the page from the floor), a conversation-first landing, promotion of a floor message onto the page. Mike's two rulings that frame them (2026-09-19): the conversation surface is per document, and Accord is "a chat tool that leaves documents behind", not a documentation tool with chat.
 - Invitations send through Resend from `accord@mike-wolf.com` since 2026-09-23 (7b5c574); the key lives only on the VPS.
+
+## Usability simplification (2026-09-23)
+
+- **Mike, 2026-09-23, on Codex's usability brief:** "Review this document. Propose any changes, turn into beads and get the job completed." The brief, Claude's review of it and the bead plan are in `docs/accord/usability-brief-2026-09-23.md`. This instruction is the ruling for the changes below. It is recorded as Mike's instruction to implement the brief, not as a separate ruling on each line.
+- Superseded by it, with the old words kept above:
+  - 09-19 "when a person closes an Issue it folds for that person" → closing an Issue never folds document text.
+  - 09-19 "A group with no Issues closes; hover opens it" → a section opens or closes only by its disclosure control, Expand all / Collapse all, or navigation to a passage inside it.
+  - 09-19 "Scroll is acceptance and agreement, provisional until the next deliberate action" → scrolling records Seen and nothing else. There is no provisional accept.
+  - 09-21 "resting the mouse on another line ends Writing mode once typing has paused" → hover never changes the mode, the target, the selection or the layout.
+  - 09-21 layout stage 3 "hover previews, the first key or click commits" → the target is the passage the reader selected. Hover may show a tooltip only.
+  - 09-22 edit gesture "leaving an edit posts it" → only Propose change or Cmd/Ctrl+Enter publishes. Leaving keeps the draft, and Cancel discards it.
+  - 09-22 the Open view as a filtered way to read → the document is always shown whole, with the Review list beside it.
+  - 09-19 "clicking marked text must just edit, Docs-like" → a click selects the passage, and editing starts from Suggest change in an inline draft. There are still no review pop-ups.
+- Kept unchanged: bracketed assent; Agreed personal and Approved owner-binding; aligned weaker than agreed; a thread and a proposal are one object; one definition of Open; the open question on unread lines; the direct-editing gate stays off.
+- The interface keeps the spec's state words (unseen, Seen, Agreed, Rejected, Approved, and "agreed to an earlier version"). The brief's "Unreviewed" and "Objected" are its names for unseen and Rejected.
