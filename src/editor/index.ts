@@ -1122,6 +1122,10 @@ class ProofEditorImpl implements ProofEditor {
   private shareContentFilterEnabled: boolean = false;
   private readOnlyBanner: HTMLElement | null = null;
   private reviewLockCount: number = 0;
+  /** Whether this connection's marks were re-applied when it became connected and in sync. */
+  private collabMarksAppliedOnSync = false;
+  /** The editable value last given to each view (updateEditableState skips an unchanged one). */
+  private readonly appliedEditable = new WeakMap<EditorView, boolean>();
   private reviewLockReason: string | null = null;
   private reviewLockBanner: HTMLElement | null = null;
   private reviewInFlight: Promise<unknown> | null = null;
@@ -1653,6 +1657,7 @@ class ProofEditorImpl implements ProofEditor {
           this.updateShareBannerPresenceDisplay();
         });
         collabClient.onSyncStatus((status) => {
+          if (!(status.connectionStatus === 'connected' && status.isSynced)) this.collabMarksAppliedOnSync = false;
           this.updateCollabHealthWindow(status);
           this.collabConnectionStatus = status.connectionStatus;
           this.collabIsSynced = status.isSynced;
@@ -1671,8 +1676,15 @@ class ProofEditorImpl implements ProofEditor {
             this.ensureCollabCursorsInstalled();
             this.applyPendingCollabTemplate();
             this.kickCollabHydration();
-            this.applyLatestCollabMarksToEditor();
-            setTimeout(() => this.applyLatestCollabMarksToEditor(), 150);
+            // Re-apply the server's marks when the page BECOMES connected and in sync, not on every
+            // sync-status event: the collab client emits one per Yjs update, and a re-apply that did
+            // not settle fed a loop of nested Yjs transactions (step 4 review, 2026-09-25; the ac-m23
+            // loop). Marks that change arrive through onMarks above, which applies them itself.
+            if (!this.collabMarksAppliedOnSync) {
+              this.collabMarksAppliedOnSync = true;
+              this.applyLatestCollabMarksToEditor();
+              setTimeout(() => this.applyLatestCollabMarksToEditor(), 150);
+            }
             this.installShareAgentPresenceObservers();
             this.clearErrorBanner();
             this.resetShareInitRetryState();
@@ -6565,6 +6577,13 @@ class ProofEditorImpl implements ProofEditor {
       && (!this.isShareMode || (this.shareAllowLocalEdits && (EDIT_SESSION_POLICY.liveProposals || isWriting())));
 
     const applyEditableState = (view: EditorView) => {
+      // setProps redraws the whole view even for the same value, and y-prosemirror's sync plugin
+      // opens a Yjs transaction on every redraw. This runs on every sync-status event, which the
+      // collab client emits per Yjs update, so re-setting an unchanged value fed a loop: step 4
+      // review, 2026-09-25, 4,390 nested transactions froze the page for up to six minutes after
+      // a discussion was turned back into text (the ac-m23 loop). Only a change reaches the view.
+      if (this.appliedEditable.get(view) === isEditable) return;
+      this.appliedEditable.set(view, isEditable);
       view.setProps({
         editable: () => isEditable,
       });
