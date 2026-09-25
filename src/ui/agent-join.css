@@ -1,6 +1,8 @@
-/* A fixed notice leaves the document and the reader's position still. */
+/* A fixed notice leaves the document and the reader's position still. It sits under the top bar at
+ * the right, where the page's other passing notices appear; at the bottom it covered the chat's
+ * composer at desktop width (review, 2026-09-25). */
 #agent-join-notices {
-  position: fixed; right: 24px; bottom: 42px; z-index: 1600;
+  position: fixed; right: 16px; top: calc(env(safe-area-inset-top, 0px) + 84px); z-index: 1600;
   width: min(540px, calc(100vw - 32px)); max-height: 38vh; overflow: auto;
   background: var(--proof-bg, #fff); color: var(--proof-fg, #17261d);
   border: 1px solid #c9d4ce; border-radius: 10px; padding: 10px;

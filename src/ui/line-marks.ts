@@ -350,6 +350,9 @@ export class LineMarksUI {
   /** Proposal attribution survives retirement of the line-mark member list. */
   proposalAuthor(actor: string): string {
     const sponsor = this.agentSponsors[actor] ?? this.agentSponsors[actorKey(actor)];
+    // The server's label is already the whole provenance line, "Izzy — added by Eric"
+    // (cross-invitation.ts agentProvenanceMap). Adding the sponsor again showed "… — added by Eric —
+    // added by Eric" on every sponsored AI's proposal, live until ac-220's review; threads use this too.
     return sponsor?.label || this.aiName(actor);
   }
   private brief: ProxyBrief | null = null;

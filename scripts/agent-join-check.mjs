@@ -106,7 +106,9 @@ try {
       await page.evaluate(() => window.__proofReadingWalk.openReviewItem(1));
       const comment = page.locator('.amg-thread', { hasText: 'Drew joined and read the Accord.' });
       await comment.waitFor({ state: 'visible' });
-      assert.equal(await comment.locator('.amg-thread-by').innerText(), 'Drew — added by Mike');
+      // The page learns a new key's sponsor on its next marks poll (every 4 s), so wait for it.
+      await page.waitForFunction(() => [...document.querySelectorAll('.amg-thread .amg-thread-by')].some(node => node.textContent === 'Drew — added by Mike'), null, { timeout: 10000 })
+        .catch(async () => { throw new Error(`thread author reads "${await comment.locator('.amg-thread-by').innerText()}", not "Drew — added by Mike"`); });
       await page.screenshot({ path: path.join(shots, `agent-join-${style}-1440-comment.png`) });
       await page.getByRole('button', { name: 'Share', exact: true }).click();
       await page.locator('#share-tab-ais').click();
