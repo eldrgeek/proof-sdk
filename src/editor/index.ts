@@ -4609,9 +4609,14 @@ class ProofEditorImpl implements ProofEditor {
       if (batch.failedIds.length) throw new Error('The proposal changed. Its words are still text.');
       batch.apply();
       this.reviewDecisionIds.add(run.id);
-      started = lm.startThread({ lines: [lm.lineAtPos(run.from)], text: run.text.trim(), asks: 'answer', waitingOn: run.waitingOn },
-        { id, recordUndo: false, announce: false, onComment: id => { commentId = id; } });
     });
+    // Step 4 review, 2026-09-25: the discussion's comment is written outside the recorded step.
+    // Inside it, Undo let Yjs delete a comment the server still stored; the server put it back and
+    // the page re-synced for 6 to 10 seconds. Turning the discussion back resolves the comment.
+    this.typedDiscussionDecision(() => {
+      started = lm.startThread({ lines: [line], text: run.text.trim(), asks: 'answer', waitingOn: run.waitingOn },
+        { id, recordUndo: false, announce: false, onComment: id => { commentId = id; } });
+    }, false);
     const record = { checkpoint, entryId: undefined as string | undefined };
     this.typedDiscussionHistory.set(id, record);
     // Publish Undo immediately, even if the row request is still in flight.
@@ -4655,6 +4660,10 @@ class ProofEditorImpl implements ProofEditor {
       if (!await lm.takeBackTypedThread(id)) return false;
       removed = true;
       if (record && history.canRestoreCheckpoint(record.checkpoint)) {
+        // The comment was never in the recorded step, so close it as a decision first; then the
+        // conversion's own step (the withdrawal) is on top again, and undoing it reopens the words.
+        this.resolveTypedDiscussionComment(thread.thread.markId);
+        if (!history.canRestoreCheckpoint(record.checkpoint)) throw new Error('Could not turn the discussion back into text.');
         this.restoreReviewDecision(false);
         // The thread row was removed; native Redo must not recreate only its comment.
         if (!TYPED_DISCUSSION_POLICY.redoConversion) history.manager.redoStack.length = 0;
@@ -4676,6 +4685,19 @@ class ProofEditorImpl implements ProofEditor {
     } finally { this.returningTypedThreads.delete(id); }
   }
 
+  /** Resolve a typed discussion's comment by the one path every decision takes, then drop that
+   * history step: the take-back owns it, and a later Undo must not reopen an orphan comment. */
+  private resolveTypedDiscussionComment(commentId: string | null | undefined): void {
+    if (!commentId || !this.editor) return;
+    const view = this.editor.ctx.get(editorViewCtx);
+    if (!getMarks(view.state).some(mark => mark.id === commentId)) return;
+    const history = this.getReviewDecisionHistory();
+    const top = history.checkpoint();
+    this.performReviewDecision([commentId], 'resolve');
+    const added = history.checkpoint();
+    if (added && added !== top) history.forgetCheckpoint(added);
+  }
+
   private async restoreTypedDiscussionText(id: string, text: string, lineIndex: number, commentId?: string | null): Promise<void> {
     const view = this.editor!.ctx.get(editorViewCtx);
     // The server's take-back removes the thread's comment, and its marks update can arrive before
@@ -4692,13 +4714,7 @@ class ProofEditorImpl implements ProofEditor {
     // Resolve the comment by the one path every decision takes (as a thread's own Undo does), then
     // drop that history step: the take-back owns it, and Undo must not reopen an orphan comment.
     // A resolve written outside that path (review, 2026-09-25) looped the marks sync after a reload.
-    if (comment && commentId) {
-      const history = this.getReviewDecisionHistory();
-      const top = history.checkpoint();
-      this.performReviewDecision([commentId], 'resolve');
-      const added = history.checkpoint();
-      if (added && added !== top) history.forgetCheckpoint(added);
-    }
+    if (comment && commentId) this.resolveTypedDiscussionComment(commentId);
     // Put the words back the way typing puts them in: a plain local insertion, which the editor's
     // dispatch wraps into the person's own pending insert, with typing's history (one Undo takes
     // it back) and typing's marks sync. Step 4 review, 2026-09-25: a separately built insert inside
