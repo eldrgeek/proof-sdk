@@ -1169,6 +1169,7 @@ class ProofEditorImpl implements ProofEditor {
   private shareMenuCleanup: (() => void) | null = null;
   /** Invite person: whether this viewer is an Owner who may invite people (null: not checked yet). */
   private teamCanManage: boolean | null = null;
+  private somaSessionListener: (() => void) | null = null;
   private presenceMenuCleanup: (() => void) | null = null;
   private agentMenuCleanup: (() => void) | null = null;
   private playmakerReview: PlayMakerReview | null = null;
@@ -1728,6 +1729,13 @@ class ProofEditorImpl implements ProofEditor {
       startAgentJoinNotices(shareClient.getSlug());
       window.dispatchEvent(new Event('proof:editor-ready'));
       void this.checkTeamAccess();
+      // Owner rights ride on the SOMA session, which the page may renew after this first check
+      // (proof-session.js): re-read them when it does, or the Share dialog keeps hiding the
+      // link setting from an Owner until a reload (Mike, 2026-09-25).
+      if (!this.somaSessionListener) {
+        this.somaSessionListener = () => { this.teamCanManage = null; void this.checkTeamAccess(); };
+        window.addEventListener('proof:soma-session', this.somaSessionListener);
+      }
     } catch (error) {
       if (attemptSeq !== this.shareInitAttemptSeq) return;
       console.error('[initFromShare] Failed:', error);

@@ -435,6 +435,7 @@ export class LineMarksUI {
     document.addEventListener('visibilitychange', this.onVisibility);
     window.addEventListener('resize', this.queueRender);
     document.addEventListener('click', this.onTermClick);
+    document.addEventListener('mouseover', this.onTermOver);
     void this.refresh();
     this.schedulePoll();
   }
@@ -446,6 +447,8 @@ export class LineMarksUI {
     document.removeEventListener('visibilitychange', this.onVisibility);
     window.removeEventListener('resize', this.queueRender);
     document.removeEventListener('click', this.onTermClick);
+    document.removeEventListener('mouseover', this.onTermOver);
+    if (this.termHoverTimer) clearTimeout(this.termHoverTimer);
     if (this.pollTimer) clearTimeout(this.pollTimer);
     this.pollTimer = null;
     this.closeMenu();
@@ -3460,11 +3463,34 @@ export class LineMarksUI {
     });
   }
 
-  /** Clicking a linked term shows its definition, with a way to go and read it. */
+  /** Clicking a linked term shows its definition, with a way to go and read it. On a desktop,
+   * resting the pointer on the term shows the same box (Mike, 2026-09-25: "Clicking gives the
+   * tooltip that I would like hover on desktop to provide"). */
   private onTermClick = (event: MouseEvent): void => {
     const target = (event.target as HTMLElement | null)?.closest?.('.pdx-term') as HTMLElement | null;
+    if (this.termHoverTimer) { clearTimeout(this.termHoverTimer); this.termHoverTimer = null; }
+    if (target && target === this.termPopFor && document.querySelector('.plm-term-pop')) return; // the pointer already opened it
+    if ((event.target as HTMLElement | null)?.closest?.('.plm-term-pop')) return;
     document.querySelector('.plm-term-pop')?.remove();
+    this.termPopFor = null;
     if (!target) return;
+    this.showTermPop(target, true);
+  };
+  private termPopFor: HTMLElement | null = null;
+  private termHoverTimer: ReturnType<typeof setTimeout> | null = null;
+  private onTermOver = (event: MouseEvent): void => {
+    if (!window.matchMedia?.('(hover: hover) and (pointer: fine)').matches) return;
+    const over = (event.target as HTMLElement | null)?.closest?.('.pdx-term, .plm-term-pop') as HTMLElement | null;
+    if (this.termHoverTimer) { clearTimeout(this.termHoverTimer); this.termHoverTimer = null; }
+    if (!over) {
+      // The pointer left the term and its box: close it after a moment, so it can be reached.
+      if (this.termPopFor) this.termHoverTimer = setTimeout(() => { document.querySelector('.plm-term-pop')?.remove(); this.termPopFor = null; }, 300);
+      return;
+    }
+    if (over.classList.contains('plm-term-pop') || over === this.termPopFor) return;
+    this.termHoverTimer = setTimeout(() => { document.querySelector('.plm-term-pop')?.remove(); this.showTermPop(over, false); }, 200);
+  };
+  private showTermPop(target: HTMLElement, fromClick: boolean): void {
     const term = target.dataset.term ?? '';
     const use = this.termLinks.find(u => u.term === term);
     if (!use) return;
@@ -3478,14 +3504,16 @@ export class LineMarksUI {
     p.append(strong, ` — ${use.definition}`);
     const go = document.createElement('button');
     go.type = 'button'; go.className = 'plm-link'; go.textContent = 'Go to the definition';
-    go.onclick = () => { pop.remove(); this.host.revealLine?.(use.defLineIndex); if (!this.host.focusLine?.(use.defLineIndex)) this.issueTarget(use.defLineIndex)?.scrollIntoView({ block: 'center' }); };
+    go.onclick = () => { pop.remove(); this.termPopFor = null; this.host.revealLine?.(use.defLineIndex); if (!this.host.focusLine?.(use.defLineIndex)) this.issueTarget(use.defLineIndex)?.scrollIntoView({ block: 'center' }); };
     pop.append(p, go);
     const r = target.getBoundingClientRect();
     pop.style.left = `${Math.max(8, Math.min(window.innerWidth - 300, r.left))}px`;
     pop.style.top = `${Math.min(window.innerHeight - 120, r.bottom + 6)}px`;
     document.body.append(pop);
-    setTimeout(() => pop.remove(), 8000);
-  };
+    this.termPopFor = target;
+    // A tap or click leaves the box up for a while; a hover keeps it while the pointer stays.
+    if (fromClick) setTimeout(() => { if (pop.isConnected) { pop.remove(); if (this.termPopFor === target) this.termPopFor = null; } }, 8000);
+  }
 
   private issueTarget(index: number): HTMLElement | null {
     const line = this.lines[index];

@@ -298,6 +298,14 @@ async function run(browser, style) {
         .catch(async (error) => { const s = await lm(mike); throw new Error(`${error.message} terms=${JSON.stringify(s.extras.terms)} def=${JSON.stringify(s.marks.filter(m => /^Issue/.test(m.anchor.excerpt)))} dom=${await mike.evaluate(() => document.querySelectorAll(".pdx-term").length)} text=${await lineText(mike, L.USE)} deco=${JSON.stringify([s.extras.decoSig, s.extras.decorations, s.extras.termProbe])} closed=${JSON.stringify((await agent("GET", "/alternatives?closed=1")).body.closed?.map(a => [a.status, a.anchor.excerpt]))}`); });
       const s = await lm(mike);
       assert.deepEqual(s.extras.terms.map(t => [t.term, t.line, t.def]), [['Issue', L.USE, L.DEF]]);
+      // Mike, 2026-09-25: on a desktop, hovering a term shows the definition box a click shows,
+      // with no browser tooltip; moving away closes it.
+      assert.equal(await mike.locator('.ProseMirror .pdx-term[data-term="Issue"]').getAttribute('title'), null, 'the browser tooltip is gone');
+      await mike.locator('.ProseMirror .pdx-term[data-term="Issue"]').hover();
+      await mike.locator('.plm-term-pop').waitFor({ state: 'visible', timeout: 3000 });
+      assert.match(await mike.locator('.plm-term-pop').innerText(), /Issue — a line or mark that someone has not seen/);
+      await mike.mouse.move(5, 5);
+      await mike.locator('.plm-term-pop').waitFor({ state: 'detached', timeout: 3000 });
       await mike.locator('.ProseMirror .pdx-term[data-term="Issue"]').click();
       await mike.locator('.plm-term-pop').waitFor({ state: 'visible' });
       assert.match(await mike.locator('.plm-term-pop').innerText(), /Issue — a line or mark that someone has not seen/);

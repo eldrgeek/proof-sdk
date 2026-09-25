@@ -104,7 +104,13 @@ try {
   assert.equal((await request('POST', '/library/api/session', { accessToken: 'invalid' }, '', { 'X-Forwarded-For': '203.0.113.1' })).status, 429);
   assert.equal((await request('POST', '/library/api/session', { accessToken: 'invalid' }, '', { 'X-Forwarded-For': '203.0.113.2' })).status, 401);
   createDocument('visit-test', '# Visit', {}, 'Visit');
-  await request('GET', '/d/visit-test', undefined, memberCookie, { Accept: 'text/html', 'User-Agent': 'Mozilla/5.0' });
+  const memberPage = await request('GET', '/d/visit-test', undefined, memberCookie, { Accept: 'text/html', 'User-Agent': 'Mozilla/5.0' });
+  // Mike, 2026-09-25: Owner rights ride on the SOMA session's daily admin check, and only library
+  // pages renewed it, so a signed-in person who opens documents by their links lost them. A
+  // document page now carries the renewal script for a signed-in member, and not for a guest.
+  assert.ok(memberPage.text.includes('/vendor/soma-auth/proof-session.js'), 'a signed-in member\'s document page renews the SOMA session');
+  const guestPage = await request('GET', '/d/visit-test', undefined, '', { Accept: 'text/html', 'User-Agent': 'Mozilla/5.0' });
+  assert.ok(!guestPage.text.includes('/vendor/soma-auth/proof-session.js'), 'a guest\'s document page loads no SOMA scripts');
   assert.equal(getDb().prepare('SELECT COUNT(*) AS n FROM library_visits').get().n, 0, 'GET never records visits');
   assert.equal((await request('POST', '/library/api/visits/visit-test', { event: 'open' }, memberCookie, { Origin: '' })).status, 403);
   assert.equal((await request('POST', '/library/api/visits/visit-test', { event: 'open' }, memberCookie)).status, 200);

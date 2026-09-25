@@ -906,8 +906,10 @@ thread is never an Issue. `GET /api/agent/<slug>/explains` lists them.
 
 **Terms.** A line of the form `**Term** — definition` or `Term: definition` inside a section whose
 heading starts with Terms, Glossary or Definitions defines Term. A reader who has not seen that
-definition line yet sees the term's first use elsewhere underlined; clicking it shows the
-definition. `GET /api/agent/<slug>/terms` lists the terms and each one's first use.
+definition line yet sees the term's first use elsewhere underlined; on a desktop, resting the
+pointer on it shows the definition, and on a phone a tap does. Put the Terms section at the top of
+an Accord, before the text that uses them (Mike, 2026-09-25: "Terms should be at the top of
+accords"). `GET /api/agent/<slug>/terms` lists the terms and each one's first use.
 
 **Perishable claims.** An author sets a time-to-live on a line ("7d", "12h", "30m", "90s"). When it
 runs out, Agreed and Approved marks made before then show as stale (they still count as Seen) and

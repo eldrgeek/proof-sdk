@@ -1,6 +1,7 @@
 import { agentJoinInstructions, agentJoinPath } from '../src/shared/agent-join.js';
 import { normalizeReviewStyle } from '../src/editor/review-style.js';
 import { injectSomaFeedback } from './soma-page.js';
+import { somaAuthHead } from './library/soma-page.js';
 import { createHash } from 'crypto';
 import { Router, type Request, type Response } from 'express';
 import { readFileSync } from 'fs';
@@ -260,7 +261,12 @@ window.__PROOF_LIBRARY_MEMBER__=${memberJson};
   document.addEventListener('DOMContentLoaded', linkWordmark);
 })();
 </script>`;
-  return html.includes('</head>') ? html.replace('</head>', () => `${script}\n</head>`) : `${script}${html}`;
+  // A signed-in person's SOMA admin check lapses after a day unless the browser renews it with a
+  // fresh token, and only the library pages loaded the script that does. Mike opens Accords by
+  // their links, so from a day after signing in he lost Owner rights on documents the tools made
+  // (the Share dialog then hid the link setting). Document pages now renew it too (2026-09-25).
+  const soma = somaAuthHead();
+  return html.includes('</head>') ? html.replace('</head>', () => `${soma}${script}\n</head>`) : `${soma}${script}${html}`;
 }
 
 /**

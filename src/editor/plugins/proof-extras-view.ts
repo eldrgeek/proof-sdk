@@ -78,7 +78,8 @@ function build(doc: ProseMirrorNode, meta: ExtrasMeta): DecorationSet {
       class: 'pdx-term',
       'data-term': spec.term,
       'data-def-line': String(spec.defLineIndex),
-      title: `${spec.term}: ${spec.definition}`,
+      // No title: the browser's tooltip was small and slow, and hovering now opens the same
+      // definition box a click does (Mike, 2026-09-25).
     }));
   }
   return DecorationSet.create(doc, decorations);

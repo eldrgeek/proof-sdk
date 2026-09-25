@@ -121,10 +121,9 @@ export function showShareDialog(host: ShareDialogHost, tab: ShareTab = 'link'): 
   const download = el('button', 'asd-btn', `Download as ${host.documentNoun} (.accord.md)`);
   download.type = 'button';
   download.onclick = () => host.download();
-  const activity = el('button', 'asd-btn', 'View activity');
-  activity.type = 'button';
-  activity.onclick = () => { dialog.close(); host.activity(); };
-  more.append(download, activity);
+  // Mike, 2026-09-25: "The 'View Activity' button is not a privilege level but goes to the activity
+  // screen." Under the link setting it read as one; it stays in File › View activity.
+  more.append(download);
   link.append(more);
   const extras = el('div', 'asd-link-extras');
   extras.append(...(host.linkExtras ?? []));

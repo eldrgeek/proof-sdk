@@ -39,6 +39,8 @@
         return;
       }
       scheduleRefresh(result.refreshAfterMs || 24 * 60 * 60 * 1000);
+      // A document page re-reads what the renewed session may do (Owner rights come from it).
+      try { window.dispatchEvent(new CustomEvent('proof:soma-session', { detail: { isAdmin: Boolean(result.isAdmin) } })); } catch (_) {}
       // Proof Documents Step B6: a document page's "Sign in" link stores where to come back to.
       var back = message ? returnPath() : null;
       if (back && message) { location.replace(back); return; }
