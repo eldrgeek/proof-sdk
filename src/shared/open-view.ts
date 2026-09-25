@@ -97,6 +97,11 @@ export interface OpenItem {
   agreedTo?: string;
   /** The thread ids on this line that are open for the viewer. */
   threadIds: string[];
+  /**
+   * The review marks and threads that make this line open. A row follows these across edits:
+   * typing into a proposal changes its passage's text on every keystroke, but not its mark.
+   */
+  markIds?: string[];
 }
 
 export interface OpenView {
@@ -275,6 +280,7 @@ export function openView(input: OpenViewInput): OpenView {
       detached: at.detached,
       ...(at.agreedTo ? { agreedTo: at.agreedTo } : {}),
       threadIds: at.threadIds,
+      markIds: [...at.markIds],
     });
   }
 

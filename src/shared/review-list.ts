@@ -34,6 +34,7 @@ export function reviewViews(input: OpenViewInput): Record<ReviewScope, OpenView>
         ...prev,
         kinds: OPEN_KIND_ORDER.filter(kind => prev.kinds.includes(kind) || item.kinds.includes(kind)),
         threadIds: [...new Set([...prev.threadIds, ...item.threadIds])],
+        markIds: [...new Set([...(prev.markIds ?? []), ...(item.markIds ?? [])])],
         count: Math.max(prev.count, item.count),
       } : item);
     }
@@ -55,18 +56,32 @@ export const emptyReviewSession = (): ReviewSession => ({ rows: [], initialized:
 /** Match threads first, then text identity. Never attach a completed row to a reused index. */
 export function reconcileReview(session: ReviewSession, open: OpenView, passages: readonly ReviewPassage[]): ReviewSession {
   const unused = new Set(session.rows);
+  // Row keys are unique within a session: the list reuses one DOM row per key, and rows that
+  // shared a passage key (several proposals on one line over time) leaked a row on every render.
+  const usedKeys = new Set<string>();
+  const uniqueKey = (key: string): string => {
+    let next = key;
+    for (let n = 2; usedKeys.has(next); n += 1) next = `${key}#${n}`;
+    usedKeys.add(next);
+    return next;
+  };
   const rows = open.items.flatMap(item => {
     const passage = passages[item.line];
     if (!passage) return [];
+    // Marks before text: typing into a proposal changes its passage on every keystroke, and
+    // matching by text alone left one "Done · passage removed" row per character in every
+    // reader's list (live since step 3; found in the step 4 review, 2026-09-25, at 690 rows).
     const old = [...unused].find(row => row.threadIds.some(id => item.threadIds.includes(id)))
+      ?? [...unused].find(row => (row.markIds ?? []).some(id => (item.markIds ?? []).includes(id)))
       ?? [...unused].find(row => row.hash === passage.hash && row.occurrence === passage.occurrence);
     if (old) unused.delete(old);
-    return [{ ...item, ...passage, key: old?.key ?? `passage:${passage.hash}:${passage.occurrence}`,
+    const base = old?.key ?? (item.markIds?.[0] ? `mark:${item.markIds[0]}` : `passage:${passage.hash}:${passage.occurrence}`);
+    return [{ ...item, ...passage, key: uniqueKey(base),
       done: false, fresh: old ? old.fresh : session.initialized }];
   });
   for (const old of unused) {
     const line = passages.findIndex(p => p.hash === old.hash && p.occurrence === old.occurrence);
-    rows.push({ ...old, line, done: true });
+    rows.push({ ...old, line, done: true, key: uniqueKey(old.key) });
   }
   rows.sort((a, b) => (a.line < 0 ? Infinity : a.line) - (b.line < 0 ? Infinity : b.line));
   return { rows, initialized: true };

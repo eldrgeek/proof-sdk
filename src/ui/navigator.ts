@@ -272,10 +272,12 @@ export class NavigatorUI {
     // Reserve room below short lists so an insertion above can still be compensated.
     this.issuesList.style.paddingBottom = `${pane.clientHeight}px`;
     const existing = new Map([...this.issuesList.children].map(node => [(node as HTMLElement).dataset.key, node as HTMLElement]));
+    const used = new Set<Element>();
     this.session.rows.forEach((row, index) => {
       const li = existing.get(row.key) ?? el('li');
       li.dataset.key = row.key;
       existing.delete(row.key);
+      used.add(li);
       const b = li.querySelector<HTMLButtonElement>('button') ?? el('button', 'anv-issue');
       b.type = 'button';
       b.dataset.line = String(row.line);
@@ -302,7 +304,9 @@ export class NavigatorUI {
       const at = this.issuesList.children[index];
       if (at !== li) this.issuesList.insertBefore(li, at ?? null);
     });
-    for (const node of existing.values()) node.remove();
+    // Remove every row this render did not place, not only the ones the key map still holds: a
+    // duplicated key kept extra rows out of the map, and they piled up (step 4 review, 2026-09-25).
+    for (const node of [...this.issuesList.children]) if (!used.has(node)) node.remove();
     if (anchor?.isConnected && before !== undefined) pane.scrollTop = anchoredReviewScroll(scroll, before, anchor.getBoundingClientRect().top);
     // Moving a node can blur it in older browsers; restore only the exact existing control.
     if (active instanceof HTMLElement && active.isConnected && document.activeElement !== active) active.focus({ preventScroll: true });

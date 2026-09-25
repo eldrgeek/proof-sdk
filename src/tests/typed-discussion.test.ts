@@ -26,6 +26,11 @@ test('a leading longest known mention waits only on its actor', () => {
   assert.deepEqual(classifyTypedRun('@Ren. Please look', candidates), { discussion: true, reason: 'mention', waitingOn: ['ai:Ren'] });
 });
 test('an ambiguous name stays literal', () => assert.deepEqual(classifyTypedRun('@Mike please look', [...candidates, { actor: 'human:Other', names: ['Mike'] }]), { discussion: false }));
+// Point 11's conditions are alternatives: a name nobody has does not stop a question being one.
+test('an unknown or ambiguous name before a question is still a question for everyone', () => {
+  assert.deepEqual(classifyTypedRun('@Nobody what do you think?', candidates), { discussion: true, reason: 'question', waitingOn: [] });
+  assert.deepEqual(classifyTypedRun('@Mike which one?', [...candidates, { actor: 'human:Other', names: ['Mike'] }]), { discussion: true, reason: 'question', waitingOn: [] });
+});
 test('thread ID survives a reload without a new record shape', () => assert.equal(typedDiscussionInsertId(typedDiscussionId('insert-1')), 'insert-1'));
 const schema = new Schema({ nodes: {
   doc: { content: 'block+' }, text: { group: 'inline' }, paragraph: { group: 'block', content: 'inline*' },

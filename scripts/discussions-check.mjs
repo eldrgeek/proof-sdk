@@ -26,7 +26,7 @@ async function start(style) {
       PORT: String(port), DATABASE_PATH: path.join(temp, 'test.db'), SNAPSHOT_DIR: path.join(temp, 'snapshots'),
       COLLAB_EMBEDDED_WS: '1', PROOF_DEFAULT_REVIEW_STYLE: style }, stdio: ['ignore', fd, fd] });
   closeSync(fd); const base = `http://127.0.0.1:${port}`;
-  const stop = async () => { child.kill('SIGTERM'); if (child.exitCode === null) await new Promise(r => child.once('exit', r)); rmSync(temp, { recursive: true, force: true }); };
+  const stop = async () => { child.kill('SIGTERM'); if (child.exitCode === null && child.signalCode === null) await new Promise(r => child.once('exit', r)); rmSync(temp, { recursive: true, force: true }); };
   for (let i = 0; i < 200; i++) {
     if ((await fetch(`${base}/health`).catch(() => null))?.ok) return { base, stop, log };
     await new Promise(r => setTimeout(r, 150));
@@ -146,17 +146,35 @@ async function run(browser, server, style, width) {
     }
 
     const escaped = await discussion(' Could you explain?', 'Escape');
-    // Exercise the real card control, after reload too (no session-only inverse).
-    await a.page.reload();
-    await a.page.waitForFunction(() => window.proof?.collabIsSynced && window.__proofLineMarks?.debugState().loaded);
-    await showWholeAccord(a.page);
+    // The card's control in the same visit, after a later edit has buried the conversion's own Undo
+    // step, so the words are put back the way typing puts them in.
+    await clickAt(a.page, 'Last paragraph stays once.');
+    await a.page.keyboard.type(' later', { delay: 30 });
+    await a.page.keyboard.press('Escape');
     await a.page.evaluate(line => window.__proofReadingWalk.openReviewItem(line), escaped.line);
     const back = a.page.locator(`.amg-thread[data-thread="${escaped.id}"] .amg-thread-turn-back`);
     await back.click();
-    await poll(async () => (await pending(a.page)).some(m => m.data.content === ' Could you explain?'), 'Turn back did not restore text after reload');
+    await poll(async () => (await pending(a.page)).some(m => m.data.content === ' Could you explain?'), 'Turn back did not restore the text');
     await poll(async () => !(await threads(b.page)).some(t => t.id === escaped.id), 'Turn back left the thread behind');
-    await selectText(a.page, ' Could you explain?'); await a.page.keyboard.press('Backspace');
+    for (const words of [' Could you explain?', ' later']) { await selectText(a.page, words); await a.page.keyboard.press('Backspace'); }
     await poll(async () => (await text(a.page)) === baseText, 'Restored text did not withdraw');
+    // Typing must not leave one completed Review row per keystroke (it left 690 before the
+    // review-list fix, 2026-09-25, and the pages spun redrawing them).
+    for (const [who, page] of [['first', a.page], ['second', b.page]]) {
+      const rows = await page.locator('.anv-issue').count();
+      assert.ok(rows <= 12, `the ${who} reader's Review list holds ${rows} rows after typing`);
+    }
+
+    // After a reload the visit's history is gone, and so is the control
+    // (TYPED_DISCUSSION_POLICY.turnBackAfterReload, bead ac-m23): the discussion stays a discussion.
+    const reloaded = await discussion(' And after a reload?', 'Escape');
+    await a.page.reload();
+    await a.page.waitForFunction(() => window.proof?.collabIsSynced && window.__proofLineMarks?.debugState().loaded);
+    await showWholeAccord(a.page);
+    await a.page.evaluate(line => window.__proofReadingWalk.openReviewItem(line), reloaded.line);
+    await a.page.locator(`.amg-thread[data-thread="${reloaded.id}"]`).waitFor();
+    assert.equal(await a.page.locator(`.amg-thread[data-thread="${reloaded.id}"] .amg-thread-turn-back`).count(), 0, 'Turn back offered after a reload');
+    assert.ok((await threads(b.page)).some(t => t.id === reloaded.id), 'The discussion did not survive the reload');
 
     const clicked = await discussion(' What about this?', 'click');
     await b.page.evaluate(({ id }) => window.__proofLineMarks.replyOnThread(id, 'Here is my reasoning.'), clicked);

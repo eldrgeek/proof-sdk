@@ -64,6 +64,12 @@ export class TypedDiscussionController {
       if (!this.view.hasFocus()) this.finish();
     });
   }
+  /** Words a person turned back into text stay text, as Shift+Enter keeps them. */
+  keepAsText(id: string): void {
+    this.keptText.add(id);
+    if (this.active === id) this.active = null;
+    this.positionHint();
+  }
   private run(): TypedDiscussionRun | null {
     if (!this.active || this.keptText.has(this.active) || !this.host.enabled()) return null;
     const mark = getMarks(this.view.state).find(m => m.id === this.active);

@@ -127,6 +127,32 @@ test('many documents keep the count, item lines and Open computation consistent'
     }
   }
 });
+// Step 4 review, 2026-09-25: typing into a proposal changes its passage's text on every keystroke.
+// Matched by text alone, each keystroke left a "Done · passage removed" row (690 in one check run).
+test('typing into a proposal keeps one row: its mark identifies it, not its changing text', () => {
+  const item = { key: 'open:1', line: 1, kinds: ['suggestion'], by: me, count: 1, because: 'A proposal',
+    detached: false, threadIds: [], markIds: ['insert-1'] } as OpenView['items'][number];
+  const open: OpenView = { items: [item], lines: [1], count: 1 };
+  let state = emptyReviewSession();
+  for (const typed of ['beta W', 'beta Wh', 'beta Why', 'beta Why?']) {
+    state = reconcileReview(state, open, passages.map((p, i) => (i === 1 ? { hash: typed, text: typed, occurrence: 1 } : p)));
+  }
+  assert.equal(state.rows.length, 1, `rows: ${state.rows.map(row => `${row.text}${row.done ? ' (done)' : ''}`).join(' / ')}`);
+  assert.equal(state.rows[0].done, false);
+  assert.equal(state.rows[0].text, 'beta Why?');
+});
+
+// The list reuses one DOM row per key; shared keys leaked a row on every render.
+test('row keys are unique even when old rows shared a passage key', () => {
+  const row = (text: string, id: string) => ({ key: 'passage:beta:1', line: 1, kinds: ['suggestion'], by: me, count: 1, because: '',
+    detached: false, threadIds: [], markIds: [id], hash: text, text, occurrence: 1, done: true, fresh: false });
+  const start = { rows: [row('beta one', 'x1'), row('beta two', 'x2')], initialized: true } as ReturnType<typeof emptyReviewSession>;
+  const next = reconcileReview(start, { items: [], lines: [], count: 0 }, passages);
+  const keys = next.rows.map(r => r.key);
+  assert.equal(keys.length, 2);
+  assert.equal(new Set(keys).size, keys.length, keys.join(' '));
+});
+
 console.log(`\n${passed} review-list tests passed`);
 
 assert.equal(viewerLabel({ actor: 'human:mike@example.test', name: 'Mike Wolf', trust: 'verified', signInUrl: null }), 'Signed in as Mike Wolf (verified)');

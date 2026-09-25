@@ -4635,6 +4635,7 @@ class ProofEditorImpl implements ProofEditor {
   private canTurnTypedThreadBack(id: string): boolean {
     const thread = this.lineMarks?.threadById(id)?.thread;
     return Boolean(typedDiscussionInsertId(id) && thread && thread.status === 'open' && thread.replies.length === 0
+      && (TYPED_DISCUSSION_POLICY.turnBackAfterReload || this.typedDiscussionHistory.has(id))
       && this.lineMarks?.canCommentHere() && this.shareAllowLocalEdits && this.collabCanEdit
       && actorKey(thread.by) === actorKey(this.lineMarks.me()));
   }
@@ -4668,6 +4669,7 @@ class ProofEditorImpl implements ProofEditor {
       this.typedDiscussionHistory.delete(id);
       return true;
     } catch (error) {
+      console.warn('[typed-discussion] turning a discussion back into text failed', error);
       if (removed) await lm.restoreTypedThreadRow(thread.thread);
       this.readingWalk?.showEditNotice(error instanceof Error ? error.message : 'Could not turn the discussion back into text.');
       return false;
@@ -4676,8 +4678,10 @@ class ProofEditorImpl implements ProofEditor {
 
   private async restoreTypedDiscussionText(id: string, text: string, lineIndex: number, commentId?: string | null): Promise<void> {
     const view = this.editor!.ctx.get(editorViewCtx);
-    const comment = commentId ? getMarks(view.state).find(mark => mark.id === commentId) : null;
-    if (commentId && !comment?.range) throw new Error('The discussion anchor changed. Its text was kept in the thread.');
+    // The server's take-back removes the thread's comment, and its marks update can arrive before
+    // this runs (after a reload there is no local record to restore from). A missing comment then
+    // means it is already gone, not that the anchor moved: the thread's own line is the anchor.
+    const comment = commentId ? getMarks(view.state).find(mark => mark.id === commentId && mark.range) : null;
     const currentLine = comment?.range ? this.lineMarks!.lineAtPos(comment.range.from) : lineIndex;
     const line = this.lineMarks?.lineList()[currentLine];
     if (!line) throw new Error('The item is gone; the discussion was kept.');
@@ -4685,21 +4689,27 @@ class ProofEditorImpl implements ProofEditor {
     if (!item) throw new Error('The item cannot be edited here.');
     // Removing the row already took the discussion back. Undo of the restored
     // typing must not reopen an orphan comment without its thread row.
-    if (commentId) this.typedDiscussionDecision(current => { markResolve(current, commentId); }, false);
-    let restoredId: string | undefined;
-    this.typedDiscussionDecision(current => {
-      const mark = suggestInsert(markApiView(current), '', getCurrentActor(), text, { from: item.end, to: item.end });
-      if (!mark) {
-        throw new Error('Could not restore the text.');
-      }
-      restoredId = mark.id;
-    });
-    if (restoredId) {
-      this.reviewDecisionIds.add(restoredId);
-      this.lineMarks?.undoStack().pushSimple('suggestion', 'returned discussion to text', () => {
-        return this.restoreReviewDecision(false) ? { ok: true } : { ok: false, reason: 'The restored text has changed since.' };
-      });
+    // Resolve the comment by the one path every decision takes (as a thread's own Undo does), then
+    // drop that history step: the take-back owns it, and Undo must not reopen an orphan comment.
+    // A resolve written outside that path (review, 2026-09-25) looped the marks sync after a reload.
+    if (comment && commentId) {
+      const history = this.getReviewDecisionHistory();
+      const top = history.checkpoint();
+      this.performReviewDecision([commentId], 'resolve');
+      const added = history.checkpoint();
+      if (added && added !== top) history.forgetCheckpoint(added);
     }
+    // Put the words back the way typing puts them in: a plain local insertion, which the editor's
+    // dispatch wraps into the person's own pending insert, with typing's history (one Undo takes
+    // it back) and typing's marks sync. Step 4 review, 2026-09-25: a separately built insert inside
+    // a decision transaction made the marks sync loop after a reload (Yjs cleanup recursed until
+    // the stack ran out). The words stay text: the typed-discussion rule must not send them again.
+    const me = actorKey(getCurrentActor());
+    const before = new Set(getMarks(view.state).map(mark => mark.id));
+    view.dispatch(view.state.tr.insertText(text, item.end));
+    const restored = getMarks(view.state).find(mark => mark.kind === 'insert' && !before.has(mark.id) && actorKey(mark.by) === me);
+    if (!restored) throw new Error('Could not restore the text.');
+    this.typedDiscussions?.keepAsText(restored.id);
     this.typedDiscussionHistory.delete(id);
   }
 

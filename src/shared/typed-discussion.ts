@@ -20,6 +20,10 @@ export const TYPED_DISCUSSION_POLICY = {
   failedSend: 'restore-text',
   emptyAnchor: 'keep-text',
   maxThreadCharacters: 4000,
+  /** "Turn back into text" while this page still holds the conversion's history (the same visit,
+   * later edits included). After a reload, resolving the comment loops Yjs's cleanup (bead ac-m23),
+   * so the control is not offered then and the discussion stays a discussion. */
+  turnBackAfterReload: false,
   itemTypes: ['paragraph', 'heading', 'list_item', 'table_row', 'table_header_row'],
 } as const;
 
@@ -37,8 +41,8 @@ export function classifyTypedRun(text: string, candidates: readonly MentionCandi
     const longest = matches[0]?.name.length;
     const actors = [...new Set(matches.filter(p => p.name.length === longest).map(p => p.actor))];
     if (actors.length === 1) return { discussion: true, reason: 'mention', waitingOn: actors };
-    // An unknown/ambiguous address stays literal even when it contains a question.
-    return { discussion: false };
+    // An unknown or ambiguous name is not a mention, but point 11's two conditions are
+    // alternatives: a run that still ends with "?" is a question for everyone (review, 2026-09-25).
   }
   let end = trimmed.length;
   while (end && TYPED_DISCUSSION_POLICY.closingQuestionCharacters.includes(trimmed[end - 1])) end--;
