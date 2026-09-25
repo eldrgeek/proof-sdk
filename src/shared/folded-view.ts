@@ -22,8 +22,9 @@ export const FOLDED_VIEW_POLICY = {
   jumpShowsLineOnly: true,
   // Input cannot reach words the reader cannot see.
   refuseEditsTouchingHidden: true,
-  // A failed load must not leave the page blank indefinitely.
-  loadTimeoutMs: 5000,
+  // A failed load must not leave the page blank indefinitely. 10 s, not 5: under load a healthy
+  // page took over 5 s to receive its open items, and a fallback keeps the whole view all visit.
+  loadTimeoutMs: 10000,
   // Structural context includes list parents and table headers.
   showStructuralParents: true,
   // An ordered list retains each entry's original ordinal.
@@ -102,6 +103,56 @@ export function mapShown(shown: ReadonlySet<number>, _before: DocLine[], after: 
   }
   for (const range of created) for (const line of after) {
     if (line.pos < range.to && line.pos + line.nodeSize > range.from) result.add(line.pos);
+  }
+  return result;
+}
+
+/**
+ * y-prosemirror applies every remote change, and every Yjs Undo or Redo, by replacing the whole
+ * document (sync-plugin _typeChanged: tr.replace(0, size, …) with isChangeOrigin). Such a
+ * transaction's mapping reports every position deleted, so mapShown would empty the view: a
+ * remote proposal anywhere would unfold or blank the reader's page (found 2026-09-24 in review).
+ * Re-find positions by content instead. Top-level blocks that did not change keep their offsets;
+ * inside the changed stretch, lines are aligned by their text (longest common subsequence), and
+ * an unmatched old line pairs, in order, with an unmatched new line in the same gap (an edit).
+ * A position that is not a line start inside the changed stretch is dropped.
+ */
+type BlockNode = LineSourceNode & { eq?(other: unknown): boolean };
+export function remapByContent(positions: ReadonlySet<number>, before: BlockNode, after: BlockNode): Set<number> {
+  const same = (a: BlockNode, b: BlockNode) => a === b || Boolean(a.eq?.(b));
+  const nb = before.childCount, na = after.childCount;
+  let prefix = 0, prefixEnd = 0;
+  while (prefix < nb && prefix < na && same(before.child(prefix) as BlockNode, after.child(prefix) as BlockNode)) {
+    prefixEnd += before.child(prefix).nodeSize; prefix += 1;
+  }
+  let suffix = 0, suffixSize = 0;
+  while (suffix < nb - prefix && suffix < na - prefix
+    && same(before.child(nb - 1 - suffix) as BlockNode, after.child(na - 1 - suffix) as BlockNode)) {
+    suffixSize += before.child(nb - 1 - suffix).nodeSize; suffix += 1;
+  }
+  const size = (node: LineSourceNode) => { let total = 0; for (let i = 0; i < node.childCount; i += 1) total += node.child(i).nodeSize; return total; };
+  const beforeTail = size(before) - suffixSize, afterTail = size(after) - suffixSize;
+  const old = extractLines(before).filter(l => l.pos >= prefixEnd && l.pos < beforeTail);
+  const now = extractLines(after).filter(l => l.pos >= prefixEnd && l.pos < afterTail);
+  // Longest common subsequence of the changed stretch's lines, by kind and text.
+  const lcs: number[][] = Array.from({ length: old.length + 1 }, () => new Array<number>(now.length + 1).fill(0));
+  for (let i = old.length - 1; i >= 0; i -= 1) for (let j = now.length - 1; j >= 0; j -= 1) {
+    lcs[i][j] = old[i].hash === now[j].hash ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+  }
+  const pairs = new Map<number, number>();
+  let gapOld: number[] = [], gapNew: number[] = [];
+  const closeGap = () => { gapOld.forEach((pos, k) => { if (k < gapNew.length) pairs.set(pos, gapNew[k]); }); gapOld = []; gapNew = []; };
+  for (let i = 0, j = 0; i < old.length || j < now.length;) {
+    if (i < old.length && j < now.length && old[i].hash === now[j].hash) { closeGap(); pairs.set(old[i].pos, now[j].pos); i += 1; j += 1; }
+    else if (j >= now.length || (i < old.length && lcs[i + 1][j] >= lcs[i][j + 1])) { gapOld.push(old[i].pos); i += 1; }
+    else { gapNew.push(now[j].pos); j += 1; }
+  }
+  closeGap();
+  const result = new Set<number>();
+  for (const pos of positions) {
+    if (pos < prefixEnd) result.add(pos);
+    else if (pos >= beforeTail) result.add(pos - beforeTail + afterTail);
+    else if (pairs.has(pos)) result.add(pairs.get(pos)!);
   }
   return result;
 }

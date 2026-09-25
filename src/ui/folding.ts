@@ -3,7 +3,8 @@ import type { EditorView } from '@milkdown/kit/prose/view';
 import { TextSelection, type Transaction } from '@milkdown/kit/prose/state';
 import { extractLines, type DocLine } from '../shared/line-marks';
 import { captureSectionScope, computeSections, sectionByHeading, type DocSection, type SectionScope, type SectionAgreementOffer } from '../shared/folding';
-import { FOLDED_VIEW_POLICY, foldedCountText, initialShown, mapShown, touchesHidden } from '../shared/folded-view';
+import { FOLDED_VIEW_POLICY, foldedCountText, initialShown, mapShown, remapByContent, touchesHidden } from '../shared/folded-view';
+import { ySyncPluginKey } from 'y-prosemirror';
 import { foldViewKey, setFoldView, hiddenBlocks, transactionTouchesHidden, FOLD_RULE_EVENT, type FoldUpdate } from '../editor/plugins/fold-view';
 import type { LineMarksUI } from './line-marks';
 import './folding.css';
@@ -103,10 +104,14 @@ export class FoldingUI {
   /** Undo snapshots also follow actual, applied document transactions by position. */
   mapTransaction(tr: Transaction): void {
     if (!tr.docChanged) return;
+    // Yjs-origin transactions replace the whole document; see remapByContent.
+    const whole = (tr.getMeta(ySyncPluginKey) as { isChangeOrigin?: boolean } | undefined)?.isChangeOrigin === true;
+    const before = extractLines(tr.before), after = extractLines(tr.doc);
+    const remap = (positions: Set<number>) => whole ? remapByContent(positions, tr.before, tr.doc) : mapShown(positions, before, after, tr.mapping);
     for (const snapshot of this.snapshots) {
-      if (snapshot.shown) snapshot.shown = mapShown(snapshot.shown, extractLines(tr.before), extractLines(tr.doc), tr.mapping);
-      if (snapshot.context) snapshot.context = mapShown(snapshot.context, extractLines(tr.before), extractLines(tr.doc), tr.mapping);
-      if (snapshot.expanded) snapshot.expanded = mapShown(snapshot.expanded, extractLines(tr.before), extractLines(tr.doc), tr.mapping);
+      if (snapshot.shown) snapshot.shown = remap(snapshot.shown);
+      if (snapshot.context) snapshot.context = remap(snapshot.context);
+      if (snapshot.expanded) snapshot.expanded = remap(snapshot.expanded);
     }
   }
   private snapshot(): Snapshot {

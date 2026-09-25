@@ -5,7 +5,8 @@ import { Decoration, DecorationSet, type EditorView } from '@milkdown/kit/prose/
 import type { Node } from '@milkdown/kit/prose/model';
 import { extractLines } from '../../shared/line-marks';
 import { computeSections } from '../../shared/folding';
-import { FOLDED_VIEW_POLICY, hiddenRuns, mapShown, structuralPaths, withPaths, touchesHidden, type HiddenRun } from '../../shared/folded-view';
+import { FOLDED_VIEW_POLICY, hiddenRuns, mapShown, remapByContent, structuralPaths, withPaths, touchesHidden, type HiddenRun } from '../../shared/folded-view';
+import { ySyncPluginKey } from 'y-prosemirror';
 
 export interface FoldState {
   ready: boolean;
@@ -88,11 +89,17 @@ export function applyFoldTransaction(tr: Transaction, previous: FoldState): Fold
       // Enter leaves an empty textblock, which extractLines deliberately omits.
       if (tr.selection.$head.parent.isTextblock) created.push({ from: tr.selection.$head.before(), to: tr.selection.$head.after() });
     }
-    state.shown = mapShown(state.shown, before, after, tr.mapping, created);
+    // A Yjs-origin transaction (remote change, Undo, Redo) replaces the whole document, so its
+    // mapping loses every position: re-find them by content (remapByContent).
+    const whole = (tr.getMeta(ySyncPluginKey) as { isChangeOrigin?: boolean } | undefined)?.isChangeOrigin === true;
+    const remap = (positions: ReadonlySet<number>, made: typeof created = []) => whole
+      ? remapByContent(positions, tr.before, tr.doc)
+      : mapShown(positions, before, after, tr.mapping, made);
+    state.shown = remap(state.shown, created);
     for (const range of created) state.shown.add(range.from);
-    state.expanded = mapShown(state.expanded, before, after, tr.mapping);
-    state.context = mapShown(state.context, before, after, tr.mapping);
-    state.open = mapShown(state.open, before, after, tr.mapping);
+    state.expanded = remap(state.expanded);
+    state.context = remap(state.context);
+    state.open = remap(state.open);
   }
   Object.assign(state, tr.getMeta(foldViewKey) as FoldUpdate | undefined);
   return build(tr.doc, state);

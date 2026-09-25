@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { Schema } from '@milkdown/kit/prose/model';
 import { EditorState, TextSelection } from '@milkdown/kit/prose/state';
 import { extractLines } from '../shared/line-marks';
-import { FOLDED_VIEW_POLICY, foldedStructure, initialShown, hiddenRuns, hiddenRunLabel, foldedCountText, structuralPaths, withPaths, mapShown } from '../shared/folded-view';
+import { FOLDED_VIEW_POLICY, foldedStructure, initialShown, hiddenRuns, hiddenRunLabel, foldedCountText, structuralPaths, withPaths, mapShown, remapByContent } from '../shared/folded-view';
+import { Fragment, Slice } from '@milkdown/kit/prose/model';
+import { ySyncPluginKey } from 'y-prosemirror';
 import { applyFoldTransaction, emptyFoldState, foldViewKey, FOLD_USER_EDIT, transactionTouchesHidden } from '../editor/plugins/fold-view';
 const schema = new Schema({ nodes: {
   doc: { content: 'block+' }, text: { group: 'inline' },
@@ -29,7 +31,7 @@ function foldingState() {
 }
 test('P5 switches and agreed view choices are explicit', () => {
   assert.equal(FOLDED_VIEW_POLICY.startsFoldedEachVisit, true); assert.equal(FOLDED_VIEW_POLICY.holdsStillWhileReading, true);
-  assert.equal(FOLDED_VIEW_POLICY.countLine, true); assert.equal(FOLDED_VIEW_POLICY.loadTimeoutMs, 5000);
+  assert.equal(FOLDED_VIEW_POLICY.countLine, true); assert.equal(FOLDED_VIEW_POLICY.loadTimeoutMs, 10000);
 });
 test('a sole highest first heading is a title; opening and top sections are separate', () => {
   const s = foldedStructure(lines); assert.equal(s.title, 0); assert.deepEqual(s.opening, [1]);
@@ -115,6 +117,38 @@ test('remote edits inside hidden lines stay hidden; accepting open lines keeps t
   assert.ok(!texts(next.visible,extractLines(tr.doc)).includes('remote Entry 2'));
   const accepted = applyFoldTransaction(EditorState.create({doc}).tr.setMeta(foldViewKey,{open:new Set()}),foldingState());
   assert.deepEqual(texts(accepted.visible),texts(initial));
+});
+// y-prosemirror applies a remote change by replacing the whole document (isChangeOrigin), as its
+// sync plugin's _typeChanged does. Build the new document from the old one's children, reusing the
+// unchanged nodes as y-prosemirror does, and replace 0..size.
+const remote = (children: (kids: any[]) => any[]) => {
+  const kids: any[] = [];
+  doc.forEach(child => { kids.push(child); });
+  return EditorState.create({ doc }).tr.replace(0, doc.content.size, new Slice(Fragment.from(children(kids)), 0, 0))
+    .setMeta(ySyncPluginKey, { isChangeOrigin: true });
+};
+const listAt = () => { let at = -1; doc.forEach((child, _offset, i) => { if (child.type.name === 'ordered_list') at = i; }); return at; };
+const listWith = (texts6: string[]) => schema.node('ordered_list', null, texts6.map(text => li(text)));
+const entries = (edit: (n: number) => string | null) => [1, 2, 3, 4, 5, 6].map(edit).filter((t): t is string => t !== null);
+test('a remote change replaces the whole document yet the shown lines hold still', () => {
+  // A second writer proposes a change inside hidden entry 2: y-prosemirror rebuilds the list block.
+  const tr = remote(kids => kids.map((k, i) => i === listAt() ? listWith(entries(n => n === 2 ? 'Entry 2 proposed' : `Entry ${n}`)) : k));
+  const next = applyFoldTransaction(tr, foldingState());
+  assert.deepEqual(texts(next.visible, extractLines(tr.doc)), texts(foldingState().visible), 'a remote proposal changed what the reader sees');
+  const plain = mapShown(foldingState().shown, lines, extractLines(tr.doc), tr.mapping);
+  assert.ok(plain.size < foldingState().shown.size, 'control: the transaction mapping alone loses shown lines');
+});
+test('remapByContent: a remote edit keeps its shown line; an insertion stays hidden; a deletion goes', () => {
+  const shown = foldingState().shown;
+  const edited = remote(kids => kids.map((k, i) => i === listAt() ? listWith(entries(n => n === 3 ? 'Entry 3 edited remotely' : `Entry ${n}`)) : k));
+  assert.ok(texts(remapByContent(shown, doc, edited.doc), extractLines(edited.doc)).includes('Entry 3 edited remotely'));
+  const inserted = remote(kids => [kids[0], p('Inserted above everything'), ...kids.slice(1)]);
+  const afterInsert = texts(remapByContent(shown, doc, inserted.doc), extractLines(inserted.doc));
+  assert.ok(!afterInsert.includes('Inserted above everything'), 'a remote insertion became shown');
+  assert.deepEqual(afterInsert, texts(shown), 'lines below an insertion lost their place');
+  const removed = remote(kids => kids.map((k, i) => i === listAt() ? listWith(entries(n => n === 3 ? null : `Entry ${n}`)) : k));
+  const afterRemove = texts(remapByContent(shown, doc, removed.doc), extractLines(removed.doc));
+  assert.ok(!afterRemove.includes('Entry 3') && afterRemove.includes('Entry 5'), `after a remote deletion: ${afterRemove.join(', ')}`);
 });
 test('a jump exposes only its item and context; a rule exposes exactly its run', () => {
   const target = lines[idx('Hidden nested')];

@@ -124,8 +124,9 @@ async function run(browser, server, style, width) {
       const r=window.__editorView.nodeDOM(l.pos).getBoundingClientRect(); return [l.index,r.top,r.height];
     })}));
     assert.deepEqual(after,before,'Remote hidden proposal moved shown text');
-    // New rows append. J reaches the new row after the remaining original proposals.
-    await page.locator('.anv-issue[data-line="11"]').click(); await page.keyboard.press('j');
+    // The list keeps document order (reconcileReview sorts rows by line), so the new row for entry 2
+    // comes first. K from entry 5's row skips entry 3's done row and reaches it.
+    await page.locator('.anv-issue[data-line="7"]').click(); await page.keyboard.press('k');
     await page.waitForFunction(()=>window.__proofReadingWalk.focusIndex()===4);
     assert.equal(await page.evaluate(()=>window.__proofFolding.isHidden(4)),false);
     assert.equal(await page.evaluate(()=>window.__proofFolding.isHidden(3)),true);
@@ -156,7 +157,9 @@ async function run(browser, server, style, width) {
     assert.equal(await page.evaluate(()=>window.__editorView.state.doc.textContent),textBefore);
     await page.keyboard.press('ArrowUp');
     assert.equal(await page.evaluate(()=>window.__proofFolding.isHidden(window.__proofLineMarks.lineAtPos(window.__editorView.state.selection.head))),false);
-    await caret(page,'Entry five open.',true); await page.keyboard.type(' live');
+    // Entry five holds a replacement: its end is inside the proposal's own words (step 3), so type
+    // at the end of a shown line with no proposal, the path heading, to make a new live proposal.
+    await caret(page,'Path heading',true); await page.keyboard.type(' live');
     await page.waitForFunction(()=>window.proof.getAllMarks().some(m=>m.by==='human:Alice' && m.data?.content?.includes(' live')));
     // Find searches the hidden item through the actual Edit menu control.
     await page.keyboard.press('Escape');
@@ -186,13 +189,13 @@ async function delayedLoad(browser, server, style) {
     await page.goto(`${server.base}/d/${created.slug}`);
     await page.waitForFunction(()=>window.__proofFolding);
     assert.equal(await page.locator('.ProseMirror > h1').isVisible(),false,'Document text appeared before open items loaded');
-    await page.waitForFunction(()=>window.__proofFolding.debugState().timedOut,null,{timeout:8000});
+    await page.waitForFunction(()=>window.__proofFolding.debugState().timedOut,null,{timeout:15000});
     assert.equal(await page.locator('.ProseMirror > h1').isVisible(),true);
     assert.match(await page.locator('.aov-header-text').innerText(),/did not load.*whole Accord/);
     release(); await page.waitForFunction(()=>window.__proofLineMarks.isLoaded());
     assert.equal((await state(page)).whole,true,'Late open items collapsed the visible page');
     await page.screenshot({path:path.join(shots,`folded-view-${style}-timeout.png`),fullPage:true});
-    console.log(`PASS folded-view-${style}: blank loading, five-second fallback, no late collapse`);
+    console.log(`PASS folded-view-${style}: blank loading, ten-second fallback, no late collapse`);
   } finally { release(); await context.close(); }
 }
 const browser=await chromium.launch();
