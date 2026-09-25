@@ -103,7 +103,9 @@ async function run(browser, server, style, width) {
     }
     if (phone) await page.locator('.prw-strip-review').click();
     await page.locator('.prw-right .anv-issues').waitFor({ state: 'visible' });
-    assert.equal(await page.locator('.prw-right .anv-tab').count(), 3);
+    // Step 2 (ac-2a8): the folded view replaces Outline and Since you; the panel holds only Review.
+    assert.deepEqual(await page.locator('.prw-right .anv-tab').allTextContents().then(t => t.map(x => x.replace(/\d+ need you|\d+ open/, '').trim())), ['Review']);
+    assert.equal(await page.locator('[data-tab="outline"], [data-tab="since"]').count(), 0);
     assert.equal(await page.locator('.amg-tab, .plm-box, .plm-dot, .plm-familiar-fold').count(), 0);
     assert.ok(await page.locator('.plm-open-dot[data-line="1"]').count());
     // J from the list selects the first open item; row clicks keep focus in the list.

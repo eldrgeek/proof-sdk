@@ -458,7 +458,8 @@ async function runViewportCases(browser, base, created, label, viewport) {
   // 3 — collapsed section: passage actions must not include hidden lines; section agree names scope.
   await check(`ac03-collapsed-section-scope@${label}`, async () => {
     await setFolded(page, L.SEC2, true);
-    assert.ok(await isHiddenLine(page, L.PROPOSAL), 'proposal line should be hidden inside a folded section');
+    // Step 2 (ac-2a8, yfbqrau4 point 9): a folded section keeps its open items shown.
+    assert.equal(await isHiddenLine(page, L.PROPOSAL), false, 'an open proposal was hidden inside a folded section');
     await focusLine(page, L.SEC2);
     const note = await page.locator(SEL.sectionNote).innerText().catch(() => '');
     if (note) assert.match(note, /lines|section/i, `section note should name scope: ${note}`);
@@ -630,13 +631,11 @@ async function runViewportCases(browser, base, created, label, viewport) {
     assert.match(await offer.innerText(), /Not yet agreed: waiting for/);
     await page.keyboard.press('Escape');
     await page.waitForTimeout(500);
+    // Step 2 (ac-2a8): the count line replaces the line-mark header, whose clauses (who read,
+    // who rejected a line) describe marks the Accord rules retire. It counts open items only.
     const header = await page.locator(SEL.honestHeaderText).innerText().catch(() => '');
-    assert.ok(header.length > 0, 'honest header missing in document view');
-    assert.ok(!/chris has not read/i.test(header),
-      `rejecter mislabeled unread: ${header}`);
-    if (!/reject|object|declin|rejected/i.test(header)) {
-      throw new Error(`header should describe Chris's rejection, not unreadness: ${header}`);
-    }
+    assert.match(header, /open for you|waiting on others|in accord/, `the count line is missing: ${header}`);
+    assert.ok(!/has not read|rejected line/i.test(header), `the count line speaks of line marks: ${header}`);
     await page.evaluate(async () => {
       const lm = window.__proofLineMarks;
       for (const line of lm.lineList()) await lm.setLineStatus(line.index, 'agreed', undefined, 'click');
@@ -694,18 +693,21 @@ async function runViewportCases(browser, base, created, label, viewport) {
     }
   });
 
-  // 11 — reload restores folds.
+  // 11 — step 2 (ac-2a8) replaces "reload restores folds" (2026-09-23): a reload is a new visit,
+  // and every visit starts folded, whatever the reader had open (the Accord rules; yfbqrau4 point 9).
   await check(`ac11-reload-restore@${label}`, async () => {
-    await setFolded(page, L.SEC3, true);
-    await page.reload(); await showWholeAccord(page);
-    await page.waitForFunction(() => window.__proofReadingWalk?.debugState().ready === true, null, { timeout: 20_000 });
+    await setFolded(page, L.SEC3, false);
+    await page.reload();
+    await page.waitForFunction(() => window.__proofReadingWalk?.debugState().ready === true && window.__proofFolding?.debugState().ready === true, null, { timeout: 20_000 });
     await waitFor(page, h => document.querySelector(`.pfold-chip[data-heading="${h}"]`)?.dataset.folded === 'true', L.SEC3);
   });
+  // Opening and closing the right-hand panel leaves the reader's folds alone.
   await check(`ac11-review-document-switch@${label}`, async () => {
     await page.locator(SEL.reviewPanelToggle).click();
     await page.waitForTimeout(400);
     await page.locator(SEL.reviewPanelToggle).click();
     await waitFor(page, h => document.querySelector(`.pfold-chip[data-heading="${h}"]`)?.dataset.folded === 'true', L.SEC3);
+    await showWholeAccord(page);
   });
 
   // 12 — primary actions without hover; focus visible; statuses have text.

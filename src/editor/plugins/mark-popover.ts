@@ -172,6 +172,32 @@ function getTopViewportInset(margin: number): number {
   return inset;
 }
 
+// Since Accord step 1 (2026-09-24) the chat, the status bar above it and the phone strip are fixed
+// to the foot of the screen. The phone's Comment row must stay above them: on a 375x667 phone a
+// selection low on the page put the row under the status bar, which took the tap (mobile-check,
+// step 2 review, 2026-09-25).
+const BOTTOM_FIXED_OVERLAY_SELECTORS = ['.prw-chat-bottom', '.pst-bar', '.prw-strip'] as const;
+
+function getBottomViewportLimit(viewportHeight: number): number {
+  let limit = viewportHeight;
+  try {
+    for (const selector of BOTTOM_FIXED_OVERLAY_SELECTORS) {
+      for (const element of document.querySelectorAll(selector)) {
+        if (!(element instanceof HTMLElement) || element.hidden || element.closest('[hidden]')) continue;
+        const style = window.getComputedStyle(element);
+        if (style.position !== 'fixed' && style.position !== 'sticky') continue;
+        if (style.display === 'none' || style.visibility === 'hidden') continue;
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0 || rect.top <= 0 || rect.top >= viewportHeight) continue;
+        limit = Math.min(limit, Math.floor(rect.top));
+      }
+    }
+  } catch {
+    // A document without layout (unit tests) has no bottom stack.
+  }
+  return limit;
+}
+
 function getAnchorBox(view: EditorView, anchor: MarkRange) {
   const from = view.coordsAtPos(anchor.from);
   const to = view.coordsAtPos(anchor.to);
@@ -1589,11 +1615,16 @@ class MarkPopoverController {
     }
     try {
       if (typeof this.strip.getBoundingClientRect !== 'function') return;
+      // updateSheetViewportOffset pins the strip's bottom for its docked form. The floating row
+      // also has a top, so pinned it stretched to the foot of the screen and measured as tall
+      // as the gap: measure its own size first.
+      this.strip.style.bottom = 'auto';
+      this.strip.style.right = 'auto';
       const vv = window.visualViewport;
       const viewportHeight = getVisualViewportHeight(window.innerHeight, vv ?? null);
       const safeTop = getTopViewportInset(12);
       const stripRect = this.strip.getBoundingClientRect();
-      const maxTop = Math.max(safeTop, viewportHeight - stripRect.height - 12);
+      const maxTop = Math.max(safeTop, getBottomViewportLimit(viewportHeight) - stripRect.height - 12);
       const belowTop = selectionRect.bottom + 10;
       const aboveTop = selectionRect.top - stripRect.height - 10;
       const targetTop = belowTop <= maxTop ? belowTop : clamp(aboveTop, safeTop, maxTop);

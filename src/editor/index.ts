@@ -1,5 +1,6 @@
 import type { Transaction } from '@milkdown/kit/prose/state';
 import { commitLiveTextInput, liveSuggestionInputEvent, focusLiveSuggestion, type LiveSuggestionInput } from './live-suggestion-input';
+import { readPointerSelectionSoon } from './pointer-selection';
 import { EDIT_SESSION_POLICY } from '../shared/edit-session';
 import { markApiView, isOwnHumanMarkChange, withHumanReviewWrite } from './review-mark-origin';
 /**
@@ -6627,6 +6628,13 @@ class ProofEditorImpl implements ProofEditor {
         },
         handleDOMEvents: {
           ...view.props.handleDOMEvents,
+          // A click puts the caret in the DOM at once, but ProseMirror reads it only when the
+          // selectionchange event arrives, a task later. An update in that window (a remote cursor,
+          // a decoration refresh) or ProseMirror's own focus check 20 ms after focus writes the old
+          // selection back, and the typing lands where the caret was before (the caret check typed
+          // into the title; 2026-09-24). Read the click's selection as soon as the click ends.
+          mouseup: (upView) => { readPointerSelectionSoon(upView); return false; },
+          click: (clickView) => { readPointerSelectionSoon(clickView); return false; },
           paste: (_view, event) => this.refuseHiddenInput(event, 'insertFromPaste'),
           cut: (_view, event) => this.refuseHiddenInput(event, 'deleteByCut'),
           drop: (inputView, event) => {

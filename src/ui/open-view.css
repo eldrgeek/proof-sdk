@@ -8,6 +8,9 @@
   font-size: 13px;
   line-height: 1.5;
 }
+@media (max-width: 700px) {
+  .aov-header { margin-bottom: 10px; padding: 6px 12px; }
+}
 .aov-header[hidden] { display: none; }
 .aov-header[data-view="accord"] { border-left-color: #a1a1aa; }
 

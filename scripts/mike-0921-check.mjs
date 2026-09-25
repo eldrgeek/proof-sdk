@@ -178,7 +178,8 @@ async function desktop(browser, base, style) {
       const bar = document.getElementById('share-banner').getBoundingClientRect();
       const buttons = [...document.querySelectorAll('#share-banner button, #share-banner a, #share-banner .share-pill-title')]
         .filter(e => e.getBoundingClientRect().width > 0).map(e => e.getBoundingClientRect());
-      const first = document.querySelector('.ProseMirror > *').getBoundingClientRect();
+      // Step 2 (ac-2a8): the page's first line is the count line when it shows; the text follows it.
+      const first = (document.querySelector('.aov-header:not([hidden])') ?? document.querySelector('.ProseMirror > *')).getBoundingClientRect();
       return { top: bar.top, h: bar.height, bottom: bar.bottom, tallest: Math.max(...buttons.map(b => b.height)), shortest: Math.min(...buttons.map(b => b.height)), firstTop: first.top };
     });
     // Accord layout stage 2: the toolbar sits right under the 28 px menu bar, which starts at 0.
@@ -456,7 +457,8 @@ async function phone(browser, base, style) {
       const controls = [...document.querySelectorAll('#share-banner button, #share-banner a')]
         .filter(e => { const r = e.getBoundingClientRect(); return r.width > 0 && getComputedStyle(e).visibility !== 'hidden'; })
         .map(e => ({ c: e.className, h: e.getBoundingClientRect().height }));
-      const first = document.querySelector('.ProseMirror > *').getBoundingClientRect();
+      // Step 2 (ac-2a8): the page's first line is the count line when it shows; the text follows it.
+      const first = (document.querySelector('.aov-header:not([hidden])') ?? document.querySelector('.ProseMirror > *')).getBoundingClientRect();
       return { h: bar.height, top: bar.top, bottom: bar.bottom, controls, firstTop: first.top };
     });
     assert.equal(info.top, 0);

@@ -53,6 +53,12 @@ body.pfold-on .ProseMirror > :is(h1, h2, h3, h4, h5, h6) { padding-right: 72px; 
 body.aov-in-accord .aov-header { display: none; }
 @media (max-width: 700px) {
   .ProseMirror .aov-rule { min-height: var(--fold-rule-target, 44px); }
-  .aov-whole-toggle { min-height: 44px; }
+  /* Two lines stay reserved for the count, so a count that grows onto a second line never moves
+     the page. The control keeps a 44 px touch target without spending 44 px of a phone's height:
+     its hit area reaches past its box. Step 2 review, 2026-09-25: the box was 108 px of a 566 px
+     reading area at 390x844, and pushed the first paragraph past the scroll camera's band. */
+  .aov-header { row-gap: 2px; }
   .aov-header-text { flex-basis: 100%; min-height: 3em; }
+  .aov-whole-toggle { position: relative; padding: 2px 0; }
+  .aov-whole-toggle::after { content: ''; position: absolute; left: -8px; right: -8px; top: 50%; height: 44px; transform: translateY(-50%); }
 }

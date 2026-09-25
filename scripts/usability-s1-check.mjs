@@ -262,6 +262,10 @@ async function desktop(browser, base, style, width) {
     assert.equal(after.at(-1), body.markId, 'incoming item was not appended');
   });
   await check(`${tag}: remote height change and heading rename preserve selected position and disclosure`, async () => {
+    // Step 2: folds do not persist across visits, and the page is in the whole view here; fold
+    // Beta explicitly so the remote rename has a disclosure choice to preserve.
+    await page.evaluate(() => window.__proofFolding.setFolded(9, true));
+    assert.equal(await page.evaluate(() => window.__proofFolding.isFolded(9)), true);
     await selectPassage(page, 15);
     await page.evaluate(() => window.scrollBy(0, -80));
     const top = () => page.evaluate(() => {

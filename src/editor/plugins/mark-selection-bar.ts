@@ -34,10 +34,13 @@ function clamp(value: number, min: number, max: number): number {
 const TOP_FIXED_OVERLAY_IDS = ['share-banner', 'readonly-banner', 'review-lock-banner', 'error-banner'] as const;
 
 // Overlays the bar must never sit on top of: the top bars, the PlayMaker Marks panel (it owns the
-// right-hand gutter) and the feedback chip.
+// right-hand gutter) and the feedback chip. Since step 1 (2026-09-24) also the bottom stack: the
+// status bar, the phone strip and the chat. On a small phone a selection near the bottom put the
+// Comment button under the status bar, which took the tap (mobile-check, step 2 review).
 const BLOCKING_OVERLAY_SELECTORS = [
   '#share-banner', '#readonly-banner', '#review-lock-banner', '#error-banner',
   '.pm-review-panel', '.soma-feedback-root',
+  '.pst-bar', '.prw-strip', '.prw-chat-bottom',
 ] as const;
 
 type Box = { top: number; bottom: number; left: number; right: number };
