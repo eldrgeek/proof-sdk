@@ -57,6 +57,22 @@ export function keepUndoGroupOpen<T extends { docChanged: boolean; getMeta(key: 
   return tr.setMeta('addToHistory', true);
 }
 
+/**
+ * A mark record's meaning: its fields in a stable order, without the anchors pages re-derive
+ * (range, quote, startRel, endRel). Two writes with the same meaning are the same record.
+ */
+export function semanticMarkRecord(value: unknown): string {
+  const stable = (input: unknown): unknown => {
+    if (Array.isArray(input)) return input.map(stable);
+    if (!input || typeof input !== 'object') return input;
+    const record = input as Record<string, unknown>;
+    return Object.fromEntries(Object.keys(record).sort()
+      .filter(key => !['range', 'quote', 'startRel', 'endRel'].includes(key))
+      .map(key => [key, stable(record[key])]));
+  };
+  return JSON.stringify(stable(value)) ?? 'undefined';
+}
+
 export function withoutOwnEcho<T>(binding: SyncBinding | null | undefined, action: () => T): T {
   const type = binding?.type;
   const observer = binding?._observeFunction;
@@ -79,6 +95,8 @@ export class ReviewDecisionHistory {
   private readonly rangeKey = Symbol('review decision text');
   private readonly suggestionsKey = Symbol('tracked typing records');
   private readonly afterSelectionKey = Symbol('native selection after operation');
+  /** The suggestion records a history entry created (not merely changed). */
+  private readonly createdKey = Symbol('suggestion records created');
   private readonly markVersions = new Map<string, number>();
   private readonly externalMarkVersions = new Map<string, number>();
   private readonly marksChanged = (event: Y.YMapEvent<unknown>, transaction: Y.Transaction): void => {
@@ -86,8 +104,17 @@ export class ReviewDecisionHistory {
     for (const id of event.keysChanged) {
       this.markVersions.set(id, (this.markVersions.get(id) ?? 0) + 1);
       // Origin labels describe workflows, not which client wrote the record.
-      if (external) this.externalMarkVersions.set(id, (this.externalMarkVersions.get(id) ?? 0) + 1);
-      else if (!this.manager.undoing && !this.manager.redoing) this.includeOwnProjection(id);
+      if (external) {
+        // Only a change of meaning is someone else's edit. The server re-sets other records with
+        // identical content whenever any mark changes; counting those made Undo refuse the
+        // person's own typing ("someone has replied") after anyone added a comment (ac-ug8,
+        // live since step 3). A re-set record is no longer this client's map item, so undoing
+        // the typing that created it withdraws it explicitly (see restore).
+        const change = event.changes.keys.get(id);
+        const resent = change?.action === 'update'
+          && semanticMarkRecord(change.oldValue) === semanticMarkRecord(this.doc.getMap('marks').get(id));
+        if (!resent) this.externalMarkVersions.set(id, (this.externalMarkVersions.get(id) ?? 0) + 1);
+      } else if (!this.manager.undoing && !this.manager.redoing) this.includeOwnProjection(id);
     }
   };
   private readonly documentDestroyed = (): void => this.destroy();
@@ -143,15 +170,18 @@ export class ReviewDecisionHistory {
     if (!item) return;
     this.rememberSelection(item);
     const expected: SuggestionRecords = item.meta.get(this.suggestionsKey) ?? new Map();
+    const created: Set<string> = item.meta.get(this.createdKey) ?? new Set();
     const after = marks.toJSON();
     for (const id of new Set([...Object.keys(before), ...Object.keys(after)])) {
       const value = after[id] ?? before[id];
       if (['insert', 'delete', 'replace'].includes(value?.kind)
         && (beforeVersions.get(id) ?? 0) !== (this.markVersions.get(id) ?? 0)) {
         expected.set(id, this.suggestionRecord(id));
+        if (!(id in before) && id in after) created.add(id);
       }
     }
     if (expected.size) item.meta.set(this.suggestionsKey, expected);
+    if (created.size) item.meta.set(this.createdKey, created);
   }
   decide(action: () => void): void {
     const fragment = this.doc.getXmlFragment('prosemirror');
@@ -205,10 +235,35 @@ export class ReviewDecisionHistory {
         if (withdrawal && JSON.stringify(marks.get(id)) === JSON.stringify(withdrawal.resolved)) marks.set(id, withdrawal.pending);
       }
     };
+    // Undo of typing whose record someone else has since re-set with the same meaning (ac-ug8):
+    // the record is their map item now, so Yjs removes the words but not the record, and the
+    // deleteFilter's withdrawal (which needs this client's own item) never runs. Withdraw it
+    // here, inside the native undo transaction, so no one ever sees a pending proposal that has
+    // lost its words, and a later Redo reopens it (withdrawnByUndo).
+    const withdrawResent = (transaction: Y.Transaction) => {
+      if (redo || transaction.origin !== manager) return;
+      const created = candidate.meta.get(this.createdKey) as Set<string> | undefined;
+      const records = candidate.meta.get(this.suggestionsKey) as SuggestionRecords | undefined;
+      const marks = this.doc.getMap('marks');
+      for (const id of created ?? []) {
+        const current = marks.get(id);
+        const entry = marks._map.get(id);
+        const expected = records?.get(id)?.value;
+        if (!entry || entry.id.client === this.doc.clientID || !isPendingSuggestion(current) || expected === undefined) continue;
+        if (semanticMarkRecord(current) !== semanticMarkRecord(JSON.parse(expected))) continue;
+        const resolved = suggestionWithStatus(current, 'rejected', getCurrentActor());
+        this.withdrawnByUndo.set(id, { pending: current, resolved });
+        marks.set(id, resolved);
+      }
+    };
     this.doc.on('beforeTransaction', reopenWithdrawals);
+    this.doc.on('beforeTransaction', withdrawResent);
     let item: StackItem | null;
     try { item = redo ? manager.redo() : manager.undo(); }
-    finally { this.doc.off('beforeTransaction', reopenWithdrawals); }
+    finally {
+      this.doc.off('beforeTransaction', reopenWithdrawals);
+      this.doc.off('beforeTransaction', withdrawResent);
+    }
     if (!item) return false;
     // Yjs may skip superseded map writes. Use the item it actually popped,
     // and put the inverse range on the newly created inverse stack item.

@@ -28,7 +28,7 @@ async function start(style) {
       PORT: String(port), DATABASE_PATH: path.join(temp, 'test.db'), SNAPSHOT_DIR: path.join(temp, 'snapshots'),
       COLLAB_EMBEDDED_WS: '1', PROOF_DEFAULT_REVIEW_STYLE: style }, stdio: ['ignore', fd, fd] });
   closeSync(fd); const base = `http://127.0.0.1:${port}`;
-  const stop = async () => { child.kill('SIGTERM'); if (child.exitCode === null) await new Promise(r => child.once('exit', r)); rmSync(temp, { recursive: true, force: true }); };
+  const stop = async () => { child.kill('SIGTERM'); if (child.exitCode === null && child.signalCode === null) await new Promise(r => child.once('exit', r)); rmSync(temp, { recursive: true, force: true }); };
   for (let i = 0; i < 200; i++) {
     if ((await fetch(`${base}/health`).catch(() => null))?.ok) return { base, stop, log };
     await new Promise(r => setTimeout(r, 150));

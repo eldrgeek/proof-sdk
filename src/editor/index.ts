@@ -50,7 +50,8 @@ import {
   remarkStringifyOptionsCtx,
   prosePluginsCtx,
 } from '@milkdown/core';
-import { commonmark } from '@milkdown/preset-commonmark';
+import { commonmark, hardbreakClearMarkPlugin } from '@milkdown/preset-commonmark';
+import { hardbreakClearMarksPlugin } from './plugins/hardbreak-clear-marks';
 import { gfm, remarkGFMPlugin } from '@milkdown/preset-gfm';
 import { history } from '@milkdown/plugin-history';
 import { collab, collabServiceCtx } from '@milkdown/plugin-collab';
@@ -1306,7 +1307,10 @@ class ProofEditorImpl implements ProofEditor {
         ctx.set(defaultValueCtx, '');
       })
       .config(nord)
-      .use(commonmark)
+      // Milkdown's own hard-break plugin appends an empty transaction after every mark change,
+      // which made server mark updates into invisible Undo steps; ours appends only real changes.
+      .use(commonmark.filter(plugin => plugin !== hardbreakClearMarkPlugin))
+      .use(hardbreakClearMarksPlugin)
       .use(gfm)
       // Frontmatter must be registered after commonmark so remark-frontmatter
       // claims `---` before commonmark parses it as a thematic break.

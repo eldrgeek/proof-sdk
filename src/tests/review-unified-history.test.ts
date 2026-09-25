@@ -103,7 +103,11 @@ const tests: Record<string, () => Promise<void>> = {
         } else if (changed) p.bob.map.set(id, { ...p.bob.map.get(id), replies: [{ by: 'human:Bob', text: 'Keep it', at: '2026-09-15T00:00:00Z' }] });
         const snapshot = () => JSON.stringify([p.alice.view.state.doc.toJSON(), p.alice.map.toJSON(), p.bob.view.state.doc.toJSON(), p.bob.map.toJSON()]);
         const before = snapshot();
-        if (changed && changed !== 'own') {
+        // ac-ug8 (2026-09-25): an identical re-set is not someone else's edit. The server does it
+        // whenever any mark changes, and refusing it broke Undo for everyone. Undo now withdraws
+        // the re-set record inside the undo transaction, so the success branch applies to it; the
+        // plain y-undo run (--production) still shows the old refusal.
+        if (changed === true || (changed === 'identical' && production)) {
           if (production) {
             p.alice.restore();
             console.log(`Production orphan: text=${p.alice.view.state.doc.textContent.includes('OWN')}, record=${p.alice.map.has(id)}, reply=${Boolean(p.alice.map.get(id)?.replies?.length)}`);
