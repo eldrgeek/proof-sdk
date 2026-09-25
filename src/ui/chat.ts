@@ -516,7 +516,7 @@ export class ChatUI {
   }
 
   /** Server candidates plus the page's team (so a new AI can be @mentioned before it chats). */
-  private allCandidates(includeMe = false): MentionCandidate[] {
+  allCandidates(includeMe = false): MentionCandidate[] {
     const out = new Map<string, MentionCandidate>();
     for (const c of this.candidates) out.set(actorKey(c.actor), { actor: c.actor, names: [...c.names] });
     for (const actor of this.host.lineMarks().issueSummary()?.team ?? []) {

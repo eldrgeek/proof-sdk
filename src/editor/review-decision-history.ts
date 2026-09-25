@@ -371,6 +371,25 @@ export class ReviewDecisionHistory {
     });
   }
   undo(): boolean { return this.restore(false); }
+  checkpoint(): StackItem | undefined { return this.manager.undoStack.at(-1); }
+  /** A side effect already owned by a higher-level Undo must not create a second native step. */
+  withoutRecording(action: () => void): void {
+    this.manager.stopCapturing();
+    withoutOwnEcho(this.binding(), () => this.doc.transact(tr => {
+      action(); tr.meta.set('addToHistory', false);
+    }, 'typed-discussion-inverse'));
+    this.manager.stopCapturing();
+  }
+  canRestoreCheckpoint(item: StackItem | undefined): boolean {
+    return Boolean(item && this.manager.undoStack.at(-1) === item && this.suggestionsMatch(item)
+      && (!item.meta.has(this.rangeKey) || rangeMatches(this.doc, item.meta.get(this.rangeKey) as DecisionRange | null)));
+  }
+  /** A later explicit inverse supersedes just this operation, never intervening edits. */
+  forgetCheckpoint(item: StackItem | undefined): void {
+    if (!item) return;
+    this.manager.undoStack = this.manager.undoStack.filter(entry => entry !== item);
+    this.manager.redoStack = this.manager.redoStack.filter(entry => entry !== item);
+  }
   redo(): boolean { return this.restore(true); }
   destroy(): void {
     if (this.destroyed) return;

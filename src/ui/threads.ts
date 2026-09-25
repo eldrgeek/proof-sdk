@@ -28,6 +28,7 @@ import {
   type ThreadView,
 } from '../shared/threads';
 import { actorLabel } from '../shared/line-marks';
+import { TYPED_DISCUSSION_POLICY } from '../shared/typed-discussion';
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -65,6 +66,8 @@ export interface ThreadsHost {
   close(id: string, status: ThreadStatus): Promise<boolean>;
   reopen(id: string): Promise<boolean>;
   reply(id: string, text: string): boolean;
+  canTurnBack?(id: string): boolean;
+  turnBack?(id: string): Promise<boolean>;
   /** Re-renders Review (after a write). */
   refresh(): void;
 }
@@ -286,6 +289,15 @@ export class ThreadsPanel {
     card.append(why);
 
     const actions = el('div', 'amg-thread-actions');
+    if (this.host.canTurnBack?.(thread.id)) {
+      const back = el('button', 'amg-thread-turn-back', TYPED_DISCUSSION_POLICY.turnBackLabel);
+      back.type = 'button';
+      back.onclick = () => {
+        back.disabled = true;
+        void this.host.turnBack?.(thread.id).finally(() => { this.sig = ''; this.host.refresh(); });
+      };
+      actions.append(back);
+    }
     if (thread.status === 'open') {
       const replyForm = el('form', 'amg-thread-reply-form');
       const input = el('input', 'amg-thread-reply-input');

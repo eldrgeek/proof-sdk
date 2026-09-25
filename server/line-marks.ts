@@ -134,7 +134,7 @@ export async function computeServerLines(markdown: string): Promise<DocLine[]> {
   return extractLines(parsed.doc as unknown as LineSourceNode);
 }
 
-function parseStoredMarks(raw: unknown): Record<string, Record<string, unknown>> {
+export function parseStoredMarks(raw: unknown): Record<string, Record<string, unknown>> {
   if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw as Record<string, Record<string, unknown>>;
   if (typeof raw !== 'string' || !raw.trim()) return {};
   try {

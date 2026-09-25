@@ -770,6 +770,8 @@ export class ReadingWalkUI {
       close: (id, status) => lm().closeThread(id, status as ThreadStatus),
       reopen: (id) => lm().reopenThread(id),
       reply: (id, text) => lm().replyOnThread(id, text),
+      canTurnBack: id => lm().canTurnThreadBack(id),
+      turnBack: id => lm().turnThreadBack(id),
       refresh: () => this.renderNow(),
     });
   }

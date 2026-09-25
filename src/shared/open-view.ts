@@ -21,6 +21,7 @@ import {
 // import cycle is safe in either load order. Never reference a `const` from layout-status here.
 import { issueNeedsViewer } from './layout-status.js';
 import { threadOpenFor, type ThreadOpenness, type ThreadView } from './threads.js';
+import { typedDiscussionInsertId } from './typed-discussion.js';
 
 // ============================================================================
 // POLICY
@@ -188,6 +189,10 @@ export function openView(input: OpenViewInput): OpenView {
 
   // ---- 1. The Issues that need the viewer (NEEDS_YOU_POLICY, unchanged). -------------------
   for (const issue of input.issues) {
+    // A stored thread owns its closing condition and addressees. Its comment is
+    // the same object, not a second legacy comment open for every other reader.
+    if ('markId' in issue && input.threads?.some(view => typedDiscussionInsertId(view.thread.id)
+      && view.thread.markId === issue.markId)) continue;
     if (!issueNeedsViewer(issue, input.viewer, aliases)) continue;
     const kind = kindOfIssue(issue);
     if (!kind) continue;

@@ -38,6 +38,9 @@ import { tierViewPlugin } from './plugins/tier-view';
 import { getReviewStyle, setReviewStyle, REVIEW_STYLE_POLICY } from './review-style';
 import { isEditing, isWriting, onWritingChange, setDirectEditing } from './editing-guard';
 import { ReviewDecisionHistory, keepUndoGroupOpen, reconnectNativeUndoManager } from './review-decision-history';
+import { TypedDiscussionController, type TypedDiscussionRun } from './typed-discussion';
+import { typedDiscussionId, typedDiscussionInsertId, typedItemAt, TYPED_DISCUSSION_POLICY } from '../shared/typed-discussion';
+import { actorKey } from '../shared/line-marks';
 
 import { getAgentPresenceDisplay } from '../shared/agent-presence';
 
@@ -1192,6 +1195,9 @@ class ProofEditorImpl implements ProofEditor {
   /** Accord round 2 stage A: leaving an edit posts what was typed (src/ui/edit-gesture.ts). */
   private editGesture: EditGestureUI | null = null;
   private reviewDecisionHistory: ReviewDecisionHistory | null = null;
+  private typedDiscussions: TypedDiscussionController | null = null;
+  private readonly typedDiscussionHistory = new Map<string, { checkpoint: ReturnType<ReviewDecisionHistory['checkpoint']>; entryId?: string }>();
+  private readonly returningTypedThreads = new Set<string>();
   private reviewDecisionIds = new Set<string>();
   private capturingReviewDecision = false;
   private restoringReviewDecision = false;
@@ -4148,14 +4154,18 @@ class ProofEditorImpl implements ProofEditor {
         authHeaders: () => shareClient.getShareAuthHeaders(),
         actor: () => getCurrentActor(),
         canComment: () => this.collabCanComment,
+        reviewTeamActors: view => Object.values(getMarkMetadataWithQuotes(view.state))
+          .filter(mark => ['insert', 'delete', 'replace', 'comment'].includes(mark.kind ?? ''))
+          .flatMap(mark => [mark.by, mark.resolvedBy, ...(mark.replies ?? []).map(reply => reply.by)])
+          .filter((actor): actor is string => typeof actor === 'string' && Boolean(actor)),
         reviewMarks: (view) => getMarks(view.state)
           .filter(mark => mark.kind === 'comment' || mark.kind === 'insert' || mark.kind === 'delete' || mark.kind === 'replace')
           .map(mark => {
-            const data = (mark.data ?? {}) as { resolved?: boolean; status?: string; text?: string; content?: string; replies?: Array<{ by?: string; text?: string; at?: string }> };
+            const data = (mark.data ?? {}) as { resolved?: boolean; resolvedBy?: string; status?: string; text?: string; content?: string; replies?: Array<{ by?: string; text?: string; at?: string }> };
             const open = mark.kind === 'comment' ? data.resolved !== true : (data.status ?? 'pending') === 'pending';
             // Accord stage D: a comment and a suggestion are both threads, so the thread's own
             // fields (its opening text, the proposed wording, when it was made) come along too.
-            return { id: mark.id, kind: mark.kind, by: mark.by, at: mark.at, quote: mark.quote, pos: mark.range?.from ?? null, range: mark.range ?? null, open, text: data.text ?? null, content: data.content ?? null, resolved: data.resolved === true, replies: data.replies, status: mark.kind === 'comment' ? null : (data.status ?? 'pending') };
+            return { id: mark.id, kind: mark.kind, by: mark.by, at: mark.at, quote: mark.quote, pos: mark.range?.from ?? null, range: mark.range ?? null, open, resolvedBy: data.resolvedBy ?? null, text: data.text ?? null, content: data.content ?? null, resolved: data.resolved === true, replies: data.replies, status: mark.kind === 'comment' ? null : (data.status ?? 'pending') };
           }),
         isSuggesting: () => this.isSuggestionsEnabled(),
         authorsOfRange: (from, to) => {
@@ -4213,6 +4223,8 @@ class ProofEditorImpl implements ProofEditor {
         this.performReviewDecision(ids, action, text);
         this.playmakerReview?.update();
       };
+      this.lineMarks.canTurnThreadBack = id => this.canTurnTypedThreadBack(id);
+      this.lineMarks.turnThreadBack = id => this.turnTypedThreadBack(id);
       (window as unknown as { __proofLineMarks?: LineMarksUI }).__proofLineMarks = this.lineMarks;
       // Proof Documents Step 1b: the three-column reading layout and the reading walk.
       const lineMarks = this.lineMarks;
@@ -4541,6 +4553,154 @@ class ProofEditorImpl implements ProofEditor {
       this.reviewDecisionIds.clear();
     }
     return this.reviewDecisionHistory;
+  }
+
+  /** One native transaction for the withdrawal and its comment, and one Proof Undo for the row. */
+  private typedDiscussionDecision(action: (view: EditorView) => void, record = true): ReturnType<ReviewDecisionHistory['checkpoint']> {
+    const history = this.getReviewDecisionHistory();
+    const view = this.editor!.ctx.get(editorViewCtx);
+    const previous = this.suppressMarksSync;
+    this.suppressMarksSync = true;
+    this.capturingReviewDecision = true;
+    const scrollers: Array<{ node: HTMLElement; top: number; left: number }> = [];
+    for (let node: HTMLElement | null = view.dom; node; node = node.parentElement) {
+      scrollers.push({ node, top: node.scrollTop, left: node.scrollLeft });
+    }
+    const x = window.scrollX, y = window.scrollY;
+    try {
+      const apply = () => {
+        action(view);
+        const metadata = getMarkMetadataWithQuotes(view.state);
+        this.lastReceivedServerMarks = { ...metadata };
+        this.initialMarksSynced = true;
+        collabClient.setMarksMetadata(metadata);
+      };
+      if (record) history.decide(apply); else history.withoutRecording(apply);
+    } finally {
+      this.capturingReviewDecision = false;
+      this.suppressMarksSync = previous;
+      for (const { node, top, left } of scrollers) { node.scrollTop = top; node.scrollLeft = left; }
+      if (window.scrollX !== x || window.scrollY !== y) window.scrollTo(x, y);
+      this.scheduleShareSuggestionReviewDisplay(view);
+    }
+    return history.checkpoint();
+  }
+
+  private async convertTypedDiscussion(run: TypedDiscussionRun): Promise<void> {
+    const lm = this.lineMarks;
+    if (!lm || !this.shareAllowLocalEdits || !this.collabCanEdit) return;
+    const currentView = this.editor!.ctx.get(editorViewCtx);
+    const item = typedItemAt(currentView.state.doc, run.from);
+    if (!item || !(currentView.state.doc.textBetween(item.from + 1, run.from, '', '')
+      + currentView.state.doc.textBetween(run.to, item.end, '', '')).trim()) {
+      this.readingWalk?.showEditNotice('This item has no other text to discuss. Your question stays a proposal.');
+      return;
+    }
+    if (run.text.trim().length > TYPED_DISCUSSION_POLICY.maxThreadCharacters) {
+      this.readingWalk?.showEditNotice('This is longer than a discussion can hold. Your words stay a proposal.');
+      return;
+    }
+    const id = typedDiscussionId(run.id);
+    let started: Promise<string | null> = Promise.resolve(null);
+    let commentId: string | undefined;
+    const line = lm.lineAtPos(run.from);
+    const checkpoint = this.typedDiscussionDecision(view => {
+      const batch = prepareSuggestionBatch(view, [run.id], 'reject', this.editor!.ctx.get(parserCtx));
+      if (batch.failedIds.length) throw new Error('The proposal changed. Its words are still text.');
+      batch.apply();
+      this.reviewDecisionIds.add(run.id);
+      started = lm.startThread({ lines: [lm.lineAtPos(run.from)], text: run.text.trim(), asks: 'answer', waitingOn: run.waitingOn },
+        { id, recordUndo: false, announce: false, onComment: id => { commentId = id; } });
+    });
+    const record = { checkpoint, entryId: undefined as string | undefined };
+    this.typedDiscussionHistory.set(id, record);
+    // Publish Undo immediately, even if the row request is still in flight.
+    const entry = lm.undoStack().pushSimple('thread', `asked a discussion on line ${line + 1}`, async () => {
+      if (!await started) return { ok: false, reason: 'The discussion was not saved; its text has been restored.' };
+      return await this.turnTypedThreadBack(id) ? { ok: true } : { ok: false, reason: 'Could not turn this discussion back into text. It may have a reply now.' };
+    });
+    record.entryId = entry?.id;
+    if (!await started) {
+      // A lost HTTP response may have saved the row. Keep a resolved comment
+      // record even in that case, so it cannot reappear as an orphan discussion.
+      await this.restoreTypedDiscussionText(id, run.text, line, commentId);
+      this.getReviewDecisionHistory().forgetCheckpoint(checkpoint);
+      if (entry) lm.undoStack().forget(entry.id);
+      this.typedDiscussionHistory.delete(id);
+      throw new Error('Could not save the discussion. Its words were kept as a proposal.');
+    }
+    this.readingWalk?.showEditNotice(TYPED_DISCUSSION_POLICY.sent.replace('{line}', String(line + 1)));
+  }
+
+  private canTurnTypedThreadBack(id: string): boolean {
+    const thread = this.lineMarks?.threadById(id)?.thread;
+    return Boolean(typedDiscussionInsertId(id) && thread && thread.status === 'open' && thread.replies.length === 0
+      && this.lineMarks?.canCommentHere() && this.shareAllowLocalEdits && this.collabCanEdit
+      && actorKey(thread.by) === actorKey(this.lineMarks.me()));
+  }
+
+  /** Also works after reload: the row ID points at the existing withdrawal record. */
+  private async turnTypedThreadBack(id: string): Promise<boolean> {
+    if (!this.canTurnTypedThreadBack(id) || this.returningTypedThreads.has(id)) return false;
+    const lm = this.lineMarks!;
+    const thread = lm.threadById(id)!;
+    const line = thread.lineIndex;
+    if (line === null || thread.detached) { this.readingWalk?.showEditNotice('The item is gone. Keep the discussion until it has a new home.'); return false; }
+    this.returningTypedThreads.add(id);
+    let removed = false;
+    try {
+      const record = this.typedDiscussionHistory.get(id);
+      const history = this.getReviewDecisionHistory();
+      if (!await lm.takeBackTypedThread(id)) return false;
+      removed = true;
+      if (record && history.canRestoreCheckpoint(record.checkpoint)) {
+        this.restoreReviewDecision(false);
+        // The thread row was removed; native Redo must not recreate only its comment.
+        if (!TYPED_DISCUSSION_POLICY.redoConversion) history.manager.redoStack.length = 0;
+      } else {
+        const view = this.editor!.ctx.get(editorViewCtx);
+        const original = getMarkMetadataWithQuotes(view.state)[typedDiscussionInsertId(id)!];
+        const text = typeof original?.content === 'string' ? original.content : TYPED_DISCUSSION_POLICY.missingOriginalPrefix + thread.thread.text;
+        await this.restoreTypedDiscussionText(id, text, line, thread.thread.markId);
+        history.forgetCheckpoint(record?.checkpoint);
+      }
+      if (record?.entryId) lm.undoStack().forget(record.entryId);
+      this.typedDiscussionHistory.delete(id);
+      return true;
+    } catch (error) {
+      if (removed) await lm.restoreTypedThreadRow(thread.thread);
+      this.readingWalk?.showEditNotice(error instanceof Error ? error.message : 'Could not turn the discussion back into text.');
+      return false;
+    } finally { this.returningTypedThreads.delete(id); }
+  }
+
+  private async restoreTypedDiscussionText(id: string, text: string, lineIndex: number, commentId?: string | null): Promise<void> {
+    const view = this.editor!.ctx.get(editorViewCtx);
+    const comment = commentId ? getMarks(view.state).find(mark => mark.id === commentId) : null;
+    if (commentId && !comment?.range) throw new Error('The discussion anchor changed. Its text was kept in the thread.');
+    const currentLine = comment?.range ? this.lineMarks!.lineAtPos(comment.range.from) : lineIndex;
+    const line = this.lineMarks?.lineList()[currentLine];
+    if (!line) throw new Error('The item is gone; the discussion was kept.');
+    const item = typedItemAt(view.state.doc, line.pos + 1);
+    if (!item) throw new Error('The item cannot be edited here.');
+    // Removing the row already took the discussion back. Undo of the restored
+    // typing must not reopen an orphan comment without its thread row.
+    if (commentId) this.typedDiscussionDecision(current => { markResolve(current, commentId); }, false);
+    let restoredId: string | undefined;
+    this.typedDiscussionDecision(current => {
+      const mark = suggestInsert(markApiView(current), '', getCurrentActor(), text, { from: item.end, to: item.end });
+      if (!mark) {
+        throw new Error('Could not restore the text.');
+      }
+      restoredId = mark.id;
+    });
+    if (restoredId) {
+      this.reviewDecisionIds.add(restoredId);
+      this.lineMarks?.undoStack().pushSimple('suggestion', 'returned discussion to text', () => {
+        return this.restoreReviewDecision(false) ? { ok: true } : { ok: false, reason: 'The restored text has changed since.' };
+      });
+    }
+    this.typedDiscussionHistory.delete(id);
   }
 
   private performReviewDecision(ids: string[], action: ReviewAction, text?: string): void {
@@ -6704,6 +6864,14 @@ class ProofEditorImpl implements ProofEditor {
         }
       }) as EventListener);
 
+      this.typedDiscussions?.stop();
+      this.typedDiscussions = new TypedDiscussionController(view, {
+        enabled: () => view.editable && this.shareAllowLocalEdits && this.collabCanEdit && this.isSuggestionsEnabled(),
+        candidates: () => this.chat?.allCandidates(true) ?? [],
+        convert: run => this.convertTypedDiscussion(run),
+        notice: message => this.readingWalk?.showEditNotice(message),
+      });
+
       // Store the original dispatchTransaction
       const dispatchOriginal = view.dispatch.bind(view);
       const originalDispatch = (transaction: Transaction) => {
@@ -6838,6 +7006,7 @@ class ProofEditorImpl implements ProofEditor {
         })) {
           this.scheduleShareSuggestionReviewDisplay(view);
         }
+        this.typedDiscussions?.update(userEdit);
       };
 
       // Caret stability (2026-09-19): a change the person did not make keeps their line in place.

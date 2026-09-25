@@ -288,7 +288,7 @@ try {
     await call(`/api/documents/${slug2}/line-marks`, 'POST', { status: 'agreed', anchor: anchor(0) }, MIKE);
     let state = await call(`/api/agent/${slug2}/state`, 'GET', undefined, { 'x-share-token': 'owner-secret-2' });
     assert.deepEqual([...state.body.alignment.team].sort(), ['guest:Mike', 'human:mw@mike-wolf.com']);
-    assert.equal(state.body.alignment.aligned, false, 'the verified Mike has not seen lines 1..');
+    assert.equal(state.body.alignment.aligned, true, 'unseen lines are not open items under the Accord rules');
     const env = { ...process.env };
     const cli = spawnSync(process.execPath, ['--import', 'tsx', 'server/library/cli.ts', 'merge-identity', '--from', 'Mike', '--into', 'human:mw@mike-wolf.com', '--slug', slug2], { env, encoding: 'utf8' });
     assert.equal(cli.status, 0, cli.stderr);

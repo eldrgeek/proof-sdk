@@ -410,6 +410,7 @@ export interface ReviewMarkLike {
   bundleId?: string;
   /** Step B4e: a suggestion's status (pending / accepted / rejected), when the caller knows it. */
   status?: string | null;
+  resolvedBy?: string | null;
 }
 
 /**
@@ -420,7 +421,7 @@ export interface ReviewMarkLike {
 export function computeStep1Team(input: {
   owners?: string[];
   lineMarks?: Array<Pick<LineMark, 'by'>>;
-  reviewMarks?: Array<Pick<ReviewMarkLike, 'by' | 'replies'>>;
+  reviewMarks?: Array<Pick<ReviewMarkLike, 'by' | 'replies' | 'resolvedBy'>>;
   agentKeyActors?: string[];
   extra?: string[];
   /**
@@ -449,6 +450,7 @@ export function computeStep1Team(input: {
   for (const mark of input.lineMarks ?? []) add(mark.by);
   for (const mark of input.reviewMarks ?? []) {
     add(mark.by, asTarget);
+    add(mark.resolvedBy, asTarget);
     for (const reply of mark.replies ?? []) add(reply?.by, asTarget);
   }
   for (const actor of input.agentKeyActors ?? []) add(actor);

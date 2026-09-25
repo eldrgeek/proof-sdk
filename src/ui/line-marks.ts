@@ -142,6 +142,7 @@ export interface LineMarksHost {
   actor(): string;
   canComment(): boolean;
   reviewMarks(view: EditorView): ReviewMarkLike[];
+  reviewTeamActors?(view: EditorView): string[];
   /** Step 1b: a click on a margin dot. Return true when the reading walk took it (no popover). */
   onDotActivate?(lineIndex: number): boolean;
   /** Step 1b: Next issue moves the focus line. Return true when the reading walk scrolled there. */
@@ -664,8 +665,8 @@ export class LineMarksUI {
         lineMarks: this.serverMarks,
         reviewMarks,
         agentKeyActors: this.agentKeyActors,
-        extra: [this.me(), ...askTeamActors(this.serverAsks), ...this.serverFlags.map(f => f.by), ...this.serverObjections.map(o => o.by),
-          ...this.serverAlternatives.map(a => a.by), ...this.serverTtls.map(t => t.by), ...doTeamActors(this.serverDos)],
+        extra: [this.me(), ...(this.host.reviewTeamActors?.(view) ?? []), ...askTeamActors(this.serverAsks), ...this.serverFlags.map(f => f.by), ...this.serverObjections.map(o => o.by),
+          ...this.serverAlternatives.map(a => a.by), ...this.serverTtls.map(t => t.by), ...doTeamActors(this.serverDos), ...this.serverThreads.flatMap(thread => [thread.by, ...thread.waitingOn, ...(thread.replies ?? []).map(reply => reply.by)])],
         identity: { target: actor => resolveTargetActor(actor, this.directory) },
       });
       this.states = buildLineStates(this.lines, this.serverMarks);
@@ -3116,7 +3117,7 @@ export class LineMarksUI {
    * T: starts a thread on a range of the document (or on one line). The closing condition is
    * required — the caller has already chosen one of THREAD_ASK_CHOICES.
    */
-  async startThread(input: { lines: number[]; text: string; asks: ThreadAsks; selection?: string | null; waitingOn?: string[] }): Promise<string | null> {
+  async startThread(input: { lines: number[]; text: string; asks: ThreadAsks; selection?: string | null; waitingOn?: string[] }, options: { id?: string; recordUndo?: boolean; announce?: boolean; onComment?: (id: string) => void } = {}): Promise<string | null> {
     const indices = [...new Set(input.lines)].filter(index => this.lines[index]).sort((a, b) => a - b);
     if (indices.length === 0 || !this.canCommentHere()) return null;
     const text = input.text.trim();
@@ -3126,7 +3127,9 @@ export class LineMarksUI {
     // made — including ones that know nothing about threads.
     const markId = this.host.commentOnLine?.(this.lines[indices[0]], text) ?? null;
     if (!markId) { this.toast('Could not place the thread on that line'); return null; }
+    options.onComment?.(markId);
     const result = await this.postAid('/threads', {
+      ...(options.id ? { id: options.id } : {}),
       markId,
       asks: input.asks,
       text,
@@ -3139,8 +3142,9 @@ export class LineMarksUI {
     const id = thread?.id ?? markId;
     this.extrasWrites += 1;
     this.startedThreads.push({ id, lines: indices, asks: input.asks });
-    this.toast(`Thread started on line ${indices[0] + 1}. It closes when: ${THREAD_ASK_LABEL[input.asks]}.`);
-    this.pushUndo('thread', `started a thread on line ${indices[0] + 1}`, async () => {
+    if (thread) { this.serverThreads = [...this.serverThreads.filter(t => t.id !== thread.id), thread]; this.recompute(); }
+    if (options.announce !== false) this.toast(`Thread started on line ${indices[0] + 1}. It closes when: ${THREAD_ASK_LABEL[input.asks]}.`);
+    if (options.recordUndo !== false) this.pushUndo('thread', `started a thread on line ${indices[0] + 1}`, async () => {
       const undone = await this.postAid(`/threads/${encodeURIComponent(id)}/undo`, {});
       if (!undone.ok) return { ok: false, reason: 'That thread can no longer be taken back.' };
       this.decideOnMark?.([markId], 'resolve');
@@ -3148,6 +3152,22 @@ export class LineMarksUI {
     });
     return id;
   }
+
+  /** Typed discussions use the same route, but restore their native text history themselves. */
+  async takeBackTypedThread(id: string): Promise<boolean> {
+    const result = await this.postAid(`/threads/${encodeURIComponent(id)}/undo`, {});
+    if (!result.ok) return false;
+    this.serverThreads = this.serverThreads.filter(thread => thread.id !== id);
+    this.recompute();
+    return true;
+  }
+  /** Compensate if the item's anchor disappears while its Undo request is in flight. */
+  async restoreTypedThreadRow(thread: ThreadView['thread']): Promise<boolean> {
+    const result = await this.postAid('/threads', { ...thread });
+    return result.ok;
+  }
+  canTurnThreadBack: (id: string) => boolean = () => false;
+  turnThreadBack: (id: string) => Promise<boolean> = async () => false;
 
   /** Closes a thread by its own rule: a proposal is accepted or rejected, a discussion is resolved. */
   async closeThread(id: string, status: ThreadStatus): Promise<boolean> {

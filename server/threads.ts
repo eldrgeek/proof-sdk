@@ -15,7 +15,8 @@
 import { randomUUID } from 'crypto';
 import { addDocumentEvent } from './db.js';
 import { broadcastToRoom } from './ws.js';
-import { computeServerLines } from './line-marks.js';
+import { computeServerLines, parseStoredMarks } from './line-marks.js';
+import { typedDiscussionInsertId } from '../src/shared/typed-discussion.js';
 import {
   appendThreadReply,
   closeThreadRow,
@@ -183,11 +184,17 @@ export function replyOnThread(slug: string, input: { id: string; by: string; tex
 }
 
 /** The Undo of starting one. Only whoever started it, and only while it is still open. */
-export function undoStartThread(slug: string, input: { id: string; by: string }): ThreadResult {
+export function undoStartThread(slug: string, input: { id: string; by: string; marks?: unknown }): ThreadResult {
   const row = getThreadRow(slug, input.id);
   if (!row) return fail(404, 'THREAD_NOT_FOUND', 'No thread with that id');
   if (actorKey(row.by) !== actorKey(input.by)) return fail(403, 'AUTHOR_REQUIRED', 'Only whoever started a thread can take it back');
-  if (!deleteThreadRow(slug, input.id, row.by)) return fail(409, 'NOT_REMOVED', 'That thread could not be taken back');
+  const typed = Boolean(typedDiscussionInsertId(row.id));
+  const mark = row.markId ? parseStoredMarks(input.marks)[row.markId] : undefined;
+  if (typed && (row.status !== 'open' || row.replies?.length || (Array.isArray(mark?.replies) && mark.replies.length)
+    || (Array.isArray(mark?.thread) && mark.thread.length))) {
+    return fail(409, 'DISCUSSION_HAS_REPLY', 'This discussion has been answered or closed. Keep its conversation.');
+  }
+  if (!deleteThreadRow(slug, input.id, row.by, typed)) return fail(409, 'NOT_REMOVED', 'That thread could not be taken back');
   event(slug, 'thread.withdrawn', { threadId: input.id, markId: row.markId }, input.by);
   return { status: 200, body: { success: true, threadId: input.id } };
 }

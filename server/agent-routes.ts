@@ -47,6 +47,7 @@ import { evaluateDocumentTiers, listTierRecords, serializeTierViews, writeTiers 
 import { bindFamiliar, familiarOf, briefFor, issueReportFor, listFamiliars, proxyStateReport, resolveHuman, serializeBrief, writeAgentProxyMarks } from './proxy-marks.js';
 import { EVIDENCE_POLICY, PROXY_POLICY, isClaimedMark } from '../src/shared/proxy-marks.js';
 import { buildSinceYou, freezeIfAligned, listSnapshotInfos, scheduleAlignmentCheck, sendSnapshotFile } from './alignment.js';
+import { documentReviewAlignment } from './review-alignment.js';
 import { agentKeyActor, anchorForLine as anchorForDocLine } from '../src/shared/line-marks.js';
 import { decideActor } from './identity.js';
 import { answerAgentAsk, buildAskReport, createAskOnLine, createAgentAsk, listAgentAsks, listCanonicalAsks, reaskAsk, withdrawAsk } from './asks.js';
@@ -2327,15 +2328,15 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
         Array.isArray(body.lineMarks) ? body.lineMarks as typeof report.lineMarks : report.lineMarks,
         revealedLines,
       );
+      const accordAlignment = documentReviewAlignment(slug, report, isRecord(body.marks) ? body.marks : doc?.marks);
       body.alignment = {
-        /** alignment.aligned answers: are there zero Issues, including open comments and proposals? */
-        ...(revealedLines ? {} : { aligned: report.aligned, counts: report.counts }),
-        team: report.team,
+        ...(revealedLines ? {} : { aligned: accordAlignment.aligned, counts: accordAlignment.counts }),
+        team: accordAlignment.team,
         owners: report.owners,
         unratifiedProxies,
         proxyRule: 'Proxy marks from a Familiar never count until their person ratifies them',
         lastSnapshot: snapshot ? { ...snapshot, ledger: `/api/agent/${slug}/snapshots/${snapshot.id}.md` } : null,
-        teamRule: 'Step 1: owner + everyone who has line-marked, commented, replied or suggested + active agent keys (Step B3: + askers and the people asked)',
+        teamRule: 'In accord when All open has zero items: the same pending proposals, asks and threads as the page. Team includes owners, reviewers, proposal authors and people who accepted or rejected, askers, addressees and active agent keys. Reading alone is not an issue. Snapshot confirmation still uses the legacy rule.',
       };
       links.lineMark = { method: 'POST', href: `/api/agent/${slug}/marks/line` };
       // Cross invitation: who is on this document and how each of them got in. An open nomination

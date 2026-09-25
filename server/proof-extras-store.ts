@@ -428,7 +428,8 @@ export function reopenThreadRow(slug: string, id: string): boolean {
 }
 
 /** The Undo of starting one: only whoever started it, and only while nobody has replied. */
-export function deleteThreadRow(slug: string, id: string, by: string): boolean {
+export function deleteThreadRow(slug: string, id: string, by: string, unansweredOnly = false): boolean {
   assertWritesAllowed('deleteThreadRow');
-  return getDb().prepare(`DELETE FROM document_threads WHERE document_slug = ? AND id = ? AND by_actor = ?`).run(slug, id, by).changes > 0;
+  return getDb().prepare(`DELETE FROM document_threads WHERE document_slug = ? AND id = ? AND by_actor = ?
+    ${unansweredOnly ? "AND status = 'open' AND json_array_length(COALESCE(replies_json, '[]')) = 0" : ''}`).run(slug, id, by).changes > 0;
 }

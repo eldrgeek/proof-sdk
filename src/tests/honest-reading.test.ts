@@ -606,11 +606,12 @@ try {
     assert.equal(since.body.baseline.snapshotId, snapshot.id);
   });
 
-  await test('aligned snapshot: a later change starts a new round (not aligned; the old snapshot stays)', async () => {
+  await test('aligned snapshot: legacy rejection changes participant status; Accord alignment counts open items', async () => {
     const r = await call(`/api/agent/${slug}/marks/line`, 'POST', { status: 'rejected', reason: 'Wrong price', lineIndex: 3 }, agent);
     assert.equal(r.status, 200);
     const state = await call(`/api/agent/${slug}/state`, 'GET', undefined, agent);
-    assert.equal(state.body.alignment.aligned, false);
+    assert.equal(state.body.alignment.aligned, true, 'legacy rejection alone is not in the page All open');
+    assert.equal(state.body.participantStatus.aligned, false);
     assert.ok(state.body.alignment.lastSnapshot, 'the last snapshot is still reported');
     assert.deepEqual(state.body.participantStatus, statusFromStateBody(state.body), 'the server status is the shared computation');
     const rejecter = (state.body.participantStatus.participants as Array<{ actor: string; counts: { rejected: number } }>).find(person => person.counts.rejected > 0);

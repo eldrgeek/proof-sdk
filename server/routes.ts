@@ -2409,8 +2409,10 @@ pageAidRoute('/documents/:slug/threads/:threadId/reopen', ({ req, slug, by }) =>
 pageAidRoute('/documents/:slug/threads/:threadId/reply', ({ req, slug, by, body }) =>
   replyOnThread(slug, { id: String(req.params.threadId ?? ''), by, text: String(body?.text ?? ''), source: 'page' }));
 // The Undo of starting a thread (only whoever started it).
-pageAidRoute('/documents/:slug/threads/:threadId/undo', ({ req, slug, by }) =>
-  undoStartThread(slug, { id: String(req.params.threadId ?? ''), by }));
+pageAidRoute('/documents/:slug/threads/:threadId/undo', async ({ req, slug, by }) => {
+  const state = await currentDocumentState(slug);
+  return undoStartThread(slug, { id: String(req.params.threadId ?? ''), by, marks: state?.marks });
+});
 // Step B4f: a line's time-to-live: { anchor, ttl: "7d" }; the setter or an Owner clears it.
 pageAidRoute('/documents/:slug/ttl', async ({ req, slug, by, access, body }) => {
   const state = await currentDocumentState(slug);

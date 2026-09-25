@@ -237,7 +237,8 @@ try {
     const team: string[] = state.body.alignment.team;
     // The owner credential wrote as the typed name "human:Mike": read as the guest it is (Step B6).
     assert.ok(team.includes('ai:claude-cos') && team.includes('guest:Mike'), team.join(','));
-    assert.equal(state.body.alignment.aligned, false);
+    assert.equal(state.body.alignment.aligned, true, 'legacy line marks are not open Accord items');
+    assert.equal(state.body.alignment.counts.total, 0);
     const rejected = state.body.issues.find((issue: any) => issue.type === 'line' && issue.lineIndex === 0);
     assert.deepEqual(rejected.rejectedBy, [{ by: 'ai:claude-cos', reason: 'Title is vague' }]);
     assert.equal(state.body._links.lineMark.href, `/api/agent/${slug}/marks/line`);

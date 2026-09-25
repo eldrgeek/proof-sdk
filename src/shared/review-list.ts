@@ -5,7 +5,7 @@
  * Mike, 2026-09-23 (usability brief).
  */
 import { participantStatus } from './participant-status';
-import { actorKey } from './line-marks';
+import { actorKey, type IssueSummary } from './line-marks';
 import { openView, OPEN_KIND_ORDER, type OpenViewInput, type OpenItem, type OpenView } from './open-view';
 
 export type ReviewScope = 'needs-you' | 'all-open';
@@ -14,6 +14,7 @@ export const REVIEW_LIST_POLICY = {
   defaultScope: 'needs-you' as ReviewScope,
   order: 'document',
   clearCompletedOn: ['next', 'clear', 'close'],
+  includeUnassignedOpenItems: true,
 } as const;
 export function reviewCountLabel(scope: ReviewScope, count: number): string {
   return scope === 'needs-you' ? `${count} need you` : `${count} open`;
@@ -23,7 +24,9 @@ export function reviewCountLabel(scope: ReviewScope, count: number): string {
 export function reviewViews(input: OpenViewInput): Record<ReviewScope, OpenView> {
   const mine = openView(input);
   const byLine = new Map(mine.items.map(item => [item.line, { ...item }]));
-  for (const viewer of input.team ?? []) {
+  // Unaddressed proposals/discussions still wait for a reader when their author
+  // is the only known participant. The empty viewer adds those to All open only.
+  for (const viewer of [...(REVIEW_LIST_POLICY.includeUnassignedOpenItems ? [''] : []), ...(input.team ?? [])]) {
     if ([input.viewer, ...(input.aliases ?? [])].some(actor => actorKey(actor) === actorKey(viewer))) continue;
     for (const item of openView({ ...input, viewer, aliases: [] }).items) {
       const prev = byLine.get(item.line);
@@ -89,4 +92,20 @@ export function reviewSurface(input: OpenViewInput) {
     objections: input.issues.flatMap(issue => issue.type === 'objection'
       ? [{ by: issue.by, reason: issue.reason, condition: issue.condition, lineIndices: issue.lineIndices }] : []) });
   return { status, views: reviewViews({ ...input, status }) };
+}
+
+/** /state keeps its public count fields, but counts the same passages as All open.
+ * A passage with several reasons is assigned to its first kind (OPEN_KIND_ORDER),
+ * so the category counts add to total. Snapshot confirmation is a separate rule.
+ */
+export function reviewAlignment(input: OpenViewInput): { aligned: boolean; counts: IssueSummary['counts'] } {
+  const open = reviewSurface(input).views['all-open'];
+  const counts: IssueSummary['counts'] = { lines: input.lineCount ?? 0, lineIssues: 0, reviewMarkIssues: 0,
+    askIssues: 0, uncertainIssues: 0, objectionIssues: 0, alternativeIssues: 0, ttlIssues: 0,
+    doIssues: 0, nominationIssues: 0, total: open.count };
+  const field = { ask: 'askIssues', do: 'doIssues', objection: 'objectionIssues', suggestion: 'reviewMarkIssues',
+    comment: 'reviewMarkIssues', thread: 'reviewMarkIssues', uncertain: 'uncertainIssues',
+    alternative: 'alternativeIssues', ttl: 'ttlIssues', changed: 'lineIssues', lapsed: 'lineIssues', unread: 'lineIssues' } as const;
+  for (const item of open.items) counts[field[item.kinds[0]]]++;
+  return { aligned: open.count === 0, counts };
 }

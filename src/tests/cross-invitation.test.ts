@@ -182,7 +182,7 @@ try {
     assert.equal(issue.email, 'ada@example.test');
     assert.equal(issue.by, 'ai:izzy');
     assert.deepEqual(issue.openFor, ['human:mw@mike-wolf.com']);
-    assert.equal(state.body.alignment.counts.nominationIssues, 1);
+    assert.equal(state.body.alignment.counts.nominationIssues, 0, 'a nomination has no document item in All open');
     // And in the people dialog, with the AI's own words for the person who confirms.
     const teamBody = await call(`/api/documents/${slug}/team`, 'GET', undefined, MIKE);
     const pending = teamBody.body.nominations.find((n: { id: string }) => n.id === nominationId);

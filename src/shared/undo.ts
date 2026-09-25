@@ -156,6 +156,13 @@ export class UndoStack {
     return this.entries.length ? this.entries[this.entries.length - 1] : null;
   }
 
+  /** An explicit inverse control performed this action's Undo. */
+  forget(id: string): void {
+    this.entries = this.entries.filter(entry => entry.id !== id);
+    this.redone = this.redone.filter(entry => entry.id !== id);
+    this.notify();
+  }
+
   /** The action Redo would repeat, or null (an entry with no redo stops the chain). */
   nextRedo(): UndoEntry | null {
     if (!UNDO_POLICY.redo) return null;
