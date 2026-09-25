@@ -13,7 +13,7 @@ export const ACCORDS_LIST_POLICY = {
   showNew: true, showAll: true, allHref: '/',
 } as const;
 
-/** Mike, 2026-09-24, yfbqrau4: Review moves right; Outline and Since you survive this step. */
+/** Mike, 2026-09-24, yfbqrau4: Review holds only open items; folded text supplies the outline. */
 export const OPEN_ITEMS_POLICY = {
   side: 'right', defaultOpen: true, phonePresentation: 'sheet',
   clickKeepsListFocus: true, enterFocusesDocument: true,
@@ -145,15 +145,14 @@ export function markedByFold(statuses: readonly string[], hasOpenObjection: bool
   return { count, total: statuses.length, open, label: count === 0 ? 'Not marked yet' : `Marked by ${count}`, detail };
 }
 
-/** Review, Outline and Since you. Mike, 2026-09-23 (usability brief). The issues id stays compatible. */
-export type NavigatorTab = 'outline' | 'issues' | 'since';
+/** Only Review. Mike, 2026-09-24, yfbqrau4 accepted Other ideas. The issues id stays compatible. */
+export type NavigatorTab = 'issues';
 export const NAVIGATOR_POLICY = {
   /** Mike, 2026-09-24, yfbqrau4: this panel now occupies the former Margin. */
   side: OPEN_ITEMS_POLICY.side,
   tabs: [
     { id: 'issues', label: 'Review' },
-    { id: 'outline', label: 'Outline' },
-    { id: 'since', label: 'Since you' },
+    // Mike accepted: the folded view replaces Outline and Since you (yfbqrau4, 2026-09-24).
   ] as ReadonlyArray<{ id: NavigatorTab; label: string }>,
   /** The panel opens on Review. */
   defaultTab: 'issues' as NavigatorTab,
@@ -161,8 +160,6 @@ export const NAVIGATOR_POLICY = {
   widthPx: 340,
   /** Closed by default under this width (proposal: "It closes by default under 1100 px"). */
   closedBelowPx: 1100,
-  /** Outline rows indent this much per heading level below the top one (px). */
-  indentPx: 12,
   /** An Issue's title is the line's text, cut to this many characters. */
   titleChars: 80,
 } as const;
@@ -232,47 +229,6 @@ export function needsYouLabel(item: NeedsYouItem, name: (actor: string) => strin
     : 'Changed since you marked it';
   const more = item.count > 1 ? ` and ${item.count - 1} more` : '';
   return `${head}${more} · line ${item.line + 1}`;
-}
-
-/** An outline row: a heading, its fold state and its Issue count. */
-export interface OutlineRow {
-  headingIndex: number;
-  level: number;
-  /** Indent steps below the shallowest heading. */
-  depth: number;
-  text: string;
-  folded: boolean;
-  /** Hidden because an enclosing section is folded. */
-  hidden: boolean;
-  issues: number;
-}
-
-/** The Outline tab's rows, from the folding sections (src/shared/folding.ts). */
-export function outlineRows(
-  sections: ReadonlyArray<{ headingIndex: number; level: number; parent: number | null }>,
-  text: (headingIndex: number) => string,
-  isFolded: (headingIndex: number) => boolean,
-  issues: (headingIndex: number) => number,
-): OutlineRow[] {
-  const top = sections.reduce((min, s) => Math.min(min, s.level), Infinity);
-  const byHeading = new Map(sections.map(s => [s.headingIndex, s]));
-  const foldedAbove = (s: { parent: number | null }): boolean => {
-    let parent = s.parent;
-    while (parent !== null) {
-      if (isFolded(parent)) return true;
-      parent = byHeading.get(parent)?.parent ?? null;
-    }
-    return false;
-  };
-  return sections.map(s => ({
-    headingIndex: s.headingIndex,
-    level: s.level,
-    depth: Number.isFinite(top) ? Math.max(0, s.level - top) : 0,
-    text: text(s.headingIndex),
-    folded: isFolded(s.headingIndex),
-    hidden: foldedAbove(s),
-    issues: issues(s.headingIndex),
-  }));
 }
 
 /** The remembered rail state: open or closed, and the tab each rail shows. */

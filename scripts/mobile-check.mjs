@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // Mobile usability check for the share page (Accord on a phone).
 // Starts an isolated local server on the current dist/ build (run `npm run build` first),
 // creates throwaway documents on a temp SQLite database, and drives Chromium at phone
@@ -86,6 +87,7 @@ async function openDoc(browser, base, slug, contextOptions) {
   await page.waitForSelector('#share-banner');
   await page.waitForTimeout(800);
   page.setDefaultTimeout(6000);
+  await showWholeAccord(page);
   return { context, page };
 }
 

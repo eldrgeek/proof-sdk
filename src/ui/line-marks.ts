@@ -42,7 +42,6 @@ import {
   type ReviewMarkLike,
 } from '../shared/line-marks';
 import { classifyLineChange } from '../shared/line-change';
-import type { SinceYouReport } from '../shared/alignment';
 import { FOLDING, planSectionMark, resolveSectionScope, type SectionAgreementOffer, type SectionScope } from '../shared/folding';
 import { UndoStack, conflictRefusal, describeLineMark, type UndoOutcome } from '../shared/undo';
 import { ANYONE, askIssueInputs, askTeamActors, evaluateAsks, type AskChoice, type AskView, type ProofAsk } from '../shared/asks';
@@ -943,23 +942,6 @@ export class LineMarksUI {
 
   /** The latest aligned snapshot (from the line-marks poll). */
   alignedSnapshot(): { id: string; createdAt: string } | null { return this.snapshot; }
-
-  /** What changed since the viewer last marked a line on purpose (null when it failed). */
-  async fetchSinceYou(): Promise<SinceYouReport | null> {
-    const slug = this.host.slug();
-    if (!slug) return null;
-    const guest = this.serverMe?.actor ? '' : `?by=${encodeURIComponent(this.me())}`;
-    try {
-      const response = await fetch(`${this.host.apiBase()}/documents/${encodeURIComponent(slug)}/since-you${guest}`, {
-        headers: this.host.authHeaders(),
-        credentials: 'same-origin',
-      });
-      if (!response.ok) return null;
-      return await response.json() as SinceYouReport;
-    } catch {
-      return null;
-    }
-  }
 
   /** Opens the snapshot's markdown ledger in a new tab (fetched with this page's credentials). */
   async openLedger(id: string): Promise<void> {

@@ -6,7 +6,7 @@
 // 1440 and 1280 (desktop) and 390 (phone). Screenshots go to .preview/ (or --shots <dir>).
 // Exit code 0 only if every check passes.
 // Usage: node scripts/reading-walk-check.mjs [--style playmaker|proof] [--width 1440] [--shots dir]
-import { nextReview, showReview } from './review-ui.mjs';
+import { nextReview, showReview, showWholeAccord } from './review-ui.mjs';
 import assert from 'node:assert/strict';
 import { selectPassage, scrollAcceptsNothing, explicitAcceptUndo } from './usability-s1-assertions.mjs';
 
@@ -109,6 +109,7 @@ async function openDoc(browser, base, slug, name, contextOptions = {}) {
   const toast = page.locator('.proof-share-welcome-toast button');
   if (await toast.count()) await toast.first().click().catch(() => {});
   page.setDefaultTimeout(6000);
+  await showWholeAccord(page);
   return { context, page };
 }
 

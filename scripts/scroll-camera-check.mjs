@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { selectPassage } from './usability-s1-assertions.mjs';
+import { showWholeAccord } from './review-ui.mjs';
 // Accord round 2 stage B — the scroll camera with a centred dead zone.
 // Authorship: Mike Wolf (rulings), built by Claude Opus 5 (worker accord-scroll), 2026-09-22.
 //
@@ -130,6 +132,7 @@ async function openDoc(browser, base, slug, name, contextOptions = {}) {
   const toast = page.locator('.proof-share-welcome-toast button');
   if (await toast.count()) await toast.first().click().catch(() => {});
   page.setDefaultTimeout(6000);
+  await showWholeAccord(page);
   return { context, page };
 }
 
@@ -269,13 +272,8 @@ async function surface(browser, base, long, brief, tag, contextOptions, phone) {
       await page.getByRole('menuitem', { name: /Review panel/ }).tap();
       await page.locator('.prw-right.prw-sheet-open').waitFor({ state: 'visible' });
     }
-    const outlineTab = page.locator('.anv-tab[data-tab="outline"]');
-    if (await outlineTab.count()) await (phone ? outlineTab.tap() : outlineTab.click());
-    await page.waitForTimeout(200);
-    const rows = page.locator('.anv-heading');
-    assert.ok(await rows.count() >= 3, 'the outline has no rows to jump to');
-    const target = Number(await rows.nth(2).getAttribute('data-line'));
-    await rows.nth(2).click();
+    const target = await page.evaluate(() => window.__proofFolding.sectionList()[2].headingIndex);
+    await selectPassage(page, target);
     const settling = await page.evaluate(() => window.scrollY);
     await page.waitForTimeout(500);
     const c = await cursor(page);

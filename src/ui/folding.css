@@ -25,17 +25,6 @@ body.pfold-on .ProseMirror > :is(h1, h2, h3, h4, h5, h6) { padding-right: 72px; 
 .pfold-chip[data-folded="true"][data-state="resolved"] { background: #dcfce7; border-color: #bbf7d0; }
 .pfold-chip[data-folded="true"] .pfold-caret { color: #26303c; }
 
-.pfold-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 10px; padding-bottom: 10px; border-bottom: 1px solid #ecebe6; }
-.pfold-controls[hidden] { display: none; }
-.pfold-controls-label { font-size: 12px; font-weight: 600; color: #646b73; margin-right: 2px; }
-.pfold-controls button {
-  min-height: 28px; padding: 0 9px; border: 1px solid #d4d4cf; border-radius: 8px; background: #fff; color: #26303c;
-  font: 600 12px/1 system-ui, -apple-system, sans-serif; cursor: pointer;
-}
-.pfold-controls button:hover { background: #f3f4f6; }
-.pfold-controls button:disabled { opacity: .45; cursor: default; }
-.pfold-levels { display: inline-flex; gap: 4px; margin-left: auto; }
-
 /* Marking a folded section (the mark box). */
 .plm-section-note { margin: 0 0 8px; padding: 6px 8px; border-radius: 8px; background: #eff6ff; color: #1e3a8a; font-size: 12px; }
 .plm-section-hint { margin: 8px 0 0; padding: 6px 8px; border-radius: 8px; background: #fef2f2; color: #991b1b; font-size: 12px; }
@@ -47,8 +36,23 @@ body.pfold-on .ProseMirror > :is(h1, h2, h3, h4, h5, h6) { padding-right: 72px; 
 @media (max-width: 700px) {
   body.pfold-on .ProseMirror > :is(h1, h2, h3, h4, h5, h6) { padding-right: 60px; }
   .pfold-chip { min-width: 52px; font-size: 13px; }
-  .pfold-controls button { min-height: 44px; padding: 0 12px; font-size: 14px; }
 }
 
 /* A folded heading: a dashed rule under it says "there is more here". */
 .ProseMirror .pfold-folded-heading { border-bottom: 1px dashed #c3c8d0; padding-bottom: 2px; }
+
+/* The count line never disappears when the last open item closes. */
+.aov-header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; border: 0; background: transparent; padding: 8px 0; }
+.aov-whole-toggle { border: 0; background: transparent; color: #1d4ed8; text-decoration: underline; cursor: pointer; font: inherit; padding: 4px 0; }
+.ProseMirror .aov-rule { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 28px; padding: 3px 0; border: 0; background: transparent; color: #71717a; cursor: pointer; font: 12px/1.3 system-ui, sans-serif; }
+.aov-rule-line { height: 1px; background: #d4d4d8; flex: 1; }
+.aov-rule-label { white-space: nowrap; min-width: 9em; text-align: right; }
+.aov-rule-entry { list-style: none !important; }
+.ProseMirror .aov-rule-row > td { padding: 0 8px; border: 0; }
+.aov-rule:focus-visible, .aov-whole-toggle:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+body.aov-in-accord .aov-header { display: none; }
+@media (max-width: 700px) {
+  .ProseMirror .aov-rule { min-height: var(--fold-rule-target, 44px); }
+  .aov-whole-toggle { min-height: 44px; }
+  .aov-header-text { flex-basis: 100%; min-height: 3em; }
+}

@@ -1,3 +1,4 @@
+import type { Transaction } from '@milkdown/kit/prose/state';
 import { commitLiveTextInput, liveSuggestionInputEvent, focusLiveSuggestion, type LiveSuggestionInput } from './live-suggestion-input';
 import { EDIT_SESSION_POLICY } from '../shared/edit-session';
 import { markApiView, isOwnHumanMarkChange, withHumanReviewWrite } from './review-mark-origin';
@@ -27,7 +28,7 @@ import { MENU_BAR_POLICY, TOOLBAR_POLICY, type ShareTab } from '../shared/layout
 import { ClarifyUI } from '../ui/clarify';
 import { EditGestureUI, draftViewPlugin } from '../ui/edit-gesture';
 import { lineMarksViewPlugin } from './plugins/line-marks-view';
-import { foldViewPlugin } from './plugins/fold-view';
+import { foldViewPlugin, FOLD_USER_EDIT } from './plugins/fold-view';
 import { askViewPlugin } from './plugins/ask-view';
 import { doViewPlugin } from './plugins/do-view';
 import { proofExtrasViewPlugin } from './plugins/proof-extras-view';
@@ -3889,9 +3890,7 @@ class ProofEditorImpl implements ProofEditor {
     if (!ui) return;
     // Inside #editor, not #editor-container: #editor carries the top padding that clears the fixed
     // menu bar and toolbar, so a header prepended to the container would sit underneath them.
-    const host = ui.current() === 'accord'
-      ? document.getElementById('editor') ?? document.getElementById('editor-container')
-      : this.readingWalk?.navigator.panes.issues;
+    const host = document.getElementById('editor') ?? document.getElementById('editor-container');
     if (host && (ui.headerEl.parentElement !== host || host.firstElementChild !== ui.headerEl)) {
       host.prepend(ui.headerEl);
     }
@@ -4020,7 +4019,6 @@ class ProofEditorImpl implements ProofEditor {
     const lm = this.lineMarks;
     const walk = this.readingWalk;
     const folding = this.folding;
-    const sections = folding?.sectionList() ?? [];
     const pending = getReviewStyle() === 'proof' && canEdit ? this.getAnchoredPendingSuggestions().length : 0;
     const style = getReviewStyle();
     const find = (id: string) => MENU_BAR_POLICY.menus.find(menu => menu.id === id)!;
@@ -4072,9 +4070,8 @@ class ProofEditorImpl implements ProofEditor {
             { id: 'view-margin', label: 'Review panel', kind: 'checkbox', checked: walk.railShown('right'), keywords: 'right rail open items', run: () => walk.toggleRailFromMenu('right') },
           );
         }
-        if (folding && sections.length > 0) {
-          items.push({ id: 'view-fold-all', label: 'Collapse all sections', keywords: 'outline collapse', separatorBefore: true, run: () => folding.foldAll() });
-          items.push({ id: 'view-unfold-all', label: 'Expand all sections', keywords: 'outline expand', run: () => folding.unfoldAll() });
+        if (folding && this.openViewUI?.current() !== 'accord') {
+          items.push({ id: 'view-folded-toggle', label: folding.toggleLabel(), keywords: 'whole open items fold', separatorBefore: true, run: () => folding.toggleWhole() });
         }
         if (walk) {
           items.push({ id: 'view-letter-shortcuts', label: 'Letter shortcuts', kind: 'checkbox', checked: walk.letterShortcutsEnabled(), run: () => walk.toggleLetterShortcuts() });
@@ -4199,6 +4196,7 @@ class ProofEditorImpl implements ProofEditor {
       // Proof Documents Step B2: folding. Subscribes to line marks before the reading walk does,
       // so the walk always reads the current hidden lines.
       this.folding = new FoldingUI({
+        documentLoaded: () => this.initialMarksSynced && (!this.collabEnabled || this.collabIsSynced),
         slug: () => shareClient.getSlug(),
         lineMarks: () => lineMarks,
       });
@@ -4257,14 +4255,11 @@ class ProofEditorImpl implements ProofEditor {
       this.openViewUI = new OpenViewUI({
         lineMarks: () => lineMarks,
         folding: () => this.folding,
-        slug: () => shareClient.getSlug(),
-        go: (index) => { lineMarks.revealLine(index); walkUi.focusLine(index); },
         changed: () => { this.mountOpenView(); walkUi.onFoldChange(); this.scheduleBannerLayoutUpdate(); },
       });
       (window as unknown as { __proofOpenView?: OpenViewUI }).__proofOpenView = this.openViewUI;
       this.openViewUI.start();
       this.mountOpenView();
-      walkUi.mountTool(this.folding.controlsEl);
       // The one Undo: at the top of the right rail, above the outline controls.
       this.undoUI = new UndoUI({ stack: () => lineMarks.undoStack(), lastTextEditAt: () => this.lastLocalTextEditAt });
       (window as unknown as { __proofUndo?: UndoUI }).__proofUndo = this.undoUI;
@@ -6595,6 +6590,13 @@ class ProofEditorImpl implements ProofEditor {
    * Set up the suggestions interceptor to convert edits to tracked changes
    * when suggestion mode is enabled.
    */
+  private refuseHiddenInput(event: Event, inputType: string): boolean {
+    if (!this.folding?.inputTouchesHidden({ inputType, target: event.target } as InputEvent)) return false;
+    event.preventDefault();
+    this.readingWalk?.showEditNotice('That would change hidden text. Show it first.');
+    return true;
+  }
+
   private setupSuggestionsInterceptor(): void {
     if (!this.editor) return;
 
@@ -6604,11 +6606,33 @@ class ProofEditorImpl implements ProofEditor {
       // Direct props run before Milkdown's native history/collab keymaps.
       // The document listener also covers Edit-menu events outside the editor.
       view.setProps({
-        handleKeyDown: (_view, event) => this.playmakerReview?.handleHistoryInput(event) ?? false,
+        handleKeyDown: (_view, event) => {
+          if (this.playmakerReview?.handleHistoryInput(event)) return true;
+          if (['Backspace', 'Delete'].includes(event.key) && this.folding?.inputTouchesHidden({
+            inputType: event.key === 'Backspace' ? 'deleteContentBackward' : 'deleteContentForward', target: event.target,
+          } as InputEvent)) {
+            event.preventDefault(); this.readingWalk?.showEditNotice('That would change hidden text. Show it first.'); return true;
+          }
+          return this.folding?.arrow(event) ?? false;
+        },
         handleDOMEvents: {
           ...view.props.handleDOMEvents,
+          paste: (_view, event) => this.refuseHiddenInput(event, 'insertFromPaste'),
+          cut: (_view, event) => this.refuseHiddenInput(event, 'deleteByCut'),
+          drop: (inputView, event) => {
+            const at = inputView.posAtCoords({ left: (event as DragEvent).clientX, top: (event as DragEvent).clientY });
+            if (at && this.folding?.positionHidden(at.pos)) {
+              event.preventDefault(); this.readingWalk?.showEditNotice('That would change hidden text. Show it first.'); return true;
+            }
+            return this.refuseHiddenInput(event, 'insertFromDrop');
+          },
           beforeinput: (inputView, event) => {
             if (this.playmakerReview?.handleHistoryInput(event as InputEvent)) return true;
+            if (this.folding?.inputTouchesHidden(event as InputEvent)) {
+              event.preventDefault();
+              this.readingWalk?.showEditNotice('That would change hidden text. Show it first.');
+              return true;
+            }
             return commitLiveTextInput(inputView, event as InputEvent, this.isSuggestionsEnabled());
           },
         },
@@ -6648,7 +6672,11 @@ class ProofEditorImpl implements ProofEditor {
       }) as EventListener);
 
       // Store the original dispatchTransaction
-      const originalDispatch = view.dispatch.bind(view);
+      const dispatchOriginal = view.dispatch.bind(view);
+      const originalDispatch = (transaction: Transaction) => {
+        this.folding?.mapTransaction(transaction);
+        dispatchOriginal(transaction);
+      };
 
       // Override dispatchTransaction to intercept edits
       (view as any).dispatch = (tr: any) => {
@@ -6661,6 +6689,7 @@ class ProofEditorImpl implements ProofEditor {
           });
         }
         const dispatchWithRevision = (transaction: any) => {
+          if (userEdit) transaction.setMeta(FOLD_USER_EDIT, true);
           // Group local text and derived records in the native history transaction.
           // All derived mark writes from this dispatch stay in that same edit.
           const humanMark = isOwnHumanMarkChange(transaction,
@@ -6713,6 +6742,13 @@ class ProofEditorImpl implements ProofEditor {
           && !isMarksOnlyChange
           && markActionMeta === undefined
           && !isDocumentLoad;
+
+        const userEdit = isLocalContentChange && tr.getMeta('history$') === undefined
+          && tr.getMeta('addToHistory') !== false && !this.capturingReviewDecision && !this.restoringReviewDecision;
+        if (userEdit && this.folding?.refuses(tr)) {
+          this.readingWalk?.showEditNotice('That would change hidden text. Show it first.');
+          return;
+        }
 
         // Check if suggestions are enabled
         const pluginState = suggestionsPluginKey.getState(view.state);
@@ -6773,7 +6809,6 @@ class ProofEditorImpl implements ProofEditor {
       // Caret stability (2026-09-19): a change the person did not make keeps their line in place.
       const interceptedDispatch = (view as any).dispatch as (tr: any) => void;
       (view as any).dispatch = (tr: any) => anchorCaretAround(view, tr, next => {
-        this.folding?.mapTransaction(next);
         interceptedDispatch(next);
       });
 
@@ -10590,6 +10625,8 @@ class ProofEditorImpl implements ProofEditor {
 
       // Scroll to the mark position
       const pos = mark.range.from;
+      const line = this.lineMarks?.lineAtPos(pos);
+      if (line !== undefined && line >= 0) this.folding?.reveal(line);
       const coords = view.coordsAtPos(pos);
       if (coords) {
         const editorRect = view.dom.getBoundingClientRect();
@@ -11629,6 +11666,8 @@ class ProofEditorImpl implements ProofEditor {
       const docSize = view.state.doc.content.size;
       const from = Math.max(0, Math.min(match.from, docSize));
       const to = Math.max(from, Math.min(match.to, docSize));
+      const line = this.lineMarks?.lineAtPos(from);
+      if (line !== undefined && line >= 0) this.folding?.reveal(line);
       const selection = TextSelection.create(view.state.doc, from, to);
       const tr = view.state.tr.setSelection(selection);
       view.dispatch(tr);

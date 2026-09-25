@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // Accord usability S6a — independent acceptance harness for the brief's twelve checks
 // (docs/accord/usability-brief-2026-09-23.md, "Acceptance checks").
 //
@@ -231,6 +232,7 @@ async function openDoc(browser, base, slug, name, viewport, pendingProposal = tr
   const toast = page.locator('.proof-share-welcome-toast button');
   if (await toast.count()) await toast.first().click().catch(() => {});
   page.setDefaultTimeout(8000);
+  await showWholeAccord(page);
   return { context, page };
 }
 
@@ -695,7 +697,7 @@ async function runViewportCases(browser, base, created, label, viewport) {
   // 11 — reload restores folds.
   await check(`ac11-reload-restore@${label}`, async () => {
     await setFolded(page, L.SEC3, true);
-    await page.reload();
+    await page.reload(); await showWholeAccord(page);
     await page.waitForFunction(() => window.__proofReadingWalk?.debugState().ready === true, null, { timeout: 20_000 });
     await waitFor(page, h => document.querySelector(`.pfold-chip[data-heading="${h}"]`)?.dataset.folded === 'true', L.SEC3);
   });

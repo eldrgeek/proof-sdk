@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // Desktop comment-flow check for the share page, in both review styles.
 // Starts an isolated local server (one per style) on the current dist/ build (run
 // `npm run build` first) with a temp SQLite database, and drives Chromium with a real
@@ -89,6 +90,7 @@ async function openDoc(browser, base, slug, viewport) {
   page.setDefaultTimeout(6000);
   const toastClose = page.locator('.proof-share-welcome-toast').getByRole('button', { name: /dismiss/i });
   if (await toastClose.count()) await toastClose.click().catch(() => {});
+  await showWholeAccord(page);
   return { context, page };
 }
 

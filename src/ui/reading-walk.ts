@@ -31,7 +31,6 @@ import { BUNDLE_POLICY, describeBundle, type BundleView } from '../shared/bundle
 import { EXPLAIN_POLICY } from '../shared/explain';
 import { ASK_POLICY, type AskChoice } from '../shared/asks';
 import { READING_WALK, ReadingWalk, countWords, dwellMsFor, type WalkLine, type WalkMark, type WalkSnapshot } from '../shared/reading-walk';
-import type { SinceItem, SinceYouReport, RingerItem } from '../shared/alignment';
 import type { LineMarksUI, MarkBox } from './line-marks';
 import { isOpenReviewMark, type PlayMakerReview, type ReviewAction } from './playmaker-review';
 import { editingGuardDebug, editingRemainingMs, installEditingGuard, isInputComposing, isReadingOwned, isWriting, letterShortcutsEnabled, onEditingActivity, onWritingChange, setLetterShortcutsEnabled } from '../editor/editing-guard';
@@ -162,12 +161,8 @@ export class ReadingWalkUI {
   private readonly meEl = el('div', 'prw-me');
   private readonly provisionalEl = el('div', 'prw-provisional');
   /** Step B3c: "Since you last marked" (collapsible) and the ringer list. */
-  private readonly sinceHost = el('section', 'prw-since');
   /** Step B3b: the reading-rate setting. */
   private readonly rateEl = el('label', 'prw-rate');
-  private sinceReport: SinceYouReport | null = null;
-  private sinceLoaded = false;
-  private sinceOpen = true;
   private readonly boxHost = el('section', 'prw-linebox');
   private readonly changesHost = el('section', 'prw-changes');
   /** Accord stage D: the threads anchored to the line the Margin shows. */
@@ -286,14 +281,13 @@ export class ReadingWalkUI {
     const saved = this.railState();
     this.navigator = new NavigatorUI({
       lineMarks: () => this.host.lineMarks(),
-      folding: () => this.host.folding?.() ?? null,
       cursor: () => this.cursorLine(),
       go: (index) => { this.host.lineMarks().revealLine(index); this.focusLine(index); },
       toggle: () => this.toggleRailFromMenu('right'),
       tabChanged: (tab) => this.saveRailState({ reviewTab: tab }),
       decide: (line, action) => this.decideReviewLine(line, action),
       focusDocument: (line) => this.focusDocument(line),
-    }, saved.reviewTab ?? saved.leftTab, this.sinceHost);
+    }, saved.reviewTab ?? saved.leftTab);
     this.buildRails();
   }
 
@@ -407,23 +401,11 @@ export class ReadingWalkUI {
     this.sync();
   }
 
-  /**
-   * Step B2: a tool (the outline fold controls) at the top of the right rail. `first` puts it
-   * above the other tools — the one Undo sits there, so it is always the first thing in reach.
-   */
-  mountTool(node: HTMLElement, options: { first?: boolean } = {}): void {
-    // Accord layout stage 3: the outline tools live on the Navigator's Outline tab. `first` is the
-    // one Undo on a phone: it sits at the top of the Margin's Line tab.
-    if (options.first) {
-      if (node.parentElement !== this.lineTools) this.lineTools.prepend(node);
-      return;
-    }
-    const tools = this.navigator.toolsEl;
-    const tiers = this.host.lineMarks().tierEl;
-    if (node.parentElement !== tools) {
-      if (tiers.parentElement === tools) tools.insertBefore(node, tiers); else tools.append(node);
-    }
+  /** The one Undo control stays available on the phone. */
+  mountTool(node: HTMLElement, _options: { first?: boolean } = {}): void {
+    if (node.parentElement !== this.lineTools) this.lineTools.prepend(node);
   }
+
 
   /** The editor view updated (cursor, marks, text): re-read pending marks if they changed. */
   notifyViewUpdate(): void {
@@ -501,10 +483,6 @@ export class ReadingWalkUI {
     if (!this.restored && lm.isLoaded()) {
       this.restored = true;
       this.restoreSession();
-    }
-    if (!this.sinceLoaded && lm.isLoaded()) {
-      this.sinceLoaded = true;
-      void this.loadSinceYou();
     }
     this.afterChange();
   }
@@ -1189,127 +1167,7 @@ export class ReadingWalkUI {
     if (hint) hint.textContent = `this line: ${(need / 1000).toFixed(need < 1000 ? 2 : 1)} s`;
   }
 
-  // --------------------------------------------------------------------------
-  // Step B3c: Since you
-  // --------------------------------------------------------------------------
 
-  private async loadSinceYou(): Promise<void> {
-    const report = await this.host.lineMarks().fetchSinceYou();
-    this.sinceReport = report;
-    this.renderSince();
-  }
-
-  private renderSince(): void {
-    const report = this.sinceReport;
-    this.sinceHost.replaceChildren();
-    this.sinceHost.hidden = !report || !report.hasHistory;
-    if (!report || !report.hasHistory) return;
-    const details = el('details', 'prw-since-details');
-    details.open = this.sinceOpen && report.counts.total > 0;
-    details.addEventListener('toggle', () => { this.sinceOpen = details.open; });
-    const summary = el('summary', 'prw-since-summary');
-    const when = report.baseline.at ? new Date(report.baseline.at) : null;
-    const whenText = when ? when.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
-    const title = report.baseline.source === 'snapshot' ? `Since the aligned version (${whenText})` : `Since you last marked (${whenText})`;
-    summary.append(el('strong', undefined, title));
-    const count = el('span', 'prw-since-count', report.counts.total === 0 ? 'nothing new' : String(report.counts.total));
-    count.dataset.count = String(report.counts.total);
-    summary.append(count);
-    details.append(summary);
-    const refresh = el('button', 'prw-link prw-since-refresh', 'Refresh');
-    refresh.type = 'button';
-    refresh.onclick = () => { void this.loadSinceYou(); };
-    const groups: Array<[string, SinceItem[], number, string]> = [
-      // Step B4d: a repair was proposed to one of your objections (Clear / Keep in the line's box).
-      ['A repair was proposed', report.repairs ?? [], report.counts.repairs ?? 0, 'repairs'],
-      ['Lines edited since', report.edited, report.counts.edited, 'edited'],
-      ['New asks', report.asks, report.counts.asks, 'asks'],
-      ['Rejected by others', report.rejections, report.counts.rejections, 'rejections'],
-      ['Suggestions added', report.suggestions, report.counts.suggestions, 'suggestions'],
-      ['Comments added', report.comments, report.counts.comments, 'comments'],
-    ];
-    for (const [label, items, total, kind] of groups) {
-      if (items.length === 0) continue;
-      const group = el('div', 'prw-since-group');
-      group.dataset.kind = kind;
-      group.append(el('h4', undefined, `${label} (${total})`));
-      const list = el('ul');
-      for (const item of items) list.append(this.sinceItem(item));
-      group.append(list);
-      details.append(group);
-    }
-    if (report.ringers.length) {
-      const group = el('div', 'prw-since-group prw-ringers');
-      group.dataset.kind = 'ringers';
-      group.append(el('h4', undefined, `Ringer list (${report.counts.ringers})`));
-      group.append(el('p', 'prw-since-note', 'These count as seen for you only because you scrolled past them or marked their section, and they changed or gained something since.'));
-      const list = el('ul');
-      for (const item of report.ringers) list.append(this.ringerItem(item));
-      group.append(list);
-      details.append(group);
-    }
-    details.append(refresh);
-    this.sinceHost.append(details);
-  }
-
-  private sinceItem(item: SinceItem): HTMLElement {
-    const li = el('li');
-    const button = el('button', 'prw-since-item');
-    button.type = 'button';
-    button.dataset.type = item.type;
-    if (item.lineIndex !== null) button.dataset.line = String(item.lineIndex);
-    const head = item.type === 'edited'
-      ? (item.change === 'cosmetic' ? 'Small fix' : item.change === 'new-since-snapshot' ? 'New or changed' : 'Changed')
-      : item.type === 'ask' ? `Ask from ${getActorName(item.by ?? '')}`
-      : item.type === 'rejection' ? `${getActorName(item.by ?? '')} rejected`
-      : item.type === 'suggestion' ? `Suggestion by ${getActorName(item.by ?? '')}`
-      : item.type === 'repair' ? `Your objection: ${item.reason ?? ''}`
-      : item.type === 'reply' ? `Reply by ${getActorName(item.by ?? '')}`
-      : `Comment by ${getActorName(item.by ?? '')}`;
-    button.append(el('span', 'prw-since-head', head));
-    button.append(el('span', 'prw-since-text', item.excerpt || '(line not found)'));
-    const detail = item.type === 'rejection' ? (item.reason ? `Reason: ${item.reason}` : '')
-      : item.type === 'edited' ? (item.from ? `Was: ${item.from}` : '')
-      : (item.detail ?? '');
-    if (detail) button.append(el('span', 'prw-since-detail', detail.length > 160 ? `${detail.slice(0, 160)}…` : detail));
-    button.onclick = () => this.gotoSince(item.hash, item.occurrence, item.lineIndex, item.markId);
-    li.append(button);
-    return li;
-  }
-
-  private ringerItem(item: RingerItem): HTMLElement {
-    const li = el('li');
-    const button = el('button', 'prw-since-item');
-    button.type = 'button';
-    button.dataset.type = 'ringer';
-    button.dataset.line = String(item.lineIndex);
-    button.append(el('span', 'prw-since-head', item.via === 'section' ? 'Seen with its section' : 'Seen by scrolling'));
-    button.append(el('span', 'prw-since-text', item.excerpt));
-    button.append(el('span', 'prw-since-detail', item.why));
-    button.onclick = () => this.gotoSince(item.hash, item.occurrence, item.lineIndex);
-    li.append(button);
-    return li;
-  }
-
-  /** Moves the focus line to a Since-you item: by its mark, else its line text, else its index. */
-  private gotoSince(hash: string | null, occurrence: number | null, lineIndex: number | null, markId?: string): void {
-    const lm = this.host.lineMarks();
-    let index = -1;
-    if (markId) {
-      const mark = (() => { try { return this.host.marks().find(m => m.id === markId); } catch { return undefined; } })();
-      if (mark?.range && typeof mark.range.from === 'number') index = lm.lineAtPos(mark.range.from);
-    }
-    if (index < 0 && hash) {
-      const lines = lm.lineList();
-      const exact = lines.find(line => line.hash === hash && line.occurrence === (occurrence ?? 0)) ?? lines.find(line => line.hash === hash);
-      if (exact) index = exact.index;
-    }
-    if (index < 0 && lineIndex !== null && lineIndex < lm.lineList().length) index = lineIndex;
-    if (index < 0) return;
-    lm.revealLine(index);
-    this.focusLine(index);
-    if (isPhone()) this.closeSheets();
-  }
 
   private sessionKey(): string | null {
     const slug = this.host.slug();
@@ -1879,8 +1737,6 @@ export class ReadingWalkUI {
     this.rightHeadEl = rightHead;
     this.provisionalEl.hidden = true;
     this.provisionalEl.setAttribute('aria-live', 'polite');
-    this.sinceHost.hidden = true;
-    this.sinceHost.setAttribute('aria-label', 'Since you last marked');
     this.buildRate();
     this.buildStatusBar();
     this.threads = this.buildThreads();
@@ -2223,7 +2079,6 @@ export class ReadingWalkUI {
       whyAsked: [...this.whyAsked],
       explained: [...this.explained],
       bundleDecisions: [...this.bundleDecisions],
-      since: this.sinceReport ? { hasHistory: this.sinceReport.hasHistory, counts: this.sinceReport.counts, baseline: this.sinceReport.baseline } : null,
       readingY: this.readingY(),
       // Stage B: the scroll camera. `band` is the dead zone in viewport y; `offset` is null while
       // the reading line is still the default (the first line's place).

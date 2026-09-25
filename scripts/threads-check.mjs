@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // Accord round 2, stage D — threads live in the document, not the chat.
 //
 // Behaviour this check drives, in a real browser, against a real server:
@@ -132,6 +133,7 @@ async function openDoc(browser, base, slug, name, contextOptions = {}) {
   const toast = page.locator('.proof-share-welcome-toast button');
   if (await toast.count()) await toast.first().click().catch(() => {});
   page.setDefaultTimeout(6000);
+  await showWholeAccord(page);
   return { context, page };
 }
 

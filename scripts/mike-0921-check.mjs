@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // Browser check for Mike's 2026-09-21 report (Waiting on Mike Accord, items 1-5 and 7):
 //   1. a click on a link opens it (new tab; a #heading link moves the focus line); no "Open link" card
 //   2. the reading keys never type into the document: writing mode vs reading mode, every entry path
@@ -125,6 +126,7 @@ async function openDoc(browser, base, slug, name, contextOptions = {}) {
   const toast = page.locator('.proof-share-welcome-toast button');
   if (await toast.count()) await toast.first().click().catch(() => {});
   page.setDefaultTimeout(6000);
+  await showWholeAccord(page);
   return { context, page };
 }
 

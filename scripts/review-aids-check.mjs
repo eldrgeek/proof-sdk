@@ -9,7 +9,7 @@
 // in both review styles at 1440 (desktop) and 390 (phone). Screenshots go to .preview/ (or --shots).
 // Exit code 0 only if every check passes.
 // Usage: node scripts/review-aids-check.mjs [--style playmaker|proof] [--shots dir]
-import { nextReview, showReview } from './review-ui.mjs';
+import { nextReview, showReview, showWholeAccord } from './review-ui.mjs';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -113,6 +113,7 @@ async function openDoc(page, base, slug) {
   page.setDefaultTimeout(6000);
   const toast = page.locator('.proof-share-welcome-toast button');
   if (await toast.count()) await toast.first().click().catch(() => {});
+  await showWholeAccord(page);
 }
 
 async function run(browser, style) {

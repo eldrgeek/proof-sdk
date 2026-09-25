@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // Browser check for Mike's 2026-09-19 UX round:
 //  1. One Undo covers every change: line marks, section marks, folds, suggestion decisions, asks.
 //     The rail names what it would reverse ("Undo agreed line 12"); Cmd/Ctrl+Z runs it.
@@ -112,6 +113,7 @@ async function openDoc(browser, base, slug, name, contextOptions = {}) {
   const toast = page.locator('.proof-share-welcome-toast button');
   if (await toast.count()) await toast.first().click().catch(() => {});
   page.setDefaultTimeout(6000);
+  await showWholeAccord(page);
   return { context, page };
 }
 

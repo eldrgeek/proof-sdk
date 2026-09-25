@@ -1,10 +1,11 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // Browser check for Proof Documents Steps B3b and B3c: honest reading and alignment.
 //   B3b: the reading time scales with a line's words (a per-reader rate in the rail); a line
 //        scrolled past faster stays unmarked; the rail says how a Seen
 //        was earned; a spelling fix carries marks forward (tilde badge, "Was:", Mark unseen) while
 //        a number change resets them.
-//   B3c: "Since you last marked" (the Navigator's Since you tab since Accord layout stage 3; items move the focus line) with the ringer
+//   B3c: historical data remains stored; the Since you UI retired in ac-2a8, replaced by open items.
 //        list; "Aligned as of <time>" in the top bar once the Issue count reaches 0, opening the
 //        snapshot's markdown ledger; a later rejection starts a new round ("Last aligned").
 // Authorship: Claude Opus 5 (worker proof-honest), 2026-09-18, in the style of reading-walk-check.mjs.
@@ -125,6 +126,7 @@ async function openDoc(browser, base, slug, name, contextOptions = {}) {
   const toast = page.locator('.proof-share-welcome-toast button');
   if (await toast.count()) await toast.first().click().catch(() => {});
   page.setDefaultTimeout(6000);
+  await showWholeAccord(page);
   return { context, page };
 }
 
@@ -156,29 +158,18 @@ async function desktop(browser, base, style) {
     await page.screenshot({ path: path.join(shots, `${tag}-3-historical-marks.png`) });
   });
 
-  await check(`${tag}: Since you lists historical edits, rejections and new suggestions; an item moves the focus`, async () => {
+  await check(`${tag}: legacy history stays stored and new proposals appear in Review`, async () => {
     await agent(base, created, '/marks/line', { by: 'guest:Ada', status: 'seen', lineIndex: L.LONG, via: 'dwell' });
-    // Since Ada's last explicit mark: an AI rejects a line and suggests a change on the long
-    // line (which Ada only saw by scrolling: a ringer).
     await agent(base, created, '/marks/line', { by: 'ai:check', status: 'rejected', reason: 'Wrong number of words', lineIndex: L.P7 });
     await agent(base, created, '/marks/suggest-replace', { quote: 'six whole seconds', content: 'six full seconds', by: 'ai:check' });
     await page.reload();
-    await page.waitForFunction(() => window.__proofReadingWalk?.debugState().since !== null, null, { timeout: 15_000 });
-    // Accord layout stage 3 (decision 7): Since you is the Navigator's third tab.
-    await page.locator('.prw-right .anv-tab[data-tab="since"]').click();
-    const since = page.locator('.prw-right .prw-since');
-    await since.waitFor({ state: 'visible' });
-    const text = await since.innerText();
-    assert.match(text, /Since you last marked/);
-    assert.match(text, /Lines edited since/);
-    assert.match(text, /Was: The fee is \$10/);
-    assert.match(text, /Rejected by others/);
-    assert.match(text, /Wrong number of words/);
-    assert.match(text, /Suggestions added/);
-    // No new inferred assent is created by this visit.
-    await page.screenshot({ path: path.join(shots, `${tag}-4-since-you.png`) });
-    await since.locator('.prw-since-item[data-type="rejection"]').first().click();
-    await waitFor(page, i => window.__proofReadingWalk.debugState().readingFocus === i, L.P7);
+    await showWholeAccord(page);
+    assert.equal(await page.locator('[data-tab="since"], .prw-since').count(), 0);
+    const lm = await agent(base, created, '/state', undefined, 'GET');
+    assert.ok(JSON.stringify(lm).includes('Wrong number of words'), 'Stored historical rejection was lost');
+    await page.locator('.anv-issue[data-line="2"]').click();
+    await waitFor(page, i => window.__proofReadingWalk.focusIndex() === i, L.LONG);
+    await page.screenshot({ path: path.join(shots, `${tag}-4-review.png`) });
   });
   await context.close();
 
@@ -235,14 +226,14 @@ async function phone(browser, base, style) {
     assert.ok(size[0] <= size[1] + 1);
     await page.screenshot({ path: path.join(shots, `${tag}-1-no-marks.png`) });
   });
-  await check(`${tag}: ⋯ › Reading settings holds the sitting budget; the Navigator sheet holds Since you; items are big enough to tap`, async () => {
+  await check(`${tag}: ⋯ › Reading settings holds the sitting budget; the Review sheet holds open items; items are big enough to tap`, async () => {
     // Pat marks a line on purpose, then an AI edits and rejects: Since you has items on reload.
     await agent(base, created, '/marks/line', { by: 'guest:Pat', status: 'agreed', lineIndex: L.PRICE });
     await new Promise(r => setTimeout(r, 30));
     await editBlocks(base, created, [['b5', PRICE.replace('$10', '$12')]]);
     await agent(base, created, '/marks/line', { by: 'ai:check', status: 'rejected', reason: 'Too long', lineIndex: 5 });
     await page.reload();
-    await page.waitForFunction(() => window.__proofReadingWalk?.debugState().since !== null, null, { timeout: 15_000 });
+    await showWholeAccord(page);
     await page.locator('#share-banner .share-pill-overflow').tap();
     await page.getByRole('menuitem', { name: /Reading settings/ }).tap();
     const settings = page.locator('#reading-settings');
@@ -253,17 +244,17 @@ async function phone(browser, base, style) {
     await page.getByRole('menuitem', { name: /Review panel/ }).tap();
     const sheet = page.locator('.prw-right.prw-sheet-open');
     await sheet.waitFor({ state: 'visible' });
-    await sheet.locator('.anv-tab[data-tab="since"]').tap();
-    const since = sheet.locator('.prw-since');
-    await since.waitFor({ state: 'visible' });
-    assert.match(await since.innerText(), /Too long/);
-    const item = since.locator('.prw-since-item[data-type="rejection"]').first();
+    assert.equal(await sheet.locator('[data-tab="since"]').count(), 0);
+    await agent(base, created, '/marks/suggest-replace', { quote: 'six whole seconds', content: 'six full seconds', by: 'ai:check' });
+    const item = sheet.locator('.anv-issue').first();
+    await item.waitFor({ state: 'visible' });
     const box = await item.boundingBox();
     assert.ok(box && box.height >= 44, `tap target ${box?.height}`);
-    await page.screenshot({ path: path.join(shots, `${tag}-2-since-sheet.png`) });
+    const index = Number(await item.getAttribute('data-line'));
     await item.tap();
-    await waitFor(page, () => window.__proofReadingWalk.debugState().readingFocus === 5);
-    assert.equal(await page.locator('.prw-right.prw-sheet-open').count(), 0, 'the sheet closes after moving the focus');
+    await waitFor(page, i => window.__proofReadingWalk.focusIndex() === i, index);
+    assert.equal(await sheet.isVisible(), true, 'Review selection retains its list on the phone');
+    await page.screenshot({ path: path.join(shots, `${tag}-2-review-sheet.png`) });
   });
   await context.close();
 }

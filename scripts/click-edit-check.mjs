@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // ac-8ae. Mike, 2026-09-24, yfbqrau4 P2/P3. Local server, two independent readers.
 // Reviewer gate: run five times, then local-write-resync, caret-stability and marks-restart.
 import assert from 'node:assert/strict';
@@ -51,6 +52,7 @@ async function reader(browser, base, slug, name, width) {
   await page.waitForFunction(() => window.proof?.collabIsSynced && window.__proofReadingWalk?.debugState().ready && window.__proofLineMarks?.debugState().loaded);
   const welcome = page.locator('.proof-share-welcome-toast button');
   if (await welcome.count()) await welcome.first().click();
+  await showWholeAccord(page);
   return { context, page, errors };
 }
 const pending = page => page.evaluate(() => window.proof.getAllMarks().filter(m => ['insert', 'delete', 'replace'].includes(m.kind) && (m.data?.status ?? 'pending') === 'pending'));

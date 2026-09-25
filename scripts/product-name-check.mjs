@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // Product-name check (Accord rename, 2026-09-19).
 //
 // Mike ruled: "Accord it is, use it everywhere." This check holds that ruling in place and, just
@@ -143,6 +144,7 @@ async function openDoc(page, base, slug) {
   page.setDefaultTimeout(6000);
   const toast = page.locator('.proof-share-welcome-toast button');
   if (await toast.count()) await toast.first().click().catch(() => {});
+  await showWholeAccord(page);
 }
 
 // ---------------------------------------------------------------- the page itself

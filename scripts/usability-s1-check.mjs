@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // Accord usability S1: explicit folding/targets, Seen-only reading and stable viewport.
 // Mike, 2026-09-23 (usability brief). Loopback fixtures, both review styles and phone.
 // Usage: node scripts/usability-s1-check.mjs [--shots dir]
@@ -125,7 +126,7 @@ async function openDoc(browser, base, slug, name, contextOptions = {}) {
   return { context, page };
 }
 
-async function ready(page) {
+async function ready(page, whole = true) {
   await page.waitForFunction(() => window.proof?.collabConnectionStatus === 'connected' && window.proof?.collabIsSynced === true, null, { timeout: 20_000 });
   await page.waitForFunction(() => window.__proofLineMarks?.debugState().loaded === true, null, { timeout: 10_000 });
   await page.waitForFunction(() => window.__proofReadingWalk?.debugState().ready === true
@@ -134,6 +135,7 @@ async function ready(page) {
   const toast = page.locator('.proof-share-welcome-toast button');
   if (await toast.count()) await toast.first().click().catch(() => {});
   page.setDefaultTimeout(6000);
+  if (whole) await showWholeAccord(page);
 }
 
 const fold = page => page.evaluate(() => window.__proofFolding.debugState());
@@ -153,7 +155,7 @@ async function desktop(browser, base, style, width) {
   const { context, page } = await openDoc(browser, base, created.slug, 'S1 Reader', { viewport: { width, height: 800 } });
   const tag = `usability-s1-${style}-${width}`;
   activePage = page;
-  await check(`${tag}: first open is expanded and scrolling never collapses it`, async () => {
+  await check(`${tag}: the whole-Accord choice stays expanded while scrolling`, async () => {
     assert.deepEqual((await fold(page)).folded, []);
     await expandedStaysExpanded(page);
   });
@@ -179,22 +181,23 @@ async function desktop(browser, base, style, width) {
     await page.keyboard.press('k');
     assert.equal((await walk(page)).cursor, 9);
   });
-  await check(`${tag}: navigation opens only ancestors and preserves unrelated folds`, async () => {
+  await check(`${tag}: navigation reveals only its item and preserves unrelated folds`, async () => {
     await page.evaluate(() => { window.__proofFolding.setFolded(2, true); window.__proofFolding.setFolded(9, true); });
     await selectPassage(page, 7);
     assert.equal(await isHiddenLine(page, 7), false);
     assert.equal(await page.evaluate(() => window.__proofFolding.isFolded(9)), true);
-    await page.reload(); await ready(page);
+    await page.reload(); await ready(page, false);
     assert.equal(await page.evaluate(() => window.__proofFolding.isFolded(9)), true, 'fold lost on reload');
-    assert.equal(await page.evaluate(() => window.__proofFolding.isFolded(2)), false, 'explicit reveal lost on reload');
+    assert.equal(await isHiddenLine(page, 7), true, 'a reveal must not survive reload');
   });
-  await check(`${tag}: disclosure choices belong to the reader in this browser`, async () => {
+  await check(`${tag}: each reader starts a new folded visit`, async () => {
     await page.evaluate(() => localStorage.setItem('proof-share-viewer-name', 'Another S1 Reader'));
-    await page.reload(); await ready(page);
-    assert.deepEqual((await fold(page)).folded, [], 'another reader inherited the first reader folds');
+    await page.reload(); await ready(page, false);
+    assert.equal((await fold(page)).whole, false, 'another reader did not start folded');
     await page.evaluate(() => localStorage.setItem('proof-share-viewer-name', 'S1 Reader'));
-    await page.reload(); await ready(page);
-    assert.equal(await page.evaluate(() => window.__proofFolding.isFolded(9)), true, 'original reader lost their choice');
+    await page.reload(); await ready(page, false);
+    assert.equal(await page.evaluate(() => window.__proofFolding.isFolded(9)), true, 'a new visit must start folded');
+    await showWholeAccord(page);
   });
   await check(`${tag}: scrolling past proposals and later navigation accept nothing`, () => scrollAcceptsNothing(page));
   await check(`${tag}: letter shortcuts can be disabled; IME and fields never run them`, async () => {
@@ -278,7 +281,7 @@ async function desktop(browser, base, style, width) {
     assert.equal((await walk(page)).cursor, 15);
     assert.ok(Math.abs(await top() - before) <= 2, 'remote edit shifted selected passage');
     assert.equal(await page.evaluate(() => window.__proofFolding.isFolded(9)), true, 'renaming a heading opened its section');
-    await page.reload(); await ready(page);
+    await page.reload(); await ready(page, false);
     assert.equal(await page.evaluate(() => window.__proofFolding.isFolded(9)), true);
   });
 

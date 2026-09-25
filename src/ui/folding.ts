@@ -1,326 +1,270 @@
-/**
- * Sections stay as the reader left them. Hover and Issue closure never fold text.
- * Badges count pending changes only (the Accord rules, 2026-09-24).
- * Stored section-mark APIs remain available for compatibility.
- */
-import { sectionPendingChanges } from '../shared/review-surface';
+/** The visit's disclosure choices. Mike, 2026-09-24, yfbqrau4 point 9 and P5. */
 import type { EditorView } from '@milkdown/kit/prose/view';
-import type { Transaction } from '@milkdown/kit/prose/state';
-import { actorKey, extractLines, type DocLine } from '../shared/line-marks';
-import {
-  FOLDING,
-  captureSectionScope,
-  remapFoldedKeys,
-  type SectionScope,
-  computeSections,
-  foldedAncestors,
-  hiddenBlockRanges,
-  hiddenLineSet,
-  sectionAgreementOffer,
-  sectionByHeading,
-  visibleLineFor,
-  type DocSection,
-  type SectionAgreementOffer,
-} from '../shared/folding';
-import { hiddenBlocks, setHiddenBlocks } from '../editor/plugins/fold-view';
+import { TextSelection, type Transaction } from '@milkdown/kit/prose/state';
+import { extractLines, type DocLine } from '../shared/line-marks';
+import { captureSectionScope, computeSections, sectionByHeading, type DocSection, type SectionScope, type SectionAgreementOffer } from '../shared/folding';
+import { FOLDED_VIEW_POLICY, foldedCountText, initialShown, mapShown, touchesHidden } from '../shared/folded-view';
+import { foldViewKey, setFoldView, hiddenBlocks, transactionTouchesHidden, FOLD_RULE_EVENT, type FoldUpdate } from '../editor/plugins/fold-view';
 import type { LineMarksUI } from './line-marks';
 import './folding.css';
 
-export interface FoldingHost {
-  slug(): string | null;
-  lineMarks(): LineMarksUI;
-}
-
-const PHONE_QUERY = '(max-width: 700px)';
-
-function isPhone(): boolean {
-  try { return window.matchMedia(PHONE_QUERY).matches; } catch { return window.innerWidth <= 700; }
-}
+export interface FoldingHost { slug(): string | null; lineMarks(): LineMarksUI; documentLoaded(): boolean; }
+const PHONE_QUERY = '(max-width: 700px)'; // Same breakpoint as the page's phone strip.
+function isPhone(): boolean { return window.matchMedia(PHONE_QUERY).matches; }
+type Snapshot = Pick<FoldUpdate, 'shown' | 'expanded' | 'context' | 'whole'>;
 
 export class FoldingUI {
-  /** Expand all / Collapse all buttons; the host mounts it (the right rail). */
-  readonly controlsEl = document.createElement('div');
   private readonly layer = document.createElement('div');
   private sections: DocSection[] = [];
   private lines: DocLine[] = [];
-  private folded = new Set<string>();
-  private hidden = new Set<number>();
-  private loadedSlug: string | null = null;
   private started = false;
+  private initialized = false;
+  private timedOut = false;
+  private timer: ReturnType<typeof setTimeout> | null = null;
   private renderQueued = false;
   private applyQueued = false;
   private resizeObserver: ResizeObserver | null = null;
   private unsubscribe: (() => void) | null = null;
   private readonly listeners = new Set<() => void>();
-  private controlsSig = '';
+  private readonly snapshots = new Set<Snapshot>();
 
   constructor(private readonly host: FoldingHost) {
     this.layer.className = 'pfold-layer';
-    this.controlsEl.className = 'pfold-controls';
-    this.controlsEl.setAttribute('role', 'group');
-    this.controlsEl.setAttribute('aria-label', 'Outline folding');
-    this.layer.addEventListener('click', this.onLayerClick);
+    this.layer.addEventListener('mousedown', e => e.preventDefault());
+    this.layer.addEventListener('click', event => {
+      const chip = (event.target as HTMLElement).closest<HTMLElement>('.pfold-chip');
+      if (!chip) return;
+      event.preventDefault(); event.stopPropagation(); this.toggle(Number(chip.dataset.heading));
+    });
   }
-
   start(): void {
     if (this.started) return;
     this.started = true;
     document.body.classList.add('pfold-on');
     window.addEventListener('resize', this.queueRender);
+    document.addEventListener(FOLD_RULE_EVENT, this.onRule);
+    document.addEventListener('click', this.onLink, true);
+    window.addEventListener('hashchange', this.onHash);
+    this.timer = setTimeout(() => {
+      if (!this.initialized) { this.timedOut = true; this.initialized = true; this.update({ ready: true, whole: true }); }
+    }, FOLDED_VIEW_POLICY.loadTimeoutMs);
     this.unsubscribe = this.host.lineMarks().subscribe(() => this.sync());
     this.sync();
   }
-
   stop(): void {
     this.started = false;
+    if (this.timer) clearTimeout(this.timer);
     document.body.classList.remove('pfold-on');
     window.removeEventListener('resize', this.queueRender);
-    this.unsubscribe?.();
-    this.resizeObserver?.disconnect();
-    this.layer.remove();
+    document.removeEventListener(FOLD_RULE_EVENT, this.onRule);
+    document.removeEventListener('click', this.onLink, true);
+    window.removeEventListener('hashchange', this.onHash);
+    this.unsubscribe?.(); this.resizeObserver?.disconnect(); this.layer.remove();
   }
-
-  /** Called after the fold state or the hidden lines change. */
-  subscribe(listener: () => void): () => void {
-    this.listeners.add(listener);
-    return () => { this.listeners.delete(listener); };
-  }
-
-  // --------------------------------------------------------------------------
-  // State
-  // --------------------------------------------------------------------------
-
+  subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   private view(): EditorView | null { return this.host.lineMarks().editorView(); }
-
-  private storageKey(): string | null {
-    const slug = this.host.slug();
-    return slug ? `${FOLDING.storagePrefix}${slug}:${actorKey(this.host.lineMarks().me())}` : null;
+  private state() { const view = this.view(); return view ? foldViewKey.getState(view.state) : undefined; }
+  private notify(): void { for (const listener of this.listeners) listener(); }
+  private update(update: FoldUpdate): void {
+    const view = this.view(); if (!view) return;
+    setFoldView(view, update); this.refreshLines(); this.queueRender(); this.notify();
   }
-
-  private loadFolded(): void {
-    const key = this.storageKey();
-    if (key === this.loadedSlug) return;
-    this.loadedSlug = key;
-    let saved: unknown = [];
-    try { saved = key ? JSON.parse(localStorage.getItem(key) || '[]') : []; } catch { saved = []; }
-    this.folded = new Set(Array.isArray(saved) ? saved.filter((k): k is string => typeof k === 'string').slice(0, 2000) : []);
-  }
-
-  private saveFolded(): void {
-    const key = this.storageKey();
-    if (!key) return;
-    try {
-      if (this.folded.size === 0) localStorage.removeItem(key);
-      else localStorage.setItem(key, JSON.stringify([...this.folded]));
-    } catch { /* optional */ }
-  }
-
-  /** Preserve disclosure choices when an edit renames or shifts their heading. */
-  mapTransaction(tr: Transaction): void {
-    if (!tr.docChanged || !this.folded.size) return;
-    const beforeLines = extractLines(tr.before);
-    const nextLines = extractLines(tr.doc);
-    this.folded = remapFoldedKeys(this.folded, beforeLines, nextLines, pos => tr.mapping.map(pos, -1));
-    this.saveFolded();
-  }
-
-  /** Lines, marks or the document changed: recompute sections and re-apply the fold. */
-  private sync(): void {
-    const lm = this.host.lineMarks();
-    const view = this.view();
-    if (!view) return;
-    this.loadFolded();
-    this.attachLayer(view);
-    this.lines = lm.lineList();
+  private refreshLines(): void {
+    const view = this.view(); if (!view) return;
+    this.lines = extractLines(view.state.doc);
     this.sections = computeSections(this.lines, view.state.doc.childCount);
-    this.recomputeHidden();
-    // This runs inside the editor's view update: dispatch the decorations afterwards.
-    this.queueApply();
-    this.queueRender();
   }
-
-  private recomputeHidden(): boolean {
-    const next = hiddenLineSet(this.sections, this.folded);
-    const changed = next.size !== this.hidden.size || [...next].some(i => !this.hidden.has(i));
-    this.hidden = next;
-    return changed;
-  }
-
-  private queueApply(): void {
-    if (this.applyQueued) return;
-    this.applyQueued = true;
-    queueMicrotask(() => {
-      this.applyQueued = false;
-      this.apply();
-    });
-  }
-
-  /** Makes the editor's decorations match the fold state (no-op when they already do). */
-  private apply(): void {
-    const view = this.view();
-    if (!view) return;
-    const ranges = hiddenBlockRanges(this.sections, this.folded)
-      .sort((a, b) => a[0] - b[0]);
-    const merged: Array<[number, number]> = [];
-    for (const range of ranges) {
-      const last = merged[merged.length - 1];
-      if (last && range[0] <= last[1]) last[1] = Math.max(last[1], range[1]);
-      else merged.push([range[0], range[1]]);
-    }
-    const want: number[] = [];
-    for (const [from, to] of merged) for (let i = from; i < Math.min(to, view.state.doc.childCount); i += 1) want.push(i);
-    const have = hiddenBlocks(view);
-    if (want.length !== have.length || want.some((block, i) => block !== have[i])) {
-      setHiddenBlocks(view, merged);
-    }
-    this.notify();
-  }
-
-  private notify(): void {
-    for (const listener of this.listeners) {
-      try { listener(); } catch (error) { console.warn('[fold] listener failed', error); }
+  private sync(): void {
+    if (!this.started) return;
+    this.refreshLines();
+    const view = this.view(); if (!view) return;
+    this.attachLayer(view);
+    if (!this.applyQueued) {
+      this.applyQueued = true;
+      queueMicrotask(() => {
+        this.applyQueued = false;
+        if (!this.started) return;
+        const lm = this.host.lineMarks(), current = this.view(); if (!current) return;
+        this.refreshLines();
+        const indices = new Set(lm.reviewViews()[FOLDED_VIEW_POLICY.shows].lines);
+        const open = new Set(this.lines.filter(l => indices.has(l.index)).map(l => l.pos));
+        const state = this.state();
+        if (!this.initialized && lm.isLoaded() && this.host.documentLoaded()) {
+          this.initialized = true;
+          if (this.timer) clearTimeout(this.timer);
+          this.update({ ready: true, whole: !FOLDED_VIEW_POLICY.startsFoldedEachVisit, shown: initialShown(current.state.doc, indices), expanded: new Set(), context: new Set(), open });
+          this.onHash();
+        } else if (state && (open.size !== state.open.size || [...open].some(p => !state.open.has(p)))) {
+          this.update({ open, ...(!FOLDED_VIEW_POLICY.holdsStillWhileReading && !state.whole ? { shown: initialShown(current.state.doc, indices) } : {}) });
+        } else { this.queueRender(); this.notify(); }
+      });
     }
   }
-
-  /** A user action changed the fold state: store it, apply it now, re-render. */
-  private commit(): void {
-    this.saveFolded();
-    this.recomputeHidden();
-    this.apply();
-    this.renderNow();
+  /** Undo snapshots also follow actual, applied document transactions by position. */
+  mapTransaction(tr: Transaction): void {
+    if (!tr.docChanged) return;
+    for (const snapshot of this.snapshots) {
+      if (snapshot.shown) snapshot.shown = mapShown(snapshot.shown, extractLines(tr.before), extractLines(tr.doc), tr.mapping);
+      if (snapshot.context) snapshot.context = mapShown(snapshot.context, extractLines(tr.before), extractLines(tr.doc), tr.mapping);
+      if (snapshot.expanded) snapshot.expanded = mapShown(snapshot.expanded, extractLines(tr.before), extractLines(tr.doc), tr.mapping);
+    }
   }
-
-  // --------------------------------------------------------------------------
-  // Public API (reading walk, line marks, tests)
-  // --------------------------------------------------------------------------
-
+  private snapshot(): Snapshot {
+    const state = this.state();
+    const snapshot = { shown: new Set(state?.shown), expanded: new Set(state?.expanded), context: new Set(state?.context), whole: state?.whole ?? false };
+    this.snapshots.add(snapshot); return snapshot;
+  }
+  private action(description: string, update: FoldUpdate, record = true): void {
+    const before = this.snapshot();
+    this.update(update);
+    if (!record) return;
+    const after = this.snapshot();
+    this.host.lineMarks().undoStack()?.pushSimple('fold', description,
+      () => { this.update(before); return { ok: true }; }, () => { this.update(after); return { ok: true }; });
+  }
   sectionList(): DocSection[] { return this.sections; }
-  /** Accord layout stage 3: the Issues left in a section (the Outline's count, same as its chip). */
-  sectionIssues(headingIndex: number): number {
-    const section = sectionByHeading(this.sections, headingIndex);
-    if (!section) return 0;
-    const lm = this.host.lineMarks();
-    return sectionPendingChanges(section.headingIndex, section.lineEnd,
-      this.lines.flatMap(line => lm.suggestionsOnLine(line.index).map(() => line.index)));
+  sectionIssues(index: number): number {
+    const section = sectionByHeading(this.sections, index); if (!section) return 0;
+    return this.host.lineMarks().reviewViews()['all-open'].lines.filter(i => i >= index && i < section.lineEnd).length;
   }
-  hiddenLines(): ReadonlySet<number> { return this.hidden; }
-  isHidden(lineIndex: number): boolean { return this.hidden.has(lineIndex); }
-
-  isFolded(headingIndex: number): boolean {
-    const section = sectionByHeading(this.sections, headingIndex);
-    return Boolean(section && this.folded.has(section.key));
+  hiddenLines(): ReadonlySet<number> {
+    const s = this.state();
+    return new Set(!s || s.whole || s.clean ? [] : this.lines.filter(l => !s.visible.has(l.pos)).map(l => l.index));
   }
-
-  /** The visible line that stands for a line (the heading of its outermost folded section). */
-  visibleLineFor(lineIndex: number): number {
-    return visibleLineFor(this.sections, this.folded, lineIndex);
+  isHidden(index: number): boolean { return this.hiddenLines().has(index); }
+  isWhole(): boolean { return this.state()?.whole ?? false; }
+  toggleLabel(): string { return this.isWhole() ? 'Show only open items' : 'Show the whole Accord'; }
+  countText(): string {
+    if (!this.initialized) return 'Loading open items…';
+    if (this.timedOut && (!this.host.lineMarks().isLoaded() || !this.host.documentLoaded())) return 'Open items did not load. Showing the whole Accord.';
+    const views = this.host.lineMarks().reviewViews();
+    const text = foldedCountText(this.lines.length, views['needs-you'].lines.length, views['all-open'].lines.length);
+    return this.timedOut ? `${text} · Showing the whole Accord because open items loaded late.` : text;
   }
-
-  /** The explicit section action captures these identities when its control is rendered. */
-  sectionScope(lineIndex: number): SectionScope | null {
-    const section = sectionByHeading(this.sections, lineIndex);
-    return section ? captureSectionScope(section, this.lines) : null;
+  isFolded(index: number): boolean {
+    const s = this.state();
+    return Boolean(s && !s.whole && !this.sections.some(section => section.headingIndex <= index && section.lineEnd > index && s.expanded.has(this.lines[section.headingIndex].pos)));
   }
-
-  /**
-   * Agree is offered only when every line is visible. Otherwise the control expands first.
-   * The scope is captured here, at render, so a later insertion cannot join it.
-   */
-  sectionAgreement(lineIndex: number): (SectionAgreementOffer & { scope: SectionScope | null }) | null {
-    const section = sectionByHeading(this.sections, lineIndex);
-    if (!section) return null;
-    const offer = sectionAgreementOffer(section, this.sections, this.folded);
-    return { ...offer, scope: offer.allVisible ? captureSectionScope(section, this.lines) : null };
+  visibleLineFor(index: number): number {
+    if (!this.isHidden(index)) return index;
+    const ancestors = this.sections.filter(s => s.headingIndex < index && s.lineEnd > index && !this.isHidden(s.headingIndex));
+    return ancestors.at(-1)?.headingIndex ?? this.lines.find(l => !this.isHidden(l.index))?.index ?? index;
   }
-
-  /** Expands this section and every collapsed section inside it. One Undo restores the folds. */
-  showSectionLines(lineIndex: number): void {
-    const section = sectionByHeading(this.sections, lineIndex);
-    if (!section) return;
-    const offer = sectionAgreementOffer(section, this.sections, this.folded);
-    if (offer.allVisible || offer.collapsedHeadings.length === 0) return;
-    const before = { folded: [...this.folded] };
-    this.record('showed the section', () => { this.folded = new Set(before.folded); this.commit(); });
-    for (const heading of offer.collapsedHeadings) {
-      const collapsed = sectionByHeading(this.sections, heading);
-      if (collapsed) this.folded.delete(collapsed.key);
-    }
-    this.commit();
+  sectionScope(index: number): SectionScope | null {
+    const section = sectionByHeading(this.sections, index); return section ? captureSectionScope(section, this.lines) : null;
   }
-
-  toggle(headingIndex: number, options: { record?: boolean } = {}): void {
-    const section = sectionByHeading(this.sections, headingIndex);
-    if (!section) return;
-    const wasFolded = this.folded.has(section.key);
-    if (wasFolded) this.folded.delete(section.key); else this.folded.add(section.key);
-    this.commit();
-    if (options.record !== false) {
-      const name = this.lines[section.headingIndex]?.text ?? 'section';
-      const short = name.length > 40 ? `${name.slice(0, 40)}…` : name;
-      this.record(`${wasFolded ? 'expanded' : 'collapsed'} “${short}”`, () => this.toggle(headingIndex, { record: false }));
-    }
+  sectionAgreement(index: number): (SectionAgreementOffer & { scope: SectionScope | null }) | null {
+    const section = sectionByHeading(this.sections, index); if (!section) return null;
+    const allVisible = this.lines.slice(index, section.lineEnd).every(l => !this.isHidden(l.index));
+    return { lineCount: section.lineEnd - index, allVisible, collapsedHeadings: allVisible ? [] : [index], scope: allVisible ? this.sectionScope(index) : null };
   }
-
-  /** Puts a fold change on the one Undo stack (a fold is a person's action like any other). */
-  private record(description: string, inverse: () => void): void {
-    const stack = this.host.lineMarks().undoStack?.();
-    if (!stack) return;
-    let snapshot: { folded: string[] } | null = null;
-    stack.pushSimple('fold', description, () => {
-      snapshot = { folded: [...this.folded] };
-      inverse();
-      return { ok: true };
-    }, () => {
-      if (!snapshot) return { ok: false, reason: 'Could not redo that fold.' };
-      this.folded = new Set(snapshot.folded);
-
-      this.commit();
-      return { ok: true };
-    });
+  showSectionLines(index: number): void { this.setFolded(index, false); }
+  toggle(index: number, options: { record?: boolean } = {}): void {
+    const state = this.state(), line = this.lines[index]; if (!state || !line) return;
+    const expanded = new Set(state.expanded), folding = !this.isFolded(index);
+    // Leaving whole view through a chip preserves the other expanded sections.
+    if (state.whole) for (const s of this.sections) expanded.add(this.lines[s.headingIndex].pos);
+    if (folding) {
+      // An expanded ancestor must not override this explicit local refold.
+      for (const s of this.sections) if (s.headingIndex <= index && s.lineEnd > index) expanded.delete(this.lines[s.headingIndex].pos);
+      const section = sectionByHeading(this.sections, index)!;
+      for (const s of this.sections) if (s.headingIndex > index && s.headingIndex < section.lineEnd) expanded.delete(this.lines[s.headingIndex].pos);
+      const context = new Set(state.context);
+      for (const l of this.lines.slice(index, section.lineEnd)) context.delete(l.pos);
+      // Preserve context outside the refolded section when its ancestor was expanded.
+      for (const l of this.lines) if ((l.index < index || l.index >= section.lineEnd) && !this.isHidden(l.index)) context.add(l.pos);
+      this.action(`folded “${line.text}”`, { whole: false, expanded, context }, options.record !== false);
+    } else { expanded.add(line.pos); this.action(`unfolded “${line.text}”`, { whole: false, expanded }, options.record !== false); }
   }
-
-  setFolded(headingIndex: number, folded: boolean): void {
-    if (this.isFolded(headingIndex) !== folded) this.toggle(headingIndex);
-  }
-
-  /** Explicitly collapse every section. */
+  setFolded(index: number, folded: boolean): void { if (this.isFolded(index) !== folded) this.toggle(index); }
   foldAll(options: { record?: boolean } = {}): void {
-    const before = { folded: [...this.folded] };
-    if (options.record !== false) {
-      this.record('folded every section', () => { this.folded = new Set(before.folded); this.commit(); });
+    const view = this.view(); if (!view) return;
+    this.action('showed only open items', { whole: false, shown: initialShown(view.state.doc, new Set(this.host.lineMarks().reviewViews()['all-open'].lines)), expanded: new Set(), context: new Set() }, options.record !== false);
+  }
+  unfoldAll(options: { record?: boolean } = {}): void { this.action('showed the whole Accord', { whole: true }, options.record !== false); }
+  toggleWhole(): void { if (this.isWhole()) this.foldAll(); else this.unfoldAll(); }
+  setClean(clean: boolean): void { if (this.state()?.clean !== clean) this.update({ clean }); }
+  reveal(index: number): boolean {
+    if (!this.isHidden(index)) return false;
+    if (!FOLDED_VIEW_POLICY.jumpShowsLineOnly) { this.showSectionLines(this.visibleLineFor(index)); return true; }
+    const shown = new Set(this.state()?.shown); shown.add(this.lines[index].pos);
+    this.action('showed a passage', { shown }); return true;
+  }
+  private revealHash(hash: string): void {
+    const view = this.view(); if (!view || !hash) return;
+    let name: string; try { name = decodeURIComponent(hash.slice(1)); } catch { return; }
+    const numbered = /^line-(\d+)$/.exec(name);
+    let index = numbered ? Number(numbered[1]) - 1 : -1;
+    if (index < 0) {
+      const target = document.getElementById(name);
+      if (target && view.dom.contains(target)) {
+        const pos = view.posAtDOM(target, 0);
+        index = this.lines.findIndex(l => pos >= l.pos && pos < l.pos + l.nodeSize);
+      }
     }
-    this.folded = new Set(this.sections.map(section => section.key));
-
-    this.commit();
+    if (index < 0 || !this.lines[index]) return;
+    this.reveal(index);
+    requestAnimationFrame(() => (view.nodeDOM(this.lines[index]?.pos) as HTMLElement | null)?.scrollIntoView({ block: 'center' }));
   }
-
-  /** Explicitly expand every section. */
-  unfoldAll(options: { record?: boolean } = {}): void {
-    const before = { folded: [...this.folded] };
-    if (options.record !== false) {
-      this.record('unfolded every section', () => { this.folded = new Set(before.folded); this.commit(); });
+  private onHash = (): void => { this.revealHash(location.hash); };
+  private onLink = (event: MouseEvent): void => {
+    const link = (event.target as HTMLElement).closest<HTMLAnchorElement>('a[href]');
+    if (!link || event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return;
+    const url = new URL(link.href, location.href);
+    if (url.origin === location.origin && url.pathname === location.pathname && url.hash) this.revealHash(url.hash);
+  };
+  private onRule = (event: Event): void => {
+    const { from, to } = (event as CustomEvent<{ from: number; to: number }>).detail;
+    const section = this.sections.find(s => s.headingIndex + 1 === from && s.lineEnd === to);
+    if (section) { this.setFolded(section.headingIndex, false); return; }
+    const shown = new Set(this.state()?.shown);
+    for (const line of this.lines.slice(from, to)) shown.add(line.pos);
+    this.action('showed hidden items', { shown });
+  };
+  positionHidden(pos: number): boolean {
+    const s = this.state(); return Boolean(s && !s.whole && !s.clean && s.hidden.some(h => pos >= h.from && pos < h.to));
+  }
+  refuses(tr: Transaction): boolean {
+    const s = this.state();
+    return Boolean(FOLDED_VIEW_POLICY.refuseEditsTouchingHidden && s?.ready && !s.whole && !s.clean && transactionTouchesHidden(tr, s.hidden));
+  }
+  inputTouchesHidden(input: InputEvent): boolean {
+    const view = this.view(), s = this.state();
+    if ((input.target as HTMLElement | null)?.closest?.('[data-live-suggestion]')) return false;
+    if (!view || !s?.ready || s.whole || s.clean || !FOLDED_VIEW_POLICY.refuseEditsTouchingHidden || input.inputType.startsWith('history')) return false;
+    let { from, to } = view.state.selection;
+    if (from === to && input.inputType.startsWith('delete')) {
+      const at = this.lines.findIndex(l => from >= l.pos && from < l.pos + l.nodeSize);
+      const cursor = view.state.selection.$from;
+      // List entries have extra wrapper tokens. Test their neighbouring items directly.
+      if (input.inputType.endsWith('Backward')) {
+        if (cursor.parentOffset === 0 && this.isHidden(at - 1)) return true;
+        from = Math.max(0, from - 1);
+      } else if (input.inputType.endsWith('Forward')) {
+        if (cursor.parentOffset === cursor.parent.content.size && this.isHidden(at + 1)) return true;
+        to += 1;
+      }
     }
-    // Only this document's headings are stored under this key, so clearing it is safe.
-    this.folded = new Set();
-
-    this.commit();
+    return touchesHidden(from, to, s.hidden);
   }
-
-  /** Unfolds every folded section that hides the line. Returns true when something unfolded. */
-  reveal(lineIndex: number): boolean {
-    const ancestors = foldedAncestors(this.sections, this.folded, lineIndex);
-    if (ancestors.length === 0) return false;
-    // Revealing a line to go to it is the person asking for it: rule 1 makes it stick.
-    for (const section of ancestors) { this.folded.delete(section.key); }
-
-    this.commit();
-    return true;
+  arrow(event: KeyboardEvent): boolean {
+    const view = this.view(), s = this.state();
+    if (!view || !s?.ready || s.whole || s.clean || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey || !['ArrowUp', 'ArrowDown'].includes(event.key)) return false;
+    const { $head } = view.state.selection;
+    const at = this.lines.findIndex(l => $head.pos >= l.pos && $head.pos < l.pos + l.nodeSize);
+    if (at < 0) return false;
+    const direction = event.key === 'ArrowUp' ? -1 : 1;
+    if (!this.isHidden(at + direction)) return false;
+    // Only intercept on the first/last visual row, preserving ordinary multiline navigation.
+    const edge = direction < 0 ? $head.start() : $head.end();
+    if (Math.abs(view.coordsAtPos(edge).top - view.coordsAtPos($head.pos).top) > 2) return false;
+    let next = at + direction; while (next >= 0 && next < this.lines.length && this.isHidden(next)) next += direction;
+    if (!this.lines[next]) return false;
+    const target = this.lines[next];
+    const pos = direction < 0 ? target.pos + target.nodeSize - 1 : target.pos + 1;
+    view.dispatch(view.state.tr.setSelection(TextSelection.near(view.state.doc.resolve(pos), direction)).scrollIntoView());
+    event.preventDefault(); return true;
   }
-
-  // --------------------------------------------------------------------------
-  // Rendering: one chip per heading, plus the controls
-  // --------------------------------------------------------------------------
-
   private attachLayer(view: EditorView): void {
     const container = (view.dom.closest('#editor-container') as HTMLElement | null) ?? view.dom.parentElement;
     if (!container) return;
@@ -343,7 +287,7 @@ export class FoldingUI {
 
   private renderNow(): void {
     this.renderChips();
-    this.renderControls();
+
   }
 
   private renderChips(): void {
@@ -372,7 +316,7 @@ export class FoldingUI {
         chip.dataset.key = section.key;
         this.layer.append(chip);
       }
-      const stored = this.folded.has(section.key);
+      const stored = this.isFolded(section.headingIndex);
 
       const folded = stored;
       const total = this.sectionIssues(section.headingIndex);
@@ -394,9 +338,9 @@ export class FoldingUI {
         chip.replaceChildren(caret, badge);
       }
       const issuesText = !loaded ? 'Issues loading' : total === 0 ? 'no Issues: resolved'
-        : `${total} open ${total === 1 ? 'change' : 'changes'}`;
+        : `${total} open ${total === 1 ? 'item' : 'items'}`;
       chip.setAttribute('aria-label', `${folded ? 'Unfold' : 'Fold'} section “${line.text.slice(0, 60)}”: ${issuesText}`);
-      chip.title = `${stored ? `Collapsed: ${bodyLines} lines hidden. Click to expand.` : 'Click to collapse this section.'}
+      chip.title = `${stored ? `Folded section: ${bodyLines} items in its body. Click to unfold.` : 'Click to collapse this section.'}
 ${issuesText}`;
       const size = phone ? 36 : 24;
       const lineHeight = parseFloat(getComputedStyle(dom).lineHeight) || size;
@@ -408,49 +352,13 @@ ${issuesText}`;
     for (const [key, chip] of existing) if (!used.has(key)) chip.remove();
   }
 
-  private renderControls(): void {
-    const foldedCount = this.sections.filter(section => this.folded.has(section.key)).length;
-    const sig = `${foldedCount}|${this.sections.length}`;
-    if (sig === this.controlsSig) return;
-    this.controlsSig = sig;
-    this.controlsEl.replaceChildren();
-    this.controlsEl.hidden = this.sections.length === 0;
-    if (this.sections.length === 0) return;
-    const label = document.createElement('span');
-    label.className = 'pfold-controls-label';
-    label.textContent = 'Outline';
-    const button = (text: string, aria: string, action: () => void, disabled = false) => {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.textContent = text;
-      b.setAttribute('aria-label', aria);
-      b.disabled = disabled;
-      b.onclick = action;
-      return b;
-    };
-    this.controlsEl.append(
-      label,
-      button('Collapse all sections', 'Collapse all sections', () => this.foldAll(), foldedCount === this.sections.length),
-      button('Expand all sections', 'Expand all sections', () => this.unfoldAll(), foldedCount === 0),
-    );
-  }
 
-  private onLayerClick = (event: MouseEvent): void => {
-    const chip = (event.target as HTMLElement).closest('.pfold-chip') as HTMLButtonElement | null;
-    if (!chip) return;
-    event.preventDefault();
-    event.stopPropagation();
-    this.toggle(Number(chip.dataset.heading));
-  };
-
-  /** Test hook. */
   debugState(): Record<string, unknown> {
-    const view = this.view();
-    return {
-      sections: this.sections.map(section => ({ ...section, text: this.lines[section.headingIndex]?.text ?? '', folded: this.folded.has(section.key) })),
-      folded: [...this.folded],
-      hidden: [...this.hidden].sort((a, b) => a - b),
-      hiddenBlocks: view ? hiddenBlocks(view) : [],
-    };
+    const s = this.state(), view = this.view();
+    return { ready: s?.ready, whole: s?.whole, timedOut: this.timedOut,
+      sections: this.sections.map(section => ({ ...section, text: this.lines[section.headingIndex]?.text ?? '', folded: this.isFolded(section.headingIndex) })),
+      folded: this.sections.filter(s => this.isFolded(s.headingIndex)).map(s => s.key),
+      shown: this.lines.filter(l => !this.isHidden(l.index)).map(l => l.index),
+      hidden: [...this.hiddenLines()], hiddenBlocks: view ? hiddenBlocks(view) : [], runs: s?.runs ?? [], count: this.countText() };
   }
 }

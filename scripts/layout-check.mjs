@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // Browser check for the Accord layout redesign (Ren's proposal, Mike ruled 2026-09-21: "build the
 // layout that you proposed"). It grows one stage at a time; each stage's checks stay.
 //   Stage 1: the status bar under the page (Line N of M, "You marked up to line K", Issues left,
@@ -133,6 +134,7 @@ async function openDoc(browser, base, slug, name, contextOptions = {}) {
   page.setDefaultTimeout(6000);
   await page.evaluate(() => document.activeElement?.blur());
   await page.waitForTimeout(300);
+  await showWholeAccord(page);
   return { context, page };
 }
 
@@ -271,7 +273,7 @@ async function desktop2(browser, base, style) {
     await page.locator('.amb-menu[data-menu="view"]').waitFor();
     const view = (await menuItems(page)).map(i => i.label);
     assert.ok(!view.includes('Show only decisions'), 'retired tier filter');
-    for (const label of ['Review panel', 'View agreed copy', 'Accords list', 'Collapse all sections', 'Expand all sections', 'Reading settings…', 'Keyboard shortcuts']) assert.ok(view.includes(label), `View lacks ${label}: ${view}`);
+    for (const label of ['Review panel', 'View agreed copy', 'Accords list', 'Show only open items', 'Reading settings…', 'Keyboard shortcuts']) assert.ok(view.includes(label), `View lacks ${label}: ${view}`);
     await page.keyboard.press('Escape');
     await reading(page);
     await page.keyboard.press('Alt+Slash');

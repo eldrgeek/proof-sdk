@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // Browser check for Invite person (Mike Wolf, 2026-09-19): an Owner invites a person to one
 // document from the Share menu (the ⋯ menu on a phone); the invitation email (captured, never
 // sent) signs the person in and opens the document; their comments carry their verified identity. A
@@ -103,6 +104,7 @@ async function waitForDoc(page) {
   page.setDefaultTimeout(6000);
   const toast = page.locator('.proof-share-welcome-toast button');
   if (await toast.count()) await toast.first().click().catch(() => {});
+  await showWholeAccord(page);
 }
 
 async function openDoc(page, base, slug) {

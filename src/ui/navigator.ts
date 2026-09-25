@@ -1,19 +1,17 @@
-/** Review, Outline and Since you beside the full document.
+/** Only open items beside the folded document (Mike, 2026-09-24, yfbqrau4).
  * Mike, 2026-09-23 (usability brief). Existing selectors keep their machine names.
  */
-import { NAVIGATOR_POLICY, reviewListKey, reviewItemHint, needsYouLabel, outlineRows, type NavigatorTab } from '../shared/layout-panels';
+import { NAVIGATOR_POLICY, reviewListKey, reviewItemHint, needsYouLabel, type NavigatorTab } from '../shared/layout-panels';
 import { isWriting, isInputComposing, letterShortcutsEnabled } from '../editor/editing-guard';
 import { REVIEW_LIST_POLICY, reviewCountLabel, reconcileReview, emptyReviewSession,
   clearCompleted, nextReviewRow, anchoredReviewScroll, type ReviewScope } from '../shared/review-list';
 import type { LineMarksUI } from './line-marks';
-import type { FoldingUI } from './folding';
 
 export interface NavigatorHost {
   lineMarks(): LineMarksUI;
-  folding(): FoldingUI | null;
   /** The one cursor's line. */
   cursor(): number;
-  /** Moves the cursor to a line (a jump; unfolds what hides it). */
+  /** Moves the cursor to a line (a jump; shows only that item and its path). */
   go(index: number): void;
   /** The tab changed (the host remembers it). */
   tabChanged(tab: NavigatorTab): void;
@@ -32,14 +30,10 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, t
 export class NavigatorUI {
   readonly tabsEl = el('div', 'anv-tabs');
   readonly panes: Record<NavigatorTab, HTMLElement> = {
-    outline: el('div', 'anv-pane prw-rail-body'),
     issues: el('div', 'anv-pane prw-rail-body'),
-    since: el('div', 'anv-pane prw-rail-body'),
   };
-  /** Fold all / Unfold all / level buttons and the other outline tools sit at the top of Outline. */
+  /** Selected open item cards remain beside the list. */
   readonly detailEl = el('section', 'anv-detail');
-  readonly toolsEl = el('div', 'anv-tools');
-  private readonly outlineList = el('ul', 'anv-outline');
   private readonly issuesList = el('ul', 'anv-issues');
   private sessions = { 'needs-you': emptyReviewSession(), 'all-open': emptyReviewSession() };
   private get session() { return this.sessions[this.scope]; }
@@ -48,19 +42,17 @@ export class NavigatorUI {
   private readonly clearSettledBtn = el('button', 'anv-clear-settled', 'Clear completed');
   private readonly nextBtn = el('button', 'anv-next', 'Next');
   private readonly issuesEmpty = el('p', 'prw-empty anv-empty');
-  private readonly sinceEmpty = el('p', 'prw-empty anv-empty', 'Nothing yet: this list fills in once you have marked lines and others change them.');
   private readonly buttons = new Map<NavigatorTab, HTMLButtonElement>();
   private readonly badge = el('span', 'anv-badge');
   readonly reviewButton = el('button', 'plm-issues anv-review-toggle');
   private readonly count = el('span', 'plm-issues-count');
   private tab: NavigatorTab;
-  private outlineSig = '';
   private reader = '';
   private panelOpen = false;
   private selectedKey: string | null = null;
   private readonly keyHint = el('p', 'anv-key-hint');
 
-  constructor(private readonly host: NavigatorHost, initial: NavigatorTab | undefined, sinceHost: HTMLElement) {
+  constructor(private readonly host: NavigatorHost, initial: NavigatorTab | undefined) {
     this.tab = initial ?? NAVIGATOR_POLICY.defaultTab;
     this.tabsEl.setAttribute('role', 'tablist');
     this.tabsEl.setAttribute('aria-label', 'Review panel');
@@ -73,7 +65,6 @@ export class NavigatorUI {
       b.setAttribute('aria-controls', `anv-pane-${spec.id}`);
       if (spec.id === 'issues') { this.badge.setAttribute('aria-hidden', 'true'); b.append(this.badge); }
       b.onclick = () => this.select(spec.id);
-      b.onkeydown = (event) => this.onTabKey(event);
       this.buttons.set(spec.id, b);
       this.tabsEl.append(b);
       const pane = this.panes[spec.id];
@@ -82,14 +73,12 @@ export class NavigatorUI {
       pane.setAttribute('role', 'tabpanel');
       pane.setAttribute('aria-labelledby', b.id);
     }
-    this.outlineList.setAttribute('aria-label', 'Headings');
     this.issuesList.setAttribute('aria-label', 'Review items');
     this.issuesList.dataset.accordReviewList = '';
     this.issuesList.tabIndex = 0;
     this.issuesList.addEventListener('keydown', this.onListKey);
     this.keyHint.setAttribute('role', 'status');
     this.keyHint.setAttribute('aria-live', 'polite');
-    this.panes.outline.append(this.toolsEl, this.outlineList);
     this.reviewButton.type = 'button';
     this.reviewButton.dataset.accordReviewToggle = '';
     this.reviewButton.setAttribute('aria-controls', 'anv-panel');
@@ -116,8 +105,6 @@ export class NavigatorUI {
     this.scopeTools.append(this.nextBtn, this.clearSettledBtn);
     this.detailEl.setAttribute('aria-label', 'Selected passage discussion and proposals');
     this.panes.issues.append(this.scopeTools, this.keyHint, this.detailEl, this.issuesEmpty, this.issuesList);
-    this.panes.since.append(this.sinceEmpty, sinceHost);
-    this.outlineList.addEventListener('focusout', () => queueMicrotask(() => this.render()));
     this.applyTab();
   }
 
@@ -129,16 +116,6 @@ export class NavigatorUI {
     this.applyTab();
     if (remember) this.host.tabChanged(tab);
     this.render(true);
-  }
-
-  private onTabKey(event: KeyboardEvent): void {
-    const ids = NAVIGATOR_POLICY.tabs.map(t => t.id);
-    const at = ids.indexOf(this.tab);
-    const to = event.key === 'ArrowRight' ? ids[(at + 1) % ids.length] : event.key === 'ArrowLeft' ? ids[(at - 1 + ids.length) % ids.length] : null;
-    if (!to) return;
-    event.preventDefault();
-    this.select(to);
-    this.buttons.get(to)?.focus();
   }
 
   private applyTab(): void {
@@ -228,7 +205,7 @@ export class NavigatorUI {
     this.render();
   }
 
-  render(force = false): void {
+  render(_force = false): void {
     const lm = this.host.lineMarks();
     if (this.reader !== lm.me()) { this.reader = lm.me(); this.sessions = { 'needs-you': emptyReviewSession(), 'all-open': emptyReviewSession() }; }
     const views = lm.reviewViews();
@@ -241,7 +218,6 @@ export class NavigatorUI {
     this.reviewButton.setAttribute('aria-label', `Review (${label})`);
     this.badge.textContent = label;
     this.buttons.get('issues')?.setAttribute('aria-label', `Review (${label})`);
-    this.sinceEmpty.hidden = Boolean(this.panes.since.querySelector('.prw-since:not([hidden])'));
     for (const button of this.scopeTools.querySelectorAll<HTMLElement>('[data-accord-review-scope]')) {
       button.setAttribute('aria-pressed', String(button.dataset.accordReviewScope === this.scope));
     }
@@ -254,7 +230,6 @@ export class NavigatorUI {
     this.issuesEmpty.textContent = this.scope === 'needs-you' ? 'Nothing needs you.' : 'Nothing is open.';
     this.issuesEmpty.hidden = this.session.rows.length > 0 || !lm.isLoaded();
     this.renderIssues();
-    if (this.tab === 'outline') this.renderOutline(force);
   }
 
   /** Keep the selected row in place when its detail receives a remote update above the list. */
@@ -316,57 +291,12 @@ export class NavigatorUI {
     if (active instanceof HTMLElement && active.isConnected && document.activeElement !== active) active.focus({ preventScroll: true });
   }
 
-  private renderOutline(force = false): void {
-    const folding = this.host.folding();
-    const lm = this.host.lineMarks();
-    const lines = lm.lineList();
-    const sections = folding?.sectionList() ?? [];
-    const cursor = this.host.cursor();
-    const rows = folding ? outlineRows(sections, i => lines[i]?.text ?? '', i => folding.isFolded(i), i => folding.sectionIssues(i)) : [];
-    // The section the cursor is in: the last heading at or above it.
-    let here = -1;
-    for (const row of rows) if (row.headingIndex <= cursor) here = row.headingIndex;
-    const sig = JSON.stringify([rows, here, lm.isLoaded()]);
-    const outlineFocus = document.activeElement;
-    const outlineTyping = outlineFocus instanceof HTMLInputElement || outlineFocus instanceof HTMLTextAreaElement;
-    if (sig === this.outlineSig || (!force && outlineTyping && this.outlineList.contains(outlineFocus))) return;
-    this.outlineSig = sig;
-    this.outlineList.replaceChildren();
-    if (rows.length === 0) {
-      this.outlineList.append(el('li', 'prw-empty anv-empty', 'No headings in this document.'));
-      return;
-    }
-    for (const row of rows) {
-      if (row.hidden) continue;
-      const li = el('li', 'anv-row');
-      li.dataset.heading = String(row.headingIndex);
-      li.dataset.level = String(row.level);
-      li.style.paddingLeft = `${8 + row.depth * NAVIGATOR_POLICY.indentPx}px`;
-      if (row.headingIndex === here) li.setAttribute('aria-current', 'true');
-      const chip = el('button', 'anv-fold');
-      chip.type = 'button';
-      chip.dataset.folded = String(row.folded);
-      chip.dataset.state = !lm.isLoaded() ? 'loading' : row.issues === 0 ? 'resolved' : 'issues';
-      chip.setAttribute('aria-expanded', String(!row.folded));
-      chip.setAttribute('aria-label', `${row.folded ? 'Unfold' : 'Fold'} “${row.text.slice(0, 60)}”: ${row.issues === 0 ? 'no Issues' : `${row.issues} ${row.issues === 1 ? 'Issue' : 'Issues'}`}`);
-      chip.append(el('span', 'anv-caret', row.folded ? '▸' : '▾'), el('span', 'anv-count', !lm.isLoaded() ? '…' : row.issues === 0 ? '✓' : String(row.issues)));
-      chip.onclick = () => { folding?.toggle(row.headingIndex); this.render(true); };
-      const heading = el('button', 'anv-heading', row.text || `Line ${row.headingIndex + 1}`);
-      heading.type = 'button';
-      heading.dataset.line = String(row.headingIndex);
-      heading.onclick = () => this.host.go(row.headingIndex);
-      li.append(chip, heading);
-      this.outlineList.append(li);
-    }
-  }
-
   debugState(): Record<string, unknown> {
     return {
       tab: this.tab,
       issues: [...this.issuesList.querySelectorAll<HTMLElement>('.anv-issue')].map(b => ({ line: Number(b.dataset.line), kind: b.dataset.kind, settled: b.dataset.settled === 'true', label: b.querySelector('.anv-issue-kind')?.textContent ?? '' })),
       scope: this.scope,
       settled: this.session.rows.filter(row => row.done).map(row => row.line),
-      outline: [...this.outlineList.querySelectorAll<HTMLElement>('.anv-row')].map(r => ({ heading: Number(r.dataset.heading), folded: r.querySelector<HTMLElement>('.anv-fold')?.dataset.folded === 'true' })),
     };
   }
 }

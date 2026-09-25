@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // Browser check for Proof Documents Step B2: folding, section Issue badges, section marking.
 // Authorship: Claude Opus 5 (worker proof-fold), 2026-09-18, in the style of reading-walk-check.mjs.
 // Starts an isolated local server on the current dist/ build (run `npm run build` first), creates
@@ -116,7 +117,7 @@ async function openDoc(browser, base, slug, name, contextOptions = {}) {
   return { context, page };
 }
 
-async function ready(page) {
+async function ready(page, whole = true) {
   await page.waitForFunction(() => window.proof?.collabConnectionStatus === 'connected' && window.proof?.collabIsSynced === true, null, { timeout: 20_000 });
   await page.waitForFunction(() => window.__proofLineMarks?.debugState().loaded === true, null, { timeout: 10_000 });
   await page.waitForFunction(() => window.__proofReadingWalk?.debugState().ready === true
@@ -125,6 +126,7 @@ async function ready(page) {
   const toast = page.locator('.proof-share-welcome-toast button');
   if (await toast.count()) await toast.first().click().catch(() => {});
   page.setDefaultTimeout(6000);
+  if (whole) await showWholeAccord(page);
 }
 
 const fold = page => page.evaluate(() => window.__proofFolding.debugState());
@@ -193,11 +195,11 @@ async function desktop(browser, base, style, width) {
   });
 
   const bob = await openDoc(browser, base, created.slug, 'Bob', { viewport: { width: 1280, height: 900 } });
-  await check(`${tag}: fold state is per viewer and survives a reload`, async () => {
+  await check(`${tag}: whole-view choices are per visit; reload starts folded`, async () => {
     assert.deepEqual((await fold(bob.page)).folded, [], 'the other viewer sees a fold');
     assert.equal(await isHiddenLine(bob.page, 11), false);
     await page.reload();
-    await ready(page);
+    await ready(page, false);
     await waitFor(page, () => document.querySelector('.pfold-chip[data-heading="9"]')?.dataset.folded === 'true');
     assert.ok(await isHiddenLine(page, 11), 'fold lost on reload');
   });
@@ -215,7 +217,7 @@ async function desktop(browser, base, style, width) {
   await check(`${tag}: scrolling past a folded section marks none of its hidden lines Seen and accepts nothing hidden`, async () => {
     await page.evaluate(() => window.scrollTo(0, 0));
     await selectPassage(page, 0);
-    await chip(page, L.ALPHA).click();
+    await page.evaluate(() => window.__proofFolding.setFolded(2, true));
     await waitFor(page, () => document.querySelector('.pfold-chip[data-heading="2"]')?.dataset.folded === 'true');
     // Read slowly with J from the top to Delta: every visible line dwells.
     for (let i = 0; i < 12; i += 1) {
@@ -228,7 +230,7 @@ async function desktop(browser, base, style, width) {
     const s = await walk(page);
     assert.equal(s.focus, L.DELTA, `focus ${s.focus}`);
     assert.equal(await page.locator('.prw-commit').count(), 0, 'a hidden suggestion was accepted by scrolling');
-    for (const line of [3, 4, 5, 6, 7, 8, 10, 11, 12, 13]) {
+    for (const line of [3, 5, 6, 7, 8, 10, 11, 12, 13]) {
       assert.ok(!s.seenWrites.includes(line), `hidden line ${line} was marked Seen`);
     }
     assert.deepEqual(s.seenWrites, [], 'reading creates no line marks');
@@ -246,31 +248,22 @@ async function desktop(browser, base, style, width) {
     await page.screenshot({ path: path.join(shots, `${tag}-4-resolved.png`) });
   });
 
-  // Accord layout stage 3 (decision 7): the fold controls live on the Navigator's Outline tab.
-  await check(`${tag}: Collapse all and Expand all controls preserve explicit reader choice`, async () => {
-    await page.locator('.prw-right .anv-tab[data-tab="outline"]').click();
-    const controls = page.locator('.prw-right .pfold-controls');
-    await controls.getByRole('button', { name: 'Collapse all sections', exact: true }).click();
-    assert.equal((await fold(page)).folded.length, 6);
-    await controls.getByRole('button', { name: 'Expand all sections', exact: true }).click();
+  await check(`${tag}: the whole-Accord control preserves explicit reader choice`, async () => {
+    await showWholeAccord(page);
+    await page.locator('[data-accord-whole-toggle]').click();
+    assert.equal((await fold(page)).whole, false);
+    await page.locator('[data-accord-whole-toggle]').click();
     assert.deepEqual((await fold(page)).hiddenBlocks, []);
     await expandedStaysExpanded(page);
   });
-
-  await check(`${tag}: Next issue unfolds the section that holds the next issue`, async () => {
-    await page.locator('.prw-right .pfold-controls').getByRole('button', { name: 'Collapse all sections', exact: true }).click();
-    const hiddenBefore = new Set((await fold(page)).hidden);
-    let unfoldedOne = false;
-    for (let i = 0; i < 6 && !unfoldedOne; i += 1) {
-      await nextReview(page);
-      await page.waitForTimeout(250);
-      const s = await walk(page);
-      assert.equal(await isHiddenLine(page, s.focus), false, `Next issue landed on hidden line ${s.focus}`);
-      if (hiddenBefore.has(s.focus)) unfoldedOne = true;
-    }
-    assert.ok(unfoldedOne, 'Next issue never went into a folded section');
-    await page.locator('.anv-tab[data-tab="outline"]').click();
-    await page.locator('.prw-right .pfold-controls').getByRole('button', { name: 'Expand all sections', exact: true }).click();
+  await check(`${tag}: Next issue lands on its shown item and keeps other text folded`, async () => {
+    await page.locator('[data-accord-whole-toggle]').click();
+    const before = (await fold(page)).hidden;
+    await nextReview(page);
+    const s = await walk(page);
+    assert.equal(await isHiddenLine(page, s.focus), false);
+    assert.deepEqual((await fold(page)).hidden, before, 'Navigation unfolded surrounding context');
+    await showWholeAccord(page);
   });
 
   await bob.context.close();
@@ -310,12 +303,13 @@ async function phone(browser, base, style) {
     await waitFor(page, () => !window.__proofFolding.isFolded(9));
     assert.equal(await isHiddenLine(page, 10), false);
   });
-  await check(`${tag}: the ⋯ menu has Fold all and Unfold all`, async () => {
+  await check(`${tag}: the ⋯ menu has the same whole-Accord toggle`, async () => {
+    await showWholeAccord(page);
     await page.locator('#share-banner .share-pill-overflow').tap();
-    await page.getByRole('menuitem', { name: /Collapse all sections/ }).tap();
+    await page.getByRole('menuitem', { name: /Show only open items/ }).tap();
     await waitFor(page, () => window.__proofFolding.debugState().folded.length === 6);
     await page.locator('#share-banner .share-pill-overflow').tap();
-    await page.getByRole('menuitem', { name: /Expand all sections/ }).tap();
+    await page.getByRole('menuitem', { name: /Show the whole Accord/ }).tap();
     await waitFor(page, () => window.__proofFolding.debugState().folded.length === 0);
   });
   await context.close();

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // Browser check for cross invitation (Mike Wolf, 2026-09-19): "if a human is invited, they should
 // be able to invite their AI and the reverse… when you invite an AI the identity test may be far
 // more stringent than when a human is invited. And an invited AI becomes an IDP for humans."
@@ -117,6 +118,7 @@ async function waitForDoc(page) {
 async function openDoc(page, base, slug) {
   await page.goto(`${base}/d/${slug}`);
   await waitForDoc(page);
+  await showWholeAccord(page);
 }
 
 const serverView = (page, slug) => page.evaluate(async ({ s, h }) => {
@@ -235,7 +237,7 @@ async function run(browser, style) {
     const line = await eric.evaluate(() => window.__proofLineMarks.lineList()[2].text);
     const proposal = await agent(base, slug, izzyKey, 'POST', '/marks/suggest-replace', { quote: line, content: 'Izzy proposes clearer words.', why: 'Make the invitation clear.' });
     assert.equal(proposal.status, 200, JSON.stringify(proposal.body));
-    await eric.reload(); await waitForDoc(eric);
+    await eric.reload(); await showWholeAccord(eric); await waitForDoc(eric);
     const view = await serverView(eric, slug);
     assert.equal(view.body.agentSponsors['ai:izzy'].sponsorName, 'Eric');
     assert.equal(view.body.agentSponsors['ai:izzy'].runtime, RUNTIME);
@@ -272,7 +274,7 @@ async function run(browser, style) {
     });
 
     await check(`${tag}: the people dialog shows the nomination with the AI's own words, and Confirm sends the invitation`, async () => {
-      await mike.reload();
+      await mike.reload(); await showWholeAccord(mike);
       await waitForDoc(mike);
       dialog = await openInviteDialog(mike, false);
       const section = dialog.locator('[data-nominations]');
@@ -339,7 +341,7 @@ async function run(browser, style) {
     // ---- 5: provenance, and 1's other half: suspension with the sponsor -------------------------
     await check(`${tag}: the people dialog shows how everyone got in, and Izzy with its sponsor and runtime`, async () => {
       activePage = mike;
-      await mike.reload();
+      await mike.reload(); await showWholeAccord(mike);
       await waitForDoc(mike);
       dialog = await openInviteDialog(mike, false);
       const text = await dialog.innerText();
@@ -396,7 +398,7 @@ async function run(browser, style) {
         email: ADA_EMAIL, name: 'Ada', why: 'Ada owns this section and should see it.',
       });
       assert.equal(nominated.status, 201, JSON.stringify(nominated.body).slice(0, 300));
-      await pMike.reload();
+      await pMike.reload(); await showWholeAccord(pMike);
       await waitForDoc(pMike);
       const d = await openInviteDialog(pMike, true);
       const section = d.locator('[data-nominations]');

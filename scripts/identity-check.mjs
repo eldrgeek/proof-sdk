@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // Browser check for Proof Documents Step B6: marks and answers name a verified person or a named AI.
 // Authorship: Claude Opus 5 (worker proof-identity), 2026-09-18, in the style of asks-check.mjs.
 // Starts an isolated local server on the current dist/ build (run `npm run build` first) with the
@@ -108,6 +109,7 @@ async function openDoc(page, base, slug) {
   page.setDefaultTimeout(6000);
   const toast = page.locator('.proof-share-welcome-toast button');
   if (await toast.count()) await toast.first().click().catch(() => {});
+  await showWholeAccord(page);
 }
 
 async function guestPage(browser, base, slug, name, options) {

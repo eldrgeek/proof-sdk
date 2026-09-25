@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // Hover changes no target, selection, mode or layout. Closing Issues never folds text.
 // Touch controls mark the selected passage. Mike, 2026-09-23 (usability brief).
 // Starts an isolated local server on the current dist/ build (run `npm run build` first) in both
@@ -96,6 +97,7 @@ async function openDoc(browser, base, slug, name, contextOptions = {}) {
   const toast = page.locator('.proof-share-welcome-toast button');
   if (await toast.count()) await toast.first().click().catch(() => {});
   page.setDefaultTimeout(6000);
+  await showWholeAccord(page);
   return { context, page };
 }
 
@@ -149,7 +151,7 @@ async function runDesktop(browser, base, tag) {
     await page.evaluate(() => document.querySelector('.share-pill-suggest-toggle').click());
   });
   await check(`${tag}: closed-Issue records never collapse text after reload`, async () => {
-    await page.reload();
+    await page.reload(); await showWholeAccord(page);
     await page.waitForFunction(() => window.__proofLineMarks?.debugState().loaded);
     await page.waitForTimeout(1600);
     assert.equal(await page.locator('.pclose-folded, .pclose-controls').count(), 0);

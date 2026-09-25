@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // Caret stability stress check (Mike, 2026-09-19: "When I tried to click before that line it
 // started to make changes but moved the view away from where I was typing"; his typing landed as
 // scattered fragments). Clicks at a mid-document position and types 40 characters at human speed
@@ -158,6 +159,7 @@ async function openDoc(browser, base, slug, name, contextOptions) {
   const toast = page.locator('.proof-share-welcome-toast button');
   if (await toast.count()) await toast.first().click().catch(() => {});
   page.setDefaultTimeout(8000);
+  await showWholeAccord(page);
   return { context, page };
 }
 

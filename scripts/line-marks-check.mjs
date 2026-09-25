@@ -8,7 +8,7 @@
 // the right rail (no popover); the focus line becomes Seen after a short dwell, so counts below
 // wait for that first.
 // Usage: node scripts/line-marks-check.mjs [--style playmaker|proof]
-import { nextReview, showReview } from './review-ui.mjs';
+import { nextReview, showReview, showWholeAccord } from './review-ui.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -118,6 +118,7 @@ async function openDoc(browser, base, slug, name, contextOptions = {}, query = '
   await page.waitForFunction(() => window.__proofLineMarks?.debugState().loaded === true, null, { timeout: 10_000 });
   await page.waitForTimeout(500);
   page.setDefaultTimeout(6000);
+  await showWholeAccord(page);
   return { context, page };
 }
 
@@ -163,7 +164,7 @@ async function desktop(browser, base) {
     assert.ok((await page.evaluate(() => window.__proofLineMarks.debugState().marks)).some(m => m.reason === 'Needs a source'));
   });
   await check(`${tag}: marks survive a reload`, async () => {
-    await page.reload();
+    await page.reload(); await showWholeAccord(page);
     await page.waitForFunction(() => window.__proofLineMarks?.debugState().loaded === true, null, { timeout: 20_000 });
     await waitFor(page, () => window.__proofLineMarks.myStatus(1) === 'agreed');
     assert.equal(await dotStatus(page, 0), 'seen');

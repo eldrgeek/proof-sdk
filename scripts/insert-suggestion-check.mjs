@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // Browser check: an AI's pending insert suggestion shows exactly once, in both review styles.
 // Regression for 2026-09-18: a paragraph insert added through the agent API
 // (suggest-insert, content "\n\n<paragraph>") is materialized in the document by the server,
@@ -100,6 +101,7 @@ async function openDoc(browser, base, slug) {
   await page.waitForFunction(() => window.proof?.collabConnectionStatus === 'connected' && window.proof?.collabIsSynced === true, null, { timeout: 20_000 });
   await page.waitForTimeout(800);
   assert.equal(await page.evaluate(() => window.__proofEditingGuard().writing), false, 'opening proposals must stay in Reading');
+  await showWholeAccord(page);
   return { context, page };
 }
 

@@ -6,7 +6,7 @@
 // 1440 (desktop) and 390 (phone). Screenshots go to .preview/ (or --shots <dir>).
 // Exit code 0 only if every check passes.
 // Usage: node scripts/asks-check.mjs [--style playmaker|proof] [--width 1440] [--shots dir]
-import { nextReview, showReview } from './review-ui.mjs';
+import { nextReview, showReview, showWholeAccord } from './review-ui.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -111,6 +111,7 @@ async function openDoc(browser, base, slug, name, contextOptions = {}) {
   const page = await context.newPage();
   await page.goto(`${base}/d/${slug}`);
   await ready(page);
+  await showWholeAccord(page);
   return { context, page };
 }
 

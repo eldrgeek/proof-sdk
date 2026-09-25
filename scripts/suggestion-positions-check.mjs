@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // Browser check: a person's pending suggestions and comments keep pointing at their own words when
 // an AI edits text above them, and a page open never drops a stored pending suggestion.
 // Regressions for 2026-09-19 (ask-mike worker): after an AI /edit/v2 replace_block grew the intro
@@ -130,6 +131,7 @@ async function openDoc(browser, base, created, device) {
   if (await toast.count()) await toast.first().click().catch(() => {});
   page.setDefaultTimeout(8000);
   assert.equal(await page.evaluate(() => window.__proofEditingGuard().writing), false, 'opening proposals must stay in Reading');
+  await showWholeAccord(page);
   return { context, page };
 }
 

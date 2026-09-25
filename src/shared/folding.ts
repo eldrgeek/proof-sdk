@@ -27,8 +27,6 @@ export const FOLDING = {
   undoToastMs: 8000,
   /** The largest batch the line-mark routes accept in one request. */
   maxBatchLines: 1000,
-  /** localStorage key prefix; the value is the list of folded heading keys (hash:occurrence). */
-  storagePrefix: 'proof:fold:',
   /** The badge counts the same Issues as the top bar (team-wide), restricted to the section. */
   badgeCounts: 'team' as 'team',
 } as const;

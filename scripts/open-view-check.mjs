@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // Review beside the full document; counts, scopes, completion and the explicit agreed copy.
 // Mike, 2026-09-23 (usability brief). Local fixtures only.
 import assert from 'node:assert/strict';
@@ -124,6 +125,7 @@ async function openDoc(browser, base, slug, name, viewport = { width: 1440, heig
   const toast = page.locator('.proof-share-welcome-toast button');
   if (await toast.count()) await toast.first().click().catch(() => {});
   page.setDefaultTimeout(6000);
+  await showWholeAccord(page);
   return { context, page };
 }
 
@@ -320,9 +322,8 @@ async function main() {
         // Mike agrees to everything; Eric agrees to the first few lines only.
         await markAll(mike.page, 'agreed');
         await markAll(eric.page, 'agreed', 3);
-        // The header names Eric as soon as his first mark syncs ("from line 2"). Wait for the
-        // three marks, which is the state the assertion below describes.
-        await waitFor(mike.page, () => /Eric[^.]* has not read from line 4 on\./.test(window.__proofOpenView.debugState().header.text || ''), null, 20_000);
+        // Historical agreement still governs the agreed-copy offer; wait for its current detail.
+        await waitFor(mike.page, () => /Eric/.test(window.__proofLineMarks.agreedCopyOffer().detail), null, 20_000);
         await mike.page.locator('#accord-menubar .amb-top[data-menu="view"]').click();
         const offer = mike.page.locator('[data-item="view-agreed-copy"]');
         assert.equal(await offer.isDisabled(), true);
@@ -330,14 +331,14 @@ async function main() {
         await mike.page.keyboard.press('Escape');
         await mike.page.waitForTimeout(500);
         const s = await state(mike.page);
-        assert.ok(/^Agreed by you/.test(s.header.text), `header: ${s.header.text}`);
-        assert.ok(/Eric[^.]* has not read from line 4 on\./.test(s.header.text), `header: ${s.header.text}`);
-        assert.equal(s.header.settled, false, 'the Accord must never imply a document is settled when it is not');
-        // ...and Eric's own header is his, not Mike's.
+        const counts = await mike.page.evaluate(() => {
+          const lm=window.__proofLineMarks, views=lm.reviewViews();
+          return {total:lm.lineList().length, needs:views['needs-you'].lines.length, all:views['all-open'].lines.length};
+        });
+        assert.match(s.header.text, counts.all ? /open for you.*in accord/ : /^In accord: all/);
+        assert.equal(s.header.settled, counts.all === 0, 'The count line uses open issues, not historical marks');
         const his = await state(eric.page);
-        assert.ok(/You have not read from line 4 on\./.test(his.header.text), `Eric's header: ${his.header.text}`);
-        assert.ok(/Mike/.test(his.header.text), `Eric's header should name Mike: ${his.header.text}`);
-        assert.ok(!/^Agreed by you/.test(his.header.text), "Eric's header must be his own, not Mike's");
+        assert.match(his.header.text, /open for you|In accord: all/);
         // The clean read: no margin dots, no rail.
         if (s.clean) {
           const chrome = await mike.page.evaluate(() => ({
@@ -404,15 +405,14 @@ async function main() {
       assert.equal(s.clean, false, 'completion removed controls');
       assert.equal(await mike.page.locator('[data-accord-review-toggle]').isVisible(), true);
       assert.equal(await mike.page.locator('.plm-issues-count').innerText(), '0 need you');
-      assert.equal(s.zero.forEveryone, false, 'Eric has still not read it');
+      assert.equal(s.header.settled, true, 'No open issues remain; historical unread lines are not open');
       await mike.page.screenshot({ path: path.join(shots, 'open-zero-for-you-1440.png') });
 
-      // Now Eric agrees to everything too: zero for EVERYONE, and the header goes.
+      // Historical agreement remains stored; zero open items keeps the count line visible.
       const eric = await openDoc(browser, base, created.slug, 'Eric');
       try {
         await markAll(eric.page, 'agreed');
-        // Izzy is on the team too (it left the ask and the comment), so the header is not settled
-        // until Izzy has agreed as well. That is the header being honest, not the check being fussy.
+        // Historical team marks remain available independently of the open-item count.
         await agent(base, created, '/marks/line', { by: 'ai:izzy', status: 'agreed', section: { quote: 'Open view check' } });
         await waitFor(mike.page, () => window.__proofOpenView.debugState().zero.forEveryone === true, null, 25_000)
           .catch(async () => { throw new Error(`not settled: ${JSON.stringify((await state(mike.page)).header)}`); });
@@ -420,8 +420,9 @@ async function main() {
         const done = await state(mike.page);
         assert.equal(done.zero.forEveryone, true);
         assert.equal(done.header.settled, true);
-        assert.equal(done.header.hidden, true, 'when it is zero for everyone the header goes too');
-        assert.equal(done.zero.text, 'Everyone has agreed.');
+        assert.equal(done.header.hidden, false, 'The count line remains when every item is in accord');
+        assert.match(done.header.text, /^In accord: all/);
+        assert.match(done.zero.text, /^In accord: all/);
         assert.equal(done.view, 'open');
         await mike.page.screenshot({ path: path.join(shots, 'open-zero-for-everyone-1440.png') });
       } finally {
@@ -477,7 +478,8 @@ async function main() {
         }
         await waitFor(page.page, () => window.__proofLineMarks.agreedCopyOffer().enabled);
         await chooseCopy(page.page, true);
-        assert.match(await page.page.locator('.aov-header-text').innerText(), /Wording revision.*Agreed by.*Mike/);
+        assert.equal(await page.page.locator('.aov-header').isVisible(), false, 'The agreed copy has no count line');
+        assert.equal((await state(page.page)).hiddenLines.length, 0, 'The agreed copy shows the whole document');
         await waitFor(page.page, () => window.__proofOpenView.debugState().view === 'accord');
         await page.page.waitForTimeout(500);
         const back = await state(page.page);

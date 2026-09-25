@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // Browser check for Proof Documents Steps B4e + B4f: review bundles (one card, atomic accept after a
 // hash check, stale bundles refuse, the walk steps a bundle as one unit), competing alternatives
 // (stacked under the line, keys 1-9, unanimity makes a normal edit, an Owner decides), blind marking
@@ -123,6 +124,7 @@ async function openDoc(page, base, slug) {
   page.setDefaultTimeout(6000);
   const toast = page.locator('.proof-share-welcome-toast button');
   if (await toast.count()) await toast.first().click().catch(() => {});
+  await showWholeAccord(page);
 }
 
 async function run(browser, style) {

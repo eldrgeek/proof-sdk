@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // A local write to a line a remote writer is touching updates that line AND NOTHING ELSE.
 //
 // The bug this check exists for (measured 2026-09-22 by worker accord-edit, fixed 2026-09-23):
@@ -153,6 +154,7 @@ async function openDoc(browser, base, slug, name, contextOptions) {
   if (await toast.count()) await toast.first().click().catch(() => {});
   if (trace) page.on('console', m => { if (/markSuggestReplace|suggest|refus|reject/i.test(m.text())) console.log(`  [page] ${m.text().slice(0, 200)}`); });
   page.setDefaultTimeout(8000);
+  await showWholeAccord(page);
   return { context, page };
 }
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // Browser check: view-only decorations survive a remote collaboration update.
 // A remote Yjs update rebuilds the whole ProseMirror document, which drops mapped decorations.
 // Two pages open one document; page A types; page B's ask widgets, folded sections and
@@ -108,6 +109,7 @@ async function openDoc(browser, base, slug, name) {
   const toast = page.locator('.proof-share-welcome-toast button');
   if (await toast.count()) await toast.first().click().catch(() => {});
   page.setDefaultTimeout(6000);
+  await showWholeAccord(page);
   return { context, page };
 }
 

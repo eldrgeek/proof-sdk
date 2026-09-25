@@ -10,7 +10,7 @@ import type { ProofIssue } from '../shared/line-marks';
 import { needsYouLines } from '../shared/layout-status';
 import {
   ACCORDS_LIST_POLICY, BOTTOM_CHAT_POLICY, OPEN_ITEMS_POLICY, GUTTER_POLICY, REVIEW_KEYS_POLICY, reviewListKey, reviewItemHint, passageMarkers, stableReviewOrder, resolveSettledIndex, MARGIN_POLICY, MARKED_BY_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY,
-  markedByFold, needsYouItems, needsYouLabel, outlineRows, parseRailState,
+  markedByFold, needsYouItems, needsYouLabel, parseRailState,
 } from '../shared/layout-panels';
 
 let passed = 0;
@@ -28,10 +28,10 @@ const ask = (line: number, openFor: string[], by = 'ai:cos'): ProofIssue => ({
 const suggestion = (line: number, by: string | null): ProofIssue => ({ type: 'suggestion', markId: `s${line}`, pos: line * 10 + 2, kind: 'replace', by, excerpt: '' });
 const comment = (line: number, by: string | null): ProofIssue => ({ type: 'comment', markId: `c${line}`, pos: line * 10 + 3, kind: 'comment', by, excerpt: '' });
 
-test('layout v2 retires the Line tab and moves the three Review tabs right', () => {
+test('the Line tab is retired and the right panel holds only Review', () => {
   assert.equal(MARGIN_POLICY.renderLineTab, false);
   assert.equal(NAVIGATOR_POLICY.side, 'right');
-  assert.deepEqual(NAVIGATOR_POLICY.tabs.map(t => t.label), ['Review', 'Outline', 'Since you']);
+  assert.deepEqual(NAVIGATOR_POLICY.tabs.map(t => t.label), ['Review']);
   assert.equal(NAVIGATOR_POLICY.widthPx, 340);
   assert.equal(MARGIN_POLICY.widthPx, 340);
   assert.equal(NAVIGATOR_POLICY.closedBelowPx, 1100);
@@ -66,24 +66,9 @@ test('Issues labels: "Ask · line N", "Change from Dee · line N", "… and 1 mo
   assert.equal(needsYouLabel(changed[0], name, ME), 'Changed since you marked it · line 4');
 });
 
-test('Outline rows: depth from the shallowest heading; folded parents hide their children', () => {
-  const sections = [
-    { headingIndex: 0, level: 1, parent: null },
-    { headingIndex: 5, level: 2, parent: 0 },
-    { headingIndex: 9, level: 3, parent: 5 },
-    { headingIndex: 14, level: 2, parent: 0 },
-  ];
-  const folded = new Set([5]);
-  const rows = outlineRows(sections, i => `H${i}`, i => folded.has(i), i => (i === 5 ? 2 : 0));
-  assert.deepEqual(rows.map(r => r.depth), [0, 1, 2, 1]);
-  assert.deepEqual(rows.map(r => r.hidden), [false, false, true, false]);
-  assert.equal(rows[1].folded, true);
-  assert.equal(rows[1].issues, 2);
-  assert.equal(rows[0].text, 'H0');
-});
-
+// Outline row assertions retired: folded-view tests cover heading paths in the document.
 test('rail state: open / closed and each rail\'s tab are remembered; junk is dropped', () => {
-  assert.deepEqual(parseRailState('{"left":true,"right":false,"leftTab":"outline","rightTab":"room"}'), { left: true, right: false, leftTab: 'outline', rightTab: 'room' });
+  assert.deepEqual(parseRailState('{"left":true,"right":false,"leftTab":"outline","rightTab":"room"}'), { left: true, right: false, rightTab: 'room' });
   assert.deepEqual(parseRailState('{"leftTab":"documents","rightTab":"third","left":"yes"}'), {});
   assert.deepEqual(parseRailState('not json'), {});
   assert.deepEqual(parseRailState(null), {});
@@ -155,7 +140,7 @@ test('layout v2 policies: independent panels, permanent composer, proposals only
   assert.equal(PHONE_STRIP_POLICY.opens, 'review');
   assert.equal(PHONE_STRIP_POLICY.showLineMarks, false);
   assert.deepEqual(parseRailState('{"left":true,"right":false,"reviewTab":"since"}'),
-    { left: true, right: false, reviewTab: 'since' });
+    { left: true, right: false });
 });
 
 test('list keys: A, Delete, Backspace, J, K and Enter; no line-mark R', () => {

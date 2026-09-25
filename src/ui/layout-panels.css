@@ -72,7 +72,7 @@ body.prw-on.prw-right-collapsed { --prw-right: var(--prw-collapsed); }
 .anv-empty { padding: 8px 14px; }
 
 /* Navigator: Issues */
-.anv-issues, .anv-outline { list-style: none; margin: 0; padding: 2px 0; }
+.anv-issues { list-style: none; margin: 0; padding: 2px 0; }
 .anv-issue {
   display: flex; gap: 8px; align-items: flex-start; width: 100%; padding: 7px 12px 7px 14px; border: none; background: none;
   color: #333; text-align: left; font: 13px/1.4 -apple-system, system-ui, sans-serif; cursor: pointer;
@@ -85,25 +85,6 @@ body.prw-on.prw-right-collapsed { --prw-right: var(--prw-collapsed); }
 .anv-issue-kind { color: var(--acc-mute, #6b7280); font-size: 12px; }
 /* The PlayMaker Marks panel docks under the Issues list (View › Marks panel). */
 .anv-pane .prw-dock:not(:empty) { margin: 10px 12px 0; padding-top: 10px; border-top: 1px solid var(--acc-line, #e3e6ea); }
-
-/* Navigator: Outline */
-.anv-tools { padding: 4px 12px 8px; display: grid; gap: 6px; }
-.anv-tools:empty { display: none; }
-.anv-tools .pfold-controls { margin: 0; }
-.anv-row { display: flex; align-items: center; gap: 6px; padding: 3px 10px 3px 8px; }
-.anv-row[aria-current="true"] { background: var(--acc-here-tint, #eef3ff); }
-.anv-fold {
-  display: inline-flex; align-items: center; gap: 3px; flex: none; min-width: 40px; height: 22px; padding: 0 6px; border: 1px solid #e5e7eb;
-  border-radius: 999px; background: #fff; color: #4b5563; font: 600 11px/1 system-ui, sans-serif; cursor: pointer;
-}
-.anv-fold[data-state="issues"] { border-color: #f0d9a6; background: var(--acc-need-tint, #fff6e3); color: #7a4f00; }
-.anv-fold[data-state="resolved"] .anv-count { color: #15803d; }
-.anv-heading {
-  flex: 1; min-width: 0; padding: 4px 2px; border: none; background: none; color: #26303c; text-align: left; cursor: pointer;
-  font: 13px/1.35 -apple-system, system-ui, sans-serif; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.anv-row[data-level="1"] .anv-heading { font-weight: 600; }
-.anv-heading:hover { color: var(--acc-here, #2f6fed); }
 
 /* Margin: the Line tab (decision 8). */
 .plm-box-margin .plm-quote {
@@ -177,8 +158,7 @@ body.prw-on.prw-right-collapsed { --prw-right: var(--prw-collapsed); }
   body.prw-margin-sheet .prw-right.prw-sheet-open .amg-head { border-top: 1px solid var(--acc-line, #e3e6ea); }
   .prw-sheet-open .amg-tab, .prw-sheet-open .anv-tab { min-height: 44px; padding: 0 14px; font-size: 14px; }
   .prw-sheet-open .plm-box-margin .plm-primary-row .plm-choice.plm-primary, .prw-sheet-open .plm-more-btn { min-height: 48px; }
-  .prw-sheet-open .anv-issue, .prw-sheet-open .anv-heading { min-height: 44px; font-size: 14px; }
-  .prw-sheet-open .anv-fold { height: 32px; min-width: 48px; }
+  .prw-sheet-open .anv-issue { min-height: 44px; font-size: 14px; }
   /* Mike, 2026-09-23 (usability brief): the sheet carries the one answer group. */
   body.prw-margin-sheet .prw-right.prw-sheet-open .prw-keys { display: none; }
   /* Sheets size to their content (the rail has only a max height): panes grow, not shrink to zero. */

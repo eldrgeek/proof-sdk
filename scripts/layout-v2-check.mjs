@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // Mike, 2026-09-24, yfbqrau4 / ac-2vs. Local fixtures only; reviewer runs Chromium.
 // Replaces layout assertions about the retired Margin, mark circles and A/R line marks.
 // Run after npm run build. Optional --style playmaker|proof and --shots directory.
@@ -67,7 +68,7 @@ async function run(browser, server, style, width) {
     await create('Another Accord');
     const created = await create('Layout v2');
     const slug = created.slug;
-    await page.goto(`${server.base}/d/${slug}`); await waitReady(page);
+    await page.goto(`${server.base}/d/${slug}`); await waitReady(page); await showWholeAccord(page);
     const keyResponse = await context.request.post(`${server.base}/api/documents/${slug}/agent-keys`, { headers: { ...headers, Origin: server.base }, data: { label: 'layout', runtime: 'test' } });
     assert.equal(keyResponse.status(), 201, await keyResponse.text());
     const token = (await keyResponse.json()).token;
@@ -96,7 +97,7 @@ async function run(browser, server, style, width) {
       await page.locator('.prw-left .prw-collapse').click();
     } else {
       assert.ok((await page.locator('#editor-container').boundingBox()).width > beforeWidth + 150);
-      await page.reload(); await waitReady(page);
+      await page.reload(); await showWholeAccord(page); await waitReady(page); await showWholeAccord(page);
       assert.equal(await page.evaluate(() => document.body.classList.contains('prw-left-collapsed')), true);
       await page.locator('.prw-left .prw-collapse').click();
     }
@@ -183,11 +184,9 @@ async function run(browser, server, style, width) {
     const bundleMarks = (await bundleState.json()).marks || {};
     assert.ok(bundleBIds.every(id => bundleMarks[id]?.status === 'rejected'), 'Backspace did not record the bundle members as rejected on the server');
     assert.equal(await text(page), bundleBText);
-    // Retained tabs live on the right. Only explicit disclosure folds the document.
-    await page.locator('.prw-right .anv-tab[data-tab="outline"]').click();
-    assert.equal(await page.locator('.prw-right .anv-outline').isVisible(), true);
-    await page.locator('.prw-right .anv-tab[data-tab="since"]').click();
-    assert.equal(await page.locator('.prw-right .anv-pane[data-tab="since"]').isVisible(), true);
+    // Mike accepted the folded view as the replacement for these tabs.
+    assert.equal(await page.locator('[data-tab="outline"], [data-tab="since"], .anv-outline, .prw-since').count(), 0);
+
     await page.locator('.prw-right .anv-tab[data-tab="issues"]').click();
     if (phone) await page.locator('.prw-right .prw-collapse').click();
     // One composer at the bottom, one latest message, explicit upward expansion.

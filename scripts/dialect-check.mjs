@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // Check for the Accord dialect (2026-09-19; named 2026-09-21, machine value proof-dialect): a Mike-like document on a running server (Mike signs in
 // and marks lines, answers an ask, objects and tags a decision line; Claude, through its agent key,
 // suggests, comments, flags, sets a time-to-live, reads with evidence and tags context) is
@@ -109,6 +110,7 @@ async function openDoc(page, base, slug) {
   page.setDefaultTimeout(8000);
   const toast = page.locator('.proof-share-welcome-toast button');
   if (await toast.count()) await toast.first().click().catch(() => {});
+  await showWholeAccord(page);
 }
 
 /** An agent call; writes retry while a live page's newest typing is being saved (409 PROJECTION_STALE / STALE_BASE). */
@@ -204,7 +206,7 @@ async function run(browser, style) {
     ok(await agent(base, slug, CLAUDE, 'POST', '/ttl', { quote: 'Next steps:', ttl: '14d' }), 'ttl');
     const ask = await agent(base, slug, CLAUDE, 'POST', '/asks', { quote: 'Next steps:', to: [MIKE], recommend: 'Yes: the invitation is ready to draft', ifYes: 'Eric starts today' });
     ok(ask, 'ask');
-    await mike.reload();
+    await mike.reload(); await showWholeAccord(mike);
     await mike.waitForFunction(() => window.__proofLineMarks?.debugState().loaded === true, null, { timeout: 20_000 });
     await mike.waitForFunction(() => window.__proofLineMarks.lineList().some(l => l.text.startsWith('Next steps')), null, { timeout: 10_000 });
     await mikeDoes(mike, slug, '/line-marks', { by: MIKE, status: 'agreed', via: 'key', anchor: await anchorOf(mike, 'Q3 launch plan') });

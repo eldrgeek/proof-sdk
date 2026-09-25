@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { showWholeAccord } from './review-ui.mjs';
 // Browser check for Proof Documents Step B7: chat in the right rail (desktop) and a bottom sheet
 // (phone). Two signed-in people (Mike, Eric) and an AI (an agent key minted in Mike's page, talking
 // through the agent API) chat about a document: line pointers, @mentions with the unread badge,
@@ -102,6 +103,7 @@ async function openDoc(page, base, slug) {
   page.setDefaultTimeout(6000);
   const toast = page.locator('.proof-share-welcome-toast button');
   if (await toast.count()) await toast.first().click().catch(() => {});
+  await showWholeAccord(page);
 }
 
 const agentCall = (base, slug, KEY, method, route, body) => fetch(`${base}/api/agent/${slug}${route}`, {
