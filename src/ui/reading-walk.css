@@ -15,7 +15,10 @@ body.prw-on.prw-right-collapsed { --prw-right: var(--prw-collapsed); }
   body.prw-on #editor-container { max-width: var(--prw-text); margin: 0 auto; }
   body.prw-on #app #editor,
   body.prw-on[data-review-style="playmaker"] #app #editor {
-    padding-right: 24px !important;
+    /* 64 px, not 24: the per-line counts ("1 proposal") sit in this gutter (usability brief,
+       2026-09-23, "counts stay visible without hover"). At 24 px the Review panel covered all
+       but their first letters (step 2 review, 2026-09-25). */
+    padding-right: 64px !important;
     padding-bottom: calc(100vh - 120px) !important;
   }
   body.prw-on .pm-review-panel:not(.pm-review-panel-docked) { display: none !important; }

@@ -87,7 +87,7 @@ body.aov-in-accord [data-prw-focus="true"] { background: transparent !important;
 .anv-clear-settled:hover { background: #f4f4f5; }
 
 .anv-review-tools { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; }
-.anv-review-tools button { min-height: 32px; border: 1px solid #d4d4d8; border-radius: 6px; background: white; color: #374151; cursor: pointer; }
+.anv-review-tools button { min-height: 32px; padding: 2px 8px; border: 1px solid #d4d4d8; border-radius: 6px; background: white; color: #374151; cursor: pointer; }
 .anv-review-tools button[aria-pressed="true"] { background: #eef3ff; border-color: #2563eb; }
 .anv-review-tools button:disabled { opacity: .5; cursor: default; }
 .anv-review-tools button:focus-visible, .anv-review-toggle:focus-visible, .anv-people:focus-visible, .anv-issue:focus-visible { outline: 2px solid #2563eb; outline-offset: -2px; }

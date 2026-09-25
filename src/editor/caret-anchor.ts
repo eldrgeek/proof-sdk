@@ -35,7 +35,13 @@ function lineTop(view: EditorView, pos: number): number | null {
     const $pos = view.state.doc.resolve(pos);
     const at = $pos.depth ? $pos.before(1) : pos;
     const dom = view.nodeDOM(at);
-    return dom instanceof HTMLElement && dom.isConnected ? dom.getBoundingClientRect().top : null;
+    if (!(dom instanceof HTMLElement) || !dom.isConnected) return null;
+    // A line that is not drawn has no place on screen to keep. Its box reads as top 0, so
+    // holding it scrolled the page: every arrival in the folded view (which hides the whole
+    // document while it loads) moved down by the editor's distance from the top of the page,
+    // title under the top bar (step 2 review, 2026-09-25).
+    if (dom.getClientRects().length === 0) return null;
+    return dom.getBoundingClientRect().top;
   } catch { return null; }
 }
 

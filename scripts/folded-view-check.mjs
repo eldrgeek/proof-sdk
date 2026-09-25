@@ -93,6 +93,12 @@ async function run(browser, server, style, width) {
     assert.deepEqual(numbers,[3,5]);
     const countRect=await page.locator('.aov-header').boundingBox(), titleRect=await page.locator('.ProseMirror h1').boundingBox();
     assert.ok(countRect.y+countRect.height<=titleRect.y);
+    // Arrival leaves the page where it starts: the count line is on screen, below the top bar.
+    // Step 2 review, 2026-09-25: holding a line that was hidden while the view loaded scrolled
+    // every arrival down by the editor's distance from the top, with the title under the bar.
+    const arrival=await page.evaluate(()=>({scrollY:window.scrollY,chrome:Math.max(0,...[...document.querySelectorAll('#share-banner,#accord-menubar')].map(e=>e.getBoundingClientRect().bottom))}));
+    assert.equal(arrival.scrollY,0,`arrival scrolled the page to ${arrival.scrollY}`);
+    assert.ok(countRect.y>=arrival.chrome-1,`the count line (top ${countRect.y}) is under the top bar (${arrival.chrome})`);
     if(width<700) {
       for(const rule of await page.locator('.aov-rule').all()) assert.ok((await rule.boundingBox()).height>=44);
       await page.locator('.prw-strip-review').click();

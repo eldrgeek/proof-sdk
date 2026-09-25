@@ -117,6 +117,9 @@
     display: inline-flex; align-items: center; gap: 0; border-radius: 999px; padding: 0 4px 0 12px; min-height: 32px;
     background: #fff6e3; color: #7a4f00; border: 1px solid #f0d9a6;
   }
+  /* Since step 1 the pill is the Review toggle, with no Next part: a gap between "Review" and its
+     count (a flex item drops its trailing space, so it read "Review4 need you"), even padding. */
+  body.amb-on #share-banner .plm-issues.anv-review-toggle { gap: 5px; padding: 0 12px; }
   body.amb-on #share-banner .plm-issues[data-state="aligned"], body.amb-on #share-banner .plm-issues[data-state="clear"] { background: #f0faf3; color: #177245; border-color: #9ccfb0; }
   body.amb-on #share-banner .plm-issues .plm-issues-count { font-weight: 700; font-size: 13px; background: transparent !important; color: inherit !important; padding: 0 !important; }
   body.amb-on #share-banner .plm-issues .plm-next {
@@ -134,8 +137,10 @@
   body.amb-on .prw-rail { top: var(--prw-top, 80px); }
 }
 
-/* The Suggesting | Editing segmented switch (the only mode a person chooses). */
-.share-pill-suggest-toggle.amb-seg { align-items: stretch !important; padding: 0 !important; gap: 0 !important; overflow: hidden; border-radius: 8px !important; background: #fff !important; border: 1px solid #d9dde3 !important; }
+/* The Edit text / Leave text button (the only mode a person chooses). It was a Suggesting |
+   Editing segmented switch; it now holds one label, so the label is centred and padded (step 2
+   review, 2026-09-25: it sat at the top edge, touching the border). */
+.share-pill-suggest-toggle.amb-seg { align-items: center !important; padding: 0 12px !important; gap: 0 !important; overflow: hidden; border-radius: 8px !important; background: #fff !important; border: 1px solid #d9dde3 !important; }
 .amb-seg .amb-seg-opt { display: inline-flex; align-items: center; padding: 0 12px; color: #1c1f24; font-weight: 500; }
 .amb-seg .amb-seg-opt[data-on="true"] { background: #1c1f24; color: #fff; }
 @media (min-width: 701px) {
