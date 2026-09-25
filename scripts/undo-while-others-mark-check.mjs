@@ -108,9 +108,64 @@ async function run(browser, style, width) {
   }
 }
 
+// ac-x31 (2026-09-25): Undo of a decision after an AI's API write. The server re-sets every record
+// then, so the rejected record became its Yjs item and Undo brought the AI's words back as plain
+// text while the Review list said Done. Desktop first: the rail's Reject is the desktop control.
+async function runDecision(browser, style) {
+  const tag = `undo-others-decision-${style}-1440`;
+  const server = await start(style);
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  try {
+    const created = await request(server.base, '/documents', { title: 'Undo a decision while others mark', markdown, role: 'editor' });
+    await context.addInitScript(() => localStorage.setItem('proof-share-viewer-name', 'Alice'));
+    await context.route('**/*', route => new URL(route.request().url()).origin === server.base ? route.continue() : route.abort());
+    const page = await context.newPage(); page.setDefaultTimeout(15000);
+    const errors = []; page.on('pageerror', e => errors.push(e.message));
+    await page.goto(`${server.base}/d/${created.slug}`);
+    await page.waitForFunction(() => window.proof?.collabIsSynced && window.__proofLineMarks?.debugState().loaded);
+    await showWholeAccord(page);
+    await request(server.base, `/api/agent/${created.slug}/marks/suggest-insert`, { quote: 'Agreed words stay here.', content: ' added by the AI', by: 'ai:tester' }, created.ownerSecret);
+    await poll(() => page.evaluate(() => (window.proof.getAllMarks() ?? []).some(m => m.kind === 'insert')), 'The AI proposal never reached the page');
+    const id = await page.evaluate(() => window.proof.getAllMarks().find(m => m.kind === 'insert').id);
+    const record = () => page.evaluate(i => window.__editorView.state['y-sync$'].doc.getMap('marks').get(i)?.status ?? 'pending', id);
+    const words = () => page.evaluate(() => window.__editorView.state.doc.textContent.includes('added by the AI'));
+    // Alice rejects it with the rail's Reject, then an AI comments on another line.
+    await page.evaluate(() => window.__proofReadingWalk.focusLine(1));
+    const reject = page.locator('.prw-right .prw-card .prw-reject').first();
+    await reject.waitFor({ state: 'visible' });
+    await reject.click();
+    await poll(async () => await record() === 'rejected' && !(await words()), 'Reject did not remove the words and record the decision');
+    await request(server.base, `/api/agent/${created.slug}/marks/comment`, { quote: 'Original replacement words.', text: 'A comment from an AI', by: 'ai:tester' }, created.ownerSecret);
+    await poll(() => page.evaluate(() => (window.proof.getAllMarks() ?? []).some(m => m.kind === 'comment')), 'The AI comment never reached the page');
+    await page.waitForTimeout(800);
+    // One Cmd+Z undoes the rejection: the words come back as the AI's pending proposal, not as text.
+    await page.keyboard.press('ControlOrMeta+z');
+    await poll(words, 'One Cmd+Z did not bring the words back');
+    await poll(async () => await record() === 'pending', 'The words came back, but the record still says rejected (plain text nobody accepted)');
+    const pmStatus = await page.evaluate(i => { const m = window.proof.getAllMarks().find(x => x.id === i); return m ? (m.data?.status ?? m.status ?? 'pending') : null; }, id);
+    assert.equal(pmStatus, 'pending', 'The page does not show the words as a pending proposal');
+    await poll(async () => {
+      const state = await request(server.base, `/api/agent/${created.slug}/state`, undefined, created.ownerSecret);
+      const marks = Array.isArray(state.marks) ? state.marks : Object.values(state.marks ?? {});
+      const insert = marks.find(m => m.kind === 'insert' && String(m.content ?? '').includes('added by the AI'));
+      return insert && (insert.status ?? 'pending') === 'pending';
+    }, 'The server does not hold the proposal as pending again');
+    await page.screenshot({ path: path.join(shots, `${tag}.png`) });
+    assert.deepEqual(errors, []);
+    console.log(`PASS ${tag}: after an AI's comment, one Cmd+Z undoes a rejection as a whole: the words and the pending proposal`);
+  } catch (error) {
+    failures += 1;
+    console.log(`FAIL ${tag}: ${error?.message?.split('\n')[0]}`);
+  } finally {
+    await context.close();
+    await server.stop();
+  }
+}
+
 const browser = await chromium.launch({ headless: true });
 try {
   for (const width of [1440, 390]) for (const style of ['playmaker', 'proof']) await run(browser, style, width);
+  for (const style of ['playmaker', 'proof']) await runDecision(browser, style);
 } finally { await browser.close(); }
 console.log(failures ? `undo-while-others-mark-check: ${failures} FAILED` : 'undo-while-others-mark-check: all passed');
 process.exit(failures ? 1 : 0);

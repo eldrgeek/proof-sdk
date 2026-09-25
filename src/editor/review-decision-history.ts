@@ -25,6 +25,8 @@ export function reconnectNativeUndoManager(manager: Y.UndoManager): void {
 
 type StackItem = Y.UndoManager['undoStack'][number];
 type SuggestionRecords = Map<string, { value: string | undefined; version: number }>;
+/** A decision's records before and after it (JSON), keyed by mark id (ac-x31). */
+type DecidedRecords = Map<string, { before: string; after: string }>;
 
 /** The parts of y-prosemirror's ProsemirrorBinding this file relies on. */
 interface SyncBinding {
@@ -97,6 +99,8 @@ export class ReviewDecisionHistory {
   private readonly afterSelectionKey = Symbol('native selection after operation');
   /** The suggestion records a history entry created (not merely changed). */
   private readonly createdKey = Symbol('suggestion records created');
+  /** The mark records a decision changed, before and after it. */
+  private readonly decidedKey = Symbol('mark records a decision changed');
   private readonly markVersions = new Map<string, number>();
   private readonly externalMarkVersions = new Map<string, number>();
   private readonly marksChanged = (event: Y.YMapEvent<unknown>, transaction: Y.Transaction): void => {
@@ -186,15 +190,32 @@ export class ReviewDecisionHistory {
   decide(action: () => void): void {
     const fragment = this.doc.getXmlFragment('prosemirror');
     const before = snapshotText(fragment);
+    const marks = this.doc.getMap('marks');
+    const recordsBefore = marks.toJSON() as Record<string, unknown>;
     this.manager.stopCapturing();
     const count = this.manager.undoStack.length;
     withoutOwnEcho(this.binding(), () => this.doc.transact(tr => { action(); tr.meta.set('addToHistory', true); }, this.origin));
     this.manager.stopCapturing();
     if (this.manager.undoStack.length > count) {
-      this.rememberSelection(this.manager.undoStack[this.manager.undoStack.length - 1]);
-      this.manager.undoStack[this.manager.undoStack.length - 1].meta.set(
-        this.rangeKey, changedRange(before, snapshotText(fragment), fragment),
-      );
+      const item = this.manager.undoStack[this.manager.undoStack.length - 1];
+      this.rememberSelection(item);
+      item.meta.set(this.rangeKey, changedRange(before, snapshotText(fragment), fragment));
+      // Keep what the decision did to each proposal it accepted or rejected, so Undo can put the
+      // record back even after someone else re-sets it (ac-x31; see restore).
+      const recordsAfter = marks.toJSON() as Record<string, unknown>;
+      const decided: DecidedRecords = new Map();
+      for (const id of Object.keys(recordsAfter)) {
+        if (!(id in recordsBefore)) continue;
+        // Only a proposal the decision accepted or rejected: its words come and go with the record.
+        // Records the same write merely re-derives or normalizes (anchors, default fields) are not
+        // the decision's, and a later reply on them is no conflict (review-decision-collab finding 3).
+        const was = recordsBefore[id] as { kind?: string; status?: string } | undefined;
+        const is = recordsAfter[id] as { kind?: string; status?: string } | undefined;
+        if (!['insert', 'delete', 'replace'].includes(String(is?.kind))) continue;
+        if ((was?.status ?? 'pending') === (is?.status ?? 'pending')) continue;
+        decided.set(id, { before: JSON.stringify(was), after: JSON.stringify(is) });
+      }
+      if (decided.size) item.meta.set(this.decidedKey, decided);
     }
   }
   private restore(redo: boolean): boolean {
@@ -211,6 +232,17 @@ export class ReviewDecisionHistory {
     if (!candidate) {
       // Native history consumes ineffective entries even when no edit remains.
       return (redo ? manager.redo() : manager.undo()) !== null;
+    }
+    // A decision's records must still mean what the decision left them meaning (ac-x31). An
+    // identical re-set is fine (the server does it after every API write); a reply, or another
+    // person's decision, is not, and Undo would otherwise overwrite it.
+    const decided = candidate.meta.get(this.decidedKey) as DecidedRecords | undefined;
+    const marksMap = this.doc.getMap('marks');
+    for (const [id, change] of decided ?? []) {
+      const current = marksMap.get(id);
+      if (current === undefined || semanticMarkRecord(current) !== semanticMarkRecord(JSON.parse(redo ? change.before : change.after))) {
+        throw new Error(`Can't ${redo ? 'redo' : 'undo'}: someone has changed this proposal since.`);
+      }
     }
     if (candidate.meta.has(this.rangeKey) && !rangeMatches(this.doc, candidate.meta.get(this.rangeKey) as DecisionRange | null)) {
       throw new Error(`Can't ${redo ? 'redo' : 'undo'}: someone has changed this text since.`);
@@ -256,13 +288,28 @@ export class ReviewDecisionHistory {
         marks.set(id, resolved);
       }
     };
+    // Undo (or Redo) of a decision whose record someone else has since re-set with the same
+    // meaning (ac-x31): the record is their map item now, so Yjs restores the text but not the
+    // record. A rejected proposal's words then came back as plain text that nobody accepted.
+    // Write the record the other side of the decision holds, inside the native transaction.
+    const restoreDecided = (transaction: Y.Transaction) => {
+      if (transaction.origin !== manager) return;
+      const marks = this.doc.getMap('marks');
+      for (const [id, change] of decided ?? []) {
+        const entry = marks._map.get(id);
+        if (!entry || entry.id.client === this.doc.clientID) continue;
+        marks.set(id, JSON.parse(redo ? change.after : change.before));
+      }
+    };
     this.doc.on('beforeTransaction', reopenWithdrawals);
     this.doc.on('beforeTransaction', withdrawResent);
+    this.doc.on('beforeTransaction', restoreDecided);
     let item: StackItem | null;
     try { item = redo ? manager.redo() : manager.undo(); }
     finally {
       this.doc.off('beforeTransaction', reopenWithdrawals);
       this.doc.off('beforeTransaction', withdrawResent);
+      this.doc.off('beforeTransaction', restoreDecided);
     }
     if (!item) return false;
     // Yjs may skip superseded map writes. Use the item it actually popped,
@@ -273,6 +320,8 @@ export class ReviewDecisionHistory {
       inverse[inverse.length - 1].meta.set(this.afterSelectionKey, beforeSelection);
     }
     if (item.meta.has(this.rangeKey)) inverse[inverse.length - 1].meta.set(this.rangeKey, changedRange(before, snapshotText(fragment), fragment));
+    const decidedByItem = item.meta.get(this.decidedKey) as DecidedRecords | undefined;
+    if (decidedByItem) inverse[inverse.length - 1].meta.set(this.decidedKey, decidedByItem);
     const records = item.meta.get(this.suggestionsKey) as SuggestionRecords | undefined;
     if (records) inverse[inverse.length - 1].meta.set(this.suggestionsKey,
       new Map([...records.keys()].map(id => [id, this.suggestionRecord(id)])));

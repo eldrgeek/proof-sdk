@@ -154,6 +154,46 @@ const tests: Record<string, () => Promise<void>> = {
       } finally { p.close(); }
     }
   },
+  // ac-x31 (2026-09-25): Undo of a decision after someone else re-set its record. The server
+  // re-sets every record after an AI's API write, which makes the record its map item; Yjs then
+  // restored the rejected words but not the record, so they read as text nobody accepted.
+  '6': async () => {
+    if (production) return;
+    for (const change of ['identical', 'reply']) {
+      const p = await pair();
+      try {
+        p.bob.edit(() => p.bob.view.dispatch(wrapTransactionForSuggestions(p.bob.view.state.tr.insertText('BOB', 9), p.bob.view.state, true)));
+        const id = [...p.alice.map.keys()][0]; assert(id, 'Bob proposed an insert');
+        const pending = structuredClone(p.alice.map.get(id));
+        // Alice rejects it the way a decision does: the words go and the record says rejected.
+        p.alice.history.decide(() => {
+          let from = -1; p.alice.view.state.doc.descendants((n: any, at: number) => { if (from < 0 && n.isText && n.text.includes('BOB')) from = at + n.text.indexOf('BOB'); });
+          p.alice.view.dispatch(p.alice.view.state.tr.delete(from, from + 3));
+          p.alice.map.set(id, { ...p.alice.map.get(id), status: 'rejected' });
+        });
+        for (const peer of [p.alice, p.bob]) assert(!peer.view.state.doc.textContent.includes('BOB'), 'the rejection removes the words');
+        if (change === 'identical') p.bob.map.set(id, structuredClone(p.bob.map.get(id)));
+        else p.bob.map.set(id, { ...p.bob.map.get(id), replies: [{ by: 'human:Bob', text: 'Why?', at: '2026-09-25T00:00:00Z' }] });
+        const snapshot = () => JSON.stringify([p.alice.view.state.doc.toJSON(), p.alice.map.toJSON(), p.bob.view.state.doc.toJSON(), p.bob.map.toJSON()]);
+        if (change === 'reply') {
+          const before = snapshot();
+          assert.throws(() => p.alice.restore(), { message: "Can't undo: someone has changed this proposal since." });
+          assert.equal(snapshot(), before, 'the refusal changes nothing on either peer');
+          continue;
+        }
+        assert(p.alice.restore(), 'Undo of the rejection runs');
+        for (const peer of [p.alice, p.bob]) {
+          assert(peer.view.state.doc.textContent.includes('BOB'), 'Undo brings the words back');
+          assert.deepEqual(peer.map.get(id), pending, 'and the record is the pending proposal again, not a rejected one');
+        }
+        assert(p.alice.restore(true), 'Redo of the rejection runs');
+        for (const peer of [p.alice, p.bob]) {
+          assert(!peer.view.state.doc.textContent.includes('BOB'), 'Redo removes the words again');
+          assert.equal(peer.map.get(id)?.status, 'rejected', 'and the record says rejected again');
+        }
+      } finally { p.close(); }
+    }
+  },
   '5': async () => {
     if (production) return;
     const p = await pair();
