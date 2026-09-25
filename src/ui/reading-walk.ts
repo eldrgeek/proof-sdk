@@ -33,7 +33,7 @@ import { ASK_POLICY, type AskChoice } from '../shared/asks';
 import { READING_WALK, ReadingWalk, countWords, dwellMsFor, type WalkLine, type WalkMark, type WalkSnapshot } from '../shared/reading-walk';
 import type { LineMarksUI, MarkBox } from './line-marks';
 import { isOpenReviewMark, type PlayMakerReview, type ReviewAction } from './playmaker-review';
-import { editingGuardDebug, editingRemainingMs, installEditingGuard, isInputComposing, isReadingOwned, isWriting, letterShortcutsEnabled, onEditingActivity, onWritingChange, setLetterShortcutsEnabled } from '../editor/editing-guard';
+import { editingGuardDebug, editingRemainingMs, installEditingGuard, isInputComposing, isReadingOwned, isWriting, keyTargetOf, letterShortcutsEnabled, onEditingActivity, onWritingChange, setLetterShortcutsEnabled } from '../editor/editing-guard';
 import { EDIT_SESSION_POLICY, postedNoticeText } from '../shared/edit-session';
 import { READING_MODE_POLICY } from '../shared/reading-keys';
 // Accord round 2, stage D: the discussion on a line lives in the document, in the Line tab.
@@ -46,7 +46,7 @@ import { ScrollFollower, containRailWheel } from './rail-follow';
 import { setReadingAnchor } from '../editor/caret-anchor';
 import { SCROLL_CAMERA_POLICY, anchoredScroll, bandFractionFor, cameraScroll, deadZone, type CameraView } from '../shared/scroll-camera';
 import { HIGHLIGHT_POLICY, MARKED_UP_TO_POLICY, formatAgo, issuesLeftText } from '../shared/layout-status';
-import { ACCORDS_LIST_POLICY, BOTTOM_CHAT_POLICY, OPEN_ITEMS_POLICY, MARGIN_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY, parseRailState, type MarginTab, type RailState } from '../shared/layout-panels';
+import { ACCORDS_LIST_POLICY, BOTTOM_CHAT_POLICY, OPEN_ITEMS_POLICY, MARGIN_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY, parseRailState, reviewListKey, type MarginTab, type RailState } from '../shared/layout-panels';
 import { NavigatorUI } from './navigator';
 import { personalCompletionText } from '../shared/participant-status';
 import { reviewStorageKey } from '../shared/review-list';
@@ -681,9 +681,18 @@ export class ReadingWalkUI {
     if (key.toLowerCase() === 's') {
       event.preventDefault(); this.host.suggestChange(this.cursorLine()); return;
     }
-    // Reading keys act only on the explicitly selected passage.
-    // Mike, 2026-09-24, yfbqrau4: A belongs only to Review; R no longer marks lines.
-    if (/^[ar]$/i.test(key)) { event.preventDefault(); return; }
+    // Mike, 2026-09-25: "I can navigate using J/K but I can't accept without moving my mouse to
+    // the sidebar and clicking. I'd often like to accept and then make a change." A accepts and
+    // Delete rejects the open item on the line J and K reached, by the Review list's own rules
+    // (yfbqrau4 point 4), and the focus stays on it; Enter then starts editing it. R stays retired.
+    const reviewKey = reviewListKey({ key, listFocused: true, typing: false, letterShortcuts: letterShortcutsEnabled() });
+    if (reviewKey === 'accept' || reviewKey === 'reject') {
+      event.preventDefault(); this.navigator.decideAtLine(this.cursorLine(), reviewKey); return;
+    }
+    if (reviewKey === 'document' && keyTargetOf(event.target) === 'other') {
+      event.preventDefault(); this.focusDocument(this.cursorLine()); return;
+    }
+    if (/^r$/i.test(key)) { event.preventDefault(); return; }
     if (key.toLowerCase() === 'j' || key === 'ArrowDown') { event.preventDefault(); this.next(); return; }
     if (key.toLowerCase() === 'k' || key === 'ArrowUp') { event.preventDefault(); this.previous(); return; }
     // Step B4f: E asks the AI collaborators to explain the focus line (never a rejection).

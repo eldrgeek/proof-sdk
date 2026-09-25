@@ -156,6 +156,23 @@ export class NavigatorUI {
     this.focusSelected();
   }
 
+  /** A or Delete pressed in the document, on the line J and K reached (Mike, 2026-09-25: "I can
+   * navigate using J/K but I can't accept without moving my mouse to the sidebar and clicking").
+   * The list's own rules apply: a hint for anything that is not a proposal, and no advance after,
+   * so the reader can go on to change the text just decided. The keyboard stays in the document. */
+  decideAtLine(line: number, action: 'accept' | 'reject'): boolean {
+    this.render();
+    const open = this.session.rows.filter(row => row.line === line && !row.done);
+    const row = open.find(candidate => candidate.key === this.selectedKey) ?? open[0];
+    if (!row) { this.keyHint.textContent = 'Nothing is open on this line. Move to an open item with J or K.'; return false; }
+    this.selectedKey = row.key;
+    const hint = reviewItemHint(row.kinds[0]);
+    this.keyHint.textContent = hint ?? '';
+    if (!hint) this.host.decide(row.line, action);
+    this.render();
+    return !hint;
+  }
+
   private focusSelected(): void {
     const li = [...this.issuesList.children].find(node => (node as HTMLElement).dataset.key === this.selectedKey);
     const button = li?.querySelector('button');

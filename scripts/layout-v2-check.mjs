@@ -143,11 +143,33 @@ async function run(browser, server, style, width) {
     assert.equal(await text(page), docBeforeTyping);
     assert.deepEqual(await pending(page), pendingBeforeTyping);
     await page.keyboard.press('Escape');
-    // Retired mark keys cannot mark a passage outside the list.
+    // Mike, 2026-09-25: "I can navigate using J/K but I can't accept without moving my mouse to the
+    // sidebar and clicking. I'd often like to accept and then make a change." In the document, A
+    // accepts the open item on the line J and K reached, by the list's rules: it decides the
+    // proposal (never a line mark), the focus stays on it, and Enter then starts editing it. R stays
+    // retired. Undo puts the proposal back for the checks below.
     await selectPassage(page, 1);
+    await page.evaluate(() => document.activeElement?.blur?.());
     const markStatuses = () => page.evaluate(() => window.__proofLineMarks.debugState().marks.filter(m => ['agreed', 'rejected'].includes(m.status)));
-    const marksBefore = await markStatuses(); await page.keyboard.press('a'); await page.keyboard.press('r');
-    assert.deepEqual(await markStatuses(), marksBefore);
+    const marksBefore = await markStatuses();
+    await page.keyboard.press('r');
+    assert.deepEqual(await pending(page), pendingBeforeTyping, 'R still does nothing');
+    assert.deepEqual(await markStatuses(), marksBefore, 'R marks no line');
+    // The keys are a desktop gesture (a phone has no J, K or A to press): desktop first.
+    if (!phone) {
+      const beforeKeyAccept = await text(page);
+      await page.keyboard.press('a');
+      await page.waitForFunction(() => window.__editorView.state.doc.textContent.includes('The first proposal has been accepted.'));
+      assert.deepEqual(await markStatuses(), marksBefore, 'A in the document decided the proposal, not a line mark');
+      assert.equal(await page.evaluate(() => window.__proofReadingWalk.debugState().focus), 1, 'the focus stays on the accepted item');
+      await page.keyboard.press('Enter');
+      await page.waitForFunction(() => window.__editorView.hasFocus());
+      assert.equal(await page.evaluate(() => window.__proofReadingWalk.debugState().focus), 1, 'Enter edits the item just accepted');
+      await page.keyboard.press('Escape');
+      await page.locator('.pundo-btn:visible').first().click();
+      await page.waitForFunction(t => window.__editorView.state.doc.textContent === t, beforeKeyAccept);
+      assert.deepEqual((await pending(page)).sort(), pendingBeforeTyping.slice().sort(), 'Undo put the proposal back');
+    }
     // Ask keys give a hint; its own inline answer buttons stay available.
     const me = await page.evaluate(() => window.__proofLineMarks.me());
     await api('/asks', { by: 'ai:layout', quote: 'Should we publish this version?', to: [me], recommend: 'Yes: the layout is ready.' });
