@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import express from 'express';
 import { stripAllProofSpanTags } from '../../server/proof-span-strip.js';
+import { showWholeAccord } from './whole-accord';
 import { WebSocketServer } from 'ws';
 const { SourceMapConsumer } = createRequire(import.meta.url)('source-map-js');
 // npm run build is sufficient; use `npx vite build --sourcemap` for mapped diagnostics.
@@ -308,6 +309,8 @@ async function runRecoveryCase(httpBase: string, chromium: any): Promise<void> {
     });
     page.on('pageerror', (error: Error) => errors.push(error.stack ?? error.message));
     await page.goto(`${httpBase}/d/${created.slug}?token=${created.accessToken}`);
+    // One paragraph and no open items: the folded view shows nothing until the whole Accord is.
+    await showWholeAccord(page);
     await page.waitForFunction(() => document.querySelector('.ProseMirror')?.getAttribute('contenteditable') === 'true');
     await page.evaluate(() => {
       const proof = (window as any).proof;

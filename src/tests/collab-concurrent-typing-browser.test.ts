@@ -8,6 +8,7 @@ import express from 'express';
 import { WebSocketServer } from 'ws';
 
 import { stripAllProofSpanTags } from '../../server/proof-span-strip.js';
+import { showWholeAccord } from './whole-accord';
 
 const CLIENT_HEADERS = {
   'X-Proof-Client-Version': '0.31.2',
@@ -78,6 +79,8 @@ async function openEditor(browser: any, url: string, name: string, suggest: bool
     await nameInput.waitFor({ state: 'hidden', timeout: 10_000 });
     await page.waitForTimeout(500);
   }
+  // The scenario types into paragraphs that the folded view hides until the whole Accord is shown.
+  await showWholeAccord(page);
 
   const suggestionsEnabled = await page.evaluate(() => (window as any).proof.isSuggestionsEnabled());
   if (suggestionsEnabled !== suggest) {
