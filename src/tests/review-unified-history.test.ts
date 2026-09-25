@@ -112,7 +112,12 @@ const tests: Record<string, () => Promise<void>> = {
           assert.equal(snapshot(), before, 'Refusal changes nothing on either peer');
         } else {
           assert(p.alice.restore());
-          for (const peer of [p.alice, p.bob]) { assert(!peer.view.state.doc.textContent.includes('OWN')); assert(!peer.map.has(id)); }
+          // Step 3 (Accord rules; the marks guard): undoing your own typing withdraws the proposal.
+          // Its record stays, with status rejected, so no client ever deletes an open proposal.
+          for (const peer of [p.alice, p.bob]) {
+            assert(!peer.view.state.doc.textContent.includes('OWN'));
+            assert.equal(peer.map.get(id)?.status, 'rejected', 'undoing typing must record a withdrawal, not delete the record');
+          }
           assert(p.alice.restore(true)); assert.equal(snapshot(), before, 'Redo restores text and exact record on both peers');
         }
       } finally { p.close(); }

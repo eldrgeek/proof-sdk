@@ -247,9 +247,18 @@ async function surface(browser, base, long, brief, tag, contextOptions, phone) {
       assertVisible(c, `J step ${i}`);
       if (c.scrollY > 0 && c.scrollY < c.maxScroll - 1) {
         const tall = c.bottom - c.top > c.band.height;
-        assert.ok(c.top >= c.band.top - 2, `step ${i}: the cursor ${Math.round(c.top)} is above the band ${Math.round(c.band.top)}`);
-        if (!tall) assert.ok(c.bottom <= c.band.bottom + 2, `step ${i}: the cursor's bottom ${Math.round(c.bottom)} is below the band ${Math.round(c.band.bottom)}`);
-        else assert.ok(c.top <= c.band.bottom + 2, `step ${i}: a tall line's top ${Math.round(c.top)} is below the band`);
+        // A line taller than the band may not fit below the band's top once the reading area ends
+        // above the bottom chat (step 3 round 2, C2). The camera then shows it whole, which
+        // "never partially visible" requires; its top may sit above the band, never under the chrome.
+        const readingBottom = c.view.viewportHeight - (c.view.bottomInset ?? 0);
+        const whole = c.top >= c.view.topInset - 1 && c.bottom <= readingBottom + 1;
+        if (!tall) {
+          assert.ok(c.top >= c.band.top - 2, `step ${i}: the cursor ${Math.round(c.top)} is above the band ${Math.round(c.band.top)}`);
+          assert.ok(c.bottom <= c.band.bottom + 2, `step ${i}: the cursor's bottom ${Math.round(c.bottom)} is below the band ${Math.round(c.band.bottom)}`);
+        } else {
+          assert.ok(c.top <= c.band.bottom + 2, `step ${i}: a tall line's top ${Math.round(c.top)} is below the band`);
+          assert.ok(c.top >= c.band.top - 2 || whole, `step ${i}: a tall line's top ${Math.round(c.top)} is above the band ${Math.round(c.band.top)} and the line is not shown whole`);
+        }
       }
     }
   });

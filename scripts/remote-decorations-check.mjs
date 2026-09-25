@@ -180,7 +180,8 @@ async function run(browser, base, style) {
   await check(`${tag}: page B starts with its widgets (asks ${before.asks}, alts ${before.alts}, hidden ${before.hidden}; fold hook ${folded})`, async () => {
     assert.equal(before.asks, 2);
     assert.equal(before.tags, 2);
-    if (created.altOk) assert.equal(before.alts, 1);
+    // Step 3 round 2 retired the stacked-alternatives widget (a proposal does that job); stored alternatives stay.
+    assert.equal(before.alts, 0, 'the retired alternatives stack rendered');
   });
   await typeInto(a.page, ' Typed by Ada.');
   await b.page.waitForFunction(() => /Typed by Ada\./.test(window.proof.getMarkdownSnapshot()?.content ?? ''), null, { timeout: 10_000 });
@@ -191,8 +192,8 @@ async function run(browser, base, style) {
     assert.equal(after.asks, 2);
     assert.equal(after.tags, 2);
   });
-  await check(`${tag}: after page A types, page B still shows the alternatives stack`, async () => {
-    if (created.altOk) assert.equal(after.alts, before.alts);
+  await check(`${tag}: after page A types, page B still shows no alternatives stack`, async () => {
+    assert.equal(after.alts, 0);
   });
   await check(`${tag}: after page A types, page B's folded section stays folded`, async () => {
     assert.equal(after.hidden, before.hidden);
