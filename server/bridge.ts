@@ -32,6 +32,7 @@ import { traceServerIncident, toErrorTraceData } from './incident-tracing.js';
 import { getMutationContractStage, validateOpPrecondition } from './mutation-stage.js';
 import { reportBugBridgeRouter } from './report-bug-bridge.js';
 import { readRequestId } from './request-context.js';
+import type { ShareRole } from './share-types.js';
 
 export const bridgeRouter = Router({ mergeParams: true });
 export function createBridgeMountRouter(middleware?: RequestHandler): Router {
@@ -277,6 +278,35 @@ function buildUnauthorizedResponse(req: Request, slug: string): Record<string, u
   };
 }
 
+/** The role each formerly open bridge route acts with (ac-ok7, 2026-09-25). */
+function requiredBridgeRole(policy: BridgeRoutePolicy): Exclude<ShareRole, 'owner_bot'> {
+  if (policy.method === 'GET') return 'viewer';
+  return policy.path === '/rewrite' ? 'editor' : 'commenter';
+}
+const BRIDGE_ROLE_RANK: Record<ShareRole, number> = { viewer: 0, commenter: 1, editor: 2, owner_bot: 3 };
+
+/** An AI's key (x-share-token) or the owner token (x-bridge-token, Authorization: Bearer). */
+function getPresentedBridgeCredential(req: Request): string | null {
+  const shareToken = req.header('x-share-token');
+  if (typeof shareToken === 'string' && shareToken.trim()) return shareToken.trim();
+  return getBridgeToken(req);
+}
+
+function buildCredentialRequiredResponse(req: Request, slug: string, presented: boolean): Record<string, unknown> {
+  const viewerUrl = `${req.protocol}://${req.get('host')}/d/${slug}`;
+  return {
+    error: presented ? 'This key does not open this document' : 'This route needs a key for this document',
+    code: 'UNAUTHORIZED',
+    hint: 'Bridge routes act on the document, so they need the key a person gave you (Add agent) or the owner token. Reading needs no key where the document allows guests: GET the viewer URL with Accept: text/markdown.',
+    acceptedHeaders: [
+      'x-share-token: <KEY>',
+      'x-bridge-token: <OWNER_SECRET>',
+      'Authorization: Bearer <KEY_OR_OWNER_SECRET>',
+    ],
+    viewerUrl,
+  };
+}
+
 function buildNoViewerResponse(req: Request, slug: string, code: string): Record<string, unknown> {
   const viewerUrl = `${req.protocol}://${req.get('host')}/d/${slug}`;
   if (code === 'NO_BRIDGE_CAPABLE_VIEWER') {
@@ -471,6 +501,28 @@ bridgeRouter.use(async (req: Request, res: Response) => {
       },
     });
     return;
+  }
+
+  if (policy.auth === 'none') {
+    // ac-ok7 (2026-09-25): upstream left these routes open, so anyone holding a slug could read a
+    // private document, comment on it, propose changes and replace its whole text (/rewrite),
+    // whatever its guest setting. Each now needs a credential with the role it acts with. The page
+    // never calls them; a person's page has its own session, and an AI uses the key a person gave it.
+    if (!getDocument(slug)) {
+      res.status(404).json({ error: 'Document not found' });
+      return;
+    }
+    const credential = getPresentedBridgeCredential(req);
+    const role = credential ? resolveDocumentAccessRole(slug, credential) : null;
+    if (!role) {
+      res.status(401).json(buildCredentialRequiredResponse(req, slug, Boolean(credential)));
+      return;
+    }
+    const needed = requiredBridgeRole(policy);
+    if (BRIDGE_ROLE_RANK[role] < BRIDGE_ROLE_RANK[needed]) {
+      res.status(403).json({ error: `This route needs ${needed} access, and this key has ${role} access.`, code: 'FORBIDDEN' });
+      return;
+    }
   }
 
   const requestBody = isRecord(req.body) ? { ...req.body } : {};

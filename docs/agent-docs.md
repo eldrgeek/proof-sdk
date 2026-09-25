@@ -20,6 +20,8 @@ The reusable `Proof SDK` surface is mounted in parallel at:
 - `POST /documents/:slug/bridge/rewrite`
 - `POST /documents/:slug/bridge/presence`
 
+Every bridge route needs a credential for the document: the key a person gave you with Add agent (`x-share-token`), or the owner token (`x-bridge-token` or `Authorization: Bearer`). Reads need read access, comments and suggestions need comment access, and `/rewrite` needs edit access. Before 2026-09-25 (bead ac-ok7) the reads, comments, suggestions and `/rewrite` needed no credential at all. Reading a document that allows guests needs no key: `GET /d/:slug` with `Accept: text/markdown`.
+
 ## Which Editing Method Should I Use?
 
 Accord has three editing approaches. **Pick one — don't mix them.**

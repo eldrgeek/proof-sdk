@@ -13,6 +13,10 @@ async function run(): Promise<void> {
   process.env.DATABASE_PATH = dbPath;
   process.env.PROOF_DB_ENV_INIT = 'development';
   const { bridgeRouter } = await import('../../server/bridge');
+  const db = await import('../../server/db');
+  // ac-ok7 (2026-09-25): bridge routes need a credential and a stored document, so the no-viewer
+  // path is reached by an owner request the server cannot complete itself (an unknown mark).
+  db.createDocument('testslug', '# Test\n\nLine.', {}, 'Test', 'owner-1', 'owner-secret');
 
   const app = express();
   app.use(express.json({ limit: '1mb' }));
@@ -27,7 +31,10 @@ async function run(): Promise<void> {
   const base = `http://127.0.0.1:${address.port}`;
 
   try {
-    const res = await fetch(`${base}/d/testslug/bridge/state`, { method: 'GET' });
+    const missing = await fetch(`${base}/d/nosuchdoc/bridge/state`, { method: 'GET' });
+    assert.equal(missing.status, 404, 'An unknown document answers 404 without trying viewers');
+    const res = await fetch(`${base}/d/testslug/bridge/marks/accept`, { method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-bridge-token': 'owner-secret' }, body: JSON.stringify({ markId: 'no-such-mark' }) });
     const body = await res.json() as {
       code?: string;
       hint?: string;
