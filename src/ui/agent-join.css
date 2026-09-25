@@ -1,0 +1,17 @@
+/* A fixed notice leaves the document and the reader's position still. */
+#agent-join-notices {
+  position: fixed; right: 24px; bottom: 42px; z-index: 1600;
+  width: min(540px, calc(100vw - 32px)); max-height: 38vh; overflow: auto;
+  background: var(--proof-bg, #fff); color: var(--proof-fg, #17261d);
+  border: 1px solid #c9d4ce; border-radius: 10px; padding: 10px;
+  box-shadow: 0 4px 24px #0002; font: 14px/1.5 system-ui, sans-serif;
+}
+.agent-join-list[hidden] { display: none; }
+.agent-join-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; }
+.agent-join-row + .agent-join-row { border-top: 1px solid #dde4df; }
+.agent-join-row span { flex: 1; overflow-wrap: anywhere; }
+.agent-join-row button { font: inherit; padding: 8px 12px; border: 1px solid #637c6c; border-radius: 6px; cursor: pointer; }
+.agent-join-admit { background: #244f38; color: white; }
+.agent-join-refuse { background: white; color: #244f38; }
+.agent-join-row button:disabled { opacity: .6; cursor: wait; }
+.agent-join-row button:focus-visible { outline: 2px solid #285de5; outline-offset: 2px; }

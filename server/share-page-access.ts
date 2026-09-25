@@ -18,7 +18,7 @@ export function deriveShareCapabilities(role: ShareRole, shareState: string) {
 /** Preserve page credential precedence; key management explicitly opts into headers
  * and rejects unresolved credentials instead of falling back to anonymous access.
  */
-export function resolveSharePageAccess(req: Request, res: Response, slug: string, doc: DocumentRow | null, mode: 'page' | 'key-management' = 'page') {
+export function resolveSharePageAccess(req: Request, res: Response | undefined, slug: string, doc: DocumentRow | null, mode: 'page' | 'key-management' = 'page') {
   // Invite person: the session counts here only for a library member or someone invited to this
   // document; without a token everyone else gets the document's guest setting.
   const tokenless = resolveTokenlessAccess(req, slug, res);

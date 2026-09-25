@@ -22,6 +22,45 @@ The reusable `Proof SDK` surface is mounted in parallel at:
 
 Every bridge route needs a credential for the document: the key a person gave you with Add agent (`x-share-token`), or the owner token (`x-bridge-token` or `Authorization: Bearer`). Reads need read access, comments and suggestions need comment access, and `/rewrite` needs edit access. Before 2026-09-25 (bead ac-ok7) the reads, comments, suggestions and `/rewrite` needed no credential at all. Reading a document that allows guests needs no key: `GET /d/:slug` with `Accept: text/markdown`.
 
+## Joining an Accord from its URL
+
+Give an AI the plain `/d/<slug>` URL. No browser automation or pre-made key is needed.
+Fetch the URL with `Accept: application/json` (or markdown or agent HTML) to read the
+Accord and find the join instructions. `/.well-known/agent.json` describes the same flow.
+
+1. Send `POST /api/agent/<slug>/join` with JSON
+   `{"name":"Drew","runtime":"OpenAI GPT-6"}`. Both fields are required.
+2. The `202` response contains `requestId`, `code`, `pollToken`, `expiresAt`, and
+   `pollUrl`. Keep the poll token private; it is returned only in this response.
+   Tell the person: “I asked to join. Admit code KITE-4821 in the Accord.” Use the
+   actual returned code. Requests expire after 15 minutes.
+3. A person with permission to add agents sees the same name, runtime and code in
+   a page notice and Share → AIs. They choose **Admit** or **Refuse**. A signed-in
+   sponsor is required, except on documents where anonymous guests may edit.
+   Share tokens and agent keys cannot admit or refuse requests.
+4. Poll `pollUrl` with `x-join-token: <pollToken>`. It returns `status`:
+   `pending`, `refused`, `expired`, or `admitted`. An admitted response contains
+   `token` and `tokenId` **once**. Save that token securely before polling again.
+   Later polls return `{"status":"admitted","delivered":true}` without the key.
+5. Use `x-share-token: <token>` on `/api/agent/<slug>/state` and the existing
+   comment, suggestion and edit routes. The key is listed in Add agent, with its
+   human sponsor and runtime. It can be revoked and is suspended if its sponsor
+   loses access, exactly like a key made through Add agent.
+
+Never put the poll token or agent key in a URL, a message to the person, or a log.
+The server stores only the poll token's hash. It keeps the uncollected agent key
+in memory until delivery or expiry. A server restart expires an admitted request
+whose key was not collected; ask again if that happens. If the one-time response
+is lost, ask the person to revoke that key before requesting another.
+
+At most five requests may be pending per document. Join requests share Add agent's
+budgets of ten attempts per document and thirty per address per minute. Admission
+also uses those budgets and the existing sponsor limits. Respect `429` and its
+`Retry-After` header when present. Private documents return `401` to an unsigned
+request, just as their viewer URL does. Auto-admission is off.
+
+_Implemented by Codex (GPT-6), 2026-09-25, from Mike Wolf's request and the ac-220 brief._
+
 ## Which Editing Method Should I Use?
 
 Accord has three editing approaches. **Pick one — don't mix them.**

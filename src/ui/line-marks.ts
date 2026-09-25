@@ -350,8 +350,7 @@ export class LineMarksUI {
   /** Proposal attribution survives retirement of the line-mark member list. */
   proposalAuthor(actor: string): string {
     const sponsor = this.agentSponsors[actor] ?? this.agentSponsors[actorKey(actor)];
-    const name = sponsor?.label || this.aiName(actor);
-    return sponsor?.sponsorName ? `${name} — added by ${sponsor.sponsorName}` : name;
+    return sponsor?.label || this.aiName(actor);
   }
   private brief: ProxyBrief | null = null;
   private briefByLine = new Map<number, ProxyItem>();

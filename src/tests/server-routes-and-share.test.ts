@@ -888,11 +888,7 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       const payload = JSON.parse(response.body || '{}') as Record<string, unknown>;
       assertEqual(payload.role, 'viewer', 'Expected cookie token to authorize viewer role');
       assert(payload.success === true, 'Expected successful payload');
-      assertEqual(
-        payload.hint,
-        'This link has no token. Ask for a tokenized link if you need a stable shareable URL.',
-        'Expected cookie-auth JSON response to avoid URL-token hint',
-      );
+      assertIncludes(String(payload.hint), `/api/agent/${fallbackSlug}/join`, 'Expected cookie-auth JSON to explain joining without exposing its credential');
     });
 
     await test('D2: /d/:slug agent-friendly HTML never embeds cookie-derived tokens', async () => {
@@ -924,7 +920,7 @@ async function runRoutePayloadValidationTests(): Promise<void> {
         !body.includes(`?token=${encodeURIComponent(cookieViewerToken)}`),
         'Expected HTML response to avoid tokenized URL when token source is cookie',
       );
-      assertIncludes(body, 'No token detected', 'Expected no-token auth guidance in HTML response');
+      assertIncludes(body, `/api/agent/${cookieHtmlSlug}/join`, 'Expected join guidance in HTML response');
     });
 
     await test('D2: /d/:slug content negotiation returns JSON with markdown + links', async () => {

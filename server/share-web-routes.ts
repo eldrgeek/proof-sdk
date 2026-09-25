@@ -1,3 +1,4 @@
+import { agentJoinInstructions, agentJoinPath } from '../src/shared/agent-join.js';
 import { normalizeReviewStyle } from '../src/editor/review-style.js';
 import { injectSomaFeedback } from './soma-page.js';
 import { createHash } from 'crypto';
@@ -25,7 +26,6 @@ import {
   ALT_SHARE_TOKEN_HEADER_FORMAT,
   AUTH_HEADER_FORMAT,
   TOKEN_FROM_URL_HINT,
-  TOKEN_MISSING_HINT,
 } from './agent-guidance.js';
 import {
   buildSharePreviewModel,
@@ -192,6 +192,7 @@ function injectShareHtmlDiscoveryTags(
     <li>Full API docs: <a href="/agent-docs">/agent-docs</a></li>
     <li>No browser automation needed — use plain HTTP requests (curl/web_fetch).</li>
   </ul>
+  <p>${escapeHtml(agentJoinInstructions(slug))}</p>
   <p>Auth: If this URL includes <code>?token=</code>, send it as <code>${escapeHtml(AUTH_HEADER_FORMAT)}</code>.</p>`;
 
   // Readability extraction differs across agents:
@@ -300,7 +301,7 @@ function renderAgentFriendlyHtml(
     : AUTH_HEADER_FORMAT;
   const authNote = token
     ? `<p><strong>Auth:</strong> Use the token from the URL as <code>Authorization: Bearer ${escapeHtml(token)}</code></p>`
-    : '<p><strong>Auth:</strong> No token detected. Ask for a tokenized link for API access.</p>';
+    : `<p><strong>Join:</strong> ${escapeHtml(agentJoinInstructions(slug))}</p>`;
   const writeGuidance = mutationReady
     ? `
     <li><strong>Edit (append/replace/insert):</strong> <code>curl -X POST "${escapeHtml(editUrl)}" -H "Content-Type: application/json" -H "${authHeader}" -d '{"by":"ai:assistant","operations":[{"op":"append","section":"Notes","content":"\\n\\nNew bullet."}]}'</code></li>
@@ -496,7 +497,8 @@ shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
       res.status(404).type('text/plain').send('Document not found');
       return;
     }
-    res.type('text/markdown').send(stripProofSpanTags(doc.markdown ?? ''));
+    res.setHeader('Link', `<${agentJoinPath(slug)}>; rel="join"`);
+    res.type('text/markdown').send(`${stripProofSpanTags(doc.markdown ?? '')}\n\n<!-- ${agentJoinInstructions(slug)} -->\n`);
     return;
   }
 
@@ -558,7 +560,7 @@ shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
         : {}),
       hint: tokenSource === 'query:token'
         ? TOKEN_FROM_URL_HINT
-        : TOKEN_MISSING_HINT,
+        : agentJoinInstructions(slug),
     });
     return;
   }

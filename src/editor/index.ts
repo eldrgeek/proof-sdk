@@ -1,3 +1,4 @@
+import { startAgentJoinNotices } from '../ui/agent-join';
 import type { Transaction } from '@milkdown/kit/prose/state';
 import { commitLiveTextInput, liveSuggestionInputEvent, focusLiveSuggestion, type LiveSuggestionInput } from './live-suggestion-input';
 import { readPointerSelectionSoon } from './pointer-selection';
@@ -1714,6 +1715,7 @@ class ProofEditorImpl implements ProofEditor {
           this.lastReceivedServerMarks = initialMarks;
           this.initialMarksSynced = true;
         }
+        startAgentJoinNotices(shareClient.getSlug());
         window.dispatchEvent(new Event('proof:editor-ready'));
         this.showErrorBanner('Live collaboration is currently unavailable for this shared document.');
         return;
@@ -1723,6 +1725,7 @@ class ProofEditorImpl implements ProofEditor {
       if (attemptSeq !== this.shareInitAttemptSeq) return;
       this.clearErrorBanner();
       this.resetShareInitRetryState();
+      startAgentJoinNotices(shareClient.getSlug());
       window.dispatchEvent(new Event('proof:editor-ready'));
       void this.checkTeamAccess();
     } catch (error) {

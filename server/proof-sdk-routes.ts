@@ -1,3 +1,4 @@
+import { agentJoinPath, agentJoinInstructions, AGENT_JOIN_POLICY } from '../src/shared/agent-join.js';
 import { canonicalCreateHref, canonicalCreateLink, AGENT_DOCS_PATH } from './agent-guidance.js';
 
 function withOrigin(path: string, origin?: string): string {
@@ -76,6 +77,7 @@ export function buildProofSdkLinks(
   const paths = buildProofSdkDocumentPaths(slug, origin);
   const links: Record<string, unknown> = {
     create: canonicalCreateLink(origin),
+    join: { method: 'POST', href: withOrigin(agentJoinPath(slug), origin) },
     state: paths.state,
     presence: { method: 'POST', href: paths.presence },
     events: paths.eventsPending,
@@ -118,6 +120,9 @@ export function buildProofSdkAgentDescriptor(
   const paths = buildProofSdkDocumentPaths(slug, origin);
   const agent: Record<string, unknown> = {
     what: 'Proof is a collaborative document editor. This is a shared doc.',
+    join: { method: 'POST', href: withOrigin(agentJoinPath(slug), origin),
+      body: { name: 'Your name', runtime: 'Your model or operator' },
+      instructions: agentJoinInstructions(slug), expiresInMs: AGENT_JOIN_POLICY.expiresInMs, autoAdmit: AGENT_JOIN_POLICY.autoAdmit },
     docs: paths.docs,
     createApi: paths.create,
     stateApi: paths.state,

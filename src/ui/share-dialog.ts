@@ -1,3 +1,4 @@
+import { mountAgentJoinPanel } from './agent-join';
 /**
  * Accord layout stage 2, decision 12: one Share dialog that absorbs Invite person and Add agent
  * (the Docs convention). Three tabs:
@@ -142,6 +143,9 @@ export function showShareDialog(host: ShareDialogHost, tab: ShareTab = 'link'): 
 
   // ---- AIs ----
   const ais = panels.get('ais')!;
+  const joinHolder = el('div');
+  ais.append(joinHolder);
+  const destroyJoinPanel = mountAgentJoinPanel(joinHolder);
   let agentPanel: AgentKeyPanel | null = null;
   const holderAi = el('div', 'asd-ais');
   ais.append(holderAi);
@@ -167,6 +171,7 @@ export function showShareDialog(host: ShareDialogHost, tab: ShareTab = 'link'): 
   dialog.addEventListener('close', () => {
     invitePanel?.destroy();
     agentPanel?.destroy();
+    destroyJoinPanel();
     dialog.remove();
     current = null;
     opener?.focus?.({ preventScroll: true });

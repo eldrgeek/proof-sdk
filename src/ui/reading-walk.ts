@@ -763,6 +763,7 @@ export class ReadingWalkUI {
         return text || null;
       },
       me: () => lm().me(),
+      authorLabel: actor => lm().proposalAuthor(actor),
       isOwner: () => lm().canApproveHere?.() === true,
       canComment: () => lm().canCommentHere(),
       team: () => lm().issueSummary()?.team ?? [],

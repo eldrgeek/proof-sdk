@@ -1,4 +1,5 @@
 import { Router, type RequestHandler } from 'express';
+import { AGENT_JOIN_POLICY } from '../src/shared/agent-join.js';
 import { createDocumentAccessToken, getDocumentBySlug, revokeDocumentAgentKey } from './db.js';
 import { getClientIp } from './client-address.js';
 import { createRateLimiter } from './rate-limiter.js';
@@ -34,9 +35,9 @@ export const agentKeyRoutes = Router();
 agentKeyRoutes.use(requireAgentKeyOrigin);
 // Independent budgets: changing addresses cannot evade the document budget, and
 // changing documents cannot evade the address budget. Each server process enforces these.
-const documentLimit = createRateLimiter({ windowMs: 60_000, maxRequests: 10,
+export const documentLimit = createRateLimiter({ windowMs: AGENT_JOIN_POLICY.rateWindowMs, maxRequests: AGENT_JOIN_POLICY.requestsPerDocument,
   keyFn: req => String(req.params.slug) });
-const addressLimit = createRateLimiter({ windowMs: 60_000, maxRequests: 30,
+export const addressLimit = createRateLimiter({ windowMs: AGENT_JOIN_POLICY.rateWindowMs, maxRequests: AGENT_JOIN_POLICY.requestsPerAddress,
   keyFn: getClientIp });
 
 const authorize: RequestHandler = (req, res, next) => {

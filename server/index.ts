@@ -1,3 +1,4 @@
+import { agentJoinRoutes, requireAgentJoinOrigin } from './agent-join-routes.js';
 import { requireAgentKeyOrigin } from './agent-key-routes.js';
 import { clientErrorRoutes } from './client-errors.js';
 import { somaFeedbackRoutes } from './soma-feedback.js';
@@ -53,6 +54,7 @@ async function main(): Promise<void> {
   const allowedCorsOrigins = parseAllowedCorsOrigins();
 
   app.use(requireAgentKeyOrigin);
+  app.use(requireAgentJoinOrigin);
   app.use(express.json({ limit: '10mb' }));
   // Share HTML comes from dist; serve its matching bundle without requiring nginx.
   app.use('/assets', express.static(path.join(__dirname, '..', 'dist', 'assets'), { maxAge: 0 }));
@@ -79,6 +81,7 @@ async function main(): Promise<void> {
         'X-Proof-Client-Build',
         'X-Proof-Client-Protocol',
         'x-share-token',
+        'x-join-token',
         'x-bridge-token',
         'x-auth-poll-token',
         'X-Agent-Id',
@@ -143,6 +146,7 @@ async function main(): Promise<void> {
   });
 
   app.use(discoveryRoutes);
+  app.use(agentJoinRoutes);
   app.use('/api', enforceApiClientCompatibility, apiRoutes);
   app.use('/api/agent', agentRoutes);
   app.use(apiRoutes);

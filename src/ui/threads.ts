@@ -55,6 +55,8 @@ export interface ThreadsHost {
   selectionText(): string | null;
   /** The viewer. */
   me(): string;
+  /** Sponsored AI attribution uses the same label as proposals. */
+  authorLabel?(actor: string): string;
   isOwner(): boolean;
   canComment(): boolean;
   team(): string[];
@@ -194,6 +196,7 @@ export class ThreadsPanel {
     for (const view of views) if (view.thread.status === 'open') this.shownOpen.add(view.thread.id);
     const sig = JSON.stringify([line, me, this.composer.hidden, [...this.unfolded].sort(), views.map(view => [
       view.thread.id, view.thread.status, view.thread.asks, view.thread.replies.length, view.detached, view.changed,
+      this.host.authorLabel?.(view.thread.by), view.thread.replies.map(reply => this.host.authorLabel?.(reply.by)),
     ])]);
     // A focused reply stays put while this same line updates. Moving to another passage redraws.
     const threadFocus = document.activeElement;
@@ -244,7 +247,7 @@ export class ThreadsPanel {
     const head = el('header', 'amg-thread-head');
     const closes = el('span', 'amg-thread-closes', `Closes when: ${THREAD_ASK_LABEL[thread.asks]}`);
     closes.dataset.closes = thread.asks;
-    head.append(closes, el('span', 'amg-thread-by', actorLabel(thread.by)));
+    head.append(closes, el('span', 'amg-thread-by', this.host.authorLabel?.(thread.by) ?? actorLabel(thread.by)));
     card.append(head);
 
     // Deleting the text never deletes the disagreement: it says so, and quotes what it was about.
@@ -270,7 +273,7 @@ export class ThreadsPanel {
       const replies = el('ol', 'amg-thread-replies');
       for (const reply of thread.replies) {
         const item = el('li', 'amg-thread-reply');
-        item.append(el('span', 'amg-thread-reply-by', actorLabel(reply.by)), el('span', 'amg-thread-reply-text', reply.text));
+        item.append(el('span', 'amg-thread-reply-by', this.host.authorLabel?.(reply.by) ?? actorLabel(reply.by)), el('span', 'amg-thread-reply-text', reply.text));
         replies.append(item);
       }
       card.append(replies);
