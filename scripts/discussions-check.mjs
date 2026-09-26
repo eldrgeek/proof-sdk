@@ -66,6 +66,12 @@ async function selectText(page, quote) {
   }, quote);
 }
 async function clickAt(page, quote, after = true) {
+  // On a phone the Review list is a bottom sheet over the text; a person closes it before tapping
+  // the text (the same step folded-view-check takes).
+  if (await page.locator('.prw-right.prw-sheet-open').count()) {
+    await page.locator('.prw-right .prw-collapse').click();
+    await page.waitForFunction(() => !document.querySelector('.prw-right.prw-sheet-open'));
+  }
   const point = await page.evaluate(({ quote, after }) => {
     const view = window.__editorView; let pos;
     view.state.doc.descendants((node, start) => { if (pos === undefined && node.isText && node.text.includes(quote)) pos = start + node.text.indexOf(quote) + (after ? quote.length : 0); });
@@ -90,7 +96,26 @@ async function clickAt(page, quote, after = true) {
   if (since < 700) await page.waitForTimeout(700 - since);
   await page.mouse.click(at.x, at.y);
   clickAt.last = Date.now();
-  await poll(async () => { const s = await page.evaluate(() => { const sel = window.__editorView.state.selection; return [sel.anchor, sel.head]; }); return s[0] === point.pos && s[1] === point.pos; }, 'Click did not place a caret', 2000);
+  try {
+    // The caret must sit at the quoted words in the CURRENT text: a click that ends a typed question
+    // converts it, which withdraws the typed words and shifts every later position left.
+    await poll(() => page.evaluate(({ quote, after }) => {
+      const view = window.__editorView; let pos;
+      view.state.doc.descendants((node, start) => { if (pos === undefined && node.isText && node.text.includes(quote)) pos = start + node.text.indexOf(quote) + (after ? quote.length : 0); });
+      const sel = view.state.selection; return pos !== undefined && sel.anchor === pos && sel.head === pos;
+    }, { quote, after }), 'Click did not place a caret', 2000);
+  } catch (error) {
+    // Say what the page was doing, so a failure explains itself.
+    const state = await page.evaluate(([x, y]) => {
+      const sel = window.__editorView.state.selection; const hit = document.elementFromPoint(x, y);
+      return { anchor: sel.anchor, head: sel.head, writing: window.__proofReadingWalk?.debugState().writing,
+        focus: window.__proofReadingWalk?.debugState().focus, editorFocused: window.__editorView.hasFocus(),
+        active: document.activeElement?.className || document.activeElement?.tagName,
+        hit: hit ? `${hit.tagName.toLowerCase()}.${String(hit.className).split(' ').slice(0, 2).join('.')}` : null };
+    }, [at.x, at.y]).catch(() => null);
+    await page.screenshot({ path: path.join(shots, 'discussions-clickat-FAIL.png') }).catch(() => {});
+    throw new Error(`${error.message} at ${point.pos} (wanted "${quote}"): ${JSON.stringify(state)}`);
+  }
 }
 async function poll(fn, message, timeout = 5000) {
   const end = Date.now() + timeout;
