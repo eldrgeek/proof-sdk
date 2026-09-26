@@ -33,7 +33,7 @@ import { ASK_POLICY, type AskChoice } from '../shared/asks';
 import { READING_WALK, ReadingWalk, countWords, dwellMsFor, type WalkLine, type WalkMark, type WalkSnapshot } from '../shared/reading-walk';
 import type { LineMarksUI, MarkBox } from './line-marks';
 import { isOpenReviewMark, type PlayMakerReview, type ReviewAction } from './playmaker-review';
-import { editingGuardDebug, editingRemainingMs, installEditingGuard, isInputComposing, isReadingOwned, isWriting, keyTargetOf, letterShortcutsEnabled, onEditingActivity, onWritingChange, setLetterShortcutsEnabled } from '../editor/editing-guard';
+import { editingGuardDebug, editingRemainingMs, installEditingGuard, isInputComposing, isReadingOwned, isWriting, letterShortcutsEnabled, onEditingActivity, onWritingChange, setLetterShortcutsEnabled } from '../editor/editing-guard';
 import { EDIT_SESSION_POLICY, postedNoticeText } from '../shared/edit-session';
 import { READING_MODE_POLICY } from '../shared/reading-keys';
 // Accord round 2, stage D: the discussion on a line lives in the document, in the Line tab.
@@ -684,13 +684,12 @@ export class ReadingWalkUI {
     // Mike, 2026-09-25: "I can navigate using J/K but I can't accept without moving my mouse to
     // the sidebar and clicking. I'd often like to accept and then make a change." A accepts and
     // Delete rejects the open item on the line J and K reached, by the Review list's own rules
-    // (yfbqrau4 point 4), and the focus stays on it; Enter then starts editing it. R stays retired.
+    // (yfbqrau4 point 4), and the focus stays on it; S (above) then edits it as a live proposal.
+    // Enter is not an edit key here: it must not start writing on a selected passage (mike-0921).
+    // R stays retired.
     const reviewKey = reviewListKey({ key, listFocused: true, typing: false, letterShortcuts: letterShortcutsEnabled() });
     if (reviewKey === 'accept' || reviewKey === 'reject') {
       event.preventDefault(); this.navigator.decideAtLine(this.cursorLine(), reviewKey); return;
-    }
-    if (reviewKey === 'document' && keyTargetOf(event.target) === 'other') {
-      event.preventDefault(); this.focusDocument(this.cursorLine()); return;
     }
     if (/^r$/i.test(key)) { event.preventDefault(); return; }
     if (key.toLowerCase() === 'j' || key === 'ArrowDown') { event.preventDefault(); this.next(); return; }

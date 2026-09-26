@@ -114,8 +114,11 @@ async function deleteBlock(base, created, needle) {
   const block = (snap.blocks ?? []).find(b => String(b.markdown ?? b.text ?? '').includes(needle));
   assert.ok(block, `block not found for "${needle}" in ${JSON.stringify((snap.blocks ?? []).map(b => b.ref))}`);
   const body = { by: 'ai:check', operations: [{ op: 'delete_block', ref: block.ref }] };
-  if (snap.revision !== undefined && snap.revision !== null) body.baseRevision = snap.revision;
+  // One base only: the server refuses a baseToken combined with a baseRevision (409
+  // CONFLICTING_BASE), and a snapshot taken while the live document is loaded carries both
+  // (seen 2026-09-25 under load). Prefer the token, which pins the exact content.
   if (snap.mutationBase) body.baseToken = typeof snap.mutationBase === 'string' ? snap.mutationBase : snap.mutationBase.token;
+  else if (snap.revision !== undefined && snap.revision !== null) body.baseRevision = snap.revision;
   assert.ok(body.baseRevision !== undefined || body.baseToken, `no base on the snapshot: ${JSON.stringify({ revision: snap.revision, mutationBase: snap.mutationBase, warning: snap.warning })}`);
   await agent(base, created, '/edit/v2', body);
 }

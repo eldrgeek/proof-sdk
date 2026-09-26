@@ -146,8 +146,9 @@ async function run(browser, server, style, width) {
     // Mike, 2026-09-25: "I can navigate using J/K but I can't accept without moving my mouse to the
     // sidebar and clicking. I'd often like to accept and then make a change." In the document, A
     // accepts the open item on the line J and K reached, by the list's rules: it decides the
-    // proposal (never a line mark), the focus stays on it, and Enter then starts editing it. R stays
-    // retired. Undo puts the proposal back for the checks below.
+    // proposal (never a line mark), the focus stays on it, and S then edits it as a live proposal
+    // (Enter does not start writing: mike-0921 item 2). R stays retired. Undo puts the proposal back
+    // for the checks below.
     await selectPassage(page, 1);
     await page.evaluate(() => document.activeElement?.blur?.());
     const markStatuses = () => page.evaluate(() => window.__proofLineMarks.debugState().marks.filter(m => ['agreed', 'rejected'].includes(m.status)));
@@ -162,9 +163,9 @@ async function run(browser, server, style, width) {
       await page.waitForFunction(() => window.__editorView.state.doc.textContent.includes('The first proposal has been accepted.'));
       assert.deepEqual(await markStatuses(), marksBefore, 'A in the document decided the proposal, not a line mark');
       assert.equal(await page.evaluate(() => window.__proofReadingWalk.debugState().focus), 1, 'the focus stays on the accepted item');
-      await page.keyboard.press('Enter');
-      await page.waitForFunction(() => window.__editorView.hasFocus());
-      assert.equal(await page.evaluate(() => window.__proofReadingWalk.debugState().focus), 1, 'Enter edits the item just accepted');
+      await page.keyboard.press('s');
+      await page.waitForFunction(() => window.__proofEditingGuard().writing);
+      assert.equal(await page.evaluate(() => window.__proofReadingWalk.debugState().focus), 1, 'S edits the item just accepted');
       await page.keyboard.press('Escape');
       await page.locator('.pundo-btn:visible').first().click();
       await page.waitForFunction(t => window.__editorView.state.doc.textContent === t, beforeKeyAccept);

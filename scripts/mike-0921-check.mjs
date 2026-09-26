@@ -231,9 +231,10 @@ async function desktop(browser, base, style) {
     await page.keyboard.down('Alt');
     await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
     await page.keyboard.up('Alt');
-    await page.waitForTimeout(150);
+    // Poll rather than wait a fixed 150 ms: under load, entering Writing can take longer (ac-jfl).
+    const started = await waitFor(page, () => window.__proofReadingWalk.debugState().writing, null, 3000).then(() => true, () => false);
     assert.equal(await page.evaluate(() => window.__opened.length), 1, 'Alt+click opened the link');
-    assert.equal(await writing(page), true, 'Alt+click did not start writing');
+    assert.equal(started, true, 'Alt+click did not start writing');
     await page.keyboard.type('Z');
     assert.ok((await docText(page)).includes('the exZample page') || /the ex[a-z]*Z[a-z]* page/.test(await docText(page)) || (await docText(page)).includes('Z'), 'typing did not go into the link');
     await page.keyboard.press('Backspace');
