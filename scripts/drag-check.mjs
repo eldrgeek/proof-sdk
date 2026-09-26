@@ -115,6 +115,9 @@ async function pendingMove(page) {
   await page.waitForFunction(() => window.__proofLineMarks.bundleList().some(b => b.bundle.kind === 'move' && b.status === 'open'));
   return page.evaluate(() => window.__proofLineMarks.bundleList().find(b => b.bundle.kind === 'move' && b.status === 'open').bundle.id);
 }
+// The focus box slides 120 ms to its new line after a move; a screenshot taken during the slide shows it
+// a line away from the focus (measured 2026-09-26: 155 px mid-slide, 263 px settled around a line at 265).
+const settled = page => page.waitForTimeout(400);
 async function decide(page, id, action, sourceText) {
   await focus(page, sourceText);
   const card = page.locator(`[data-bundle-id="${id}"]`);
@@ -166,7 +169,7 @@ async function run(browser, server, style, width) {
     await b.page.getByRole('button', { name: 'Undo accepted a move', exact: true }).first().waitFor();
     const moved = [...initial]; moved.splice(1, 1); moved.splice(3, 0, initial[1]);
     await waitOrder(a.page, moved); await waitOrder(b.page, moved);
-    await b.page.screenshot({ path: path.join(shots, `${tag}-accepted.png`), fullPage: true });
+    await settled(b.page); await b.page.screenshot({ path: path.join(shots, `${tag}-accepted.png`), fullPage: true });
     await undo(b.page); await waitOrder(a.page, initial);
     await decide(b.page, id, 'Reject', 'Alpha paragraph.');
     await waitOrder(a.page, initial);
@@ -203,7 +206,7 @@ async function run(browser, server, style, width) {
     assert.equal(await a.page.locator('.accord-outline-item').count(), initial.length);
     await drag(a.page, a.page.locator('.accord-outline-item').filter({ hasText: /^Alpha paragraph\.$/ }), a.page.locator('.accord-outline-item').filter({ hasText: /^Gamma paragraph\.$/ }));
     const outline = await pendingMove(b.page); await decide(b.page, outline, 'Accept', 'Alpha paragraph.');
-    await waitOrder(a.page, moved); await a.page.screenshot({ path: path.join(shots, `${tag}-outline.png`), fullPage: true });
+    await waitOrder(a.page, moved); await settled(a.page); await a.page.screenshot({ path: path.join(shots, `${tag}-outline.png`), fullPage: true });
     await a.page.keyboard.press('Escape'); assert.equal(await a.page.locator('.accord-item-outline').count(), 0);
     await undo(b.page); await waitOrder(a.page, initial); await decide(b.page, outline, 'Reject', 'Alpha paragraph.');
 
@@ -276,7 +279,7 @@ async function immediate(browser, style) {
     const state = await request(server.base, '/api/agent/drag-signed/state', undefined, 'local-drag-owner');
     const marks = Array.isArray(state.marks) ? state.marks : Object.values(state.marks ?? {});
     assert.ok(marks.some(m => m.move && m.status === 'accepted' && String(m.resolvedBy).toLowerCase() === me.toLowerCase()), "the immediate move is not recorded as the mover's own decision");
-    await page.screenshot({ path: path.join(shots, `${tag}.png`), fullPage: true });
+    await settled(page); await page.screenshot({ path: path.join(shots, `${tag}.png`), fullPage: true });
     await undo(page); await waitOrder(page, initial);
     assert.deepEqual(errors, []);
     console.log(`PASS ${tag}: a listed verified person's own move applies at once, is recorded as their decision, and has one Undo`);
