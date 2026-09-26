@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { Schema } from '@milkdown/kit/prose/model';
 import { TextSelection } from '@milkdown/kit/prose/state';
-import { classifyTypedRun, isRunAtItemEnd, typedItemAt, typedDiscussionId, typedDiscussionInsertId } from '../shared/typed-discussion';
+import { classifyTypedRun, isRunAtItemEnd, typedItemAt, typedDiscussionId, typedDiscussionInsertId, convertedDiscussionFor, convertedRowLabel } from '../shared/typed-discussion';
 import { pair } from './review-history-fixture';
 import { setCurrentActor } from '../editor/actor';
 import { getMarks, comment, getMarkMetadataWithQuotes, clearResolvedMarkTombstones } from '../editor/plugins/marks';
@@ -32,6 +32,14 @@ test('an unknown or ambiguous name before a question is still a question for eve
   assert.deepEqual(classifyTypedRun('@Mike which one?', [...candidates, { actor: 'human:Other', names: ['Mike'] }]), { discussion: true, reason: 'question', waitingOn: [] });
 });
 test('thread ID survives a reload without a new record shape', () => assert.equal(typedDiscussionInsertId(typedDiscussionId('insert-1')), 'insert-1'));
+test('a completed row whose words became a discussion says so, with the line (ac-tvq)', () => {
+  const views = [{ thread: { id: 'typed-discussion:insert-9' }, lineIndex: 1 }, { thread: { id: 'other' }, lineIndex: 4 }];
+  assert.equal(convertedDiscussionFor(['insert-9'], views), views[0]);
+  assert.equal(convertedDiscussionFor(['insert-8'], views), null, 'an ordinary withdrawal is not a conversion');
+  assert.equal(convertedDiscussionFor(undefined, views), null);
+  assert.equal(convertedRowLabel(1), 'Done · became a discussion on line 2');
+  assert.equal(convertedRowLabel(null), 'Done · became a discussion');
+});
 const schema = new Schema({ nodes: {
   doc: { content: 'block+' }, text: { group: 'inline' }, paragraph: { group: 'block', content: 'inline*' },
   heading: { group: 'block', content: 'inline*' }, code_block: { group: 'block', content: 'text*' },

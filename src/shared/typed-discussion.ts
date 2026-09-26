@@ -10,6 +10,10 @@ export const TYPED_DISCUSSION_POLICY = {
   ambiguousMention: 'keep-text',
   hint: 'Enter sends this as a discussion',
   sent: 'Asked as a discussion on line {line}. Undo turns it back into text.',
+  /** The Review list's completed row for the words a conversion withdrew (bead ac-tvq). Without it
+   * the row read 'Done · passage removed', though nothing was removed: the words became a thread. */
+  completedRow: 'Done · became a discussion on line {line}',
+  completedRowNoLine: 'Done · became a discussion',
   turnBackLabel: 'Turn back into text',
   threadIdPrefix: 'typed-discussion:',
   shiftEnter: 'keep-text',
@@ -79,6 +83,16 @@ export function isRunAtItemEnd(doc: Node, range: { from: number; to: number }): 
 }
 
 export function typedDiscussionId(insertId: string): string { return TYPED_DISCUSSION_POLICY.threadIdPrefix + insertId; }
+/** The discussion a withdrawn typing run became, if any: its thread id is the run's insert id with the prefix. */
+export function convertedDiscussionFor<T extends { thread: { id: string } }>(markIds: readonly string[] | undefined, threads: readonly T[]): T | null {
+  if (!markIds?.length) return null;
+  const ids = new Set(markIds.map(typedDiscussionId));
+  return threads.find(view => ids.has(view.thread.id)) ?? null;
+}
+export function convertedRowLabel(lineIndex: number | null): string {
+  return lineIndex === null ? TYPED_DISCUSSION_POLICY.completedRowNoLine
+    : TYPED_DISCUSSION_POLICY.completedRow.replace('{line}', String(lineIndex + 1));
+}
 export function typedDiscussionInsertId(threadId: string): string | null {
   return threadId.startsWith(TYPED_DISCUSSION_POLICY.threadIdPrefix)
     ? threadId.slice(TYPED_DISCUSSION_POLICY.threadIdPrefix.length) || null : null;

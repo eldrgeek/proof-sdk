@@ -154,6 +154,12 @@ async function run(browser, server, style, width) {
   };
   try {
     const enter = await discussion(' What is your reasoning?', 'Enter');
+    // The withdrawn words' completed row says what happened to them (ac-tvq), not 'passage removed'.
+    // Completed rows are kept only while the Review panel is open (desktop); a phone's closed sheet
+    // drops them (navigator.ts, clearCompleted), so there the row must simply not mislead.
+    const doneRows = () => a.page.evaluate(() => [...document.querySelectorAll('.anv-issue[data-settled="true"]')].map(b => b.textContent ?? ''));
+    if (width >= 700) await poll(async () => (await doneRows()).some(t => /Done · became a discussion on line \d+/.test(t)), "The converted words' completed row does not say they became a discussion");
+    assert.equal((await doneRows()).some(t => t.includes('What is your reasoning?') && t.includes('passage removed')), false, 'The converted words read as a removed passage');
     await a.page.screenshot({ path: path.join(shots, `${tag}-sent.png`), fullPage: true });
     await a.page.keyboard.press('ControlOrMeta+z');
     await poll(async () => (await pending(a.page)).some(m => m.data.content === ' What is your reasoning?'), 'Undo did not restore a live proposal');

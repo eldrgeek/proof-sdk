@@ -6,6 +6,7 @@ import { isWriting, isInputComposing, letterShortcutsEnabled } from '../editor/e
 import { REVIEW_LIST_POLICY, reviewCountLabel, reconcileReview, emptyReviewSession,
   clearCompleted, nextReviewRow, anchoredReviewScroll, type ReviewScope } from '../shared/review-list';
 import type { LineMarksUI } from './line-marks';
+import { convertedDiscussionFor, convertedRowLabel } from '../shared/typed-discussion';
 
 export interface NavigatorHost {
   lineMarks(): LineMarksUI;
@@ -286,7 +287,9 @@ export class NavigatorUI {
       b.dataset.new = String(row.fresh);
       if (row.line === cursor) b.setAttribute('aria-current', 'true'); else b.removeAttribute('aria-current');
       const title = row.text.length > NAVIGATOR_POLICY.titleChars ? `${row.text.slice(0, NAVIGATOR_POLICY.titleChars - 1)}…` : row.text;
-      const label = row.done ? (row.line < 0 ? 'Done · passage removed' : `Done · line ${row.line + 1}`)
+      // A row whose passage is gone may be words that became a discussion (step 4): say so (ac-tvq).
+      const discussion = row.done && row.line < 0 ? convertedDiscussionFor(row.markIds, lm.allThreads()) : null;
+      const label = row.done ? (discussion ? convertedRowLabel(discussion.lineIndex) : row.line < 0 ? 'Done · passage removed' : `Done · line ${row.line + 1}`)
         : `${row.fresh ? 'New · ' : ''}${needsYouLabel(this.scope === 'all-open' ? { ...row, count: 1 } : row, actor => lm.displayName(actor), lm.me())}`;
       if (b.dataset.label !== title + label) {
         const dot = el('span', 'anv-dot'); dot.setAttribute('aria-hidden', 'true');
@@ -298,6 +301,7 @@ export class NavigatorUI {
       b.onclick = () => {
         this.keyHint.textContent = '';
         if (row.line >= 0) this.selectLine(row.line);
+        else if (discussion && discussion.lineIndex !== null) this.selectLine(discussion.lineIndex);
       };
       if (b.parentElement !== li) li.append(b);
       // Inserting above a focused button preserves that button's DOM node.
