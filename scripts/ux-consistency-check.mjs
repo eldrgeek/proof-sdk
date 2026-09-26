@@ -258,13 +258,17 @@ async function runDesktop(browser, base, tag) {
     await page.mouse.click(box.x + box.width - 30, box.y + box.height / 2);
     await page.waitForTimeout(250);
     await page.keyboard.press('End');
-    await page.keyboard.type(' Is this right?');
+    // A question mark inside prose. The typed run must not end with "?": a question typed at the
+    // end of an item becomes a discussion when the person leaves the text (step 4, yfbqrau4 point
+    // 11), which discussions-check covers. What this case guards is that the clarify feature never
+    // eats a real question mark.
+    await page.keyboard.type(' Is this right? I think so.');
     await page.waitForTimeout(250);
     await page.evaluate(() => document.activeElement?.blur());
     await page.waitForTimeout(600);
     const after = (await page.evaluate(() => window.__proofClarify.debugState())).converted.length;
     assert.equal(after, before, 'ordinary prose was turned into a clarify request');
-    assert.match(await target.innerText(), /Is this right\?/);
+    assert.match(await target.innerText(), /Is this right\? I think so\./);
     await page.evaluate(() => {
       const btn = document.querySelector('.share-pill-suggest-toggle');
       if (btn && btn.getAttribute('aria-label') === 'Leave Editing') btn.click();
