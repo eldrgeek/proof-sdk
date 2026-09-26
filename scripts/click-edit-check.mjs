@@ -152,6 +152,9 @@ async function run(browser, server, style, width) {
     await b.page.keyboard.press('Backspace'); await decision(insert.id, 'human:Bob');
     await b.page.keyboard.press('ControlOrMeta+z');
     await poll(async () => (await text(b.page)).includes(' live'), 'Undo did not restore insert');
+    // Alice acts next. Bob's Undo reaches her page a few milliseconds after his own page shows it, and
+    // a click aimed before it arrives lands five characters early (ac-1oj, measured 2026-09-26).
+    await poll(async () => await text(a.page) === await text(b.page), "Bob's Undo did not reach Alice");
     const withdrawn = [];
     for (let i = 0; i < 5; i++) {
       await clickAt(a.page, 'Last paragraph stays once.');

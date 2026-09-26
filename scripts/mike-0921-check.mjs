@@ -224,13 +224,28 @@ async function desktop(browser, base, style) {
     assert.ok(top > 0 && top < 900, `heading not in view (${top})`);
   });
   await page.evaluate(() => document.querySelector('.share-pill-suggest-toggle').click());
+  // Entering Editing puts the caret on the focus line, and the scroll camera keeps that caret in view
+  // on the next frames. Let both finish first: a scroll made meanwhile can be undone by the camera,
+  // which left the link above the window in 1 of 4 runs (ac-jfl, measured 2026-09-26).
+  await waitFor(page, () => window.__proofReadingWalk.debugState().writing);
+  await page.evaluate(() => new Promise(done => {
+    let last = scrollY, still = 0;
+    const tick = () => { if (scrollY === last) { if (++still >= 3) return done(); } else { last = scrollY; still = 0; } requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+  }));
   await check(`${tag}: item 1 — Alt/Option+click in direct Editing puts the caret in its words to edit them (nothing opens)`, async () => {
-    await scrollLineIntoView(page, L.LINKS);
     const link = page.locator('.ProseMirror a[href="https://example.com/page"]');
+    // The press must land on the link: scroll it into view, and again if the page moved meanwhile.
+    let box = null;
+    for (let tries = 0; tries < 5 && !box; tries++) {
+      await scrollLineIntoView(page, L.LINKS);
+      const seen = await link.boundingBox(); const height = await page.evaluate(() => innerHeight);
+      if (seen && seen.y >= 0 && seen.y + seen.height <= height) box = seen;
+    }
+    assert.ok(box, `the link could not be brought on screen for the press (its box: ${JSON.stringify(await link.boundingBox())})`);
     // What the page is doing just before the press, so a failure explains itself (ac-jfl).
     const before = await page.evaluate(() => ({ writing: window.__proofReadingWalk.debugState().writing,
       toggle: document.querySelector('.share-pill-suggest-toggle')?.textContent ?? null }));
-    const box = await link.boundingBox();
     const hit = await page.evaluate(([x, y]) => { const el = document.elementFromPoint(x, y); return el ? `${el.tagName.toLowerCase()}${el.getAttribute('href') ? `[href=${el.getAttribute('href')}]` : ''}` : null; },
       [box.x + box.width / 2, box.y + box.height / 2]);
     await page.keyboard.down('Alt');
