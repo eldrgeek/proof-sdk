@@ -56,7 +56,7 @@ const SEL = {
   personalCompletionStatus: '[data-accord-review-complete-status]',
 };
 
-const clientHeaders = { 'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const clientHeaders = { 'X-Proof-Client-Version': '0.34.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 const DESKTOP = { width: 1280, height: 800 };
 const PHONE = devices['iPhone 13'];
 

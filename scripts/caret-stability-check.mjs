@@ -31,7 +31,7 @@ const styles = arg('--style') ? [arg('--style')] : ['playmaker', 'proof'];
 const modes = arg('--mode') ? [arg('--mode')] : ['suggesting'];
 const deviceNames = arg('--device') ? [arg('--device')] : ['desktop', 'phone'];
 
-const clientHeaders = { 'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const clientHeaders = { 'X-Proof-Client-Version': '0.34.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 let failures = 0;
 const results = [];
 let activePage = null;

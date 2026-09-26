@@ -89,7 +89,7 @@ async function startServer(style) {
 
 const para = (tag) => `${tag} paragraph is plain text for reading; it is long enough to be a real line of the document.`;
 const markdown = ['# Cross invitation check', para('Intro'), para('Middle'), para('Last')].join('\n\n');
-const CLIENT = { 'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const CLIENT = { 'X-Proof-Client-Version': '0.34.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 
 async function newContext(browser, base, options = {}) {
   const context = await browser.newContext(options);

@@ -37,7 +37,7 @@ let address = 0;
 const call = async (url: string, method = 'GET', body?: unknown, headers: Record<string, string> = {}) => {
   const res = await fetch(base + url, { method, headers: {
     'Content-Type': 'application/json', Origin: base, 'X-Real-IP': `198.51.${Math.floor(address / 250)}.${++address % 250}`,
-    'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3', ...headers,
+    'X-Proof-Client-Version': '0.34.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3', ...headers,
   }, body: body === undefined ? undefined : JSON.stringify(body) });
   const text = await res.text();
   let json: any = {}; try { json = JSON.parse(text); } catch { /* HTML/markdown */ }

@@ -1,7 +1,10 @@
 /** Mike, 2026-09-24, yfbqrau4 (ac-8ae): live typing withdraws through status writes.
+ * 2026-09-26 (ac-l71, step 6): a move is two linked suggestion records over the item (remove +
+ * insert). A client from before moves would draw them as a plain deletion and insertion, and
+ * accepting the one or rejecting the other there deletes the item; 0.34.0 makes such clients reload.
  * Older clients must reload before editing; the ac-lhc protocol stays unchanged. */
 export const COLLAB_VERSION_POLICY = {
-  minVersion: '0.33.0',
+  minVersion: '0.34.0',
   protocol: '3',
   reloadCode: 4401, // Hocuspocus Unauthorized stops automatic socket retries, including 0913728.
   reloadReason: 'client-upgrade-required',

@@ -15,7 +15,7 @@ const shots = path.join(root, '.preview');
 mkdirSync(shots, { recursive: true });
 const styles = process.argv.includes('--style') ? [process.argv[process.argv.indexOf('--style') + 1]] : ['playmaker', 'proof'];
 for (const style of styles) assert.ok(['playmaker', 'proof'].includes(style));
-const headers = { 'Content-Type': 'application/json', 'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const headers = { 'Content-Type': 'application/json', 'X-Proof-Client-Version': '0.34.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 async function start(style) {
   const socket = createServer(); await new Promise(resolve => socket.listen(0, '127.0.0.1', resolve));
   const port = socket.address().port; await new Promise(resolve => socket.close(resolve));

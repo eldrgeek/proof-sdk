@@ -166,7 +166,7 @@ console.log('PASS moves: proposal Undo/Redo, rows preserve headers, nested list 
     const response = await fetch(`${base}/api/agent/${slug}${route}`, {
       method: body === undefined ? 'GET' : 'POST',
       headers: { 'Content-Type': 'application/json', 'x-share-token': token,
-        'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' },
+        'X-Proof-Client-Version': '0.34.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' },
       ...(body === undefined ? {} : { body: JSON.stringify({ by: alice, ...body as object }) }),
     });
     return { status: response.status, body: await response.json() as any };

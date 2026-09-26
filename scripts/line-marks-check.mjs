@@ -25,7 +25,7 @@ mkdirSync(shots, { recursive: true });
 const styleArg = process.argv.indexOf('--style');
 const style = styleArg > 0 ? process.argv[styleArg + 1] : 'playmaker';
 
-const clientHeaders = { 'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const clientHeaders = { 'X-Proof-Client-Version': '0.34.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 let failures = 0;
 const results = [];
 let activePage = null;

@@ -16,7 +16,7 @@ import { showWholeAccord } from './review-ui.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const shots = path.join(root, '.preview'); mkdirSync(shots, { recursive: true });
-const headers = { 'Content-Type': 'application/json', 'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const headers = { 'Content-Type': 'application/json', 'X-Proof-Client-Version': '0.34.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 const markdown = '# Undo while others mark\n\nAgreed words stay here.\n\nOriginal replacement words.\n\nLast paragraph stays once.';
 let failures = 0;
 

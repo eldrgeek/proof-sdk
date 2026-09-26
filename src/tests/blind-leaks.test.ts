@@ -21,7 +21,7 @@ await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
 const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 type Headers = Record<string, string>;
 async function call(url: string, headers: Headers, body?: unknown, method = body === undefined ? 'GET' : 'POST') {
-  const response = await fetch(base + url, { method, headers: { 'Content-Type': 'application/json', 'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3', ...headers }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const response = await fetch(base + url, { method, headers: { 'Content-Type': 'application/json', 'X-Proof-Client-Version': '0.34.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3', ...headers }, body: body === undefined ? undefined : JSON.stringify(body) });
   const text = await response.text(); let json: any = {};
   try { json = JSON.parse(text); } catch { /* exports */ }
   return { status: response.status, body: json, text, headers: response.headers };

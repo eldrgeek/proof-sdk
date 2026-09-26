@@ -15,7 +15,7 @@ const arg = key => { const i = process.argv.indexOf(key); return i > 0 ? process
 const styles = arg('--style') ? [arg('--style')] : ['playmaker', 'proof'];
 const widths = arg('--width') ? [Number(arg('--width'))] : [1440, 390];
 const shots = arg('--shots') || path.join(root, '.preview'); mkdirSync(shots, { recursive: true });
-const headers = { 'Content-Type': 'application/json', 'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const headers = { 'Content-Type': 'application/json', 'X-Proof-Client-Version': '0.34.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 async function start(style) {
   const socket = createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r));
   const port = socket.address().port; await new Promise(r => socket.close(r));

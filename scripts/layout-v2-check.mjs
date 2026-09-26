@@ -17,7 +17,7 @@ const arg = name => { const at = process.argv.indexOf(name); return at > 0 ? pro
 const styles = arg('--style') ? [arg('--style')] : ['playmaker', 'proof'];
 const shots = arg('--shots') || path.join(root, '.preview');
 mkdirSync(shots, { recursive: true });
-const headers = { 'Content-Type': 'application/json', 'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const headers = { 'Content-Type': 'application/json', 'X-Proof-Client-Version': '0.34.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 const first = 'The first proposal replaces this original wording.';
 const second = 'The second proposal also keeps its original wording until accepted.';
 const markdown = ['# Layout v2', first, second, 'Should we publish this version?', ...Array.from({ length: 16 }, (_, i) => `Passage ${i + 1} is here to check deliberate navigation and a stable reading view.`)].join('\n\n');

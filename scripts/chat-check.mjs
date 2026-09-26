@@ -24,7 +24,7 @@ const shots = arg('--shots') || path.join(root, '.preview');
 mkdirSync(shots, { recursive: true });
 const styles = arg('--style') ? [arg('--style')] : ['playmaker', 'proof'];
 
-const clientHeaders = { 'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const clientHeaders = { 'X-Proof-Client-Version': '0.34.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 const MIKE_EMAIL = 'mw@mike-wolf.com';
 const ERIC_EMAIL = 'eric@example.test';
 let failures = 0;

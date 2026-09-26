@@ -27,7 +27,7 @@ const shots = arg('--shots') || path.join(root, '.preview');
 mkdirSync(shots, { recursive: true });
 const styles = arg('--style') ? [arg('--style')] : ['playmaker', 'proof'];
 
-const clientHeaders = { 'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
+const clientHeaders = { 'X-Proof-Client-Version': '0.34.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' };
 const MIKE_EMAIL = 'mw@mike-wolf.com';
 let failures = 0;
 const results = [];
@@ -113,12 +113,12 @@ async function openDoc(page, base, slug) {
 }
 
 const serverView = (page, slug) => page.evaluate(async s => {
-  const r = await fetch(`/api/documents/${s}/line-marks`, { credentials: 'same-origin', headers: { 'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' } });
+  const r = await fetch(`/api/documents/${s}/line-marks`, { credentials: 'same-origin', headers: { 'X-Proof-Client-Version': '0.34.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' } });
   return { status: r.status, body: await r.json() };
 }, slug);
 
 const pagePost = (page, url, body) => page.evaluate(async ({ u, b }) => {
-  const r = await fetch(u, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' }, body: JSON.stringify(b) });
+  const r = await fetch(u, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-Proof-Client-Version': '0.34.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' }, body: JSON.stringify(b) });
   return { status: r.status, body: await r.json().catch(() => ({})) };
 }, { u: url, b: body });
 
@@ -232,7 +232,7 @@ async function run(browser, style) {
       assert.equal(await notice.innerText(), 'You can comment as a guest. Sign in to edit.');
       assert.ok(await notice.getByRole('link', { name: 'Sign in' }).getAttribute('href'));
       await guest.waitForTimeout(800);
-      const md = await fetch(`${base}/api/documents/${slug}`, { headers: { 'X-Proof-Client-Version': '0.33.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' } }).then(r => r.json());
+      const md = await fetch(`${base}/api/documents/${slug}`, { headers: { 'X-Proof-Client-Version': '0.34.0', 'X-Proof-Client-Build': 'test', 'X-Proof-Client-Protocol': '3' } }).then(r => r.json());
       assert.ok(!String(md.markdown).includes('GUESTTYPED'), 'guest typing never reaches the document');
       // A mark from the page is refused, not recorded.
       const refused = await pagePost(guest, `/api/documents/${slug}/line-marks`, { by: 'Visitor', status: 'agreed', anchor: { hash: 'x', occurrence: 0, ordinal: 2, kind: 'paragraph', excerpt: 'Middle' } });
