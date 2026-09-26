@@ -140,12 +140,14 @@ export class ReviewDecisionHistory {
       // Undo of newly typed text is a withdrawal too. Set the decision inside the
       // undo transaction, before its update can reach the server's marks guard.
       if (item.parent === marks && id && marks._map.get(id) === item) {
-        const current = marks.get(id);
-        if (this.manager.undoing && isPendingSuggestion(current)) {
+        const current = marks.get(id) as StoredMark;
+        if (this.manager.undoing && (isPendingSuggestion(current) || (current?.move && current.status === 'accepted' && !item.left))) {
           const resolved = suggestionWithStatus(current, 'rejected', getCurrentActor());
           this.withdrawnByUndo.set(id, { pending: current, resolved });
           marks.set(id, resolved);
-          return false;
+          // A move proposal may be metadata-only. Report its withdrawal as an effective
+          // native undo step; deleting the replaced item cannot delete the new decision.
+          return Boolean(current.move);
         }
       }
       return true;
@@ -278,7 +280,7 @@ export class ReviewDecisionHistory {
       const records = candidate.meta.get(this.suggestionsKey) as SuggestionRecords | undefined;
       const marks = this.doc.getMap('marks');
       for (const id of created ?? []) {
-        const current = marks.get(id);
+        const current = marks.get(id) as StoredMark;
         const entry = marks._map.get(id);
         const expected = records?.get(id)?.value;
         if (!entry || entry.id.client === this.doc.clientID || !isPendingSuggestion(current) || expected === undefined) continue;

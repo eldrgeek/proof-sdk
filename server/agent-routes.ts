@@ -1,3 +1,5 @@
+import { moveDocumentAsync } from './document-engine.js';
+import { setImmediateMoveActors } from './moves.js';
 import { redactSuggestionDecisions, blindReadView, readBlindView, redactAsk, redactTtl, filterBlindEvents, visibleAlternative } from './blind-view.js';
 import { createHash } from 'crypto';
 import { Router, type Request, type Response } from 'express';
@@ -4654,7 +4656,10 @@ aidRoute('/:slug/bundles', 'POST /bundles', ['commenter', 'editor', 'owner_bot']
 for (const action of ['accept', 'reject'] as const) {
   aidRoute(`/:slug/bundles/:bundleId/${action}`, `POST /bundles/:id/${action}`, ['editor', 'owner_bot'], async ({ req, slug, by }) => {
     const state = await currentAgentState(slug);
-    return decideBundle(slug, { id: String(req.params.bundleId ?? ''), by, action, markdown: state.markdown, rawMarks: state.marks, apply: bundleApplier(req, slug, by) });
+    const id = String(req.params.bundleId ?? '');
+    const marks = typeof state.marks === 'string' ? JSON.parse(state.marks) : state.marks;
+    if (marks?.[`${id}:remove`]?.move) return moveDocumentAsync(slug, by, {}, { id, action });
+    return decideBundle(slug, { id, by, action, markdown: state.markdown, rawMarks: state.marks, apply: bundleApplier(req, slug, by) });
   });
 }
 
@@ -5489,6 +5494,15 @@ agentRoutes.post('/:slug/events/ack', (req: Request, res: Response) => {
   const acked = ackDocumentEvents(slug, Math.trunc(upToId), by);
   res.json({ success: true, acked });
 });
+
+// ac-l71: register before the generic engine fallback below.
+aidRoute('/:slug/moves', 'POST /moves', ['commenter', 'editor', 'owner_bot'], ({ slug, by, payload }) => moveDocumentAsync(slug, by, payload));
+for (const action of ['accept', 'reject'] as const) {
+  aidRoute(`/:slug/moves/:moveId/${action}`, `POST /moves/:id/${action}`, ['editor', 'owner_bot'], ({ req, slug, by }) =>
+    moveDocumentAsync(slug, by, {}, { id: String(req.params.moveId), action }));
+}
+aidRoute('/:slug/move-settings', 'POST /move-settings', ['owner_bot'], async ({ slug, by, role, payload }) =>
+  setImmediateMoveActors(slug, payload.immediateMoveActors, by, role === 'owner_bot'));
 
 agentRoutes.use(async (req: Request, res: Response) => {
   const slug = getSlug(req);

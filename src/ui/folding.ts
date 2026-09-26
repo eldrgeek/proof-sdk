@@ -33,6 +33,7 @@ export class FoldingUI {
     this.layer.className = 'pfold-layer';
     this.layer.addEventListener('mousedown', e => e.preventDefault());
     this.layer.addEventListener('click', event => {
+      if ((event.target as HTMLElement).closest('.accord-move-handle')) { event.preventDefault(); event.stopPropagation(); return; }
       const chip = (event.target as HTMLElement).closest<HTMLElement>('.pfold-chip');
       if (!chip) return;
       event.preventDefault(); event.stopPropagation(); this.toggle(Number(chip.dataset.heading));
@@ -105,7 +106,7 @@ export class FoldingUI {
   mapTransaction(tr: Transaction): void {
     if (!tr.docChanged) return;
     // Yjs-origin transactions replace the whole document; see remapByContent.
-    const whole = (tr.getMeta(ySyncPluginKey) as { isChangeOrigin?: boolean } | undefined)?.isChangeOrigin === true;
+    const whole = (tr.getMeta(ySyncPluginKey) as { isChangeOrigin?: boolean } | undefined)?.isChangeOrigin === true || tr.getMeta("proofMove") === true;
     const before = extractLines(tr.before), after = extractLines(tr.doc);
     const remap = (positions: Set<number>) => whole ? remapByContent(positions, tr.before, tr.doc) : mapShown(positions, before, after, tr.mapping);
     for (const snapshot of this.snapshots) {
@@ -328,6 +329,15 @@ export class FoldingUI {
       const bodyLines = section.lineEnd - section.headingIndex - 1;
       chip.dataset.heading = String(section.headingIndex);
       chip.dataset.folded = String(stored);
+      // The handle remains visible on every folded chip, independent of the pointer.
+      queueMicrotask(() => {
+        const old = chip!.querySelector('.accord-move-handle');
+        if (!stored || phone) { old?.remove(); return; }
+        const handle = old as HTMLElement ?? document.createElement('span');
+        handle.className = 'accord-move-handle'; handle.dataset.moveLine = String(section.headingIndex);
+        handle.textContent = '⠿'; handle.title = 'Drag to move this whole section';
+        if (!old) chip!.append(handle);
+      });
       chip.dataset.state = !loaded ? 'loading' : (total === 0 ? 'resolved' : 'issues');
       chip.setAttribute('aria-expanded', String(!folded));
       const countText = !loaded ? '…' : (total === 0 ? '✓' : String(total));

@@ -148,8 +148,21 @@ export function remapByContent(positions: ReadonlySet<number>, before: BlockNode
     else { gapNew.push(now[j].pos); j += 1; }
   }
   closeGap();
+  // ac-l71: a move is a permutation, not an edit to the moved words. LCS deliberately
+  // omits a reordered line; match uniquely surviving content before its gap fallback.
+  const beforeLines = extractLines(before), afterLines = extractLines(after);
+  const uniqueMoves = new Map<number, number>();
+  const oldHashes = new Map<string, DocLine[]>(), newHashes = new Map<string, DocLine[]>();
+  for (const line of beforeLines) oldHashes.set(line.hash, [...(oldHashes.get(line.hash) ?? []), line]);
+  for (const line of afterLines) newHashes.set(line.hash, [...(newHashes.get(line.hash) ?? []), line]);
+  for (const [hash, oldLines] of oldHashes) {
+    const newLines = newHashes.get(hash);
+    if (oldLines.length === 1 && newLines?.length === 1) uniqueMoves.set(oldLines[0].pos, newLines[0].pos);
+  }
   const result = new Set<number>();
   for (const pos of positions) {
+    if (uniqueMoves.has(pos)) { result.add(uniqueMoves.get(pos)!); continue; }
+
     if (pos < prefixEnd) result.add(pos);
     else if (pos >= beforeTail) result.add(pos - beforeTail + afterTail);
     else if (pairs.has(pos)) result.add(pairs.get(pos)!);

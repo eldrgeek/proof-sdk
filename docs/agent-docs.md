@@ -1369,3 +1369,58 @@ Repeated suggest/reject cycles on annotated documents now preserve stable sugges
 ### `COLLAB_SYNC_FAILED` errors
 
 Edits via the API can fail when a browser has the document open with an active Yjs collab session. The `/edit` and `/edit/v2` endpoints handle this gracefully, but `rewrite.apply` does not. If you hit this, retry after a short delay or use `/edit`/`/edit/v2` instead.
+
+## Moving items (Accord step 6, ac-l71)
+
+`POST /api/agent/:slug/moves` proposes one structural move. It needs comment or
+edit access and the usual authenticated `by`. The unit and destination each accept
+`lineIndex`, `{hash, occurrence}`, `{ref, quote}`, or a unique `quote`, as line marks do.
+
+```json
+{
+  "by": "ai:your-agent",
+  "unit": {"ref": "b3", "quote": "First task"},
+  "section": true,
+  "place": {
+    "target": {"quote": "Second task"},
+    "side": "after",
+    "section": true
+  }
+}
+```
+
+`section: true` moves a heading and its whole section. Without it, a heading moves
+alone. `place.section: true` with `side: "after"` lands after the destination's
+whole section. List entries include nested content and stay in the same list.
+Table rows stay in their table and cannot cross or move its header. Other items
+land between top-level blocks. A drop at the current position returns `noOp: true`.
+Identical source or destination lines are refused because a content anchor cannot
+safely distinguish them after concurrent edits.
+
+The response contains `proposal`: a bundle with `kind: "move"`, its plain-language
+title, and two members (removal and insertion). Both members live atomically in
+the shared marks map; pending moves retain one copy at the original position.
+`GET /state` shows the bundle and counts one open item. `GET /bundles` also lists it.
+Accept or reject with `POST /moves/:id/accept` or `/moves/:id/reject` (edit access).
+The equivalent `/bundles/:id/accept` and `/bundles/:id/reject` routes work too.
+Accept removes whole nodes without leaving an empty block. Reject leaves the text
+unchanged. Both retain decision records. A changed source, destination or source
+proposal refuses Accept with `409 MOVE_STALE_OR_INVALID`; re-read, reject, and
+propose again. Canonical revision checks also refuse concurrent stale writes.
+
+An owner can POST `/api/agent/:slug/move-settings` with
+`{"by":"human:mw@mike-wolf.com","immediateMoveActors":["human:mw@mike-wolf.com"]}`.
+The page owner API is `POST /documents/:slug/move-settings` with the same body.
+The setting appears under `settings.immediateMoveActors` in `/state` and defaults
+to `[]`. Only the named actor's own moves are created accepted; other actors still
+propose. This implements Waiting on Mike's exception without hard-coding its slug.
+No live document is configured by this implementation.
+
+Page-created moves and decisions use the page's native, guarded Undo and Redo.
+An API call has no browser history entry. Its decision is nevertheless recorded.
+Desktop controls are the focus item's gutter handle, each folded section's chip,
+Review rows, and View → Outline. Alt+Shift+Up/Down moves the focus item one slot.
+Escape leaves the outline. The outline is not remembered between visits, and
+phone dragging is disabled.
+
+_Implemented by Codex (GPT-6), 2026-09-26, from Mike Wolf's rulings and Claude's ac-l71 brief._

@@ -1,3 +1,4 @@
+import { moveSourceLine } from '../src/shared/moves.js';
 /** Read-only Accord alignment. The legacy report still owns snapshot freezing. */
 import { reviewAlignment, reviewSurface } from '../src/shared/review-list.js';
 import { computeStep1Team, buildLineStates, normalizeLineText } from '../src/shared/line-marks.js';
@@ -19,6 +20,8 @@ export function documentReviewAlignment(slug: string, report: IssueReport, rawMa
     identity: { target: actor => resolveTargetActor(actor, directory) } });
   const lineAtPos = (pos: number) => lines.find(line => pos >= line.pos && pos < line.pos + line.nodeSize)?.index ?? -1;
   const lineOf = (mark: ThreadSourceMark): number | null => {
+    const source = moveSourceLine(lines, mark as any);
+    if (source) return source.index;
     // The server parses the current markdown. Stored PM positions can belong to an
     // earlier revision, so prefer the quote when it identifies exactly one item.
     const quote = normalizeLineText(mark.quote ?? '');

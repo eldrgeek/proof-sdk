@@ -1,3 +1,5 @@
+import { moveBundles } from '../src/shared/moves.js';
+import { parseStoredMarks } from './line-marks.js';
 /**
  * Proof Documents Steps B4e + B4f — server side of review bundles, competing alternatives, blind
  * marking, Explain and perishable claims.
@@ -165,6 +167,7 @@ export async function addToBundle(slug: string, input: {
     if (!mark || !['insert', 'delete', 'replace'].includes(kind) || (typeof mark.status === 'string' && mark.status !== 'pending')) {
       return fail(409, 'NOT_A_PENDING_SUGGESTION', `${markId} is not a pending suggestion`, { markId });
     }
+    if (mark.move) return fail(409, 'IN_ANOTHER_BUNDLE', 'A move already belongs to its structural bundle. Decide it as one move.');
     if (BUNDLE_POLICY.onePerSuggestion) {
       const holder = others.find(b => b.members.some(m => m.markId === markId));
       if (holder) return fail(409, 'IN_ANOTHER_BUNDLE', `${markId} already belongs to bundle ${holder.id}`, { markId, bundleId: holder.id });
@@ -194,7 +197,7 @@ export async function addToBundle(slug: string, input: {
 export async function bundleReport(slug: string, markdown: string, rawMarks: unknown, includeClosed = false): Promise<Array<Record<string, unknown>>> {
   const lines = await computeServerLines(markdown);
   const locate = serverSuggestionLocator(slug, lines, rawMarks);
-  return listBundles(slug, { includeClosed }).map(bundle => serializeBundle(evaluateBundle(bundle, lines, locate), lines));
+  return [...listBundles(slug, { includeClosed }), ...moveBundles(parseStoredMarks(rawMarks) as any).filter(b => includeClosed || b.status === "open")].map(bundle => serializeBundle(evaluateBundle(bundle, lines, locate), lines));
 }
 
 /**

@@ -1,3 +1,4 @@
+import { moveBundles, resolveMove, moveSourceLine } from '../src/shared/moves.js';
 /**
  * Proof Documents Step 1 — server side of line marks and Issues.
  *
@@ -281,7 +282,12 @@ export async function buildIssueReport(slug: string, markdown: string, rawMarks:
   const lineMarks = listCanonicalLineMarks(slug, dir);
   // Steps B4e + B4f: an Explain thread is not an Issue; a bundled suggestion names its bundle.
   const extrasPre = readExtras(slug);
-  const reviewMarks = annotateReviewMarks(reviewMarksFromStored(rawMarks), extrasPre);
+  extrasPre.bundles.push(...moveBundles(parseStoredMarks(rawMarks) as any));
+  const storedMoves = parseStoredMarks(rawMarks);
+  const reviewMarks = annotateReviewMarks(reviewMarksFromStored(rawMarks).map(mark => {
+    const source = moveSourceLine(lines, storedMoves[mark.id] as any);
+    return source ? { ...mark, pos: source.pos + 1, quote: source.text } : mark;
+  }), extrasPre);
   // Step B4c/B4d: flags and objections are Issues too; flaggers and objectors join the team.
   const aids = evaluateAids(slug, lines, reviewMarks);
   // {do} action lines: proposers and approvers join the team; unfinished ones are Issues.
@@ -293,6 +299,14 @@ export async function buildIssueReport(slug: string, markdown: string, rawMarks:
   const states = buildLineStates(lines, lineMarks);
   const now = Date.now();
   const extras = evaluateExtras(slug, extrasPre, { lines, states, team, rawMarks, now });
+  if (extras.bundleViews.some(v => v.bundle.kind === 'move' && v.status === 'open')) {
+    const parser = await getHeadlessMilkdownParser();
+    const parsed = parseMarkdownWithHtmlFallback(parser, markdown);
+    for (const view of extras.bundleViews) if (view.bundle.move && view.status === 'open'
+      && (!parsed.doc || !resolveMove(parsed.doc, view.bundle.move, parseStoredMarks(rawMarks) as any))) {
+      view.acceptable = false; view.stale = view.pending;
+    }
+  }
   // Line tiers: a context line an AI read (and nothing open on it) is not an Issue for people.
   let tierEvaluation: TierEvaluation | undefined;
   try { tierEvaluation = evaluateDocumentTiers(slug, lines, lineMarks); } catch { tierEvaluation = undefined; }

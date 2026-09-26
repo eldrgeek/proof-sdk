@@ -210,6 +210,7 @@ export interface MarksDocument {
 }
 
 export interface StoredMark {
+  move?: import("../shared/moves").MoveMember;
   kind?: MarkKind;
   by?: string;
   createdAt?: string;

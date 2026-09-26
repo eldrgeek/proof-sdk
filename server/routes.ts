@@ -1,3 +1,4 @@
+import { setImmediateMoveActors } from './moves.js';
 import { readCollabClientVersion, requireCurrentCollabClient } from './client-capabilities.js';
 import { redactSuggestionDecisions, blindReadView, readBlindView, redactAsk, redactTtl, visibleObjection, visibleAlternative } from './blind-view.js';
 import { agentKeyRoutes } from './agent-key-routes.js';
@@ -3104,3 +3105,6 @@ apiRoutes.get('/documents/:slug/collab-session', async (req: Request, res: Respo
     },
   });
 });
+
+pageAidRoute('/documents/:slug/move-settings', ({ slug, by, access, body }) =>
+  setImmediateMoveActors(slug, body.immediateMoveActors, by, access.canApprove));

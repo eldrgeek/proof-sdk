@@ -1,3 +1,4 @@
+import { immediateMoveActors } from './moves.js';
 /**
  * Proof Documents Steps B4e + B4f — storage for review bundles, competing alternatives and picks,
  * per-document settings (blind marking), Explain threads and line times-to-live.
@@ -186,12 +187,12 @@ export function deletePicksForLine(slug: string, lineHash: string): void {
 // Settings (blind marking)
 // ============================================================================
 
-export interface ProofSettings { blind: boolean; blindSetBy: string | null; blindSetAt: string | null }
+export interface ProofSettings { immediateMoveActors?: string[]; blind: boolean; blindSetBy: string | null; blindSetAt: string | null }
 
 export function getProofSettings(slug: string): ProofSettings {
   try {
     const row = getDb().prepare(`SELECT * FROM document_proof_settings WHERE document_slug = ?`).get(slug) as { blind: number; blind_set_by: string | null; blind_set_at: string | null } | undefined;
-    return { blind: Boolean(row?.blind), blindSetBy: row?.blind_set_by ?? null, blindSetAt: row?.blind_set_at ?? null };
+    return { immediateMoveActors: immediateMoveActors(slug), blind: Boolean(row?.blind), blindSetBy: row?.blind_set_by ?? null, blindSetAt: row?.blind_set_at ?? null };
   } catch {
     return { blind: false, blindSetBy: null, blindSetAt: null };
   }

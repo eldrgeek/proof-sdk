@@ -59,6 +59,8 @@ export interface BundleMember {
 }
 
 export interface ProofBundle {
+  kind?: "move";
+  move?: import("./moves").MoveSpec;
   id: string;
   by: string;
   title: string;

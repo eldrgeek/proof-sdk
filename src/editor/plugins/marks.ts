@@ -1,3 +1,4 @@
+import { decideMove, moveSourceRange } from '../../shared/moves';
 import { makeLiveSuggestionInput, syncLiveSuggestionInputs } from '../live-suggestion-input';
 /**
  * Unified Marks Plugin for ProseMirror/Milkdown
@@ -396,6 +397,7 @@ function resolveRangeFromRelativeAnchors(
 }
 
 function resolveStoredMarkRange(doc: ProseMirrorNode, stored: StoredMark): MarkRange | null {
+  if (stored.move) return moveSourceRange(doc, stored);
   const storedQuote = typeof stored.quote === 'string' ? stored.quote : '';
   const normalizedStoredQuote = normalizeQuote(storedQuote);
   const allowsQuoteLessAnchorFallback = stored.kind === 'authored';
@@ -1937,6 +1939,7 @@ export function applyRemoteMarks(
 
   if (hydrateAnchors) {
     for (const [id, stored] of filteredEntries) {
+      if (stored.move) continue;
       if (existingIds.has(id)) continue; // Already has an anchor
       if (!stored.kind) continue;
       const isAuthored = stored.kind === 'authored';
@@ -3108,6 +3111,7 @@ function hasLiveMarksMap(state: EditorState): boolean {
 }
 
 export function accept(view: EditorView, markId: string, parser?: MarkdownParser, preview = false): boolean {
+  if (getMarkMetadata(view.state)[markId]?.move) return decideMoveInView(view, markId, "accept");
   const effectiveParser = resolveMarkdownParser(parser);
   const marks = getMarks(view.state);
   const mark = marks.find(item => item.id === markId);
@@ -3234,6 +3238,7 @@ export function accept(view: EditorView, markId: string, parser?: MarkdownParser
 }
 
 export function reject(view: EditorView, markId: string, preview = false, retainStatus = false): boolean {
+  if (getMarkMetadata(view.state)[markId]?.move) return decideMoveInView(view, markId, "reject");
   const marks = getMarks(view.state);
   const mark = marks.find(item => item.id === markId);
   if (!mark) return false;
@@ -3320,10 +3325,12 @@ export function prepareSuggestionBatch(view: EditorView, ids: string[], action: 
     state: initial,
     dispatch(tr: Transaction) {
       for (const step of tr.steps) transaction.step(step);
+      if (tr.getMeta("proofMove")) transaction.setMeta("proofMove", true);
       this.state = this.state.apply(tr);
     },
   } as EditorView;
   for (const id of [...ids].reverse()) {
+    if (getMarkMetadata(initial)[id]?.move && getMarkMetadata(preview.state)[id]?.status !== "pending") continue;
     const ok = action === 'accept' ? accept(preview, id, parser, true) : reject(preview, id, true);
     if (!ok) failedIds.push(id);
   }
@@ -3611,6 +3618,7 @@ export function createDecorations(
   }
 
   for (const mark of resolved) {
+    if (markMetadata[mark.id]?.move) continue;
     const ranges = mark.resolvedRanges ?? (mark.resolvedRange ? [mark.resolvedRange] : []);
     if (ranges.length === 0) continue;
     const isActive = mark.id === activeMarkId;
@@ -4112,3 +4120,19 @@ export {
   calculateAuthorshipStats,
   resolveQuote,
 } from '../../formats/marks.js';
+
+/** Structural move members cannot be decided independently. */
+function decideMoveInView(view: EditorView, id: string, action: 'accept' | 'reject'): boolean {
+  try {
+    const tr = view.state.tr;
+    const metadata = decideMove(tr, getMarkMetadata(view.state), id, action, getCurrentActor());
+    finalizeMarkTransaction(view, tr, metadata, { action, skipDocStamp: true });
+    return true;
+  } catch { return false; }
+}
+export function applyMoveProposal(view: EditorView, members: Record<string, StoredMark>, immediate: boolean, by: string): void {
+  const tr = view.state.tr;
+  let metadata = { ...getMarkMetadata(view.state), ...members };
+  if (immediate) metadata = decideMove(tr, metadata, Object.keys(members)[0], 'accept', by);
+  finalizeMarkTransaction(view, tr, metadata, { skipDocStamp: true });
+}

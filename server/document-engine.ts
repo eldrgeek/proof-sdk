@@ -1,3 +1,8 @@
+import type { StoredMark as MoveStoredMark } from '../src/formats/marks.js';
+import { createMove, decideMove, moveBundles } from '../src/shared/moves.js';
+import { extractLines, actorKey } from '../src/shared/line-marks.js';
+import { resolveAgentLineTarget } from './line-marks.js';
+import { immediateMoveActors } from './moves.js';
 import { randomUUID } from 'crypto';
 import { EditorState } from '@milkdown/kit/prose/state';
 import { Fragment, type Node as ProseMirrorNode, type ResolvedPos } from '@milkdown/kit/prose/model';
@@ -1956,6 +1961,7 @@ function updateSuggestionStatus(
 
   const marks = parseMarks(doc.marks);
   const existing = marks[markId];
+  if (existing?.move) return { status: 409, body: { success: false, code: 'MOVE_REQUIRES_ASYNC', error: 'Decide this move through /moves/:id/accept or /moves/:id/reject.' } };
   if (!existing) {
     const revisionHint = typeof body.baseRevision === 'number'
       ? body.baseRevision
@@ -2800,6 +2806,7 @@ async function updateSuggestionStatusAsync(
   }
 
   const actor = typeof body.by === 'string' && body.by.trim() ? body.by.trim() : 'owner';
+  if (existing.move) return moveDocumentAsync(slug, actor, {}, { id: markId, action: status === 'accepted' ? 'accept' : 'reject' });
   // This async path is used by REST. Its persistence helpers update the same
   // authoritative Y.Doc for accepts and rejects, so a successful reject must not
   // bump the epoch or clear the Yjs history after that live apply.
@@ -2984,6 +2991,12 @@ export async function finalizeSuggestionsBatchAsync(
   if (ids.length === 0) return { status: 400, body: { success: false, error: 'No suggestions to finalize' } };
   let markdown = doc.markdown;
   let marks = parseMarks(doc.marks);
+  const moves = ids.filter(id => marks[id]?.move);
+  if (moves.length) {
+    const bundles = new Set(moves.map(id => (marks[id] as MoveStoredMark).move!.spec.id));
+    if (moves.length !== ids.length || bundles.size !== 1) return { status: 409, body: { success: false, code: 'MOVE_REQUIRES_BUNDLE', error: 'Decide each move as one bundle before using a mixed text batch.' } };
+    return moveDocumentAsync(slug, by, {}, { id: moves[0], action: status === 'accepted' ? 'accept' : 'reject' });
+  }
   const done: string[] = [];
   for (const markId of ids) {
     const existing = marks[markId];
@@ -3306,4 +3319,47 @@ export async function executeDocumentOperationAsync(
     return replyCommentAsync(slug, body, context);
   }
   return executeDocumentOperation(slug, method, routePath, body);
+}
+
+/** Structural moves use the canonical live-document gate and the same retained decision records
+ * as the page. baseRevision closes the read/apply race with another writer. */
+export async function moveDocumentAsync(slug: string, by: string, payload: Record<string, unknown>,
+  decision?: { id: string; action: 'accept' | 'reject' }): Promise<{ status: number; body: Record<string, unknown> }> {
+  try {
+    const doc = await getAuthoritativeCanonicalReadableDocument(slug);
+    if (!doc) return { status: 404, body: { success: false, error: 'Document not found' } };
+    const parser = await getHeadlessMilkdownParser();
+    const parsed = parseMarkdownWithHtmlFallback(parser, doc.markdown);
+    if (!parsed.doc) throw new Error('Cannot read this document.');
+    const state = EditorState.create({ doc: parsed.doc });
+    const lines = extractLines(parsed.doc);
+    const marks = (typeof doc.marks === 'string' ? JSON.parse(doc.marks) : doc.marks ?? {}) as Record<string, MoveStoredMark>;
+    let next = { ...marks }, id = decision?.id ?? `move-${randomUUID()}`;
+    const tr = state.tr;
+    if (decision) {
+      const key = marks[id]?.move ? id : `${id}:remove`;
+      next = decideMove(tr, marks, key, decision.action, by);
+      id = marks[key].move!.spec.id;
+    } else {
+      const source = resolveAgentLineTarget(lines, (payload.unit ?? {}) as Record<string, unknown>);
+      const place = payload.place as Record<string, unknown> | undefined;
+      const target = resolveAgentLineTarget(lines, (place?.target ?? {}) as Record<string, unknown>);
+      if (!source.ok) return { status: source.status, body: { success: false, code: source.code, error: source.error } };
+      if (!target.ok) return { status: target.status, body: { success: false, code: target.code, error: target.error } };
+      if (place?.side !== 'before' && place?.side !== 'after') return { status: 400, body: { success: false, error: 'place.side must be before or after' } };
+      const members = createMove(parsed.doc, source.line, { line: target.line, side: place.side, section: place.section === true }, payload.section === true, id, by, marks);
+      if (!members) return { status: 200, body: { success: true, noOp: true } };
+      next = { ...marks, ...members };
+      if (immediateMoveActors(slug).includes(actorKey(by))) next = decideMove(tr, next, `${id}:remove`, 'accept', by);
+    }
+    const mutation = await mutateCanonicalDocument({ slug,
+      nextMarkdown: tr.docChanged ? await serializeMarkdown(tr.doc) : doc.markdown,
+      nextMarks: next, source: `engine:move:${by}`, baseRevision: doc.revision,
+      baseUpdatedAt: doc.updated_at, strictLiveDoc: true, guardPathologicalGrowth: true });
+    if (!mutation.ok) return { status: mutation.status, body: { success: false, code: mutation.code, error: mutation.error } };
+    addDocumentEvent(slug, decision ? `move.${decision.action}ed` : 'move.proposed', { id }, by);
+    return { status: 200, body: { success: true, proposal: moveBundles(next).find(b => b.id === id), marks: mutation.marks } };
+  } catch (error) {
+    return { status: 409, body: { success: false, code: 'MOVE_STALE_OR_INVALID', error: error instanceof Error ? error.message : 'Move refused' } };
+  }
 }

@@ -1,3 +1,4 @@
+import { moveSourceLine } from '../src/shared/moves.js';
 /**
  * Mike, 2026-09-23 (usability brief): omit unrevealed Issue rows so their existence and ranking cannot disclose hidden choices.
  * Proof Documents Steps B4e + B4f — evaluating bundles, alternatives, blind marking, Explain
@@ -57,6 +58,7 @@ export function serverSuggestionLocator(slug: string, lines: DocLine[], rawMarks
   const marks = parseStoredMarks(rawMarks);
   return (markId: string) => {
     const mark = marks[markId];
+    if (mark?.move) { const line = moveSourceLine(lines, mark as any); return { state: (mark.status ?? 'pending') as MemberState, lineIndex: line?.index ?? null }; }
     if (!mark || typeof mark !== 'object') {
       let tomb: { status?: string } | null = null;
       try { tomb = getMarkTombstone(slug, markId); } catch { tomb = null; }
@@ -192,6 +194,7 @@ export function ttlInputs(evaluation: ExtrasEvaluation) {
 export function serializeBundle(view: BundleView, lines: DocLine[]): Record<string, unknown> {
   const b = view.bundle;
   return {
+    ...(b.kind ? { kind: b.kind, move: b.move } : {}),
     id: b.id, by: b.by, title: b.title, why: b.why, createdAt: b.createdAt,
     status: view.status, recordedStatus: b.status, closedAt: b.closedAt, closedBy: b.closedBy,
     summary: describeBundle(view), acceptable: view.acceptable, pending: view.pending, stale: view.stale,

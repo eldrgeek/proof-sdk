@@ -733,9 +733,9 @@ export class ReadingWalkUI {
       proposalCardElsewhere: view => {
         if (!view.open || view.thread.kind !== 'proposal' || !view.thread.markId) return false;
         const bundle = lm().bundleForMark(view.thread.markId);
-        return !bundle || bundle.stale.length > 0;
+        return !bundle || (bundle.bundle.kind !== "move" && bundle.stale.length > 0);
       },
-      proposalDecisionElsewhere: view => Boolean(view.open && view.thread.markId && lm().bundleForMark(view.thread.markId)?.stale.length === 0),
+      proposalDecisionElsewhere: view => { const bundle = view.thread.markId ? lm().bundleForMark(view.thread.markId) : null; return Boolean(view.open && bundle && (bundle.bundle.kind === 'move' || bundle.stale.length === 0)); },
       // The subject of a thread: a selected range of the document (line-selected or text-selected),
       // else the line in focus.
       selectedLines: (force) => {
@@ -1524,7 +1524,7 @@ export class ReadingWalkUI {
       if (!mark) continue;
       // Bundled changes are decided on the bundle card (unless it is stale: then one by one).
       const bundle = lm.bundleForMark(item.id);
-      if (bundle && bundle.stale.length === 0) continue;
+      if (bundle && (bundle.bundle.kind === "move" || bundle.stale.length === 0)) continue;
       this.changesHost.append(this.changeCard(mark, {
         current: false,
         passed: false,
@@ -1541,7 +1541,7 @@ export class ReadingWalkUI {
     card.dataset.stale = String(view.stale.length > 0);
     card.style.setProperty('--review-author', getMarkColor(b.by));
     const head = el('div', 'prw-bundle-head');
-    head.append(el('span', 'prw-bundle-tag', 'Bundle'), el('strong', 'prw-bundle-title', b.title), el('span', 'prw-bundle-by', getActorName(b.by)));
+    head.append(el('span', 'prw-bundle-tag', b.kind === 'move' ? 'Move' : 'Bundle'), el('strong', 'prw-bundle-title', b.title), el('span', 'prw-bundle-by', getActorName(b.by)));
     card.append(head);
     if (b.why) {
       const why = el('p', 'prw-why');
@@ -1569,23 +1569,23 @@ export class ReadingWalkUI {
       if (member.stale) li.append(el('span', 'prw-bundle-stale', member.staleReason === 'rejected' ? 'rejected on its own' : member.staleReason === 'missing' ? 'no longer here' : 'changed since bundled'));
       list.append(li);
     }
-    card.append(list);
+    if (b.kind !== "move") card.append(list);
     card.append(el('p', 'prw-bundle-note', BUNDLE_POLICY.acceptNote));
-    const status = el('p', 'prw-bundle-status', describeBundle(view));
+    const status = el('p', 'prw-bundle-status', b.kind === 'move' && view.stale.length ? 'The item or its destination changed. Reject this move and propose it again.' : describeBundle(view));
     status.setAttribute('role', 'status');
     card.append(status);
     const actions = el('div', 'prw-card-actions');
-    const accept = el('button', 'prw-accept prw-bundle-accept', `Accept bundle (${view.pending.length})`);
+    const accept = el('button', 'prw-accept prw-bundle-accept', b.kind === "move" ? "Accept move" : `Accept bundle (${view.pending.length})`);
     accept.type = 'button';
     accept.disabled = view.status !== 'open' || view.pending.length === 0;
     accept.onclick = () => this.decideBundle(b.id, 'accept');
-    const reject = el('button', 'prw-reject prw-bundle-reject', 'Reject bundle');
+    const reject = el('button', 'prw-reject prw-bundle-reject', b.kind === 'move' ? 'Reject move' : 'Reject bundle');
     reject.type = 'button';
     reject.disabled = view.status !== 'open' || view.pending.length === 0;
     reject.onclick = () => this.decideBundle(b.id, 'reject');
     actions.append(accept, reject);
     card.append(actions);
-    if (view.stale.length) card.append(el('p', 'prw-bundle-fallback', 'Some changes no longer match the text they were bundled on, so the bundle cannot be accepted whole. Review the changes below one by one.'));
+    if (view.stale.length && b.kind !== "move") card.append(el('p', 'prw-bundle-fallback', 'Some changes no longer match the text they were bundled on, so the bundle cannot be accepted whole. Review the changes below one by one.'));
     return card;
   }
 
@@ -1620,7 +1620,9 @@ export class ReadingWalkUI {
     const walk = this.walk;
     if (!view || !walk) return false;
     if (action === 'accept' && !view.acceptable) {
-      this.lastError = view.stale.length
+      this.lastError = view.bundle.kind === 'move'
+        ? 'The item or its destination changed. Reject this move and propose it again.'
+        : view.stale.length
         ? `${view.stale.length} of ${view.bundle.members.length} changes in “${view.bundle.title}” changed since they were bundled. Nothing was accepted: review them one by one.`
         : 'Nothing in this bundle can be accepted now.';
       this.bundleDecisions.push({ id, action, ok: false, error: this.lastError });
@@ -1634,7 +1636,7 @@ export class ReadingWalkUI {
       this.host.decide(ids, action);
       this.lastError = '';
       this.bundleDecisions.push({ id, action, ok: true });
-      void lm.recordBundleDecision(id, action === 'accept' ? 'accepted' : 'rejected');
+      if (view.bundle.kind !== 'move') void lm.recordBundleDecision(id, action === 'accept' ? 'accepted' : 'rejected');
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : 'Could not save the bundle.';
       this.bundleDecisions.push({ id, action, ok: false, error: this.lastError });

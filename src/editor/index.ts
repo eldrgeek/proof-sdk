@@ -1,3 +1,6 @@
+import { MovesUI } from '../ui/moves';
+import { createMove } from '../shared/moves';
+import { applyMoveProposal } from './plugins/marks';
 import { startAgentJoinNotices } from '../ui/agent-join';
 import type { Transaction } from '@milkdown/kit/prose/state';
 import { commitLiveTextInput, liveSuggestionInputEvent, focusLiveSuggestion, type LiveSuggestionInput } from './live-suggestion-input';
@@ -1198,6 +1201,7 @@ class ProofEditorImpl implements ProofEditor {
   private clarifyUI: ClarifyUI | null = null;
   /** Accord round 2 stage A: leaving an edit posts what was typed (src/ui/edit-gesture.ts). */
   private editGesture: EditGestureUI | null = null;
+  private movesUI: MovesUI | null = null;
   private reviewDecisionHistory: ReviewDecisionHistory | null = null;
   private typedDiscussions: TypedDiscussionController | null = null;
   private readonly typedDiscussionHistory = new Map<string, { checkpoint: ReturnType<ReviewDecisionHistory['checkpoint']>; entryId?: string }>();
@@ -4097,7 +4101,7 @@ class ProofEditorImpl implements ProofEditor {
         return items;
       }),
       menu('view', () => {
-        const items: MenuItemSpec[] = [];
+        const items: MenuItemSpec[] = [{ id: 'view-outline', label: 'Outline', kind: 'checkbox', checked: this.movesUI?.isOutline() ?? false, run: () => this.movesUI?.toggleOutline() }];
         if (this.openViewUI) {
           const returning = this.openViewUI.current() === 'accord';
           const offer = lm?.agreedCopyOffer();
@@ -4194,7 +4198,7 @@ class ProofEditorImpl implements ProofEditor {
         openReviewItem: index => this.readingWalk?.openReviewItem(index),
         nextReview: () => { this.readingWalk?.navigator.next(); },
         focusLine: (lineIndex) => this.readingWalk?.focusLine(lineIndex) ?? false,
-        viewUpdated: () => { this.readingWalk?.notifyViewUpdate(); this.folding?.queueRender(); },
+        viewUpdated: () => { this.readingWalk?.notifyViewUpdate(); this.folding?.queueRender(); this.movesUI?.refresh(); },
         sectionScope: (lineIndex) => this.folding?.sectionScope(lineIndex) ?? null,
         sectionAgreement: (lineIndex) => this.folding?.sectionAgreement(lineIndex) ?? null,
         showSectionLines: (lineIndex) => { this.folding?.showSectionLines(lineIndex); },
@@ -4282,6 +4286,7 @@ class ProofEditorImpl implements ProofEditor {
         focusChanged: (lineIndex) => {
           // Explicit selection updates the chat context without scrolling it.
           this.chat?.onFocusLine(lineIndex);
+          this.lineMarks?.refreshMoveHandle();
         },
         visibleLineFor: (lineIndex) => {
           let visible = this.folding?.visibleLineFor(lineIndex) ?? lineIndex;
@@ -4383,6 +4388,36 @@ class ProofEditorImpl implements ProofEditor {
       walkUi.onRoomShown(() => chatUi.roomShown());
       (window as unknown as { __proofChat?: ChatUI }).__proofChat = this.chat;
     }
+    if (!this.movesUI) this.movesUI = new MovesUI({
+      view: () => this.lineMarks?.editorView() ?? null,
+      focus: () => this.readingWalk?.focusIndex() ?? 0,
+      folded: line => this.folding?.isFolded(line) ?? false,
+      canMove: () => this.shareAllowLocalEdits && !this.isReadOnly && this.reviewLockCount === 0 && this.collabCanEdit && this.openViewUI?.current() !== 'accord',
+      navigate: line => { this.folding?.reveal(line); this.readingWalk?.focusLine(line); },
+      notice: message => this.readingWalk?.showEditNotice(message),
+      propose: (source, place, section) => {
+        const view = this.lineMarks?.editorView(); if (!view) return;
+        const by = this.lineMarks!.me();
+        const members = createMove(view.state.doc, source, place, section, `move-${crypto.randomUUID()}`, by, getMarkMetadataWithQuotes(view.state));
+        if (!members) return;
+        const immediate = this.lineMarks!.immediateMoveActors().includes(actorKey(by));
+        const positions: Array<[HTMLElement, number, number]> = [];
+        for (let node: HTMLElement | null = view.dom; node; node = node.parentElement) positions.push([node, node.scrollTop, node.scrollLeft]);
+        const x = window.scrollX, y = window.scrollY;
+        const restore = () => { positions.forEach(([node, top, left]) => { node.scrollTop = top; node.scrollLeft = left; }); window.scrollTo(x, y); };
+        const previous = this.suppressMarksSync;
+        this.suppressMarksSync = true; this.capturingReviewDecision = true;
+        try {
+          this.getReviewDecisionHistory().decide(() => {
+            applyMoveProposal(view, members, immediate, by);
+            const metadata = getMarkMetadataWithQuotes(view.state);
+            this.lastReceivedServerMarks = { ...metadata }; this.initialMarksSynced = true;
+            collabClient.setMarksMetadata(metadata);
+          });
+          this.recordDecisionUndo(Object.keys(members), immediate ? 'accept' : 'reject', immediate ? 'moved an item' : 'proposed moving an item');
+        } finally { this.suppressMarksSync = previous; this.capturingReviewDecision = false; restore(); requestAnimationFrame(restore); }
+      },
+    });
     this.lineMarks.start();
     this.folding?.start();
     this.undoUI?.start();
@@ -4457,7 +4492,7 @@ class ProofEditorImpl implements ProofEditor {
       const phoneItems: MenuItemSpec[] = [];
       if (this.readingWalk) {
         // Accord layout stage 3 (decision 11): the Margin sheet on its Line tab, or its Room tab.
-        phoneItems.push({ id: 'phone-line', label: 'Review panel', detail: 'Review · Outline · Since you', run: () => this.readingWalk?.openSheet('right') });
+        phoneItems.push({ id: 'phone-line', label: 'Review panel', detail: 'Review', run: () => this.readingWalk?.openSheet('right') });
       }
       if (this.chat) {
         phoneItems.push({ id: 'phone-chat', label: 'Room', detail: this.chatUnread > 0 ? `chat · ${this.chatUnread} @you` : 'chat', run: () => this.chat?.open(true) });
@@ -4787,13 +4822,13 @@ class ProofEditorImpl implements ProofEditor {
    * Its inverse is the editor's own decision history, which refuses when the text moved under it,
    * so an undo never rewrites what someone typed after the decision.
    */
-  private recordDecisionUndo(ids: string[], action: ReviewAction): void {
+  private recordDecisionUndo(ids: string[], action: ReviewAction, description?: string): void {
     if (action === 'reply' || ids.length === 0) return;
     const stack = this.lineMarks?.undoStack();
     if (!stack) return;
     const verb = action === 'accept' ? 'accepted' : action === 'reject' ? 'rejected' : 'resolved';
     const what = ids.length === 1 ? (action === 'resolve' ? 'a comment' : 'a change') : `${ids.length} ${action === 'resolve' ? 'comments' : 'changes'}`;
-    const entry = stack.pushSimple(action === 'resolve' ? 'comment' : 'suggestion', `${verb} ${what}`, () => {
+    const entry = stack.pushSimple(action === 'resolve' ? 'comment' : 'suggestion', description ?? `${verb} ${what}`, () => {
       try {
         const changed = this.restoreReviewDecision(false);
         return changed ? { ok: true } : { ok: false, reason: 'Not undone: that decision is no longer the newest change to the text.' };

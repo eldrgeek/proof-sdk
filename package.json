@@ -13,7 +13,7 @@
     "build": "vite build && node scripts/finalize-web-build.mjs",
     "serve": "tsx server/index.ts",
     "library": "tsx server/library/cli.ts",
-    "test": "npm run test:agents-sync && npm run test:proof-sdk && npm run test:server-routes-share && npm run test:library && npm run test:soma-feedback && npm run test:client-errors && npm run test:agent-keys && npm run test:agent-join && npm run test:bridge-credential && npm run test:line-marks && npm run test:reading-walk && npm run test:scroll-camera && npm run test:folding && npm run test:folded-view && npm run test:asks && npm run test:identity && npm run test:honest && npm run test:aids && npm run test:bundles && npm run test:do && npm run test:chat && npm run test:editing-first && npm run test:edit-session && npm run test:orphans && npm run test:proxy && npm run test:tiers && npm run test:dialect && npm run test:caret && npm run test:team && npm run test:cross-invite && npm run test:remap && npm run test:ux-consistency && npm run test:mike-0921 && npm run test:layout && npm run test:threads && npm run test:open-view && npm run test:participant-status && npm run test:usability-impact && npm run test:blind-leaks && npm run test:review-list && npm run test:marks-restart && npm run test:typed-discussion && npm run test:review-alignment",
+    "test": "npm run test:agents-sync && npm run test:proof-sdk && npm run test:server-routes-share && npm run test:library && npm run test:soma-feedback && npm run test:client-errors && npm run test:agent-keys && npm run test:agent-join && npm run test:bridge-credential && npm run test:line-marks && npm run test:reading-walk && npm run test:scroll-camera && npm run test:folding && npm run test:folded-view && npm run test:asks && npm run test:identity && npm run test:honest && npm run test:aids && npm run test:bundles && npm run test:do && npm run test:chat && npm run test:editing-first && npm run test:edit-session && npm run test:orphans && npm run test:proxy && npm run test:tiers && npm run test:dialect && npm run test:caret && npm run test:team && npm run test:cross-invite && npm run test:remap && npm run test:ux-consistency && npm run test:mike-0921 && npm run test:layout && npm run test:threads && npm run test:open-view && npm run test:participant-status && npm run test:usability-impact && npm run test:blind-leaks && npm run test:review-list && npm run test:marks-restart && npm run test:typed-discussion && npm run test:review-alignment && npm run test:moves",
     "test:agents-sync": "tsx src/tests/agents-claude-sync.test.ts",
     "test:proof-sdk": "tsx src/tests/proof-sdk-agent-bridge-client.test.ts",
     "test:bridge-credential": "tsx src/tests/bridge-credential-required.test.ts",
@@ -61,7 +61,9 @@
     "check:marks-restart": "node scripts/marks-restart-check.mjs",
     "test:folded-view": "tsx src/tests/folded-view.test.ts",
     "test:typed-discussion": "tsx src/tests/typed-discussion.test.ts",
-    "test:review-alignment": "tsx src/tests/review-alignment.test.ts"
+    "test:review-alignment": "tsx src/tests/review-alignment.test.ts",
+    "test:moves": "tsx src/tests/moves.test.ts",
+    "check:drag": "node scripts/drag-check.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.879.0",

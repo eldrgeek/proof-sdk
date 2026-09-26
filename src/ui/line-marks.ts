@@ -1,3 +1,5 @@
+import { MOVE_POLICY, moveBundles, resolveMove } from '../shared/moves';
+import { getMarkMetadata, marksPluginKey } from '../editor/plugins/marks';
 /**
  * Proof Documents Step 1 — the line-marks UI.
  * Mike, 2026-09-23 (usability brief): one answer group opens drafts and discussions; markers always show their text counts.
@@ -329,6 +331,8 @@ export class LineMarksUI {
   private blindInfo: { revealedLines?: number[]; hiddenPositions?: number } | null = null;
   /** Server clock minus this browser's clock (expiry is judged on the server's clock). */
   private clockSkewMs = 0;
+  private immediateActors: string[] = [];
+  immediateMoveActors(): readonly string[] { return this.immediateActors; }
   private bundleViews: BundleView[] = [];
   private altViews: AltSetView[] = [];
   private altsByLine = new Map<number, AltSetView>();
@@ -487,7 +491,7 @@ export class LineMarksUI {
         lineMarks?: LineMark[]; owners?: string[]; agentKeyActors?: string[]; asks?: ProofAsk[];
         flags?: UncertainFlag[]; reviewNotes?: ReviewNote[]; objections?: ProofObjection[];
         bundles?: ProofBundle[]; alternatives?: ProofAlternative[]; alternativeHistory?: ProofAlternative[]; picks?: AltPick[];
-        settings?: { blind?: boolean }; explains?: LineMarksUI['serverExplains']; ttls?: ProofTtl[]; serverNow?: string; dos?: ProofDo[];
+        settings?: { blind?: boolean; immediateMoveActors?: string[] }; explains?: LineMarksUI['serverExplains']; ttls?: ProofTtl[]; serverNow?: string; dos?: ProofDo[];
         threads?: ThreadMeta[];
         blind?: { revealedLines?: number[]; hiddenPositions?: number };
         viewer?: { canApprove?: boolean; canMark?: boolean };
@@ -514,6 +518,7 @@ export class LineMarksUI {
       this.serverTtls = Array.isArray(body.ttls) ? body.ttls : [];
       this.serverDos = Array.isArray(body.dos) ? body.dos : [];
       this.blind = body.settings?.blind === true;
+      this.immediateActors = body.settings?.immediateMoveActors ?? [];
       this.blindInfo = body.blind ?? null;
       const serverNow = body.serverNow ? Date.parse(body.serverNow) : NaN;
       if (Number.isFinite(serverNow)) this.clockSkewMs = serverNow - Date.now();
@@ -615,7 +620,10 @@ export class LineMarksUI {
       this.view = view;
       this.attachGutter();
     }
-    if (!prevState || prevState.doc !== view.state.doc || this.linesDoc !== view.state.doc) {
+    // A pending move changes only shared proposal records. Refresh its single card
+    // immediately on both peers, without waiting for text changes or server polling.
+    const metadataChanged = !prevState || marksPluginKey.getState(prevState)?.metadata !== marksPluginKey.getState(view.state)?.metadata;
+    if (!prevState || prevState.doc !== view.state.doc || this.linesDoc !== view.state.doc || metadataChanged) {
       this.recompute();
     } else {
       this.queueRender();
@@ -653,7 +661,8 @@ export class LineMarksUI {
       }
       // Steps B4e + B4f: an Explain thread is not an Issue; a bundled suggestion names its bundle.
       const explainIds = new Set(this.serverExplains.map(e => e.commentMarkId).filter((id): id is string => Boolean(id)));
-      const bundleOf = bundleIndex(this.serverBundles);
+      const bundles = [...this.serverBundles.filter(b => b.kind !== "move"), ...moveBundles(getMarkMetadata(view.state))];
+      const bundleOf = bundleIndex(bundles);
       const reviewMarks = this.host.reviewMarks(view).map(mark => {
         const explain = !EXPLAIN_POLICY.commentIsIssue && explainIds.has(mark.id);
         const bundleId = bundleOf.get(mark.id);
@@ -677,7 +686,13 @@ export class LineMarksUI {
       this.ttlByLine = new Map(this.ttlViews.filter(v => v.lineIndex !== null).map(v => [v.lineIndex as number, v]));
       applyDecay(this.states, this.ttlViews);
       this.disagreement = disagreementCounts(this.blind) ? disagreementLines(this.states) : new Set();
-      this.bundleViews = this.serverBundles.map(bundle => evaluateBundle(bundle, this.lines, markId => this.locateSuggestion(markId)));
+      this.bundleViews = bundles.map(bundle => {
+        const result = evaluateBundle(bundle, this.lines, markId => this.locateSuggestion(markId));
+        if (bundle.move && result.status === 'open' && !resolveMove(view.state.doc, bundle.move, getMarkMetadata(view.state))) {
+          result.acceptable = false; result.stale = bundle.members.map(m => m.markId);
+        }
+        return result;
+      });
       // Accord stage D: every thread on the document — the rows stored as threads PLUS every
       // comment and suggestion read as one, so nothing already here is orphaned.
       this.threadViews = evaluateThreads({
@@ -1463,6 +1478,8 @@ export class LineMarksUI {
     if (short) short.textContent = text;
   }
 
+  refreshMoveHandle(): void { this.queueRender(); }
+
   private renderGutter(): void {
     const view = this.view;
     if (!view || !this.gutter.isConnected) return;
@@ -1508,6 +1525,17 @@ export class LineMarksUI {
         const lh = parseFloat(getComputedStyle(dom).lineHeight) || 24;
         bubble.style.top = `${Math.round(rect.top - containerRect.top + Math.max(0, (Math.min(lh, rect.height) - dotSize) / 2) - (phone ? 8 : 6))}px`;
         bubble.style.left = `${Math.round(Math.max(0, leftEdge) + dotSize - (phone ? 12 : 8))}px`;
+      }
+      if (!phone && this.host.canComment() && line.index === this.host.anchorLine?.()) {
+        const dragKey = `move:${key}`;
+        used.add(dragKey);
+        let handle = existing.get(dragKey);
+        if (!handle) { handle = document.createElement('button'); handle.type = 'button'; handle.className = 'accord-move-handle'; handle.dataset.key = dragKey; this.gutter.append(handle); }
+        handle.dataset.moveLine = String(line.index);
+        handle.textContent = '⠿'; handle.title = 'Move item (Alt+Shift+↑ / ↓)'; handle.setAttribute('aria-label', 'Drag to move this item');
+        handle.style.position = 'absolute';
+        handle.style.left = `${Math.max(0, editorRect.left - containerRect.left - MOVE_POLICY.gutterHandleOffsetPx)}px`;
+        handle.style.top = `${rect.top - containerRect.top}px`;
       }
       const marker = markers.get(line.index);
       if (marker) {

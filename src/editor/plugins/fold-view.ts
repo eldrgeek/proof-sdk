@@ -91,7 +91,7 @@ export function applyFoldTransaction(tr: Transaction, previous: FoldState): Fold
     }
     // A Yjs-origin transaction (remote change, Undo, Redo) replaces the whole document, so its
     // mapping loses every position: re-find them by content (remapByContent).
-    const whole = (tr.getMeta(ySyncPluginKey) as { isChangeOrigin?: boolean } | undefined)?.isChangeOrigin === true;
+    const whole = (tr.getMeta(ySyncPluginKey) as { isChangeOrigin?: boolean } | undefined)?.isChangeOrigin === true || tr.getMeta("proofMove") === true;
     const remap = (positions: ReadonlySet<number>, made: typeof created = []) => whole
       ? remapByContent(positions, tr.before, tr.doc)
       : mapShown(positions, before, after, tr.mapping, made);

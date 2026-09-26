@@ -1440,6 +1440,9 @@ function initDatabase(): void {
   `);
   d.exec(`CREATE INDEX IF NOT EXISTS idx_document_objections_slug ON document_objections(document_slug, created_at)`);
 
+  d.exec(`CREATE TABLE IF NOT EXISTS document_move_settings (
+    document_slug TEXT PRIMARY KEY, actors_json TEXT NOT NULL DEFAULT '[]'
+  )`);
   // Proof Documents Steps B4e + B4f (server/proof-extras-store.ts): review bundles, competing
   // alternatives and picks, per-document settings (blind marking), Explain threads and line
   // times-to-live. All beside the document, never in its text or Yjs state.
