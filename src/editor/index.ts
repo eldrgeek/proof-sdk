@@ -5693,8 +5693,12 @@ class ProofEditorImpl implements ProofEditor {
         <button type="button" class="proof-toast-dismiss" aria-label="Dismiss">×</button>
       </div>
     `;
+    // A join request's notice can appear or go while this note shows; the note moves below it.
+    const reposition = () => { if (this.shareWelcomeToast === toast) this.positionShareWelcomeToast(toast); };
+    const stopRepositioning = () => window.removeEventListener('proof:top-notices-changed', reposition);
+    window.addEventListener('proof:top-notices-changed', reposition);
     toast.querySelector('.proof-toast-dismiss')?.addEventListener('click', () => {
-      toast.remove();
+      toast.remove(); stopRepositioning();
       if (this.shareWelcomeToast === toast) this.shareWelcomeToast = null;
     });
 
@@ -5707,6 +5711,7 @@ class ProofEditorImpl implements ProofEditor {
     });
 
     setTimeout(() => {
+      stopRepositioning();
       if (this.shareWelcomeToast !== toast) return;
       toast.remove();
       this.shareWelcomeToast = null;
@@ -5721,6 +5726,13 @@ class ProofEditorImpl implements ProofEditor {
     if (banner) {
       const rect = banner.getBoundingClientRect();
       top = Math.max(12, Math.round(rect.bottom + 10));
+    }
+    // A waiting AI join request sits in the same corner and carries Admit and Refuse; the note goes
+    // below it rather than over its buttons (ac-pb1; seen live 2026-09-26).
+    const joinNotice = document.getElementById('agent-join-notices');
+    if (joinNotice && !joinNotice.hidden) {
+      const rect = joinNotice.getBoundingClientRect();
+      if (rect.height > 0) top = Math.max(top, Math.round(rect.bottom + 8));
     }
 
     if (isMobile) {

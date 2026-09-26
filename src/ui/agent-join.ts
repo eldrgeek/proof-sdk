@@ -9,7 +9,12 @@ const subscribers = new Set<() => void>();
 const busy = new Set<string>();
 let error = '';
 let connectionAttempt = 0;
-const renderAll = () => { for (const render of subscribers) render(); };
+// The notice shares the top-right corner with the page's passing notes; they re-place themselves on
+// this event so none of them covers its Admit and Refuse buttons (ac-pb1).
+const renderAll = () => {
+  for (const render of subscribers) render();
+  window.dispatchEvent(new Event('proof:top-notices-changed'));
+};
 const base = () => `/api/documents/${encodeURIComponent(slug)}/agent-joins`;
 
 async function decide(id: string, decision: 'admit' | 'refuse') {
@@ -70,6 +75,11 @@ export function startAgentJoinNotices(documentSlug: string | null): void {
     notice.setAttribute('aria-live', 'polite');
     document.body.append(notice);
     mountAgentJoinPanel(notice);
+    // The notice can grow after it renders (styles and fonts settle), so a size change also tells
+    // the notes beside it to move.
+    if (typeof ResizeObserver !== 'undefined') {
+      new ResizeObserver(() => window.dispatchEvent(new Event('proof:top-notices-changed'))).observe(notice);
+    }
   }
   // Check permission before opening EventSource so readers do not reconnect forever on 403.
   const connectingSlug = slug;

@@ -122,6 +122,55 @@ try {
       }
       assert.deepEqual(errors, []);
       console.log(`PASS agent join ${style} 1440: two readers, matching codes, Share admission, one-time delivery, sponsored comment`);
+      // Seen live on 2026-09-26 (ac-pb1): the "shared with you" note, shown for 5 s when a page
+      // opens, sat over a waiting request's Admit and Refuse buttons. A fresh page (new session, so
+      // the note shows) opens while a request waits: the note goes below the notice, and each
+      // button is the element under its own centre.
+      const waiting = await json(local.base, '/api/agent/join-browser/join', { name: 'Iris', runtime: 'Google Gemini' });
+      const fresh = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+      try {
+        await fresh.addCookies([{ ...local.cookie, url: local.base }]);
+        await fresh.route('**/*', route => new URL(route.request().url()).origin === local.base ? route.continue() : route.abort());
+        // The note lives 5 s, so the page samples the layout every frame while both boxes exist.
+        await fresh.addInitScript(() => {
+          window.__noticeSamples = [];
+          const sample = () => {
+            const note = document.querySelector('.proof-share-welcome-toast');
+            const row = document.querySelector('#agent-join-notices .agent-join-row');
+            if (note && row) {
+              const hits = [...row.querySelectorAll('button')].map(button => {
+                const r = button.getBoundingClientRect();
+                const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+                return hit === button || button.contains(hit);
+              });
+              // The note slides in for 250 ms (proof-toast-slide-in); only settled frames judge its place.
+              const animating = note.getAnimations().some(animation => animation.playState === 'running');
+              window.__noticeSamples.push({ hits, animating, noteTop: note.getBoundingClientRect().top,
+                noticeBottom: document.getElementById('agent-join-notices').getBoundingClientRect().bottom });
+              if (window.__noticeSamples.length > 400) window.__noticeSamples.shift();
+            }
+            requestAnimationFrame(sample);
+          };
+          requestAnimationFrame(sample);
+        });
+        const opener = await fresh.newPage(); opener.setDefaultTimeout(15000);
+        await opener.goto(`${local.base}/d/join-browser`);
+        const waitingRow = opener.locator('#agent-join-notices .agent-join-row', { hasText: waiting.code });
+        await waitingRow.waitFor({ state: 'visible' });
+        await opener.waitForFunction(() => window.__noticeSamples.filter(sample => !sample.animating).length >= 10, null, { timeout: 6000 })
+          .catch(() => { throw new Error('the welcome note and the join request never showed together, so the overlap was not measured'); });
+        await opener.screenshot({ path: path.join(shots, `agent-join-${style}-1440-welcome-note.png`) });
+        const samples = await opener.evaluate(() => window.__noticeSamples);
+        // A button is never covered, in any frame; once the note has settled it sits below the notice.
+        const covered = samples.find(sample => sample.hits.some(onTop => !onTop));
+        assert.equal(covered, undefined, `the welcome note covered a join button: ${JSON.stringify(covered)}`);
+        const settled = samples.filter(sample => !sample.animating).slice(-5);
+        const overlapping = settled.find(sample => sample.noteTop < sample.noticeBottom);
+        assert.equal(overlapping, undefined, `the settled welcome note overlaps the join notice: ${JSON.stringify(overlapping)}`);
+        await waitingRow.getByRole('button', { name: 'Refuse', exact: true }).click();
+        await waitingRow.waitFor({ state: 'detached' });
+        console.log(`PASS agent join ${style} 1440: the welcome note sits below a waiting request and covers neither button (${samples.length} frames)`);
+      } finally { await fresh.close(); }
     } finally { await context?.close(); await local.stop(); }
   }
 } finally { await browser.close(); }
