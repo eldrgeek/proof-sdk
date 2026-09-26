@@ -204,9 +204,9 @@ async function desktop(browser, base, style) {
     assert.match(subject, /Revenue doubled/, 'and it quotes that line');
     // "Every thread states what would close it": all five choices, "just a comment" among them.
     const choices = await composer.locator('.amg-thread-ask .amg-thread-ask-label').allInnerTexts();
-    assert.deepEqual(choices, ['accept or reject', 'pick one wording', 'yes or no', 'someone answer this', 'just a comment']);
+    assert.deepEqual(choices, ['accept or reject', 'pick one wording', 'yes or no', 'someone answers', 'just a comment']);
     const checked = await composer.locator('.amg-thread-ask input:checked').getAttribute('value');
-    assert.equal(checked, 'answer', 'a discussion defaults to "someone answer this"');
+    assert.equal(checked, 'answer', 'a discussion defaults to "someone answers"');
     await page.screenshot({ path: path.join(shots, `${tag}-1-composer.png`) });
     await startThread(page, { text: 'Is this the right figure for Q2?', asks: 'yes-no' });
     const all = await threads(page);

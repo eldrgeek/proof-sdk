@@ -67,7 +67,7 @@ export const THREAD_ASK_CHOICES: readonly ThreadAsks[] = ['accept-reject', 'word
 export const THREAD_ASK_LABEL: Record<ThreadAsks, string> = {
   wording: 'pick one wording',
   'yes-no': 'yes or no',
-  answer: 'someone answer this',
+  answer: 'someone answers',
   'accept-reject': 'accept or reject',
   comment: 'just a comment',
   clarify: 'an AI answers this',
@@ -666,7 +666,7 @@ export function resolutionsFor(thread: Thread): Array<{ status: ThreadStatus; la
 
 /**
  * May this viewer close the thread? Whoever started it always may; an Owner may; and for a thread
- * that asks the room ("someone answer this", "yes or no", "pick one wording") anyone it waits on
+ * that asks the room ("someone answers", "yes or no", "pick one wording") anyone it waits on
  * may, because agreement is what closes it.
  */
 export function canResolveThread(view: ThreadView, viewer: string, options: { isOwner?: boolean; team?: readonly string[] } = {}): boolean {

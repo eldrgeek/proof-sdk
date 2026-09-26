@@ -275,7 +275,7 @@ await test('a discussion that gains a wording becomes a proposal and resolves by
   assert.equal(T.threadOpenFor(view, ERIC).why, 'accept-or-reject');
 });
 
-await test('"someone answer this" closes for everyone once anyone answers, and asks its author to close it', () => {
+await test('"someone answers" closes for everyone once anyone answers, and asks its author to close it', () => {
   const asked = T.evaluateThread(start('answer', [CLAIM]), lines);
   assert.equal(T.threadOpenFor(asked, ERIC).why, 'answer-this');
   assert.equal(T.threadOpenFor(asked, MIKE).open, false, 'not open for whoever asked');
