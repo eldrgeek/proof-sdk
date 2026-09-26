@@ -92,7 +92,13 @@ async function clickAt(page, quote, after = true) {
   if (since < 700) await page.waitForTimeout(700 - since);
   await page.mouse.click(at.x, at.y);
   clickAt.last = Date.now();
-  await poll(async () => { const s = await page.evaluate(() => { const sel = window.__editorView.state.selection; return [sel.anchor, sel.head]; }); return s[0] === point.pos && s[1] === point.pos; }, 'Click did not place a caret', 2000);
+  // The caret must sit at the quoted words in the CURRENT text: a withdrawal or another writer's
+  // edit that lands after the click shifts later positions (the same fix as discussions-check).
+  await poll(() => page.evaluate(({ quote, after }) => {
+    const view = window.__editorView; let pos;
+    view.state.doc.descendants((node, start) => { if (pos === undefined && node.isText && node.text.includes(quote)) pos = start + node.text.indexOf(quote) + (after ? quote.length : 0); });
+    const sel = view.state.selection; return pos !== undefined && sel.anchor === pos && sel.head === pos;
+  }, { quote, after }), 'Click did not place a caret', 2000);
 }
 async function poll(fn, message, timeout = 5000) {
   const end = Date.now() + timeout;
