@@ -2,7 +2,7 @@
 import { showWholeAccord } from './review-ui.mjs';
 // ac-l71. Local-only desktop drag checks; reviewer runs Chromium outside the worker sandbox.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdtempSync, mkdirSync, rmSync, openSync, closeSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -55,20 +55,52 @@ async function reader(browser, base, slug, name, width) {
 }
 const markdown = '# Moving items\n\nAlpha paragraph.\n\nBeta paragraph.\n\nGamma paragraph.\n\n### First task\n\nFirst task body.\n\n### Second task\n\nSecond task body.\n\n### Last task\n\nLast task body.';
 async function focus(page, text) {
-  await page.evaluate(text => {
+  const index = await page.evaluate(text => {
     const line = window.__proofLineMarks.lineList().find(l => l.text === text);
     if (!line) throw Error(`No line ${text}`);
     window.__proofReadingWalk.focusLine(line.index);
     document.activeElement?.blur();
+    return line.index;
   }, text);
+  // The gutter redraws on the next frame, and the move handle follows the focus line. Reading the
+  // handle before that pressed where the previous line's handle had been (reviewer, 2026-09-26).
+  await page.waitForFunction(i => innerWidth < 701 || document.querySelector('.plm-gutter .accord-move-handle')?.dataset.moveLine === String(i), index);
 }
 async function drag(page, source, target, side = 'after') {
-  const a = await source.boundingBox(), b = await target.boundingBox();
-  assert.ok(a && b, 'Drag endpoints must be visible');
+  // Press only where the source really is. The gutter handle and the fold chips are redrawn on the
+  // next frame after a focus or fold change, and a box read before that pressed where the handle
+  // had been, so no drag started (reviewer, 2026-09-26).
+  await source.waitFor({ state: 'visible' });
+  let a = null;
+  for (let i = 0; i < 30 && !a; i++) {
+    const box = await source.boundingBox();
+    const under = box && await source.evaluate((el, [x, y]) => { const hit = document.elementFromPoint(x, y); return Boolean(hit && (el === hit || el.contains(hit))); },
+      [box.x + box.width / 2, box.y + box.height / 2]);
+    if (under) a = box; else await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => resolve())));
+  }
+  if (!a) {
+    const seen = await source.evaluate(el => {
+      const r = el.getBoundingClientRect(), hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+      const describe = n => n ? `${n.tagName.toLowerCase()}.${String(n.className).slice(0, 50)}` : 'none';
+      const chip = el.closest('.pfold-chip');
+      return { box: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)], covering: describe(hit),
+        coveringBox: hit ? (({ x, y, width, height }) => [Math.round(x), Math.round(y), Math.round(width), Math.round(height)])(hit.getBoundingClientRect()) : null,
+        chip: chip ? (({ x, y, width, height }) => [Math.round(x), Math.round(y), Math.round(width), Math.round(height)])(chip.getBoundingClientRect()) : null,
+        pe: getComputedStyle(el).pointerEvents };
+    });
+    assert.fail(`The drag source never sat under its own box: ${JSON.stringify(seen)}`);
+  }
+  const b = await target.boundingBox();
+  assert.ok(b, 'Drag target must be visible');
   await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
   await page.mouse.down();
   await page.mouse.move(b.x + b.width / 2, side === 'before' ? b.y + 1 : b.y + b.height - 1, { steps: 18 });
-  await page.locator('.accord-drop-line').waitFor({ state: 'visible' });
+  try {
+    await page.locator('.accord-drop-line').waitFor({ state: 'visible' });
+  } catch (error) {
+    const state = await page.evaluate(() => ({ moving: document.body.classList.contains('accord-moving') }));
+    throw new Error(`No drop line: ${state.moving ? 'the drag started but found no valid place' : 'the drag never started'} (${error.message.split('\n')[0]})`);
+  }
   await page.mouse.up();
 }
 const blocks = page => page.evaluate(() => {
@@ -89,10 +121,20 @@ async function decide(page, id, action, sourceText) {
   await card.waitFor({ state: 'visible' });
   assert.equal(await card.count(), 1, 'one move card');
   assert.match(await card.innerText(), /Moves .* to (before|after)/);
-  const scrollBefore = await page.evaluate(() => scrollY);
+  // The reader's item holds still on screen. After an Accept the focus follows the moved item (the
+  // reading walk keeps focus on the same line key) and the page scrolls just enough to keep that item
+  // where it was, so the reader is not moved off what they were looking at. Measured 2026-09-26: the
+  // item stayed at 224 px while scrollY went 0 to 83 (reviewer; the first version asserted scrollY).
+  const focusTop = () => page.evaluate(text => {
+    const line = window.__proofLineMarks.lineList().find(l => l.text === text);
+    const dom = line ? window.__editorView.nodeDOM(line.pos) : null;
+    return dom?.getBoundingClientRect ? Math.round(dom.getBoundingClientRect().top) : null;
+  }, sourceText);
+  const before = await focusTop();
   await card.getByRole('button', { name: `${action} move`, exact: true }).click();
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-  assert.ok(Math.abs(await page.evaluate(() => scrollY) - scrollBefore) < 3, `${action} jumped the page`);
+  const after = await focusTop();
+  assert.ok(before !== null && after !== null && Math.abs(after - before) < 3, `${action} moved the reader's item on screen (top ${before} to ${after})`);
 }
 async function undo(page) {
   await page.locator('.amb-top[data-menu="edit"]').click();
@@ -128,8 +170,9 @@ async function run(browser, server, style, width) {
     await waitOrder(a.page, initial);
 
     // A folded heading moves its body as one unit.
-    await a.page.evaluate(() => { const l = window.__proofLineMarks.lineList().find(l => l.text === 'First task'); window.__proofFolding.setFolded(l.index, true); });
-    await drag(a.page, a.page.locator('.pfold-chip[data-folded="true"] .accord-move-handle').first(), a.page.locator('.ProseMirror h3').filter({ hasText: /^Last task$/ }), 'before');
+    const firstTask = await a.page.evaluate(() => { const l = window.__proofLineMarks.lineList().find(l => l.text === 'First task'); window.__proofFolding.setFolded(l.index, true); return l.index; });
+    // The chip of First task itself: the title's chip can be folded too, and it comes first.
+    await drag(a.page, a.page.locator(`.pfold-chip[data-heading="${firstTask}"][data-move-line]`), a.page.locator('.ProseMirror h3').filter({ hasText: /^Last task$/ }), 'before');
     const folded = await pendingMove(b.page);
     await decide(b.page, folded, 'Accept', 'First task');
     const sectionOrder = [initial[0], initial[1], initial[2], initial[3], initial[6], initial[7], initial[4], initial[5], initial[8], initial[9]];
@@ -162,23 +205,87 @@ async function run(browser, server, style, width) {
     await a.page.keyboard.press('Escape'); assert.equal(await a.page.locator('.accord-item-outline').count(), 0);
     await undo(b.page); await waitOrder(a.page, initial); await decide(b.page, outline, 'Reject', 'Alpha paragraph.');
 
-    await api('/move-settings', { by: 'human:Alice', immediateMoveActors: ['human:Alice'] });
-    await a.page.waitForFunction(() => window.__proofLineMarks.immediateMoveActors().some(a => a.toLowerCase() === 'human:alice'));
-    await focus(a.page, 'Alpha paragraph.');
-    await a.page.keyboard.press('Alt+Shift+ArrowDown');
-    await waitOrder(b.page, [initial[0], initial[2], initial[1], ...initial.slice(3)]);
-    const state = await api('/state');
-    assert.ok(Object.values(state.marks).some(m => m.move && m.status === 'accepted' && m.resolvedBy === 'human:Alice'));
-    await undo(a.page); await waitOrder(b.page, initial);
+    // A guest's move stays a proposal even when an owner lists the name: the list takes verified ids only.
+    const refused = await fetch(`${server.base}/api/agent/${created.slug}/move-settings`, { method: 'POST', headers: { ...headers, 'x-share-token': created.ownerSecret },
+      body: JSON.stringify({ by: 'owner', immediateMoveActors: ['guest:Alice'] }) });
+    assert.equal(refused.status, 400, 'a guest was accepted as an immediate mover');
     assert.deepEqual(a.errors, []); assert.deepEqual(b.errors, []);
-    console.log(`PASS ${tag}: mouse, two peers, decision/Undo, folded section, Review row, keyboard, outline, immediate move, stable scroll`);
+    console.log(`PASS ${tag}: mouse, two peers, decision/Undo, folded section, Review row, keyboard, outline, guests never immediate, the reader's item holds still`);
   } finally { await a.context.close(); await b.context.close(); }
+}
+// A listed verified person's own moves apply at once (Waiting on Mike: Mike's moves). Guests cannot be
+// listed (the server takes only human: and ai: ids, by design), so this case runs as a signed-in
+// member on a server with the library on, seeded the way agent-join-check does it: no mail, no
+// production credentials (reviewer, 2026-09-26; the first version listed human:Alice for a guest page).
+async function startSignedIn(style) {
+  const socket = createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r));
+  const port = socket.address().port; await new Promise(r => socket.close(r));
+  const base = `http://127.0.0.1:${port}`;
+  const temp = mkdtempSync(path.join(tmpdir(), 'accord-drag-signed-'));
+  const env = { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR,
+    PORT: String(port), DATABASE_PATH: path.join(temp, 'test.db'), SNAPSHOT_DIR: path.join(temp, 'snapshots'),
+    PROOF_LIBRARY_ENABLED: '1', PROOF_ENV: 'test', PROOF_DB_ENV_INIT: 'test',
+    COLLAB_EMBEDDED_WS: '1', PROOF_DEFAULT_REVIEW_STYLE: style };
+  const fixture = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
+    const db = await import('./server/db.ts');
+    const auth = await import('./server/library/auth.ts');
+    const member = auth.createLibraryMember({ name: 'Mike', email: 'mike@example.test', isOwner: true });
+    db.createDocument('drag-signed', ${JSON.stringify(markdown)}, {}, 'Dragging', 'owner', 'local-drag-owner');
+    db.getDb().prepare('INSERT INTO library_document_meta (slug, created_by_member_id) VALUES (?, ?)').run('drag-signed', member.id);
+    const link = auth.createLibrarySigninLink({ memberId: member.id, purpose: 'operator', origin: ${JSON.stringify(base)} });
+    const session = auth.consumeLibrarySigninToken(new URL(link.link).hash.slice(3), null);
+    console.log('FIXTURE:' + JSON.stringify({ name: auth.LIBRARY_SESSION_COOKIE, value: session.sessionId }));
+  `], { cwd: root, env, encoding: 'utf8' });
+  if (fixture.status !== 0) { rmSync(temp, { recursive: true, force: true }); throw Error(fixture.stderr); }
+  const cookie = JSON.parse(fixture.stdout.split('\n').find(line => line.startsWith('FIXTURE:')).slice(8));
+  const log = path.join(temp, 'server.log'); const fd = openSync(log, 'w');
+  const child = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { cwd: root, env, stdio: ['ignore', fd, fd] });
+  closeSync(fd);
+  const stop = async () => { child.kill('SIGTERM'); if (child.exitCode === null && child.signalCode === null) await new Promise(r => child.once('exit', r)); rmSync(temp, { recursive: true, force: true }); };
+  for (let i = 0; i < 200; i++) {
+    if ((await fetch(`${base}/health`).catch(() => null))?.ok) return { base, cookie, stop, log };
+    if (child.exitCode !== null) break;
+    await new Promise(r => setTimeout(r, 150));
+  }
+  const error = readFileSync(log, 'utf8'); await stop(); throw Error(`Signed-in server did not start: ${error.slice(-2000)}`);
+}
+async function immediate(browser, style) {
+  const server = await startSignedIn(style);
+  const tag = `drag-${style}-1440-immediate`;
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  try {
+    await context.addCookies([{ ...server.cookie, url: server.base }]);
+    await context.route('**/*', route => new URL(route.request().url()).origin === server.base ? route.continue() : route.abort());
+    const page = await context.newPage(); page.setDefaultTimeout(15000);
+    const errors = []; page.on('pageerror', e => errors.push(e.message));
+    await page.goto(`${server.base}/d/drag-signed`);
+    await page.waitForFunction(() => window.proof?.collabIsSynced && window.__proofReadingWalk?.debugState().ready && window.__proofLineMarks?.debugState().loaded);
+    const welcome = page.locator('.proof-share-welcome-toast button'); if (await welcome.count()) await welcome.first().click();
+    const me = await page.evaluate(() => window.__proofLineMarks.me());
+    assert.match(me, /^human:/, `the signed-in page acts as ${me}, not a verified person`);
+    await request(server.base, '/api/agent/drag-signed/move-settings', { by: 'owner', immediateMoveActors: [me] }, 'local-drag-owner');
+    await page.waitForFunction(me => window.__proofLineMarks.immediateMoveActors().includes(me.toLowerCase()), me);
+    // A signed-in owner arrives in the folded view, where the paragraphs are hidden and cannot take the focus.
+    await showWholeAccord(page);
+    const initial = await blocks(page);
+    await focus(page, 'Alpha paragraph.');
+    await page.keyboard.press('Alt+Shift+ArrowDown');
+    await waitOrder(page, [initial[0], initial[2], initial[1], ...initial.slice(3)]);
+    const state = await request(server.base, '/api/agent/drag-signed/state', undefined, 'local-drag-owner');
+    const marks = Array.isArray(state.marks) ? state.marks : Object.values(state.marks ?? {});
+    assert.ok(marks.some(m => m.move && m.status === 'accepted' && String(m.resolvedBy).toLowerCase() === me.toLowerCase()), "the immediate move is not recorded as the mover's own decision");
+    await page.screenshot({ path: path.join(shots, `${tag}.png`), fullPage: true });
+    await undo(page); await waitOrder(page, initial);
+    assert.deepEqual(errors, []);
+    console.log(`PASS ${tag}: a listed verified person's own move applies at once, is recorded as their decision, and has one Undo`);
+  } catch (e) { console.error(readFileSync(server.log, 'utf8').slice(-4000)); throw e; }
+  finally { await context.close(); await server.stop(); }
 }
 const browser = await chromium.launch({ headless: true });
 try {
   for (const style of styles) {
     const server = await start(style);
-    try { for (const width of widths) await run(browser, server, style, width); }
+    try { for (const width of widths) await run(browser, server, style, width); if (widths.some(w => w >= 701)) await immediate(browser, style); }
     catch (e) { console.error(readFileSync(server.log, 'utf8').slice(-4000)); throw e; }
     finally { await server.stop(); }
   }

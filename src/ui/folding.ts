@@ -329,7 +329,10 @@ export class FoldingUI {
       const bodyLines = section.lineEnd - section.headingIndex - 1;
       chip.dataset.heading = String(section.headingIndex);
       chip.dataset.folded = String(stored);
-      // The handle remains visible on every folded chip, independent of the pointer.
+      // The handle remains visible on every folded chip, independent of the pointer. The chip itself
+      // carries the move data: the chip's children take no pointer events (folding.css), so the press
+      // lands on the chip. A plain click still folds; a press that moves 5 px drags the section.
+      if (stored && !phone) chip.dataset.moveLine = String(section.headingIndex); else delete chip.dataset.moveLine;
       queueMicrotask(() => {
         const old = chip!.querySelector('.accord-move-handle');
         if (!stored || phone) { old?.remove(); return; }
