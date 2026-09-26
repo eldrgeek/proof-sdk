@@ -4827,7 +4827,13 @@ class ProofEditorImpl implements ProofEditor {
     const stack = this.lineMarks?.undoStack();
     if (!stack) return;
     const verb = action === 'accept' ? 'accepted' : action === 'reject' ? 'rejected' : 'resolved';
-    const what = ids.length === 1 ? (action === 'resolve' ? 'a comment' : 'a change') : `${ids.length} ${action === 'resolve' ? 'comments' : 'changes'}`;
+    // A move is two records (remove + insert) but one change to a person: 'Undo accepted a move',
+    // not 'Undo accepted 2 changes' (step 6 review, 2026-09-26).
+    const view = this.lineMarks?.editorView();
+    const metadata = view ? getMarkMetadataWithQuotes(view.state) : {};
+    const moveIds = new Set(ids.map(id => metadata[id]?.move?.spec.id));
+    const oneMove = moveIds.size === 1 && !moveIds.has(undefined);
+    const what = oneMove ? 'a move' : ids.length === 1 ? (action === 'resolve' ? 'a comment' : 'a change') : `${ids.length} ${action === 'resolve' ? 'comments' : 'changes'}`;
     const entry = stack.pushSimple(action === 'resolve' ? 'comment' : 'suggestion', description ?? `${verb} ${what}`, () => {
       try {
         const changed = this.restoreReviewDecision(false);

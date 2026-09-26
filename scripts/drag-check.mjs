@@ -162,6 +162,8 @@ async function run(browser, server, style, width) {
     assert.deepEqual(await blocks(b.page), initial, 'proposal preserves one copy at original location');
     assert.ok(Math.abs(await a.page.evaluate(() => scrollY) - beforeScroll) < 3, 'proposal jumped the page');
     await decide(b.page, id, 'Accept', 'Alpha paragraph.');
+    // One change to a person, though two records: the Undo says 'a move', not '2 changes'.
+    await b.page.getByRole('button', { name: 'Undo accepted a move', exact: true }).first().waitFor();
     const moved = [...initial]; moved.splice(1, 1); moved.splice(3, 0, initial[1]);
     await waitOrder(a.page, moved); await waitOrder(b.page, moved);
     await b.page.screenshot({ path: path.join(shots, `${tag}-accepted.png`), fullPage: true });
