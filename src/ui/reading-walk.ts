@@ -28,6 +28,7 @@ import { getActorName, getMarkColor } from '../formats/marks';
 import { actorKey, isAiActor, type DocLine } from '../shared/line-marks';
 import { UNCERTAIN_POLICY, WHY_POLICY } from '../shared/review-aids';
 import { BUNDLE_POLICY, describeBundle, type BundleView } from '../shared/bundles';
+import { MOVE_POLICY } from '../shared/moves';
 import { EXPLAIN_POLICY } from '../shared/explain';
 import { ASK_POLICY, type AskChoice } from '../shared/asks';
 import { READING_WALK, ReadingWalk, countWords, dwellMsFor, type WalkLine, type WalkMark, type WalkSnapshot } from '../shared/reading-walk';
@@ -1570,10 +1571,16 @@ export class ReadingWalkUI {
       list.append(li);
     }
     if (b.kind !== "move") card.append(list);
-    card.append(el('p', 'prw-bundle-note', BUNDLE_POLICY.acceptNote));
-    const status = el('p', 'prw-bundle-status', b.kind === 'move' && view.stale.length ? 'The item or its destination changed. Reject this move and propose it again.' : describeBundle(view));
-    status.setAttribute('role', 'status');
-    card.append(status);
+    card.append(el('p', 'prw-bundle-note', b.kind === 'move' ? MOVE_POLICY.cardNote : BUNDLE_POLICY.acceptNote));
+    // A move is one change: no '2 changes pending' (its two records are one decision).
+    const statusText = b.kind === 'move'
+      ? (view.stale.length ? 'The item or its destination changed. Reject this move and propose it again.' : '')
+      : describeBundle(view);
+    if (statusText) {
+      const status = el('p', 'prw-bundle-status', statusText);
+      status.setAttribute('role', 'status');
+      card.append(status);
+    }
     const actions = el('div', 'prw-card-actions');
     const accept = el('button', 'prw-accept prw-bundle-accept', b.kind === "move" ? "Accept move" : `Accept bundle (${view.pending.length})`);
     accept.type = 'button';

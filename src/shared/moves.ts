@@ -40,6 +40,8 @@ export const MOVE_POLICY = {
   mixedApiBatch: 'refuse', // A generic text batch cannot partially decide a structural move.
   maxDropDistancePx: 24,
   outlinePersists: false, // A visit's view choice must not change the next arrival.
+  /** The move card's note, in place of a bundle's 'Accepting agrees to these changes.' (step 6.1). */
+  cardNote: 'Accepting moves the item there. Rejecting leaves it where it is.',
   ownMovesDefault: [] as readonly string[],
   maxImmediateActors: 50,
 } as const;

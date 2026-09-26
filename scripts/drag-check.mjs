@@ -163,6 +163,19 @@ async function run(browser, server, style, width) {
     await drag(a.page, a.page.locator('.plm-gutter .accord-move-handle'), a.page.locator('.ProseMirror p').filter({ hasText: /^Gamma paragraph\.$/ }));
     const id = await pendingMove(b.page);
     assert.deepEqual(await blocks(b.page), initial, 'proposal preserves one copy at original location');
+    // One proposal, not two records: one Discussion entry that says what moves, and the gutter counts one.
+    await focus(b.page, 'Alpha paragraph.');
+    await b.page.locator(`[data-bundle-id="${id}"]`).waitFor({ state: 'visible' });
+    await b.page.waitForFunction(() => document.querySelectorAll('.amg-thread-diff[data-diff="move"]').length === 1);
+    const onLine = await b.page.evaluate(() => ({
+      moveThreads: [...document.querySelectorAll('.amg-thread-diff[data-diff="move"]')].map(n => n.textContent),
+      deletions: [...document.querySelectorAll('.amg-thread-diff')].filter(n => /Proposes deleting: “Alpha paragraph\.”/.test(n.textContent ?? '')).length,
+      marker: document.querySelector('.plm-review-marker')?.textContent ?? '',
+      card: document.querySelector(`[data-bundle-id]`)?.textContent ?? '' }));
+    assert.match(onLine.moveThreads[0], /^Moves “Alpha paragraph\.” to after “Gamma paragraph\.”/);
+    assert.equal(onLine.deletions, 0, 'a move record reads as a deletion');
+    assert.match(onLine.marker, /1\s*proposal/, `the gutter counts the move's records (${onLine.marker})`);
+    assert.equal(/changes pending/.test(onLine.card), false, "the move card says 'changes pending'");
     assert.ok(Math.abs(await a.page.evaluate(() => scrollY) - beforeScroll) < 3, 'proposal jumped the page');
     await decide(b.page, id, 'Accept', 'Alpha paragraph.');
     // One change to a person, though two records: the Undo says 'a move', not '2 changes'.

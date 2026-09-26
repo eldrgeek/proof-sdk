@@ -695,8 +695,10 @@ export class LineMarksUI {
       });
       // Accord stage D: every thread on the document — the rows stored as threads PLUS every
       // comment and suggestion read as one, so nothing already here is orphaned.
+      const moveOf = getMarkMetadata(view.state);
       this.threadViews = evaluateThreads({
-        marks: reviewMarks as unknown as ThreadSourceMark[],
+        // A move's records carry their move (one thread per move, not one per record).
+        marks: reviewMarks.map(mark => { const move = moveOf[mark.id]?.move; return move ? { ...mark, move } : mark; }) as unknown as ThreadSourceMark[],
         meta: this.serverThreads,
         explains: this.serverExplains,
         lines: this.lines,

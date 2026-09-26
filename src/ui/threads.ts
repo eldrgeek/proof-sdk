@@ -268,8 +268,8 @@ export class ThreadsPanel {
     if (thread.text) card.append(el('p', 'amg-thread-text', thread.text));
     if (thread.diff) {
       const diff = el('p', 'amg-thread-diff');
-      diff.dataset.diff = thread.diff.kind;
-      diff.textContent = thread.diff.kind === 'delete'
+      diff.dataset.diff = thread.diff.move ? 'move' : thread.diff.kind;
+      diff.textContent = thread.diff.move ? thread.diff.move : thread.diff.kind === 'delete'
         ? `Proposes deleting: “${thread.diff.quote.slice(0, 200)}”`
         : `Proposes: “${String(thread.diff.content ?? '').slice(0, 200)}”`;
       card.append(diff);

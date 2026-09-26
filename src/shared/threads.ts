@@ -103,6 +103,9 @@ export interface ThreadDiff {
   content: string | null;
   /** The review mark this diff is, when it is one (a suggestion already in the document). */
   markId?: string | null;
+  /** When the proposal is a move (step 6): its title, 'Moves "X" to after "Y"'. One thread stands for
+   * the move's two records; its markId is the remove record, which decides the whole move. */
+  move?: string;
 }
 
 /** One anchored line: what it was, where it was last found, and its neighbours (its slot). */
@@ -207,6 +210,8 @@ export interface ThreadSourceMark {
   resolved?: boolean;
   status?: string | null;
   orphaned?: boolean;
+  /** Set on the two records of a move (src/shared/moves.ts); only the title is read here. */
+  move?: { role: 'remove' | 'insert'; spec?: { title?: string } } | null;
 }
 
 /** The row stored beside the document for a thread a person started (server/proof-extras-store). */
@@ -280,6 +285,7 @@ export function mergeReplies(a: readonly ThreadReply[], b: readonly ThreadReply[
 
 function diffOf(mark: ThreadSourceMark): ThreadDiff | null {
   if (mark.kind !== 'insert' && mark.kind !== 'delete' && mark.kind !== 'replace') return null;
+  if (mark.move) return { kind: 'delete', quote: String(mark.quote ?? ''), content: null, markId: mark.id, move: String(mark.move.spec?.title ?? 'Moves an item') };
   return {
     kind: mark.kind,
     quote: String(mark.quote ?? ''),
@@ -327,6 +333,8 @@ export function threadsFrom(input: ThreadInput): Thread[] {
   const out: Thread[] = [];
   for (const mark of input.marks ?? []) {
     if (mark.kind !== 'comment' && mark.kind !== 'insert' && mark.kind !== 'delete' && mark.kind !== 'replace') continue;
+    // A move is one proposal: its remove record stands for it, so the insert record makes no thread.
+    if (mark.move?.role === 'insert') continue;
     const meta = metaByMark.get(mark.id) ?? null;
     const explain = explainByMark.get(mark.id) ?? null;
     const diff = diffOf(mark);

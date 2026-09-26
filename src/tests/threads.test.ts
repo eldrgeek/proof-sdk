@@ -95,6 +95,24 @@ await test('a suggestion already on a document reads as a proposal that asks "ac
   assert.equal(view.thread.status, 'open');
 });
 
+await test('a move is one proposal: its remove record stands for it, titled as the move, and the gutter counts one', async () => {
+  const spec = { title: 'Moves “We ship the export” to after “Claims”' };
+  const views = T.evaluateThreads({
+    lines,
+    marks: [
+      { id: 'm1:remove', kind: 'delete', by: ERIC, at: '2026-09-26T00:00:00Z', quote: lines[SHIP].text, status: 'pending', move: { role: 'remove', spec } },
+      { id: 'm1:insert', kind: 'insert', by: ERIC, at: '2026-09-26T00:00:00Z', quote: lines[SHIP].text, status: 'pending', move: { role: 'insert', spec } },
+    ],
+    lineOf: () => SHIP,
+  });
+  assert.equal(views.length, 1, 'the insert record made its own thread');
+  assert.equal(views[0].thread.kind, 'proposal');
+  assert.equal(views[0].thread.diff?.move, spec.title);
+  assert.equal(views[0].thread.diff?.markId, 'm1:remove');
+  const panels = await import('../shared/layout-panels');
+  assert.equal(panels.passageMarkers(views).get(SHIP)?.text, '1 proposal');
+});
+
 await test('an accepted or rejected suggestion reads as a closed thread, not an open one', () => {
   for (const [status, expected] of [['accepted', 'accepted'], ['rejected', 'rejected']] as const) {
     const [view] = T.evaluateThreads({
