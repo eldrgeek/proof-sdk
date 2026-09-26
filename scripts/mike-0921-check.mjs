@@ -227,14 +227,19 @@ async function desktop(browser, base, style) {
   await check(`${tag}: item 1 — Alt/Option+click in direct Editing puts the caret in its words to edit them (nothing opens)`, async () => {
     await scrollLineIntoView(page, L.LINKS);
     const link = page.locator('.ProseMirror a[href="https://example.com/page"]');
+    // What the page is doing just before the press, so a failure explains itself (ac-jfl).
+    const before = await page.evaluate(() => ({ writing: window.__proofReadingWalk.debugState().writing,
+      toggle: document.querySelector('.share-pill-suggest-toggle')?.textContent ?? null }));
     const box = await link.boundingBox();
+    const hit = await page.evaluate(([x, y]) => { const el = document.elementFromPoint(x, y); return el ? `${el.tagName.toLowerCase()}${el.getAttribute('href') ? `[href=${el.getAttribute('href')}]` : ''}` : null; },
+      [box.x + box.width / 2, box.y + box.height / 2]);
     await page.keyboard.down('Alt');
     await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
     await page.keyboard.up('Alt');
     // Poll rather than wait a fixed 150 ms: under load, entering Writing can take longer (ac-jfl).
     const started = await waitFor(page, () => window.__proofReadingWalk.debugState().writing, null, 3000).then(() => true, () => false);
     assert.equal(await page.evaluate(() => window.__opened.length), 1, 'Alt+click opened the link');
-    assert.equal(started, true, 'Alt+click did not start writing');
+    assert.equal(started, true, `Alt+click did not start writing (before the press: writing=${before.writing}, toggle said "${before.toggle}", the press landed on ${hit})`);
     await page.keyboard.type('Z');
     assert.ok((await docText(page)).includes('the exZample page') || /the ex[a-z]*Z[a-z]* page/.test(await docText(page)) || (await docText(page)).includes('Z'), 'typing did not go into the link');
     await page.keyboard.press('Backspace');
