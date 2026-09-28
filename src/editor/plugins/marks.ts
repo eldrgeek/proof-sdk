@@ -1424,17 +1424,81 @@ function enclosingNodeRange(
   return null;
 }
 
+/**
+ * True when [from, to) holds nothing but the suggestion: every text node lies inside its
+ * anchors (whitespace-only text and line breaks are neutral), every other inline leaf such as
+ * an image carries its mark, and some suggested text is there at all.
+ */
+function isRangeOnlySuggestion(
+  doc: ProseMirrorNode,
+  mark: Mark,
+  range: MarkRange,
+  anchors: MarkRange[]
+): boolean {
+  let sawSuggestedText = false;
+  let onlySuggestion = true;
+  doc.nodesBetween(range.from, range.to, (node, pos) => {
+    if (!onlySuggestion) return false;
+    if (!node.isInline) return true;
+    const from = Math.max(pos, range.from);
+    const to = Math.min(pos + node.nodeSize, range.to);
+    if (to <= from) return false;
+    if (node.isText) {
+      if (anchors.some(anchor => anchor.from <= from && to <= anchor.to)) {
+        sawSuggestedText = true;
+      } else if ((node.text ?? '').trim().length > 0) {
+        onlySuggestion = false;
+      }
+      return false;
+    }
+    const isLineBreak = node.type.name === 'hardbreak' || node.type.name === 'hard_break';
+    if (!isLineBreak && !node.marks.some(nodeMark => isMatchingAnchorMark(mark, nodeMark))) {
+      onlySuggestion = false;
+    }
+    return false;
+  });
+  return sawSuggestedText && onlySuggestion;
+}
+
+/**
+ * Rejecting a block insert removes only what the insert put in the document (ac-1kf).
+ * A block is removed whole only when it holds nothing but the suggestion; then the
+ * removal widens to the largest ancestor that holds nothing else (a list item, its list,
+ * a blockquote), so no empty shell is left. When the inserted text shares a block with
+ * other text (for example, a "10. …" insert that the markdown round trip folded into
+ * the anchor's own list item), only the suggestion's own text is removed.
+ */
 function resolveInsertedStructureRangesDescending(
   doc: ProseMirrorNode,
   mark: Mark,
   structure: 'block' | 'table_row'
 ): MarkRange[] {
-  const unique = new Map<string, MarkRange>();
-  for (const anchor of collectAnchorRanges(doc, mark)) {
-    const range = enclosingNodeRange(doc, anchor.from, structure);
-    if (range) unique.set(`${range.from}:${range.to}`, range);
+  const anchors = collectAnchorRanges(doc, mark);
+  const candidates: MarkRange[] = [];
+  for (const anchor of anchors) {
+    const enclosing = enclosingNodeRange(doc, anchor.from, structure);
+    if (!enclosing || !isRangeOnlySuggestion(doc, mark, enclosing, anchors)) {
+      candidates.push(anchor);
+      continue;
+    }
+    let widest = enclosing;
+    if (structure === 'block') {
+      const $inside = doc.resolve(anchor.from);
+      for (let depth = $inside.depth - 1; depth > 0; depth -= 1) {
+        const ancestor = { from: $inside.before(depth), to: $inside.after(depth) };
+        if (!isRangeOnlySuggestion(doc, mark, ancestor, anchors)) break;
+        widest = ancestor;
+      }
+    }
+    candidates.push(widest);
   }
-  return [...unique.values()].sort((a, b) => b.from - a.from);
+  const outermost = candidates.filter((range, index) => !candidates.some((other, otherIndex) => (
+    otherIndex !== index
+    && other.from <= range.from
+    && range.to <= other.to
+    && (other.from !== range.from || other.to !== range.to || otherIndex < index)
+  )));
+  return outermost.sort((a, b) => b.from - a.from);
 }
 
 function getProofAnchorIds(doc: ProseMirrorNode): Map<string, { kind: MarkKind; by: string }> {

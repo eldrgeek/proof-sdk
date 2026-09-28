@@ -2221,20 +2221,90 @@ function parseSuggestedTableRow(
   return row;
 }
 
-function findBlockInsertion(
+const LIST_NODE_NAMES = new Set(['bullet_list', 'ordered_list']);
+
+/**
+ * Where a block insert may go, best first (ac-1kf). Content that is only a list of one kind
+ * ("10. New question") joins the nearest enclosing list of that kind as sibling items after
+ * the anchor's item, which is what the same text means in markdown. Otherwise, and as the
+ * fallback, it goes after the anchor's block at each depth, innermost first.
+ */
+function blockInsertionCandidates(
   $anchor: ResolvedPos,
   fragment: Fragment,
-): { position: number } | null {
+): Array<{ position: number; content: Fragment }> {
+  const candidates: Array<{ position: number; content: Fragment }> = [];
+  let listType: string | null = null;
+  let onlyLists = fragment.childCount > 0;
+  const items: ProseMirrorNode[] = [];
+  fragment.forEach((child) => {
+    if (!LIST_NODE_NAMES.has(child.type.name) || (listType !== null && child.type.name !== listType)) {
+      onlyLists = false;
+      return;
+    }
+    listType = child.type.name;
+    child.forEach((item) => items.push(item));
+  });
+  if (onlyLists && listType !== null && items.length > 0) {
+    for (let depth = $anchor.depth; depth > 1; depth -= 1) {
+      const list = $anchor.node(depth - 1);
+      if ($anchor.node(depth).type.name !== 'list_item' || list.type.name !== listType) continue;
+      const siblings = Fragment.fromArray(items);
+      const index = $anchor.indexAfter(depth - 1);
+      if (list.canReplace(index, index, siblings)) {
+        candidates.push({ position: $anchor.after(depth), content: siblings });
+      }
+      break;
+    }
+  }
   for (let depth = $anchor.depth; depth > 0; depth -= 1) {
     const node = $anchor.node(depth);
     if (!node.isBlock) continue;
     const parent = $anchor.node(depth - 1);
     const index = $anchor.indexAfter(depth - 1);
     if (parent.canReplace(index, index, fragment)) {
-      return { position: $anchor.after(depth) };
+      candidates.push({ position: $anchor.after(depth), content: fragment });
     }
   }
-  return null;
+  return candidates;
+}
+
+function textblockTexts(doc: ProseMirrorNode, from = 0, to = doc.content.size): string[] {
+  const texts: string[] = [];
+  doc.nodesBetween(from, to, (node) => {
+    if (!node.isTextblock) return true;
+    texts.push(normalizeQuote(node.textContent));
+    return false;
+  });
+  return texts;
+}
+
+function countTextblockRuns(texts: string[], run: string[]): number {
+  let count = 0;
+  for (let start = 0; start + run.length <= texts.length; start += 1) {
+    if (run.every((text, offset) => texts[start + offset] === text)) count += 1;
+  }
+  return count;
+}
+
+/**
+ * A block insert must still be its own blocks after the document is saved as markdown and
+ * read back. "10. …" nested under a list item's paragraph fails this: markdown cannot start
+ * a list numbered 10 inside a paragraph, so it is saved as an escaped continuation line of
+ * the anchor's own item, and rejecting it later would take the anchor's text with it (ac-1kf).
+ */
+function insertedBlocksSurviveRoundTrip(
+  parser: Awaited<ReturnType<typeof getHeadlessMilkdownParser>>,
+  doc: ProseMirrorNode,
+  from: number,
+  to: number,
+  markdown: string,
+): boolean {
+  const run = textblockTexts(doc, from, to);
+  if (run.length === 0) return true;
+  const reparsed = parseMarkdownWithHtmlFallback(parser, markdown).doc;
+  if (!reparsed) return false;
+  return countTextblockRuns(textblockTexts(reparsed), run) >= countTextblockRuns(textblockTexts(doc), run);
 }
 
 async function prepareInsertSuggestion(
@@ -2277,6 +2347,7 @@ async function prepareInsertSuggestion(
   let structure: InsertStructure = 'inline';
   let insertedFrom = anchorRange.to;
   let insertedTo = anchorRange.to;
+  let serializedMarkdown: string | null = null;
 
   if (tableCellDepth !== null && (hasParagraphBreak || looksLikeTableRow)) {
     const rowDepth = findAncestorDepth($anchor, new Set(['table_row']));
@@ -2312,17 +2383,34 @@ async function prepareInsertSuggestion(
         error: 'Inserted block content must contain visible text',
       };
     }
-    const insertion = findBlockInsertion($anchor, blockDoc.content);
-    if (!insertion) {
+    const candidates = blockInsertionCandidates($anchor, blockDoc.content);
+    if (candidates.length === 0) {
       return {
         status: 422,
         code: 'UNREPRESENTABLE_INSERT',
         error: 'Inserted block content cannot be placed after the anchor block',
       };
     }
-    insertedFrom = insertion.position;
-    tr = tr.insert(insertedFrom, blockDoc.content);
-    insertedTo = insertedFrom + blockDoc.content.size;
+    let placed = false;
+    for (const candidate of candidates) {
+      const attempt = state.tr.insert(candidate.position, candidate.content);
+      const attemptTo = candidate.position + candidate.content.size;
+      const attemptMarkdown = await serializeMarkdown(attempt.doc);
+      if (!insertedBlocksSurviveRoundTrip(parser, attempt.doc, candidate.position, attemptTo, attemptMarkdown)) continue;
+      tr = attempt;
+      insertedFrom = candidate.position;
+      insertedTo = attemptTo;
+      serializedMarkdown = attemptMarkdown;
+      placed = true;
+      break;
+    }
+    if (!placed) {
+      return {
+        status: 422,
+        code: 'UNREPRESENTABLE_INSERT',
+        error: 'Inserted block content would not stay a separate block once the document is saved',
+      };
+    }
     structure = 'block';
   } else {
     try {
@@ -2356,7 +2444,7 @@ async function prepareInsertSuggestion(
   }
 
   return {
-    markdown: await serializeMarkdown(tr.doc),
+    markdown: serializedMarkdown ?? await serializeMarkdown(tr.doc),
     quote,
     range,
     ...relative,

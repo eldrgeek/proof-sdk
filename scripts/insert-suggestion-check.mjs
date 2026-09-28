@@ -9,6 +9,8 @@ import { showWholeAccord } from './review-ui.mjs';
 // `npm run build` first) with a temp SQLite database. Checks: the insert shows once and
 // raw markdown never shows; accept leaves it once as plain text; reject removes it; a
 // replace suggestion still shows the old words struck and the new words in a widget.
+// 2026-09-28 (ac-1kf): a "10. …" insert anchored on list item 9 shows as its own item 10, and
+// the page's reject removes that item without touching item 9's text (it used to empty item 9).
 // Exit code 0 only if every check passes.
 // Usage: node scripts/insert-suggestion-check.mjs [--style playmaker|proof]
 import assert from 'node:assert/strict';
@@ -67,7 +69,10 @@ The anchor paragraph ends here.
 
 The replace paragraph has an old phrase in it.
 
-The last paragraph sits near the bottom.`;
+The last paragraph sits near the bottom.
+
+8. **Who owns the domain?** Mike does.
+9. **Which company collects the money?** Not decided.`;
 
 const INSERT_TEXT = 'Inserted [bracketed] paragraph from the AI.';
 const INSERT_CONTENT = '\n\nInserted \\[bracketed\\] paragraph from the AI.';
@@ -166,6 +171,31 @@ async function run(browser, base, style) {
       assert.equal(occurrences(text, 'A paragraph to reject.'), 0, 'rejected insert text is still on the page');
       assert.equal(occurrences(text, 'The last paragraph sits near the bottom.'), 1, 'anchor paragraph was damaged');
       assert.equal(await page.locator('.ProseMirror .ProseMirror-widget.mark-insert[data-mark-kind="insert"]').count(), 0);
+    });
+
+    // Third insert (ac-1kf): a new numbered item anchored on item 9's question.
+    await agent(base, created, '/marks/suggest-insert', { quote: 'Which company collects the money?', content: '\n\n10. **New question?** Some detail.', by: 'ai:check' });
+    await page.waitForFunction(() => (window.proof?.getAllMarks?.() ?? []).some(m => m.kind === 'insert' && m.data?.status === 'pending'), null, { timeout: 10_000 });
+    await page.waitForTimeout(400);
+    const itemTexts = () => page.evaluate(() => [...document.querySelectorAll('.ProseMirror ol > li')].map(li => li.innerText.trim()));
+
+    await check(`${tag}: a "10. …" insert on list item 9 shows as its own item, not inside item 9`, async () => {
+      const items = await itemTexts();
+      assert.equal(items.length, 3, `expected 3 list items, got ${JSON.stringify(items)}`);
+      assert.ok(items[1].includes('Which company collects the money?') && !items[1].includes('New question'), `item 9 is ${JSON.stringify(items[1])}`);
+      assert.ok(items[2].includes('New question? Some detail.'), `item 10 is ${JSON.stringify(items[2])}`);
+      assert.equal(occurrences(await editorText(page), '10\\.'), 0, 'an escaped list marker is visible');
+    });
+
+    await check(`${tag}: rejecting the list-item insert keeps item 9's text`, async () => {
+      const [id] = await pendingOf(page, 'insert');
+      assert.ok(id, 'no pending insert');
+      assert.equal(await page.evaluate(i => window.proof.markReject(i), id), true);
+      await page.waitForTimeout(600);
+      const items = await itemTexts();
+      assert.equal(items.length, 2, `expected 2 list items after reject, got ${JSON.stringify(items)}`);
+      assert.ok(items[1].includes('Which company collects the money? Not decided.'), `item 9 is ${JSON.stringify(items[1])}`);
+      assert.equal(occurrences(await editorText(page), 'New question'), 0, 'rejected insert text is still on the page');
     });
   } finally {
     await context.close();

@@ -1366,6 +1366,12 @@ The `/edit` endpoint searches for your `search` or `after` text in the document.
 
 Repeated suggest/reject cycles on annotated documents now preserve stable suggestion anchors so the document text should remain unchanged. If you still see unexpected content drift, re-read `Accept: text/markdown` and report the exact request/response pair.
 
+### Inserting a new list item, and what a reject removes (2026-09-28, ac-1kf)
+
+`suggest-insert` with `content` that starts with a blank line (`"\n\n…"`) proposes new blocks after the block that holds the `quote`. When the content is only a list (`"\n\n10. **New question?** …"` or `"\n\n- new point"`) and the quote sits in a list item of the same kind, the new items join that list right after the quoted item; the number you type is not kept, because markdown numbers items by position. Other block content goes after the quoted block. If the proposed blocks would not stay separate blocks once the document is saved as markdown, the request fails with 422 `UNREPRESENTABLE_INSERT` instead of folding your text into the quoted item.
+
+Rejecting a block insert removes only the blocks that hold nothing but the suggestion (with a list item or list left empty by that removal). Text that shares a block with the suggestion is never removed. Before this fix, a `"\n\n10. …"` insert on item 9 was saved as an escaped line inside item 9, and rejecting it deleted item 9's own text.
+
 ### `COLLAB_SYNC_FAILED` errors
 
 Edits via the API can fail when a browser has the document open with an active Yjs collab session. The `/edit` and `/edit/v2` endpoints handle this gracefully, but `rewrite.apply` does not. If you hit this, retry after a short delay or use `/edit`/`/edit/v2` instead.
