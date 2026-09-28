@@ -160,6 +160,18 @@ export const LINE_MARK_POLICY = {
    * behaviour. 0.5 keeps "ship on Monday" -> "ship on Friday" and refuses an unrelated sentence.
    */
   lapseSimilarity: 0.5,
+  /**
+   * Brief 1 truthful count (ac-fbw, 2026-09-27): a skim never counted as Seen, so a stale skim is not
+   * "changed since you read it" (docs/accord/rulings.md 2026-09-23: scrolling records Seen only).
+   */
+  staleSkimIsNotAChange: true,
+  /**
+   * Brief 1 truthful count (ac-fbw, 2026-09-27): when marked text is gone and neither carry nor lapse
+   * applies, only an explicit decision mark keeps the ordinal fallback. A passive Seen mark is dropped
+   * (Agreement lapses on a substantive edit, rulings.md 2026-09-22; open issues are unaccepted changes,
+   * rulings.md 2026-09-24).
+   */
+  ordinalFallbackStatuses: ['agreed', 'approved', 'rejected'] as const satisfies readonly LineMarkStatus[],
 } as const;
 
 /**
@@ -572,6 +584,12 @@ export function buildLineStates(lines: DocLine[], lineMarks: LineMark[]): LineSt
       }
     }
     if (!resolved) continue;
+    if (LINE_MARK_POLICY.staleSkimIsNotAChange && !resolved.current && mark.status === 'skimmed') continue;
+    if (
+      !resolved.current
+      && !resolved.lapsed
+      && !(LINE_MARK_POLICY.ordinalFallbackStatuses as readonly LineMarkStatus[]).includes(mark.status)
+    ) continue;
     const state = states[resolved.lineIndex];
     const key = actorKey(mark.by);
     const existing = state.marks.get(key);
