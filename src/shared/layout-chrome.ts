@@ -172,6 +172,8 @@ export const KEYBOARD_SHORTCUTS: ReadonlyArray<{ group: string; keys: string; do
   { group: 'Reading (caret out of the text)', keys: 'Y / T / N', does: 'Answer the ask on this line: Yes / Not yet / No' },
   { group: 'Reading (caret out of the text)', keys: 'E', does: 'Ask the AIs to explain the line' },
   { group: 'Reading (caret out of the text)', keys: 'S', does: 'Place the caret to propose a change' },
+  { group: 'Reading (caret out of the text)', keys: 'Shift+End / Shift+arrows', does: 'Select text on this line' },
+  { group: 'Reading (caret out of the text)', keys: 'C', does: 'Comment on the selection, or on this line' },
   { group: 'Writing', keys: 'Esc', does: 'Leave the text and return to Reading' },
   { group: 'Everywhere', keys: '⌘Z / Ctrl+Z', does: 'Undo the last thing you did (a decision or typing)' },
   { group: 'Everywhere', keys: '⇧⌘Z / Ctrl+Y', does: 'Redo' },

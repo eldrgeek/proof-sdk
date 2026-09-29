@@ -4037,7 +4037,7 @@ class ProofEditorImpl implements ProofEditor {
     if (!this.findBar) {
       this.findBar = new FindBar({
         lines: () => lineMarks.lineList().map(line => line.text),
-        focusLine: index => { lineMarks.revealLine(index); return walk.focusLine(index); },
+        focusLine: index => { this.folding?.expandSectionContaining(index); return walk.focusLine(index); },
         from: () => walk.focusIndex(),
       });
     }
@@ -4393,7 +4393,7 @@ class ProofEditorImpl implements ProofEditor {
       focus: () => this.readingWalk?.focusIndex() ?? 0,
       folded: line => this.folding?.isFolded(line) ?? false,
       canMove: () => this.shareAllowLocalEdits && !this.isReadOnly && this.reviewLockCount === 0 && this.collabCanEdit && this.openViewUI?.current() !== 'accord',
-      navigate: line => { this.folding?.reveal(line); this.readingWalk?.focusLine(line); },
+      navigate: line => { this.folding?.expandSectionContaining(line); this.readingWalk?.focusLine(line); },
       notice: message => this.readingWalk?.showEditNotice(message),
       propose: (source, place, section) => {
         const view = this.lineMarks?.editorView(); if (!view) return;

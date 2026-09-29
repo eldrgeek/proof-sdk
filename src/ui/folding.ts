@@ -4,6 +4,7 @@ import { TextSelection, type Transaction } from '@milkdown/kit/prose/state';
 import { extractLines, type DocLine } from '../shared/line-marks';
 import { captureSectionScope, computeSections, sectionByHeading, type DocSection, type SectionScope, type SectionAgreementOffer } from '../shared/folding';
 import { FOLDED_VIEW_POLICY, foldedCountText, initialShown, mapShown, remapByContent, touchesHidden } from '../shared/folded-view';
+import { headingSlug } from '../editor/plugins/markdown-link-click';
 import { ySyncPluginKey } from 'y-prosemirror';
 import { foldViewKey, setFoldView, hiddenBlocks, transactionTouchesHidden, FOLD_RULE_EVENT, type FoldUpdate } from '../editor/plugins/fold-view';
 import type { LineMarksUI } from './line-marks';
@@ -46,6 +47,7 @@ export class FoldingUI {
     window.addEventListener('resize', this.queueRender);
     document.addEventListener(FOLD_RULE_EVENT, this.onRule);
     document.addEventListener('click', this.onLink, true);
+    document.addEventListener('beforematch', this.onBeforeMatch, true);
     window.addEventListener('hashchange', this.onHash);
     this.timer = setTimeout(() => {
       if (!this.initialized) { this.timedOut = true; this.initialized = true; this.update({ ready: true, whole: true }); }
@@ -60,6 +62,7 @@ export class FoldingUI {
     window.removeEventListener('resize', this.queueRender);
     document.removeEventListener(FOLD_RULE_EVENT, this.onRule);
     document.removeEventListener('click', this.onLink, true);
+    document.removeEventListener('beforematch', this.onBeforeMatch, true);
     window.removeEventListener('hashchange', this.onHash);
     this.unsubscribe?.(); this.resizeObserver?.disconnect(); this.layer.remove();
   }
@@ -196,6 +199,36 @@ export class FoldingUI {
     const shown = new Set(this.state()?.shown); shown.add(this.lines[index].pos);
     this.action('showed a passage', { shown }); return true;
   }
+  /** The single top heading whose section is the whole document. Opening it would show every section. */
+  isDocumentTitle(index: number): boolean {
+    const level = this.lines[index]?.level;
+    if (level === undefined) return false;
+    return !this.sections.some(s => s.headingIndex !== index && s.level <= level);
+  }
+  /** J/K onto a section heading opens that section. The document title stays folded. */
+  expandSectionAt(index: number): boolean {
+    if (!FOLDED_VIEW_POLICY.navigationExpandsSection || this.lines[index]?.level === undefined) return false;
+    if (this.isDocumentTitle(index) || !this.isFolded(index)) return false;
+    this.setFolded(index, false);
+    return true;
+  }
+  /**
+   * Hash, outline, find, and in-page links show the section that holds the line,
+   * not only its heading. A review-list jump still uses reveal().
+   */
+  expandSectionContaining(index: number): boolean {
+    if (!FOLDED_VIEW_POLICY.navigationExpandsSection) return this.reveal(index);
+    if (this.isWhole() || !this.state()?.ready) return false;
+    const chain = this.sections.filter(s => s.headingIndex <= index && s.lineEnd > index);
+    const target = chain.at(-1);
+    if (!target) return this.isHidden(index) ? (this.reveal(index) || true) : false;
+    if (this.isDocumentTitle(target.headingIndex)) {
+      return index !== target.headingIndex && this.isHidden(index) ? (this.reveal(index) || true) : false;
+    }
+    if (this.isFolded(target.headingIndex)) { this.setFolded(target.headingIndex, false); return true; }
+    if (this.isHidden(index)) { this.reveal(index); return true; }
+    return false;
+  }
   private revealHash(hash: string): void {
     const view = this.view(); if (!view || !hash) return;
     let name: string; try { name = decodeURIComponent(hash.slice(1)); } catch { return; }
@@ -204,14 +237,36 @@ export class FoldingUI {
     if (index < 0) {
       const target = document.getElementById(name);
       if (target && view.dom.contains(target)) {
-        const pos = view.posAtDOM(target, 0);
-        index = this.lines.findIndex(l => pos >= l.pos && pos < l.pos + l.nodeSize);
+        try {
+          const pos = view.posAtDOM(target, 0);
+          index = this.lines.findIndex(l => pos >= l.pos && pos < l.pos + l.nodeSize);
+        } catch { index = -1; }
       }
     }
+    if (index < 0) {
+      const wanted = headingSlug(name);
+      index = this.lines.findIndex(l => l.level !== undefined && headingSlug(l.text) === wanted);
+    }
     if (index < 0 || !this.lines[index]) return;
-    this.reveal(index);
+    this.expandSectionContaining(index);
     requestAnimationFrame(() => (view.nodeDOM(this.lines[index]?.pos) as HTMLElement | null)?.scrollIntoView({ block: 'center' }));
   }
+  private onBeforeMatch = (event: Event): void => {
+    const target = event.target;
+    const view = this.view();
+    if (!(target instanceof HTMLElement) || !view || !view.dom.contains(target)) return;
+    let index = -1;
+    try {
+      const pos = view.posAtDOM(target, 0);
+      index = this.lines.findIndex(l => pos >= l.pos && pos < l.pos + l.nodeSize);
+    } catch { index = -1; }
+    if (index < 0) {
+      const text = (target.textContent ?? '').replace(/\s+/g, ' ').trim();
+      if (text) index = this.lines.findIndex(l => l.text && (text === l.text || text.includes(l.text)));
+    }
+    if (index < 0) return;
+    this.expandSectionContaining(index);
+  };
   private onHash = (): void => { this.revealHash(location.hash); };
   private onLink = (event: MouseEvent): void => {
     const link = (event.target as HTMLElement).closest<HTMLAnchorElement>('a[href]');

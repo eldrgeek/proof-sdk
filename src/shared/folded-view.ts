@@ -18,8 +18,12 @@ export const FOLDED_VIEW_POLICY = {
   shows: 'all-open',
   // Opening prose has the same rules as a section body.
   openingCollapses: true,
-  // Navigation exposes only the destination and its context path.
+  // A review-list jump exposes only the destination and its context path.
   jumpShowsLineOnly: true,
+  // A heading anchor, outline jump, find, or J/K onto a section heading shows that
+  // section's content. The review list still uses reveal() (jumpShowsLineOnly).
+  // Usability test 2026-09-28: a hash or find left the reader on a folded heading.
+  navigationExpandsSection: true,
   // Input cannot reach words the reader cannot see.
   refuseEditsTouchingHidden: true,
   // A failed load must not leave the page blank indefinitely. 10 s, not 5: under load a healthy

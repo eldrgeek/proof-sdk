@@ -224,6 +224,15 @@ body.prw-strip-on .prw-strip:not([hidden]) {
 /* Reserve the strip's height so it never covers the end of the text; lift the feedback chip above it. */
 body.prw-strip-on #app #editor { padding-bottom: calc(100vh - 80px + var(--prw-strip-h, 64px)) !important; }
 body.prw-strip-on .soma-feedback-root { bottom: calc(var(--prw-strip-h, 64px) + 12px + env(safe-area-inset-bottom, 0px)); }
+/* The Feedback chip is position:fixed at z-index 9999 and sits on the phone's
+   Comment button (usability test 2026-09-28). Hide it while a selection toolbar
+   or the comment composer is open so the tap reaches Comment and the composer. */
+body:has(.mark-selection-bar[style*="display: flex"]) .soma-feedback-root,
+body:has(.mark-mobile-strip:not([style*="display: none"]):not([style*="display:none"]) .mark-mobile-strip-actions) .soma-feedback-root,
+body:has(.mark-popover.mark-popover-composer[style*="display: block"]) .soma-feedback-root {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
 body.prw-strip-on .plm-toast { bottom: calc(var(--prw-strip-h, 64px) + 16px); }
 
 /* Writing mode (2026-09-21, src/shared/reading-keys.ts): the caret blinks only while writing, and

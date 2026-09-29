@@ -2,6 +2,7 @@ import {
   LINK_CLICK_POLICY,
   extractLinkTargetFromEvent,
   headingSlug,
+  uniqueHeadingId,
   inPageFragment,
   isLinkModifierActive,
   pressKeepsCaretOut,
@@ -99,6 +100,9 @@ function testPressAndFragments(): void {
   assertEqual(headingSlug('The end'), 'the-end', 'Headings slug like GitHub');
   assertEqual(headingSlug('  Step 2: ship it!  '), 'step-2-ship-it', 'Punctuation drops, spaces become dashes');
   assertEqual(headingSlug('Café & bar'), 'café--bar', 'Letters beyond ASCII stay');
+  const seen = new Map<string, number>();
+  assertEqual(uniqueHeadingId('Needs your hands', seen), 'needs-your-hands', 'The first heading keeps the slug');
+  assertEqual(uniqueHeadingId('Needs your hands', seen), 'needs-your-hands-2', 'A repeated heading is numbered');
 }
 
 function testNormalizeAndValidateHref(): void {

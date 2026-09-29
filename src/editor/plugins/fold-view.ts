@@ -6,6 +6,7 @@ import type { Node } from '@milkdown/kit/prose/model';
 import { extractLines } from '../../shared/line-marks';
 import { computeSections } from '../../shared/folding';
 import { FOLDED_VIEW_POLICY, hiddenRuns, mapShown, remapByContent, structuralPaths, withPaths, touchesHidden, type HiddenRun } from '../../shared/folded-view';
+import { uniqueHeadingId } from './markdown-link-click';
 import { ySyncPluginKey } from 'y-prosemirror';
 
 export interface FoldState {
@@ -27,8 +28,21 @@ export const FOLD_RULE_EVENT = 'proof:fold-rule-expand';
 export const FOLD_NOTICE_EVENT = 'proof:fold-notice';
 export const FOLD_USER_EDIT = 'proofFoldUserEdit';
 
+const HIDDEN_ATTRS = { class: 'pfold-hidden', hidden: 'until-found' } as const;
+
+function headingIdDecorations(lines: ReturnType<typeof extractLines>): Decoration[] {
+  const seen = new Map<string, number>();
+  const out: Decoration[] = [];
+  for (const line of lines) {
+    if (line.level === undefined) continue;
+    out.push(Decoration.node(line.pos, line.pos + line.nodeSize, { id: uniqueHeadingId(line.text, seen) }));
+  }
+  return out;
+}
+
 function build(doc: Node, state: FoldState): FoldState {
   const lines = extractLines(doc);
+  const ids = headingIdDecorations(lines);
   const visible = new Set([...state.shown, ...state.context]);
   for (const s of computeSections(lines)) if (state.expanded.has(lines[s.headingIndex].pos)) {
     for (let i = s.headingIndex; i < s.lineEnd; i++) visible.add(lines[i].pos);
@@ -37,10 +51,10 @@ function build(doc: Node, state: FoldState): FoldState {
   state.hidden = [];
   state.runs = [];
   const decorations: Decoration[] = [];
-  if (state.whole || state.clean) { state.decorations = DecorationSet.empty; return state; }
+  if (state.whole || state.clean) { state.decorations = DecorationSet.create(doc, ids); return state; }
   if (!state.ready) {
-    doc.forEach((node, pos) => decorations.push(Decoration.node(pos, pos + node.nodeSize, { class: 'pfold-hidden' })));
-    state.decorations = DecorationSet.create(doc, decorations);
+    doc.forEach((node, pos) => decorations.push(Decoration.node(pos, pos + node.nodeSize, HIDDEN_ATTRS)));
+    state.decorations = DecorationSet.create(doc, [...decorations, ...ids]);
     return state;
   }
   const visit = (node: Node, start: number) => {
@@ -50,7 +64,7 @@ function build(doc: Node, state: FoldState): FoldState {
       const hasShown = [...state.visible].some(p => p >= pos && p < end);
       if ((items.length || (!FOLDED_VIEW_POLICY.showEmptyBlocks && child.isTextblock)) && !hasShown) {
         state.hidden.push({ from: pos, to: end });
-        decorations.push(Decoration.node(pos, end, { class: 'pfold-hidden' }, { pfold: 'hidden' }));
+        decorations.push(Decoration.node(pos, end, HIDDEN_ATTRS, { pfold: 'hidden' }));
       } else if (child.childCount && !child.isTextblock && child.type.name !== 'table_row') visit(child, pos + 1);
       if (FOLDED_VIEW_POLICY.preserveListNumbers && node.type.name === 'ordered_list' && child.type.name === 'list_item') {
         decorations.push(Decoration.node(pos, end, { value: String(Number(node.attrs.order ?? node.attrs.start ?? 1) + index) }));
@@ -68,7 +82,7 @@ function build(doc: Node, state: FoldState): FoldState {
       side: -1, pfold: 'rule', key: `rule-${run.from}-${run.to}-${run.label}`, stopEvent: () => true,
     }));
   }
-  state.decorations = DecorationSet.create(doc, decorations);
+  state.decorations = DecorationSet.create(doc, [...decorations, ...ids]);
   return state;
 }
 

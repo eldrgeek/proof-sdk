@@ -26,7 +26,7 @@ const route = (key: string, target: KeyTarget, writing: boolean, mods: { ctrlKey
 test('policy: the rule Mike reads is the rule the code follows', () => {
   assert.equal(READING_MODE_POLICY.hideCaretWhileReading, true);
   assert.equal(READING_MODE_POLICY.showModeChip, true);
-  for (const key of ['a', 'A', 'r', 'y', 'n', 't', 'd', 'e', 'j', 'k', '1', '9', 'ArrowUp', 'ArrowDown']) {
+  for (const key of ['a', 'A', 'r', 'y', 'n', 't', 'd', 'e', 'j', 'k', 'c', 'C', '1', '9', 'ArrowUp', 'ArrowDown']) {
     assert.equal(isReadingCommandKey(key), true, key);
   }
   for (const key of ['x', 'z', ' ', 'Escape', 'Tab', 'ArrowLeft', '0']) assert.equal(isReadingCommandKey(key), false, key);
@@ -37,7 +37,7 @@ test('writing: every key types into the text, the reading keys included', () => 
 });
 
 test('reading with the keyboard in the text (a caret the person did not put there): a key acts or does nothing, never both', () => {
-  for (const key of ['a', 'A', 'r', 'y', 'n', 't', 'd', 'e', 'j', 'k', '1', '5', 'ArrowDown']) {
+  for (const key of ['a', 'A', 'c', 'C', 'r', 'y', 'n', 't', 'd', 'e', 'j', 'k', '1', '5', 'ArrowDown']) {
     assert.equal(route(key, 'editor', false), 'command', key);
   }
   for (const key of ['x', 'z', 'Q', ' ', 'Backspace', 'Delete', '0', '?', 'Enter']) assert.equal(route(key, 'editor', false), 'swallow', key);

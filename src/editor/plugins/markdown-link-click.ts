@@ -174,6 +174,14 @@ export function headingSlug(text: string): string {
     .replace(/\s/g, '-');
 }
 
+/** Stable id for a heading. The first copy is the slug; later copies add -2, -3, … */
+export function uniqueHeadingId(text: string, seen: Map<string, number>): string {
+  const base = headingSlug(text) || 'section';
+  const n = (seen.get(base) ?? 0) + 1;
+  seen.set(base, n);
+  return n === 1 ? base : `${base}-${n}`;
+}
+
 /** Is this href a link to a place in this document (`#fragment`)? Returns the decoded fragment. */
 export function inPageFragment(rawHref: string): string | null {
   const trimmed = rawHref.trim();

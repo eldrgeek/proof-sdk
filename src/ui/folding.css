@@ -1,6 +1,11 @@
 /* Proof Documents Step B2: folding (Claude Opus 5, 2026-09-18). */
 /* A folded section's body: hidden in the view only (a node decoration, never the document). */
-.ProseMirror .pfold-hidden { display: none !important; }
+/* Folded text stays out of the layout and in the page's find index.
+   display:none would hide it from Ctrl+F. hidden=until-found (set on the node)
+   fires beforematch so a match can open the section. A browser without
+   until-found still gets display:none from the :not() rule. */
+.ProseMirror .pfold-hidden:not([hidden="until-found"]) { display: none !important; }
+.ProseMirror .pfold-hidden[hidden="until-found"] { content-visibility: hidden; }
 /* Room at the right of every top-level heading for its fold chip. */
 body.pfold-on .ProseMirror > :is(h1, h2, h3, h4, h5, h6) { padding-right: 72px; }
 

@@ -12,7 +12,7 @@ export const READING_MODE_POLICY = {
 
 /** The single-letter and digit keys that are commands while reading (lower case). */
 export const READING_COMMAND_KEYS: ReadonlySet<string> = new Set([
-  'a', 'r', 'y', 'n', 't', 'd', 'e', 's', 'j', 'k',
+  'a', 'r', 'y', 'n', 't', 'd', 'e', 's', 'j', 'k', 'c',
   '1', '2', '3', '4', '5', '6', '7', '8', '9',
 ]);
 

@@ -22,6 +22,8 @@ import { REVIEW_SURFACE_POLICY, viewerLabel } from '../shared/review-surface';
  * Phones: a position strip opens the one answer group in the Margin sheet.
  */
 import { TextSelection } from '@milkdown/kit/prose/state';
+import { getCurrentActor } from '../editor/actor';
+import { openCommentComposer } from '../editor/plugins/mark-popover';
 import { productIdentity } from '../shared/product-identity';
 import type { Mark, CommentData, ReplaceData } from '../formats/marks';
 import { getActorName, getMarkColor } from '../formats/marks';
@@ -678,9 +680,17 @@ export class ReadingWalkUI {
     const target = event.target as HTMLElement | null;
     if (target?.closest?.('[role="dialog"], .pm-review-dialog, .mark-popover, .plm-menu, .proof-share-overflow-menu, [role="menu"]')) return;
     const key = event.key;
+    if (event.shiftKey && (key === 'ArrowLeft' || key === 'ArrowRight' || key === 'ArrowUp' || key === 'ArrowDown' || key === 'Home' || key === 'End')) {
+      event.preventDefault();
+      this.extendReadingSelection(key);
+      return;
+    }
     if (key === 'Escape' && this.host.lineMarks().selectionLines().length) { this.host.lineMarks().clearSelection(); return; }
     if (key.toLowerCase() === 's') {
       event.preventDefault(); this.host.suggestChange(this.cursorLine()); return;
+    }
+    if (key.toLowerCase() === 'c') {
+      event.preventDefault(); this.commentOnSelection(); return;
     }
     // Mike, 2026-09-25: "I can navigate using J/K but I can't accept without moving my mouse to
     // the sidebar and clicking. I'd often like to accept and then make a change." A accepts and
@@ -714,6 +724,81 @@ export class ReadingWalkUI {
       return;
     }
   };
+
+  /**
+   * Shift+arrows, Shift+Home and Shift+End select text while Reading.
+   * The selection starts on the current line when the caret is somewhere else.
+   */
+  private extendReadingSelection(key: string): void {
+    const view = this.view();
+    if (!view) return;
+    const index = this.cursorLine();
+    const line = this.lines[index];
+    if (!line) return;
+    this.host.folding?.()?.expandSectionContaining(index);
+    const doc = view.state.doc;
+    const lineStart = Math.min(Math.max(1, line.pos + 1), doc.content.size);
+    const lineEnd = Math.max(lineStart, Math.min(line.pos + line.nodeSize - 1, doc.content.size));
+    let anchor = view.state.selection.anchor;
+    let head = view.state.selection.head;
+    const headIndex = this.host.lineMarks().lineAtPos(head);
+    if (view.state.selection.empty && headIndex !== index) {
+      anchor = lineStart;
+      head = lineStart;
+    }
+    if (key === 'End') head = lineEnd;
+    else if (key === 'Home') head = lineStart;
+    else if (key === 'ArrowRight') head = Math.min(head + 1, lineEnd);
+    else if (key === 'ArrowLeft') head = Math.max(head - 1, lineStart);
+    else if (key === 'ArrowDown' || key === 'ArrowUp') {
+      const dir = key === 'ArrowDown' ? 1 : -1;
+      const fromLine = headIndex >= 0 ? headIndex : index;
+      let next = fromLine + dir;
+      const folding = this.host.folding?.();
+      while (next >= 0 && next < this.lines.length && folding?.isHidden(next)) next += dir;
+      if (next < 0 || next >= this.lines.length) return;
+      folding?.expandSectionContaining(next);
+      const n = this.lines[next];
+      if (!n) return;
+      head = key === 'ArrowDown'
+        ? Math.min(n.pos + n.nodeSize - 1, doc.content.size)
+        : Math.min(Math.max(1, n.pos + 1), doc.content.size);
+      this.selectPassage(next);
+    }
+    const from = Math.max(1, Math.min(anchor, doc.content.size));
+    const to = Math.max(1, Math.min(head, doc.content.size));
+    if (from === to && key === 'End') {
+      view.dispatch(view.state.tr.setSelection(TextSelection.create(doc, lineStart, lineEnd)).setMeta('addToHistory', false));
+      return;
+    }
+    view.dispatch(view.state.tr.setSelection(TextSelection.create(doc, from, to)).setMeta('addToHistory', false));
+  }
+
+  /** C comments on the selection, or on the whole current line when nothing is selected. */
+  commentOnSelection(): boolean {
+    const view = this.view();
+    if (!view || !this.host.lineMarks().canCommentHere()) return false;
+    const index = this.cursorLine();
+    this.host.folding?.()?.expandSectionContaining(index);
+    const doc = view.state.doc;
+    let { from, to } = view.state.selection;
+    const fromLine = this.host.lineMarks().lineAtPos(from);
+    const toLine = this.host.lineMarks().lineAtPos(Math.max(from, to - 1));
+    const low = Math.min(fromLine, toLine);
+    const high = Math.max(fromLine, toLine);
+    const coversCursor = from !== to && fromLine >= 0 && index >= low && index <= high;
+    if (!coversCursor) {
+      const line = this.lines[index];
+      if (!line) return false;
+      from = Math.min(Math.max(1, line.pos + 1), doc.content.size);
+      to = Math.max(from, Math.min(line.pos + line.nodeSize - 1, doc.content.size));
+    }
+    if (from >= to) return false;
+    if (!doc.textBetween(from, to, '\n', '\n').trim()) return false;
+    view.dispatch(view.state.tr.setSelection(TextSelection.create(doc, from, to)).setMeta('addToHistory', false));
+    openCommentComposer(view, { from, to }, getCurrentActor());
+    return true;
+  }
 
   /** T or Discuss opens the Review composer for the selected passage or phrase. */
   startThreadHere(fromSelection = false): boolean {
@@ -896,7 +981,7 @@ export class ReadingWalkUI {
     if (!this.walk || pos < 0) return;
     const line = this.host.lineMarks().lineAtPos(pos);
     if (line < 0) return;
-    this.host.lineMarks().revealLine?.(line);
+    this.host.folding?.()?.expandSectionContaining(line);
     if (this.focusLine(line)) event.detail.handled = true;
   };
 
@@ -1012,13 +1097,13 @@ export class ReadingWalkUI {
   // Actions
   // --------------------------------------------------------------------------
 
-  /** J / ↓: the next visible passage. */
+  /** J / ↓: the next visible passage. Arriving at a folded heading opens that section. */
   next(): void {
     const walk = this.walk;
     if (!walk) return;
-    // A collapsed section is one stop: its heading.
     const to = walk.nextVisible(1, this.cursorLine());
     if (to === null) return;
+    this.host.folding?.()?.expandSectionAt(to);
     walk.moveTo(to, performance.now(), 'scroll', this.heights);
     this.selectPassage(walk.focus);
     this.cameraTo(walk.focus);
@@ -1026,12 +1111,13 @@ export class ReadingWalkUI {
     this.afterChange();
   }
 
-  /** K / ↑: the previous visible passage. */
+  /** K / ↑: the previous visible passage. Arriving at a folded heading opens that section. */
   previous(): void {
     const walk = this.walk;
     if (!walk) return;
     const to = walk.nextVisible(-1, this.cursorLine());
     if (to === null) return;
+    this.host.folding?.()?.expandSectionAt(to);
     walk.moveTo(to, performance.now(), 'scroll', this.heights);
     this.selectPassage(walk.focus);
     this.cameraTo(walk.focus);
