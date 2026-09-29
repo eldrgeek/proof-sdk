@@ -295,9 +295,20 @@ async function runMobileComment(page) {
     return line && !window.__proofFolding.isHidden(line.index);
   });
   await page.waitForTimeout(400);
+  await page.evaluate(() => window.getSelection()?.removeAllRanges());
   await selectText(page, 'Only what needs your fingertip');
   const comment = page.locator('button[aria-label="Add comment on selected text"]');
   await comment.waitFor({ state: 'visible' });
+  // The strip follows the selection on the next frame. Wait until Comment is the top element
+  // at its own centre, so a leftover selection near the banner is not what the tap measures.
+  await page.waitForFunction(() => {
+    const btn = document.querySelector('button[aria-label="Add comment on selected text"]');
+    if (!btn) return false;
+    const r = btn.getBoundingClientRect();
+    if (r.width < 8 || r.height < 8) return false;
+    const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return top === btn || btn.contains(top);
+  });
   // The 28 September screenshots show the Feedback chip covering this button.
   // Put the chip there so the tap is the one that used to open Feedback.
   await page.evaluate(() => {

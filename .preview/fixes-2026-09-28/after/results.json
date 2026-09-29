@@ -23,7 +23,12 @@
       "detail": ""
     },
     {
-      "name": "phone J opens the next section",
+      "name": "phone J steps over a folded section",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "phone selecting visible text leaves the section folded",
       "ok": true,
       "detail": ""
     },
@@ -48,7 +53,12 @@
       "detail": ""
     },
     {
-      "name": "desktop J opens the next section",
+      "name": "desktop J steps over a folded section",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop selecting visible text leaves the section folded",
       "ok": true,
       "detail": ""
     },
