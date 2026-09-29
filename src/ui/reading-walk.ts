@@ -735,7 +735,6 @@ export class ReadingWalkUI {
     const index = this.cursorLine();
     const line = this.lines[index];
     if (!line) return;
-    this.host.folding?.()?.expandSectionContaining(index);
     const doc = view.state.doc;
     const lineStart = Math.min(Math.max(1, line.pos + 1), doc.content.size);
     const lineEnd = Math.max(lineStart, Math.min(line.pos + line.nodeSize - 1, doc.content.size));
@@ -757,7 +756,6 @@ export class ReadingWalkUI {
       const folding = this.host.folding?.();
       while (next >= 0 && next < this.lines.length && folding?.isHidden(next)) next += dir;
       if (next < 0 || next >= this.lines.length) return;
-      folding?.expandSectionContaining(next);
       const n = this.lines[next];
       if (!n) return;
       head = key === 'ArrowDown'
@@ -779,7 +777,6 @@ export class ReadingWalkUI {
     const view = this.view();
     if (!view || !this.host.lineMarks().canCommentHere()) return false;
     const index = this.cursorLine();
-    this.host.folding?.()?.expandSectionContaining(index);
     const doc = view.state.doc;
     let { from, to } = view.state.selection;
     const fromLine = this.host.lineMarks().lineAtPos(from);
@@ -1097,13 +1094,12 @@ export class ReadingWalkUI {
   // Actions
   // --------------------------------------------------------------------------
 
-  /** J / ↓: the next visible passage. Arriving at a folded heading opens that section. */
+  /** J / ↓: the next visible passage. A folded section is one stop and stays folded. */
   next(): void {
     const walk = this.walk;
     if (!walk) return;
     const to = walk.nextVisible(1, this.cursorLine());
     if (to === null) return;
-    this.host.folding?.()?.expandSectionAt(to);
     walk.moveTo(to, performance.now(), 'scroll', this.heights);
     this.selectPassage(walk.focus);
     this.cameraTo(walk.focus);
@@ -1111,13 +1107,12 @@ export class ReadingWalkUI {
     this.afterChange();
   }
 
-  /** K / ↑: the previous visible passage. Arriving at a folded heading opens that section. */
+  /** K / ↑: the previous visible passage. A folded section is one stop and stays folded. */
   previous(): void {
     const walk = this.walk;
     if (!walk) return;
     const to = walk.nextVisible(-1, this.cursorLine());
     if (to === null) return;
-    this.host.folding?.()?.expandSectionAt(to);
     walk.moveTo(to, performance.now(), 'scroll', this.heights);
     this.selectPassage(walk.focus);
     this.cameraTo(walk.focus);

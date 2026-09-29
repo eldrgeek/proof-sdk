@@ -227,7 +227,7 @@ async function runFold(page, phone) {
         return line && !window.__proofFolding.isHidden(line.index);
       });
     }],
-    [`${where} J opens the next section`, async () => {
+    [`${where} J steps over a folded section`, async () => {
       await refold(page);
       await page.evaluate(() => document.activeElement?.blur());
       for (let i = 0; i < 40; i++) {
@@ -235,11 +235,29 @@ async function runFold(page, phone) {
         if (at === 0) break;
         await page.keyboard.press('k');
       }
+      const start = await page.evaluate(() => window.__proofReadingWalk.focusIndex());
       await page.keyboard.press('j');
-      await page.waitForFunction(() => {
-        const line = window.__proofLineMarks.lineList().find(l => l.text.includes('The board project'));
-        return line && !window.__proofFolding.isHidden(line.index);
+      const after = await page.evaluate(() => {
+        const lines = window.__proofLineMarks.lineList();
+        const board = lines.find(l => l.text.includes('The board project'));
+        const focus = window.__proofReadingWalk.focusIndex();
+        return {
+          focus,
+          focusHidden: window.__proofFolding.isHidden(focus),
+          boardHidden: board ? window.__proofFolding.isHidden(board.index) : null,
+          boardIndex: board ? board.index : -1,
+        };
       });
+      assert.ok(after.focus > start, `J stayed on line ${after.focus}`);
+      assert.equal(after.focusHidden, false, 'J landed on a hidden line');
+      assert.equal(after.boardHidden, true, 'J opened a folded section');
+      assert.notEqual(after.focus, after.boardIndex, 'J stopped on a hidden line');
+    }],
+    [`${where} selecting visible text leaves the section folded`, async () => {
+      await refold(page);
+      await selectText(page, 'Where we are');
+      await page.waitForTimeout(250);
+      assert.equal((await lineHidden(page, 'The board project')).hidden, true, 'a visible selection opened a folded section');
     }],
   ]);
 }

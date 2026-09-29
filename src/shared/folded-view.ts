@@ -20,8 +20,9 @@ export const FOLDED_VIEW_POLICY = {
   openingCollapses: true,
   // A review-list jump exposes only the destination and its context path.
   jumpShowsLineOnly: true,
-  // A heading anchor, outline jump, find, or J/K onto a section heading shows that
-  // section's content. The review list still uses reveal() (jumpShowsLineOnly).
+  // A heading anchor, outline jump, or find shows that section's content.
+  // J and K still step over a folded section as one stop and mark nothing hidden.
+  // The review list still uses reveal() (jumpShowsLineOnly).
   // Usability test 2026-09-28: a hash or find left the reader on a folded heading.
   navigationExpandsSection: true,
   // Input cannot reach words the reader cannot see.

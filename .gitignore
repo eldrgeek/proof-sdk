@@ -71,6 +71,10 @@ test-results/
 # Playwright MCP screenshots
 .playwright-mcp/
 
+# Browser-check recordings. AGENTS.md keeps .preview screenshots; these videos
+# are attached to the pull request instead of the tree.
+.preview/**/*.webm
+
 # Package locks (keep package.json)
 package-lock.json
 CODEX-IMPLEMENT.md

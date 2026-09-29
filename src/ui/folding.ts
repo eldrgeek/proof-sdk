@@ -210,16 +210,9 @@ export class FoldingUI {
     if (level === undefined) return false;
     return !this.sections.some(s => s.headingIndex !== index && s.level <= level);
   }
-  /** J/K onto a section heading opens that section. The document title stays folded. */
-  expandSectionAt(index: number): boolean {
-    if (!FOLDED_VIEW_POLICY.navigationExpandsSection || this.lines[index]?.level === undefined) return false;
-    if (this.isDocumentTitle(index) || !this.isFolded(index)) return false;
-    this.setFolded(index, false);
-    return true;
-  }
   /**
    * Hash, outline, find, and in-page links show the section that holds the line,
-   * not only its heading. A review-list jump still uses reveal().
+   * not only its heading. J/K and a review-list jump do not call this.
    */
   expandSectionContaining(index: number): boolean {
     if (!FOLDED_VIEW_POLICY.navigationExpandsSection) return this.reveal(index);
@@ -262,23 +255,25 @@ export class FoldingUI {
   };
   /**
    * Browser find selects folded text without firing beforematch. The page also keeps a
-   * clipped copy of the markdown for agents, and find hits that copy first, so a match
-   * is recognised by its text when it is not inside the editor.
+   * clipped copy of the markdown for agents, and find hits that copy first. A selection
+   * inside the visible editor is ordinary reading and must not open a section.
    */
   private revealingFound = false;
   private onFoundSelection = (): void => {
     if (this.revealingFound || this.applyingFold) return;
     const view = this.view();
     const sel = document.getSelection();
-    if (!view || !sel || sel.isCollapsed) return;
+    if (!view || !sel || sel.isCollapsed || !sel.anchorNode) return;
     const text = sel.toString().replace(/\s+/g, ' ').trim();
     if (!text) return;
-    let index = -1;
-    if (sel.anchorNode && view.dom.contains(sel.anchorNode)) {
-      const el = sel.anchorNode instanceof Element ? sel.anchorNode : sel.anchorNode.parentElement;
-      const hidden = el?.closest('.pfold-hidden');
-      if (hidden instanceof HTMLElement) index = this.indexOfElement(hidden);
-    }
+    const el = sel.anchorNode instanceof Element ? sel.anchorNode : sel.anchorNode.parentElement;
+    if (!el) return;
+    const inEditor = view.dom.contains(sel.anchorNode);
+    const hidden = inEditor ? el.closest('.pfold-hidden') : null;
+    // Find hits the clipped agent copy before the editor. Visible editor text is not a find.
+    const findOutside = !inEditor && Boolean(el.closest('#agent-instructions'));
+    if (!(hidden instanceof HTMLElement) && !findOutside) return;
+    let index = hidden instanceof HTMLElement ? this.indexOfElement(hidden) : -1;
     if (index < 0) {
       index = this.lines.findIndex(l => l.text.replace(/\s+/g, ' ').trim() === text);
     }
