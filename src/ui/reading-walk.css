@@ -229,7 +229,10 @@ body.prw-strip-on .soma-feedback-root { bottom: calc(var(--prw-strip-h, 64px) + 
    or the comment composer is open so the tap reaches Comment and the composer. */
 body:has(.mark-selection-bar[style*="display: flex"]) .soma-feedback-root,
 body:has(.mark-mobile-strip:not([style*="display: none"]):not([style*="display:none"]) .mark-mobile-strip-actions) .soma-feedback-root,
-body:has(.mark-popover.mark-popover-composer[style*="display: block"]) .soma-feedback-root {
+body:has(.mark-popover.mark-popover-composer[style*="display: block"]) .soma-feedback-root,
+body:has(.mark-selection-bar[style*="display: flex"]) .soma-feedback-root *,
+body:has(.mark-mobile-strip:not([style*="display: none"]):not([style*="display:none"]) .mark-mobile-strip-actions) .soma-feedback-root *,
+body:has(.mark-popover.mark-popover-composer[style*="display: block"]) .soma-feedback-root * {
   visibility: hidden !important;
   pointer-events: none !important;
 }

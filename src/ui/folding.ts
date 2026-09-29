@@ -48,6 +48,7 @@ export class FoldingUI {
     document.addEventListener(FOLD_RULE_EVENT, this.onRule);
     document.addEventListener('click', this.onLink, true);
     document.addEventListener('beforematch', this.onBeforeMatch, true);
+    document.addEventListener('selectionchange', this.onFoundSelection);
     window.addEventListener('hashchange', this.onHash);
     this.timer = setTimeout(() => {
       if (!this.initialized) { this.timedOut = true; this.initialized = true; this.update({ ready: true, whole: true }); }
@@ -63,6 +64,7 @@ export class FoldingUI {
     document.removeEventListener(FOLD_RULE_EVENT, this.onRule);
     document.removeEventListener('click', this.onLink, true);
     document.removeEventListener('beforematch', this.onBeforeMatch, true);
+    document.removeEventListener('selectionchange', this.onFoundSelection);
     window.removeEventListener('hashchange', this.onHash);
     this.unsubscribe?.(); this.resizeObserver?.disconnect(); this.layer.remove();
   }
@@ -70,9 +72,12 @@ export class FoldingUI {
   private view(): EditorView | null { return this.host.lineMarks().editorView(); }
   private state() { const view = this.view(); return view ? foldViewKey.getState(view.state) : undefined; }
   private notify(): void { for (const listener of this.listeners) listener(); }
+  private applyingFold = false;
   private update(update: FoldUpdate): void {
     const view = this.view(); if (!view) return;
+    this.applyingFold = true;
     setFoldView(view, update); this.refreshLines(); this.queueRender(); this.notify();
+    queueMicrotask(() => { this.applyingFold = false; });
   }
   private refreshLines(): void {
     const view = this.view(); if (!view) return;
@@ -253,19 +258,62 @@ export class FoldingUI {
   }
   private onBeforeMatch = (event: Event): void => {
     const target = event.target;
+    if (target instanceof HTMLElement) this.revealFoundElement(target);
+  };
+  /**
+   * Browser find selects folded text without firing beforematch. The page also keeps a
+   * clipped copy of the markdown for agents, and find hits that copy first, so a match
+   * is recognised by its text when it is not inside the editor.
+   */
+  private revealingFound = false;
+  private onFoundSelection = (): void => {
+    if (this.revealingFound || this.applyingFold) return;
     const view = this.view();
-    if (!(target instanceof HTMLElement) || !view || !view.dom.contains(target)) return;
+    const sel = document.getSelection();
+    if (!view || !sel || sel.isCollapsed) return;
+    const text = sel.toString().replace(/\s+/g, ' ').trim();
+    if (!text) return;
     let index = -1;
-    try {
-      const pos = view.posAtDOM(target, 0);
-      index = this.lines.findIndex(l => pos >= l.pos && pos < l.pos + l.nodeSize);
-    } catch { index = -1; }
+    if (sel.anchorNode && view.dom.contains(sel.anchorNode)) {
+      const el = sel.anchorNode instanceof Element ? sel.anchorNode : sel.anchorNode.parentElement;
+      const hidden = el?.closest('.pfold-hidden');
+      if (hidden instanceof HTMLElement) index = this.indexOfElement(hidden);
+    }
     if (index < 0) {
-      const text = (target.textContent ?? '').replace(/\s+/g, ' ').trim();
-      if (text) index = this.lines.findIndex(l => l.text && (text === l.text || text.includes(l.text)));
+      index = this.lines.findIndex(l => l.text.replace(/\s+/g, ' ').trim() === text);
+    }
+    if (index < 0 && text.length >= 12) {
+      index = this.lines.findIndex(l => this.isHidden(l.index) && l.text.includes(text));
     }
     if (index < 0) return;
-    this.expandSectionContaining(index);
+    this.revealingFound = true;
+    try { this.expandSectionContaining(index); }
+    finally { this.revealingFound = false; }
+    const line = this.lines[index];
+    requestAnimationFrame(() => (view.nodeDOM(line?.pos) as HTMLElement | null)?.scrollIntoView({ block: 'center' }));
+  };
+  private indexOfElement(target: HTMLElement): number {
+    const view = this.view();
+    if (!view) return -1;
+    try {
+      const pos = view.posAtDOM(target, 0);
+      const index = this.lines.findIndex(l => pos >= l.pos && pos < l.pos + l.nodeSize);
+      if (index >= 0) return index;
+    } catch { /* the node is not a document position */ }
+    const text = (target.textContent ?? '').replace(/\s+/g, ' ').trim();
+    if (!text) return -1;
+    return this.lines.findIndex(l => l.text && (text === l.text || text.includes(l.text)));
+  };
+  private revealFoundElement(target: HTMLElement): void {
+    const index = this.indexOfElement(target);
+    if (index < 0 || this.revealingFound) return;
+    const view = this.view();
+    if (!view) return;
+    this.revealingFound = true;
+    try { this.expandSectionContaining(index); }
+    finally { this.revealingFound = false; }
+    const line = this.lines[index];
+    requestAnimationFrame(() => (view.nodeDOM(line?.pos) as HTMLElement | null)?.scrollIntoView({ block: 'center' }));
   };
   private onHash = (): void => { this.revealHash(location.hash); };
   private onLink = (event: MouseEvent): void => {

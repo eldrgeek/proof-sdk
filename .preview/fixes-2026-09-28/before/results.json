@@ -1,0 +1,66 @@
+{
+  "label": "before",
+  "recordOnly": true,
+  "results": [
+    {
+      "name": "phone hash opens the section",
+      "ok": false,
+      "detail": "page.waitForFunction: Timeout 12000ms exceeded."
+    },
+    {
+      "name": "phone window.find opens the section",
+      "ok": false,
+      "detail": "page.waitForFunction: Timeout 12000ms exceeded."
+    },
+    {
+      "name": "phone in-app find opens the section",
+      "ok": false,
+      "detail": "page.waitForFunction: Timeout 12000ms exceeded."
+    },
+    {
+      "name": "phone outline opens the section",
+      "ok": false,
+      "detail": "page.waitForFunction: Timeout 12000ms exceeded."
+    },
+    {
+      "name": "phone J opens the next section",
+      "ok": false,
+      "detail": "page.waitForFunction: Timeout 12000ms exceeded."
+    },
+    {
+      "name": "desktop hash opens the section",
+      "ok": false,
+      "detail": "page.waitForFunction: Timeout 12000ms exceeded."
+    },
+    {
+      "name": "desktop window.find opens the section",
+      "ok": false,
+      "detail": "page.waitForFunction: Timeout 12000ms exceeded."
+    },
+    {
+      "name": "desktop in-app find opens the section",
+      "ok": false,
+      "detail": "page.waitForFunction: Timeout 12000ms exceeded."
+    },
+    {
+      "name": "desktop outline opens the section",
+      "ok": false,
+      "detail": "page.waitForFunction: Timeout 12000ms exceeded."
+    },
+    {
+      "name": "desktop J opens the next section",
+      "ok": false,
+      "detail": "page.waitForFunction: Timeout 12000ms exceeded."
+    },
+    {
+      "name": "phone comment by touch",
+      "ok": false,
+      "detail": "Feedback took the tap (soma-feedback-tab Feedback)"
+    },
+    {
+      "name": "desktop keyboard comment",
+      "ok": false,
+      "detail": "Shift+End left an empty selection"
+    }
+  ]
+}

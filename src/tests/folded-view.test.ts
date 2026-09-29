@@ -82,6 +82,10 @@ test('actual node decorations hide list entries and retain original numbering', 
   assert.equal(state.hidden.filter(r => doc.nodeAt(r.from)!.type.name === 'list_item').length,4);
   const values = state.decorations.find().map(d => (d as any).type.attrs?.value).filter(Boolean);
   assert.deepEqual(values,['1','2','3','4','5','6']);
+  const hiddenAttrs = state.decorations.find().filter(d => (d as any).spec?.pfold === 'hidden').map(d => (d as any).type.attrs);
+  assert.ok(hiddenAttrs.length > 0 && hiddenAttrs.every(a => a.hidden === 'until-found' && a.class === 'pfold-hidden'));
+  const ids = state.decorations.find().map(d => (d as any).type.attrs?.id).filter(Boolean);
+  assert.deepEqual(ids, ['title', 'list', 'nested', 'path', 'quiet']);
 });
 test('editing shown words and inserting above them preserves shown positions, not hashes', () => {
   const selected = lines[idx('Entry 3')];
@@ -179,7 +183,9 @@ test('remote, decision and history transactions remain applicable even across hi
 test('whole and agreed copy have no hidden decorations; returning preserves the visit', () => {
   for(const flag of ['whole','clean']) {
     const state=applyFoldTransaction(EditorState.create({doc}).tr.setMeta(foldViewKey,{[flag]:true}),foldingState());
-    assert.equal(state.decorations.find().length,0);
+    const found = state.decorations.find();
+    assert.equal(found.filter(d => (d as any).spec?.pfold === 'hidden' || (d as any).type?.attrs?.hidden).length, 0);
+    assert.deepEqual(found.map(d => (d as any).type.attrs?.id).filter(Boolean), ['title', 'list', 'nested', 'path', 'quiet']);
     const restored=applyFoldTransaction(EditorState.create({doc}).tr.setMeta(foldViewKey,{[flag]:false}),state);
     assert.deepEqual(texts(restored.visible),texts(initial));
   }

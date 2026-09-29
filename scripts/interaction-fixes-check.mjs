@@ -45,7 +45,18 @@ async function check(name, fn) {
     note(name, true, detail || '');
   } catch (error) {
     note(name, false, error?.message?.split('\n')[0] || String(error));
-    if (!recordOnly) throw error;
+  }
+}
+
+/** Runs every scenario. The asserting run fails if any scenario failed; --record-only keeps going. */
+async function scenarios(pairs) {
+  for (const [name, fn] of pairs) {
+    try {
+      await fn();
+      note(name, true, '');
+    } catch (error) {
+      note(name, false, error?.message?.split('\n')[0] || String(error));
+    }
   }
 }
 
@@ -86,8 +97,9 @@ async function createDoc(base) {
     method: 'POST', headers,
     body: JSON.stringify({ markdown, title: 'Estate organization: where we are, and the plan', role: 'commenter' }),
   });
-  assert.equal(response.status, 200, await response.text());
-  return response.json();
+  const body = await response.text();
+  assert.equal(response.status, 200, body.slice(0, 300));
+  return JSON.parse(body);
 }
 
 async function openPage(browser, base, slug, kind, videoName) {
@@ -131,92 +143,105 @@ function lineHidden(page, snippet) {
   }, snippet);
 }
 
-async function runFold(page, phone) {
-  // Hash: the section body, not only the heading.
-  await page.goto(page.url().split('#')[0] + '#needs-your-hands');
-  await page.waitForFunction(() => {
-    const line = window.__proofLineMarks.lineList().find(l => l.text.includes('Only what needs your fingertip'));
-    return line && !window.__proofFolding.isHidden(line.index);
+async function refold(page) {
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined));
+  await page.evaluate(() => {
+    history.replaceState(null, '', location.pathname + location.search);
+    window.getSelection()?.removeAllRanges();
+    const view = window.__editorView;
+    if (view && !view.state.selection.empty) {
+      const Sel = view.state.selection.constructor;
+      view.dispatch(view.state.tr.setSelection(Sel.create(view.state.doc, 1)).setMeta('addToHistory', false));
+    }
+    window.__proofFolding?.foldAll?.({ record: false });
   });
-  const fingertip = await lineHidden(page, 'Only what needs your fingertip');
-  assert.equal(fingertip.hidden, false, 'hash left the section folded');
-  const elsewhere = await lineHidden(page, 'The board project');
-  assert.equal(elsewhere.hidden, true, 'hash unfolded an unrelated section');
-
-  // Find in the page (Ctrl+F proxy) opens the folded section.
-  await page.goto(page.url().split('#')[0]);
-  await page.waitForFunction(() => window.__proofFolding?.debugState().ready && !window.__proofFolding.debugState().whole);
-  await page.waitForFunction(() => {
-    const line = window.__proofLineMarks.lineList().find(l => l.text.includes('owner seat'));
-    return line && window.__proofFolding.isHidden(line.index);
-  });
-  const found = await page.evaluate(() => {
-    const sel = window.getSelection();
-    sel?.removeAllRanges();
-    return window.find('Give the estate organization an owner seat');
-  });
-  assert.equal(found, true, 'window.find did not match the folded heading');
-  await page.waitForFunction(() => {
-    const line = window.__proofLineMarks.lineList().find(l => l.text.includes('estate-owner-seat'));
-    return line && !window.__proofFolding.isHidden(line.index);
-  });
-  assert.equal((await lineHidden(page, 'The board project')).hidden, true, 'find unfolded an unrelated section');
-
-  // In-app Find (Edit › Find) does the same.
-  await page.goto(page.url().split('#')[0]);
-  await page.waitForFunction(() => {
-    const line = window.__proofLineMarks.lineList().find(l => l.text.includes('fingertip'));
-    return line && window.__proofFolding.isHidden(line.index);
-  });
-  if (phone) {
-    await page.locator('#share-banner .share-pill-overflow').click();
-    await page.getByRole('menuitem', { name: /^Find/ }).click();
-  } else {
-    await page.keyboard.press('Alt+e');
-    await page.keyboard.press('f');
-    await page.keyboard.press('Enter');
-  }
-  const find = page.getByPlaceholder('Find in this document');
-  await find.waitFor({ state: 'visible' });
-  await find.fill('Only what needs your fingertip');
-  await find.press('Enter');
-  await page.waitForFunction(() => {
-    const line = window.__proofLineMarks.lineList().find(l => l.text.includes('fingertip'));
-    return line && !window.__proofFolding.isHidden(line.index);
-  });
-
-  // Outline jump opens the section.
-  await page.goto(page.url().split('#')[0]);
-  await page.waitForFunction(() => {
-    const line = window.__proofLineMarks.lineList().find(l => l.text.includes('fingertip'));
-    return line && window.__proofFolding.isHidden(line.index);
-  });
-  if (phone) {
-    await page.locator('#share-banner .share-pill-overflow').click();
-    await page.getByRole('menuitem', { name: 'Outline', exact: true }).click();
-  } else {
-    await page.keyboard.press('Alt+v');
-    await page.keyboard.press('o');
-    await page.keyboard.press('Enter');
-  }
-  const outlineItem = page.locator('.accord-outline-item', { hasText: 'Needs your hands' });
-  await outlineItem.waitFor({ state: 'visible' });
-  if (phone) await outlineItem.tap();
-  else await outlineItem.press('Enter');
-  await page.waitForFunction(() => {
-    const line = window.__proofLineMarks.lineList().find(l => l.text.includes('fingertip'));
-    return line && !window.__proofFolding.isHidden(line.index);
-  });
-
-  // J from the title steps into the next section and opens it.
-  await page.goto(page.url().split('#')[0]);
-  await page.waitForFunction(() => window.__proofFolding?.debugState().ready);
-  await page.evaluate(() => document.activeElement?.blur());
-  await page.keyboard.press('j');
   await page.waitForFunction(() => {
     const line = window.__proofLineMarks.lineList().find(l => l.text.includes('The board project'));
-    return line && !window.__proofFolding.isHidden(line.index);
+    return line && window.__proofFolding.isHidden(line.index) && !window.__proofFolding.debugState().whole;
   });
+}
+
+async function runFold(page, phone) {
+  const where = phone ? 'phone' : 'desktop';
+  await scenarios([
+    [`${where} hash opens the section`, async () => {
+      await refold(page);
+      await page.evaluate(() => { location.hash = 'needs-your-hands'; });
+      await page.waitForFunction(() => {
+        const line = window.__proofLineMarks.lineList().find(l => l.text.includes('Only what needs your fingertip'));
+        return line && !window.__proofFolding.isHidden(line.index);
+      });
+      assert.equal((await lineHidden(page, 'Only what needs your fingertip')).hidden, false, 'hash left the section folded');
+      assert.equal((await lineHidden(page, 'The board project')).hidden, true, 'hash unfolded an unrelated section');
+    }],
+    [`${where} window.find opens the section`, async () => {
+      await refold(page);
+      const found = await page.evaluate(() => {
+        const sel = window.getSelection();
+        sel?.removeAllRanges();
+        return window.find('Give the estate organization an owner seat', false, false, true);
+      });
+      assert.equal(found, true, 'window.find did not match the folded heading');
+      await page.waitForFunction(() => {
+        const line = window.__proofLineMarks.lineList().find(l => l.text.includes('estate-owner-seat'));
+        return line && !window.__proofFolding.isHidden(line.index);
+      });
+      assert.equal((await lineHidden(page, 'The board project')).hidden, true, 'find unfolded an unrelated section');
+    }],
+    [`${where} in-app find opens the section`, async () => {
+      await refold(page);
+      if (phone) {
+        await page.locator('#share-banner .share-pill-overflow').click();
+        await page.getByRole('menuitem', { name: /^Find/ }).click();
+      } else {
+        await page.keyboard.press('Alt+e');
+        await page.keyboard.press('f');
+        await page.keyboard.press('Enter');
+      }
+      const find = page.getByPlaceholder('Find in this document');
+      await find.waitFor({ state: 'visible' });
+      await find.fill('Needs your hands');
+      await find.press('Enter');
+      await page.waitForFunction(() => {
+        const line = window.__proofLineMarks.lineList().find(l => l.text.includes('fingertip'));
+        return line && !window.__proofFolding.isHidden(line.index);
+      });
+    }],
+    [`${where} outline opens the section`, async () => {
+      await refold(page);
+      if (phone) {
+        await page.locator('#share-banner .share-pill-overflow').click();
+        await page.getByRole('menuitem', { name: 'Outline', exact: true }).click();
+      } else {
+        await page.keyboard.press('Alt+v');
+        await page.keyboard.press('o');
+        await page.keyboard.press('Enter');
+      }
+      const outlineItem = page.locator('.accord-outline-item', { hasText: 'Needs your hands' });
+      await outlineItem.waitFor({ state: 'visible' });
+      if (phone) await outlineItem.tap();
+      else await outlineItem.press('Enter');
+      await page.waitForFunction(() => {
+        const line = window.__proofLineMarks.lineList().find(l => l.text.includes('fingertip'));
+        return line && !window.__proofFolding.isHidden(line.index);
+      });
+    }],
+    [`${where} J opens the next section`, async () => {
+      await refold(page);
+      await page.evaluate(() => document.activeElement?.blur());
+      for (let i = 0; i < 40; i++) {
+        const at = await page.evaluate(() => window.__proofReadingWalk.focusIndex());
+        if (at === 0) break;
+        await page.keyboard.press('k');
+      }
+      await page.keyboard.press('j');
+      await page.waitForFunction(() => {
+        const line = window.__proofLineMarks.lineList().find(l => l.text.includes('The board project'));
+        return line && !window.__proofFolding.isHidden(line.index);
+      });
+    }],
+  ]);
 }
 
 async function selectText(page, snippet) {
@@ -228,6 +253,7 @@ async function selectText(page, snippet) {
     while ((node = walker.nextNode())) {
       const at = node.textContent.indexOf(snippet);
       if (at < 0) continue;
+      node.parentElement.scrollIntoView({ block: 'center' });
       const range = document.createRange();
       range.setStart(node, at);
       range.setEnd(node, at + snippet.length);
@@ -235,7 +261,6 @@ async function selectText(page, snippet) {
       sel.removeAllRanges();
       sel.addRange(range);
       document.dispatchEvent(new Event('selectionchange'));
-      node.parentElement?.scrollIntoView({ block: 'center' });
       return true;
     }
     return false;
@@ -244,14 +269,29 @@ async function selectText(page, snippet) {
 }
 
 async function runMobileComment(page) {
-  await page.goto(page.url().split('#')[0] + '#needs-your-hands');
+  // The words have to be on screen before the tap. Show the whole Accord, which the
+  // base commit can do; the hash check is what opens one section.
+  await page.evaluate(() => window.__proofFolding?.unfoldAll?.({ record: false }));
   await page.waitForFunction(() => {
     const line = window.__proofLineMarks.lineList().find(l => l.text.includes('Only what needs your fingertip'));
     return line && !window.__proofFolding.isHidden(line.index);
   });
+  await page.waitForTimeout(400);
   await selectText(page, 'Only what needs your fingertip');
   const comment = page.locator('button[aria-label="Add comment on selected text"]');
   await comment.waitFor({ state: 'visible' });
+  // The 28 September screenshots show the Feedback chip covering this button.
+  // Put the chip there so the tap is the one that used to open Feedback.
+  await page.evaluate(() => {
+    const btn = document.querySelector('button[aria-label="Add comment on selected text"]');
+    const chip = document.querySelector('.soma-feedback-root');
+    if (!btn || !chip) return;
+    const r = btn.getBoundingClientRect();
+    chip.style.top = `${r.top}px`;
+    chip.style.left = `${Math.max(0, r.left - 8)}px`;
+    chip.style.bottom = 'auto';
+    chip.style.right = 'auto';
+  });
   const hit = await comment.evaluate(el => {
     const r = el.getBoundingClientRect();
     const x = r.left + r.width / 2;
@@ -288,13 +328,18 @@ async function runMobileComment(page) {
 }
 
 async function runDesktopComment(page) {
-  await page.evaluate(() => document.activeElement?.blur());
-  await page.keyboard.press('j');
+  await page.evaluate(() => window.__proofFolding?.unfoldAll?.({ record: false }));
   await page.waitForFunction(() => {
     const line = window.__proofLineMarks.lineList().find(l => l.text.includes('The board project'));
     return line && !window.__proofFolding.isHidden(line.index);
   });
-  await page.keyboard.press('j');
+  await page.evaluate(() => document.activeElement?.blur());
+  const target = await page.evaluate(() => window.__proofLineMarks.lineList().find(l => l.text.includes('The board project')).index);
+  for (let i = 0; i < 40; i++) {
+    const at = await page.evaluate(() => window.__proofReadingWalk.focusIndex());
+    if (at === target) break;
+    await page.keyboard.press('j');
+  }
   await page.keyboard.press('Shift+End');
   const selected = await page.evaluate(() => {
     const sel = window.__editorView.state.selection;
@@ -325,16 +370,18 @@ let failed = false;
 try {
   const created = await createDoc(server.base);
   const phoneFold = await openPage(browser, server.base, created.slug, 'phone', 'phone-fold-and-comment');
-  try {
-    await check('phone fold navigation', () => runFold(phoneFold.page, true));
-    await check('phone comment by touch', () => runMobileComment(phoneFold.page));
-  } finally { await phoneFold.finish(); }
-
   const desktop = await openPage(browser, server.base, created.slug, 'desktop', 'desktop-keyboard-and-fold');
   try {
+    // Fold checks first, on a document with no comments, so an open item cannot
+    // make a line visible before the navigation that is supposed to open it.
+    await runFold(phoneFold.page, true);
+    await runFold(desktop.page, false);
+    await check('phone comment by touch', () => runMobileComment(phoneFold.page));
     await check('desktop keyboard comment', () => runDesktopComment(desktop.page));
-    await check('desktop fold navigation', () => runFold(desktop.page, false));
-  } finally { await desktop.finish(); }
+  } finally {
+    await phoneFold.finish();
+    await desktop.finish();
+  }
 } catch (error) {
   failed = true;
   if (recordOnly) note('run', false, error?.message?.split('\n')[0] || String(error));

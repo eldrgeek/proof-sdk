@@ -1,0 +1,66 @@
+{
+  "label": "after",
+  "recordOnly": false,
+  "results": [
+    {
+      "name": "phone hash opens the section",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "phone window.find opens the section",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "phone in-app find opens the section",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "phone outline opens the section",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "phone J opens the next section",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop hash opens the section",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop window.find opens the section",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop in-app find opens the section",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop outline opens the section",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop J opens the next section",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "phone comment by touch",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "desktop keyboard comment",
+      "ok": true,
+      "detail": ""
+    }
+  ]
+}
