@@ -164,7 +164,7 @@ async function main() {
       await waitFor(mike.page, () => window.__proofOpenView.debugState().open.count > 0);
       const button = mike.page.locator('[data-accord-review-toggle]');
       await button.waitFor({ state: 'visible' });
-      assert.match(await button.innerText(), /Review.*\d+ need you/s);
+      assert.match(await button.innerText(), /Review.*\d+ open/s);
       assert.equal(await mike.page.locator('.aov-toggle').count(), 0);
       if (await button.getAttribute('aria-expanded') !== 'true') await button.click();
       assert.equal(await button.getAttribute('aria-expanded'), 'true');
@@ -201,7 +201,7 @@ async function main() {
       const rows = (await nav(mike.page)).issues.filter(row => !row.settled).map(row => row.line);
       assert.deepEqual(rows, [...new Set(rows)].sort((a,b) => a-b));
       await mike.page.locator('[data-accord-review-scope="needs-you"]').click();
-      assert.match(await mike.page.locator('.plm-issues-count').innerText(), /^\d+ need you$/);
+      assert.match(await mike.page.locator('.plm-issues-count').innerText(), /^\d+ open$/);
     });
 
     await check('new Review items enter document order without moving the selected row or focus', async () => {
@@ -404,7 +404,7 @@ async function main() {
       assert.equal(s.view, 'open', 'completion switched views');
       assert.equal(s.clean, false, 'completion removed controls');
       assert.equal(await mike.page.locator('[data-accord-review-toggle]').isVisible(), true);
-      assert.equal(await mike.page.locator('.plm-issues-count').innerText(), '0 need you');
+      assert.equal(await mike.page.locator('.plm-issues-count').innerText(), '0 open');
       assert.equal(s.header.settled, true, 'No open issues remain; historical unread lines are not open');
       await mike.page.screenshot({ path: path.join(shots, 'open-zero-for-you-1440.png') });
 

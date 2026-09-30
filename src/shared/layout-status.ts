@@ -171,8 +171,7 @@ export function formatAgo(at: string, now: number): string {
   return new Date(then).toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 
-/** "12 Issues left" / "1 Issue left" / "Nothing needs you". */
+/** Status bar open count. Mike, 2026-09-30: the single word "open" everywhere. */
 export function issuesLeftText(count: number): string {
-  if (count === 0) return 'Nothing needs you';
-  return `${count} ${count === 1 ? 'Issue' : 'Issues'} left`;
+  return `${count} open`;
 }

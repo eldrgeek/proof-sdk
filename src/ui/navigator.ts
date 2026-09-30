@@ -1,6 +1,7 @@
 /** Only open items beside the folded document (Mike, 2026-09-24, yfbqrau4).
  * Mike, 2026-09-23 (usability brief). Existing selectors keep their machine names.
  */
+import { issuesPillTitle } from '../shared/layout-chrome';
 import { NAVIGATOR_POLICY, reviewListKey, reviewItemHint, needsYouLabel, type NavigatorTab } from '../shared/layout-panels';
 import { isWriting, isInputComposing, letterShortcutsEnabled } from '../editor/editing-guard';
 import { REVIEW_LIST_POLICY, reviewCountLabel, reconcileReview, emptyReviewSession,
@@ -230,7 +231,7 @@ export class NavigatorUI {
     const open = views[this.scope];
     const label = reviewCountLabel(this.scope, open.count);
     this.count.textContent = label;
-    this.count.title = `${views['needs-you'].count} need you; ${views['all-open'].count} open for the team.`;
+    this.count.title = issuesPillTitle(views['needs-you'].count, views['all-open'].count);
     this.count.dataset.viewerCount = String(views['needs-you'].count);
     this.count.dataset.teamCount = String(views['all-open'].count);
     this.reviewButton.setAttribute('aria-label', `Review (${label})`);
@@ -245,7 +246,7 @@ export class NavigatorUI {
     }
     this.nextBtn.disabled = open.count === 0 && !this.session.rows.some(row => row.done);
     this.clearSettledBtn.disabled = !this.session.rows.some(row => row.done);
-    this.issuesEmpty.textContent = this.scope === 'needs-you' ? 'Nothing needs you.' : 'Nothing is open.';
+    this.issuesEmpty.textContent = 'Nothing is open.';
     this.issuesEmpty.hidden = this.session.rows.length > 0 || !lm.isLoaded();
     this.renderIssues();
   }

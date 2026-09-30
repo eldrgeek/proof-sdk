@@ -85,9 +85,9 @@ test('formatAgo and issuesLeftText read plainly', () => {
   assert.equal(formatAgo('2026-09-21T09:00:00Z', now), '3 h ago');
   assert.equal(formatAgo('2026-09-20T11:00:00Z', now), 'yesterday');
   assert.equal(formatAgo('not a date', now), '');
-  assert.equal(issuesLeftText(0), 'Nothing needs you');
-  assert.equal(issuesLeftText(1), '1 Issue left');
-  assert.equal(issuesLeftText(12), '12 Issues left');
+  assert.equal(issuesLeftText(0), '0 open');
+  assert.equal(issuesLeftText(1), '1 open');
+  assert.equal(issuesLeftText(12), '12 open');
 });
 
 console.log(`\n${passed} layout-status tests passed`);

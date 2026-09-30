@@ -35,6 +35,7 @@ import {
 // thread on its line (src/shared/threads.ts). Nothing is deleted — the line talk is still here,
 // folded, and still opens its line.
 import { splitRoom } from '../shared/threads';
+import { buildChatNextStep } from '../shared/chat-next-step';
 import type { LineMarksUI } from './line-marks';
 import { ScrollFollower } from './rail-follow';
 import './chat.css';
@@ -65,6 +66,8 @@ export interface ChatHost {
    */
   inMargin?(): boolean;
   closeRail?(): void;
+  /** Name prompt on first post (mark, comment or chat). */
+  beforePost?(): Promise<boolean>;
 }
 
 const PHONE_QUERY = '(max-width: 700px)';
@@ -108,7 +111,9 @@ export class ChatUI {
   private readonly toggle = el('button', 'pch-toggle');
   private readonly countEl = el('span', 'pch-count');
   private readonly list = el('ol', 'pch-list');
-  private readonly empty = el('p', 'pch-empty', 'No messages yet. 📍 points a message at a line.');
+  /** Pinned first: the open-items guide (code, not the model). */
+  private readonly nextStep = el('div', 'pch-next-step');
+  private nextStepSig = '';
   /**
    * Accord stage D: talk about a line belongs to the document, so the Room folds it away behind one
    * row. It is folded, never dropped: the messages keep their place in the conversation and one
@@ -177,7 +182,8 @@ export class ChatUI {
     };
     this.lineTalkBar.append(this.lineTalkToggle);
     this.lineTalkBar.hidden = true;
-    this.root.append(this.head, this.empty, this.lineTalkBar, this.list, this.composer);
+    this.nextStep.setAttribute('aria-live', 'polite');
+    this.root.append(this.head, this.nextStep, this.lineTalkBar, this.list, this.composer);
     // Rail scrolling (2026-09-21): the messages keep the newest in view unless the person scrolled up.
     this.follower = new ScrollFollower({ scroller: this.list, name: 'chat' });
     this.list.after(this.follower.pillElement);
@@ -529,6 +535,40 @@ export class ChatUI {
     return [...out.values()].filter(c => (includeMe || actorKey(c.actor) !== actorKey(me)) && c.names.length > 0);
   }
 
+  private renderNextStep(): void {
+    const lm = this.host.lineMarks();
+    const open = lm.openView();
+    const step = buildChatNextStep({
+      count: open.count,
+      items: open.items,
+      asks: lm.askList(),
+      lineText: index => lm.lineList()[index]?.text ?? '',
+    });
+    const sig = JSON.stringify(step);
+    if (sig === this.nextStepSig) return;
+    this.nextStepSig = sig;
+    this.nextStep.replaceChildren();
+    this.nextStep.hidden = false;
+    if (step.empty) {
+      this.nextStep.append(step.plain ?? 'Nothing is open for you.');
+      return;
+    }
+    const body = el('p', 'pch-next-step-body');
+    body.append(step.lead, ' ');
+    if (step.askTitle) {
+      body.append('Next: ', el('span', 'pch-next-step-ask', step.askTitle.endsWith('?') ? step.askTitle : `${step.askTitle}?`));
+      if (step.recommend) body.append(' Recommend: ', el('span', 'pch-next-step-rec', step.recommend), '.');
+      else body.append('.');
+    } else if (step.plain) {
+      body.textContent = step.plain;
+    }
+    const go = button('Go to it →', 'pch-link pch-next-step-go', () => {
+      if (step.line !== null) this.gotoLine(step.line);
+    });
+    go.setAttribute('aria-label', step.line === null ? 'Go to the next open item' : `Go to line ${step.line + 1}`);
+    this.nextStep.append(body, go);
+  }
+
   private render(): void {
     const lines = this.lines();
     const marks = this.safeMarks();
@@ -541,7 +581,8 @@ export class ChatUI {
     // suggestion is talk about the text: it shows on its line as a thread, and here only under the
     // folded "about the text" row, so nothing anyone ever said becomes unreadable.
     const split = splitRoom(this.messages);
-    this.empty.hidden = this.messages.length > 0;
+    this.root.dataset.compact = String(this.inMargin() && this.messages.length === 0);
+    this.renderNextStep();
     this.composer.hidden = !this.canPost;
     if (sig !== this.listSig) {
       this.listSig = sig;
@@ -926,6 +967,7 @@ export class ChatUI {
   private async submit(): Promise<void> {
     const text = cleanChatText(this.input.value);
     if (!text || this.sending) return;
+    if (this.host.beforePost && !(await this.host.beforePost())) return;
     const slug = this.host.slug();
     if (!slug) return;
     this.sending = true;
@@ -994,6 +1036,7 @@ export class ChatUI {
       lineTalk: splitRoom(this.messages).lineTalk.map(m => m.id),
       lineTalkOpen: this.lineTalkOpen,
       follow: this.follower.debugState(),
+      nextStep: this.nextStepSig,
     };
   }
 }

@@ -149,7 +149,7 @@ async function run(browser, style) {
     // Accord layout stage 3 (decision 6): the chat is the Margin's Room tab (the Line tab is the line's thread).
     await check(`${tag}: the composer is permanent and the empty conversation expands upward`, async () => {
       assert.equal(await mike.locator('.prw-chat-bottom .pch-input').isVisible(), true);
-      assert.match(await mike.locator('.prw-chat-bottom .pch-empty').innerText(), /No messages yet/);
+      assert.match(await mike.locator('.prw-chat-bottom .pch-next-step').innerText(), /decisions wait|Nothing is open/);
       for (const page of [mike, eric]) await page.locator('.prw-chat-bottom .pch-toggle').click();
       assert.equal((await chatState(mike)).visible, true);
       assert.equal(await mike.locator('.amg-tab').count(), 0);

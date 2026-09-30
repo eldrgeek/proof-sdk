@@ -31,6 +31,14 @@ function shouldAutofocusInput(): boolean {
   return window.innerWidth > 900;
 }
 
+export function hasStoredViewerName(): boolean {
+  return Boolean(getViewerName());
+}
+
+export function guestViewerLabel(): string {
+  return 'Guest';
+}
+
 export function getViewerName(): string | null {
   const memberName = typeof window !== 'undefined' ? window.__PROOF_LIBRARY_MEMBER__?.name : undefined;
   if (typeof memberName === 'string' && memberName.trim()) {

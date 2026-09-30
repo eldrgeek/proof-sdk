@@ -38,13 +38,13 @@ test('policy: the pill counts the viewer; Next goes to the viewer first; Share h
   assert.equal(SETTINGS_POLICY.proxyBriefFolds, true);
 });
 
-test('issuesPillText: the viewer count, "Aligned" only when the team has nothing open', () => {
-  assert.equal(issuesPillText(12, 30), '12 Issues');
-  assert.equal(issuesPillText(1, 30), '1 Issue');
-  assert.equal(issuesPillText(0, 30), '0 Issues');
-  assert.equal(issuesPillText(0, 0), '0 Issues');
-  assert.equal(issuesPillTitle(2, 9), '2 lines need you (the amber dots); the team has 9 open Issues.');
-  assert.equal(issuesPillTitle(0, 0), 'Nothing needs you; the team has nothing open.');
+test('issuesPillText: the viewer count uses the word open', () => {
+  assert.equal(issuesPillText(12, 30), '12 open');
+  assert.equal(issuesPillText(1, 30), '1 open');
+  assert.equal(issuesPillText(0, 30), '0 open');
+  assert.equal(issuesPillText(0, 0), '0 open');
+  assert.equal(issuesPillTitle(2, 9), '2 open for you (the amber dots); the team has 9 open.');
+  assert.equal(issuesPillTitle(0, 0), '0 open for you (the amber dots); the team has nothing open.');
 });
 
 test('menuForKey: Alt+letter while reading, Ctrl+Option+letter always, never in a field or with Cmd/Shift', () => {

@@ -184,7 +184,7 @@ async function desktop(browser, base, style) {
     const link = t.page.locator('#share-banner .plm-aligned-at');
     await waitFor(t.page, () => /Aligned as of/.test(document.querySelector('#share-banner .plm-aligned-at')?.textContent ?? ''), null, 15000);
     // The Issues pill said "Aligned". The Review count names the scope. Mike, 2026-09-23 (usability brief).
-    assert.equal(await t.page.locator('#share-banner .plm-issues-count').innerText(), '0 need you');
+    assert.equal(await t.page.locator('#share-banner .plm-issues-count').innerText(), '0 open');
     await t.page.screenshot({ path: path.join(shots, `${tag}-5-aligned.png`), clip: { x: 0, y: 0, width: 1440, height: 160 } });
     const [ledger] = await Promise.all([t.context.waitForEvent('page'), link.click()]);
     await ledger.waitForLoadState();
@@ -205,7 +205,7 @@ async function desktop(browser, base, style) {
       if (/Last aligned/.test(lastAligned)) break;
     }
     assert.match(lastAligned, /Last aligned/);
-    assert.equal(await t.page.locator('#share-banner .plm-issues-count').innerText(), '0 need you');
+    assert.equal(await t.page.locator('#share-banner .plm-issues-count').innerText(), '0 open');
   });
   await t.context.close();
 }

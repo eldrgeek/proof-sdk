@@ -184,7 +184,7 @@ async function run(browser, style) {
       assert.equal(await mike.evaluate(() => window.proof.getMarkdownSnapshot()?.content), mdBefore);
       const s = await mike.evaluate(() => window.__proofLineMarks.debugState());
       assert.equal(s.doIssues, 1);
-      assert.match(await mike.locator('#share-banner .plm-issues-count').getAttribute('title'), /need you/);
+      assert.match(await mike.locator('#share-banner .plm-issues-count').getAttribute('title'), /open/);
     });
 
     await check(`${tag}: Next issue lands on the {do} first (waiting for Mike's approval outranks unseen lines)`, async () => {
