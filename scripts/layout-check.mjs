@@ -306,7 +306,7 @@ async function phone(browser, base, style) {
     assert.ok(Math.abs(strip.y + strip.height - 844) <= 2, `strip bottom ${strip.y + strip.height}`);
     assert.match(await page.locator('.prw-strip-where').innerText(), /^Line 1 of 25$/);
     assert.equal(b.line, 'Line 1 of 25');
-    assert.match(b.issues, /^4open$/);
+    assert.match(b.issues, /^4 open$/);
     const chip = await page.locator('.soma-feedback-root').boundingBox().catch(() => null);
     if (chip) assert.ok(chip.y + chip.height <= strip.y + 1, 'the feedback chip covers the strip');
     await page.screenshot({ path: path.join(shots, `${tag}-statusbar.png`) });
@@ -398,7 +398,7 @@ async function desktop2(browser, base, style) {
     assert.equal(await page.locator('.aov-toggle').count(), 0);
     assert.equal(await page.locator('#share-banner .anv-people').isVisible(), true);
     // S2a's toolbar (title, Review, People, Share) plus S3's one labelled control for direct Editing.
-    for (const label of c.controls) assert.match(label, /^(Review|People|Share|Waiting on Mike|Enter Editing|Leave Editing|Undo|Nothing to undo)/, `unexpected toolbar control: ${label}`);
+    for (const label of c.controls) assert.match(label, /^(Review|People|Share|Ada|Guest · set your name|Waiting on Mike|Enter Editing|Leave Editing|Undo|Nothing to undo)/, `unexpected toolbar control: ${label}`);
     const rails = await page.evaluate(() => ({ left: document.querySelector('.prw-left').getBoundingClientRect().top, right: document.querySelector('.prw-right').getBoundingClientRect().top }));
     assert.ok(rails.left >= c.toolbar.bottom && rails.right >= c.toolbar.bottom, 'a rail sits under the toolbar');
     await page.screenshot({ path: path.join(shots, `${tag}-chrome.png`), clip: { x: 0, y: 0, width: 1440, height: 120 } });
@@ -411,7 +411,8 @@ async function desktop2(browser, base, style) {
     assert.equal(b.count, lines.length);
     const team = await page.evaluate(() => Number(document.querySelector('#share-banner .plm-issues-count').dataset.teamCount));
     assert.ok(team >= lines.length, 'All open must include Needs you');
-    assert.match(await page.locator('#share-banner .plm-issues-count').getAttribute('title'), new RegExp(`^${lines.length} open for you \\(the amber dots\\); the team has ${team} open\\.`));
+    const title = await page.locator('#share-banner .plm-issues-count').getAttribute('title');
+    assert.match(title ?? '', new RegExp(`^${lines.length} open for you \\(the amber dots\\); the team has ${team} open\\.`));
   });
   await check(`${tag}: Next goes to the lines that need you first`, async () => {
     const lines = await amber(page);

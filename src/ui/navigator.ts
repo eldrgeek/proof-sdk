@@ -1,6 +1,7 @@
 /** Review, Outline and Since you beside the full document.
  * Mike, 2026-09-23 (usability brief). Existing selectors keep their machine names.
  */
+import { issuesPillTitle } from '../shared/layout-chrome';
 import { NAVIGATOR_POLICY, needsYouLabel, outlineRows, type NavigatorTab } from '../shared/layout-panels';
 import { REVIEW_LIST_POLICY, reviewCountLabel, reconcileReview, emptyReviewSession,
   clearCompleted, nextReviewRow, anchoredReviewScroll, type ReviewScope } from '../shared/review-list';
@@ -171,7 +172,7 @@ export class NavigatorUI {
     const open = views[this.scope];
     const label = reviewCountLabel(this.scope, open.count);
     this.count.textContent = label;
-    this.count.title = `${views['needs-you'].count} need you; ${views['all-open'].count} open for the team.`;
+    this.count.title = issuesPillTitle(views['needs-you'].count, views['all-open'].count);
     this.count.dataset.viewerCount = String(views['needs-you'].count);
     this.count.dataset.teamCount = String(views['all-open'].count);
     this.reviewButton.setAttribute('aria-label', `Review (${label})`);
