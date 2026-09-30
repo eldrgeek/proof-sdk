@@ -160,6 +160,18 @@ export const LINE_MARK_POLICY = {
    * behaviour. 0.5 keeps "ship on Monday" -> "ship on Friday" and refuses an unrelated sentence.
    */
   lapseSimilarity: 0.5,
+  /**
+   * Brief 1 truthful count (ac-fbw, 2026-09-27): a skim never counted as Seen, so a stale skim is not
+   * "changed since you read it" (docs/accord/rulings.md 2026-09-23: scrolling records Seen only).
+   */
+  staleSkimIsNotAChange: true,
+  /**
+   * Brief 1 truthful count (ac-fbw, 2026-09-27): when marked text is gone and neither carry nor lapse
+   * applies, only an explicit decision mark keeps the ordinal fallback. A passive Seen mark is dropped
+   * (Agreement lapses on a substantive edit, rulings.md 2026-09-22; open issues are unaccepted changes,
+   * rulings.md 2026-09-24).
+   */
+  ordinalFallbackStatuses: ['agreed', 'approved', 'rejected'] as const satisfies readonly LineMarkStatus[],
 } as const;
 
 /**
@@ -561,15 +573,22 @@ export function buildLineStates(lines: DocLine[], lineMarks: LineMark[]): LineSt
       // Step B3b: a cosmetic edit carries the mark to the new text.
       const target = findCarryTarget(lines, mark.anchor, cache);
       if (target) resolved = { lineIndex: target.index, current: true, carried: true };
-      else {
+      else if (mark.status !== 'skimmed') {
         // Accord round 2 stage C: a substantive edit does NOT carry, but the mark must still land
         // on the line the text became, so the lapse is reported on the right line (and reported at
         // all when the line's kind changed too). This beats resolveLineAnchor's ordinal guess.
+        // Stale skims are dropped below (staleSkimIsNotAChange), so skip the expensive lapse search.
         const lapse = findLapseTarget(lines, mark.anchor);
         if (lapse) resolved = { lineIndex: lapse.index, current: false, lapsed: true };
       }
     }
     if (!resolved) continue;
+    if (LINE_MARK_POLICY.staleSkimIsNotAChange && !resolved.current && mark.status === 'skimmed') continue;
+    if (
+      !resolved.current
+      && !resolved.lapsed
+      && !(LINE_MARK_POLICY.ordinalFallbackStatuses as readonly LineMarkStatus[]).includes(mark.status)
+    ) continue;
     const state = states[resolved.lineIndex];
     const key = actorKey(mark.by);
     const existing = state.marks.get(key);
@@ -895,8 +914,10 @@ export function computeIssues(input: {
   disagreementAlternatives?: boolean;
   /** Line tiers (src/shared/line-tiers.ts tierIssueInput). Absent: every line is a decision line. */
   tiers?: TierIssueInput;
+  /** When the caller already built line states (e.g. the editor after decay), pass them to avoid rebuilding. */
+  states?: LineState[];
 }): IssueSummary {
-  const states = buildLineStates(input.lines, input.lineMarks);
+  const states = input.states ?? buildLineStates(input.lines, input.lineMarks);
   const issues: ProofIssue[] = [];
   const tierView = new Map<number, TierIssueView>();
   for (const view of input.tiers?.views ?? []) tierView.set(view.lineIndex, view);

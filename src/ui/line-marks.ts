@@ -387,6 +387,8 @@ export class LineMarksUI {
   private restampTimer: ReturnType<typeof setTimeout> | null = null;
   private fetchSeq = 0;
   private writesInFlight = 0;
+  /** Last line-marks poll payload (serverNow omitted): unchanged polls skip recompute. */
+  private lastPollFingerprint: string | null = null;
   private menu: HTMLElement | null = null;
   private menuCleanup: (() => void) | null = null;
   private started = false;
@@ -488,6 +490,10 @@ export class LineMarksUI {
       };
       // A newer fetch or a local write superseded this answer.
       if (seq !== this.fetchSeq || this.writesInFlight > 0) return;
+      const { serverNow, ...pollBody } = body;
+      const fingerprint = JSON.stringify(pollBody);
+      if (fingerprint === this.lastPollFingerprint) return;
+      this.lastPollFingerprint = fingerprint;
       this.serverMarks = Array.isArray(body.lineMarks) ? body.lineMarks : [];
       this.serverAsks = Array.isArray(body.asks) ? body.asks : [];
       this.serverFlags = Array.isArray(body.flags) ? body.flags : [];
@@ -503,8 +509,8 @@ export class LineMarksUI {
       this.serverDos = Array.isArray(body.dos) ? body.dos : [];
       this.blind = body.settings?.blind === true;
       this.blindInfo = body.blind ?? null;
-      const serverNow = body.serverNow ? Date.parse(body.serverNow) : NaN;
-      if (Number.isFinite(serverNow)) this.clockSkewMs = serverNow - Date.now();
+      const parsedServerNow = serverNow ? Date.parse(serverNow) : NaN;
+      if (Number.isFinite(parsedServerNow)) this.clockSkewMs = parsedServerNow - Date.now();
       this.owners = Array.isArray(body.owners) ? body.owners : [];
       this.agentKeyActors = Array.isArray(body.agentKeyActors) ? body.agentKeyActors : [];
       this.canApprove = body.viewer?.canApprove === true;
@@ -717,6 +723,7 @@ export class LineMarksUI {
         disagreementLines: this.disagreement,
         disagreementAlternatives: disagreementCounts(this.blind),
         tiers: tierIssueInput(this.tierEval),
+        states: this.states,
       });
       this.computeTierFold();
       // Accord round 2 stage C: ONE call, three surfaces. The amber dots, the Issues pill and the

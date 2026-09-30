@@ -304,6 +304,7 @@ export async function buildIssueReport(slug: string, markdown: string, rawMarks:
     alternatives: alternativeInputs(extras, team), ttl: ttlInputs(extras), dos: doReport.issueInputs, nominations,
     disagreementLines: extras.disagreement, disagreementAlternatives: extras.countsDisagreement,
     tiers: tierIssueInput(tierEvaluation),
+    states,
   });
   // Step B4c: each Issue carries its team-neutral priority (rules + explicit AI priorities).
   const summary = { ...computed, issues: annotateIssues(computed.issues, aids.notes, lines) as typeof computed.issues };

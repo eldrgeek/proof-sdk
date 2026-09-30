@@ -23,6 +23,7 @@ import { needsYouItems } from '../shared/layout-panels';
 import { participantStatus, personalCompletionText } from '../shared/participant-status';
 import {
   LINE_MARK_POLICY,
+  actorKey,
   anchorForLine,
   buildLineStates,
   computeIssues,
@@ -32,6 +33,7 @@ import {
   type DocLine,
   type LineMark,
   type LineMarkStatus,
+  type MarkVia,
   type ProofIssue,
 } from '../shared/line-marks';
 import { evaluateThreads, startThread, type Thread, type ThreadMeta, type ThreadView } from '../shared/threads';
@@ -60,8 +62,8 @@ function makeLines(texts: string[], kinds: string[] = []): DocLine[] {
   });
 }
 
-function mark(line: DocLine, by: string, status: LineMarkStatus, at = '2026-09-22T10:00:00.000Z'): LineMark {
-  return { id: `m-${by}-${line.index}-${at}`, by, status, at, anchor: { ...anchorForLine(line), text: line.text }, via: 'click' };
+function mark(line: DocLine, by: string, status: LineMarkStatus, at = '2026-09-22T10:00:00.000Z', via: MarkVia = 'click'): LineMark {
+  return { id: `m-${by}-${line.index}-${at}`, by, status, at, anchor: { ...anchorForLine(line), text: line.text }, via };
 }
 
 const ME = 'human:mike@x.com';
@@ -376,6 +378,70 @@ test('lapse: only an Agreed or Approved mark lapses; a Seen one is merely out of
   const issue = seen.issues.find(i => i.type === 'line' && i.lineIndex === 1) as Extract<ProofIssue, { type: 'line' }>;
   assert.deepEqual(issue.changedFor, [ME]);
   assert.equal(issue.lapsedFor, undefined);
+});
+
+// ============================================================================
+// 4. Truthful count (brief 1, ac-fbw)
+// ============================================================================
+
+test('truthful: a stale skim on a deleted line does not put the reader in changedFor', () => {
+  const before = makeLines(['Lead line one.', 'Skimmed then deleted entirely.', 'Tail line three.']);
+  const after = makeLines(['Lead line one.', 'Tail line three.']);
+  const summary = computeIssues({ lines: after, lineMarks: [mark(before[1], ME, 'skimmed', '2026-09-22T10:00:00.000Z', 'dwell')], team: [ME] });
+  assert.equal(summary.issues.filter(i => i.type === 'line' && i.changedFor.includes(ME)).length, 0);
+});
+
+test('truthful: a stale skim after a substantive edit does not open the line', () => {
+  const before = makeLines([A, BEFORE, C]);
+  const after = makeLines([A, SUBSTANTIVE, C]);
+  const open = openView({
+    issues: computeIssues({ lines: after, lineMarks: [mark(before[1], ME, 'skimmed', '2026-09-22T10:00:00.000Z', 'dwell')], team: [ME] }).issues,
+    viewer: ME,
+    lineAtPos: () => -1,
+    lineCount: after.length,
+  });
+  assert.deepEqual(open.lines, []);
+});
+
+test('truthful: a stale Seen mark on a deleted line does not reopen an unrelated line at the ordinal', () => {
+  const before = makeLines(['Alpha opener.', 'Seen then deleted line text.', 'Gamma closer.']);
+  const after = makeLines(['Alpha opener.', 'A wholly unrelated sentence now sits here instead.', 'Gamma closer.']);
+  const open = openView({
+    issues: computeIssues({ lines: after, lineMarks: [mark(before[1], ME, 'seen')], team: [ME] }).issues,
+    viewer: ME,
+    lineAtPos: () => -1,
+    lineCount: after.length,
+  });
+  assert.deepEqual(open.lines, []);
+});
+
+test('truthful: an Agreed mark on a replaced line at the same ordinal still opens for the reader', () => {
+  const before = makeLines(['Alpha opener.', 'Agreed budget line for the quarter.', 'Gamma closer.']);
+  const after = makeLines(['Alpha opener.', 'Unrelated replacement sentence at this position.', 'Gamma closer.']);
+  const summary = computeIssues({ lines: after, lineMarks: [mark(before[1], ME, 'agreed')], team: [ME] });
+  const issue = summary.issues.find(i => i.type === 'line' && i.lineIndex === 1) as Extract<ProofIssue, { type: 'line' }>;
+  assert.deepEqual(issue?.changedFor, [ME]);
+});
+
+test('truthful: a substantive edit still opens a Seen mark with reason changed', () => {
+  const before = makeLines([A, BEFORE, C]);
+  const after = makeLines([A, SUBSTANTIVE, C]);
+  const summary = computeIssues({ lines: after, lineMarks: [mark(before[1], ME, 'seen')], team: [ME] });
+  const issue = summary.issues.find(i => i.type === 'line' && i.lineIndex === 1) as Extract<ProofIssue, { type: 'line' }>;
+  assert.deepEqual(issue?.changedFor, [ME]);
+  assert.ok(issue?.reasons.includes('changed'));
+});
+
+test('truthful: when Seen and skimmed marks both land stale on one line, Seen wins over a newer skim', () => {
+  const before = makeLines([A, BEFORE, C]);
+  const after = makeLines([A, SUBSTANTIVE, C]);
+  const marks = [
+    mark(before[1], ME, 'seen', '2026-09-20T10:00:00.000Z'),
+    mark(before[1], ME, 'skimmed', '2026-09-22T10:00:00.000Z', 'dwell'),
+  ];
+  const entry = buildLineStates(after, marks)[1].marks.get(actorKey(ME));
+  assert.equal(entry?.mark.status, 'seen');
+  assert.equal(entry?.lapsed, true);
 });
 
 // ============================================================================

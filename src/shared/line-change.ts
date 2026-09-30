@@ -95,16 +95,36 @@ function words(text: string): Token[] {
   return tokens;
 }
 
+const editDistanceRows = { cols: 0, prev2: null as Int32Array | null, prev: null as Int32Array | null, cur: null as Int32Array | null };
+
+function editDistanceRow(cols: number, which: 'prev2' | 'prev' | 'cur'): Int32Array {
+  if (cols > editDistanceRows.cols) {
+    editDistanceRows.cols = cols;
+    editDistanceRows.prev2 = new Int32Array(cols);
+    editDistanceRows.prev = new Int32Array(cols);
+    editDistanceRows.cur = new Int32Array(cols);
+  }
+  const row = editDistanceRows[which]!;
+  if (row.length < cols) {
+    const grown = new Int32Array(cols);
+    grown.set(row);
+    editDistanceRows[which] = grown;
+    return grown;
+  }
+  return row;
+}
+
 /** Optimal string alignment distance (Damerau-Levenshtein without repeated edits of a substring). */
 export function editDistance(a: string, b: string, cap = Number.POSITIVE_INFINITY): number {
   if (a === b) return 0;
   if (Math.abs(a.length - b.length) > cap) return cap + 1;
   const rows = a.length + 1;
   const cols = b.length + 1;
-  let prev2 = new Array<number>(cols).fill(0);
-  let prev = Array.from({ length: cols }, (_, j) => j);
+  const prev2 = editDistanceRow(cols, 'prev2');
+  const prev = editDistanceRow(cols, 'prev');
+  const cur = editDistanceRow(cols, 'cur');
+  for (let j = 0; j < cols; j += 1) prev[j] = j;
   for (let i = 1; i < rows; i += 1) {
-    const cur = new Array<number>(cols).fill(0);
     cur[0] = i;
     let rowMin = cur[0];
     for (let j = 1; j < cols; j += 1) {
@@ -115,8 +135,8 @@ export function editDistance(a: string, b: string, cap = Number.POSITIVE_INFINIT
       if (value < rowMin) rowMin = value;
     }
     if (rowMin > cap) return cap + 1;
-    prev2 = prev;
-    prev = cur;
+    for (let j = 0; j < cols; j += 1) prev2[j] = prev[j];
+    for (let j = 0; j < cols; j += 1) prev[j] = cur[j];
   }
   return prev[cols - 1];
 }
