@@ -16,8 +16,8 @@ export const REVIEW_LIST_POLICY = {
   clearCompletedOn: ['next', 'clear', 'close'],
   includeUnassignedOpenItems: true,
 } as const;
-export function reviewCountLabel(scope: ReviewScope, count: number): string {
-  return scope === 'needs-you' ? `${count} need you` : `${count} open`;
+export function reviewCountLabel(_scope: ReviewScope, count: number): string {
+  return `${count} open`;
 }
 
 /** All open is the union of the team's Open sets, never the broader raw Issue count. */

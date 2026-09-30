@@ -168,7 +168,7 @@ async function desktop(browser, base, style, width) {
     const s = await lm(page);
     assert.equal(s.askIssues, 2);
     const title = await page.locator('#share-banner .plm-issues-count').getAttribute('title');
-    assert.match(title, /need you/);
+    assert.match(title, /open/);
   });
 
   await check(`${tag}: Next issue lands on the ask line first`, async () => {

@@ -179,7 +179,7 @@ async function phone(browser, base, name, viewport) {
     await review.tap();
     await page.locator('.prw-right.prw-sheet-open').waitFor({ state: 'visible' });
     assert.equal(await review.getAttribute('aria-expanded'), 'true');
-    assert.match(await page.locator('.plm-issues-count').innerText(), /^\d+ need you$/);
+    assert.match(await page.locator('.plm-issues-count').innerText(), /^\d+ open$/);
     await page.locator('[data-accord-review-scope="all-open"]').tap();
     assert.match(await page.locator('.plm-issues-count').innerText(), /^\d+ open$/);
     await review.tap();

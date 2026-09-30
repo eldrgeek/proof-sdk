@@ -148,7 +148,7 @@ async function desktop(browser, base) {
   await check(`${tag}: Review names its scope and excludes unread lines`, async () => {
     // Step 3 round 2 retired Seen by dwell (REVIEW_SURFACE_POLICY.seenByDwell): wait for the load, not a read mark.
     await waitFor(page, () => window.__proofLineMarks.debugState().loaded === true);
-    assert.equal(await page.locator('#share-banner .plm-issues-count').textContent(), '0 need you');
+    assert.equal(await page.locator('#share-banner .plm-issues-count').textContent(), '0 open');
     assert.ok(await page.locator('[data-accord-review-toggle]').isVisible());
   });
   await check(`${tag}: Seen on line 1 lowers the count`, async () => {
@@ -260,7 +260,7 @@ async function phone(browser, base) {
     assert.ok(h <= 60, `bar height ${h}`);
     const btn = page.locator('[data-accord-review-toggle]');
     assert.ok(await btn.isVisible(), 'issue button hidden');
-    assert.equal(await page.locator('#share-banner .plm-issues-count').innerText(), '0 need you');
+    assert.equal(await page.locator('#share-banner .plm-issues-count').innerText(), '0 open');
     const r = await btn.boundingBox();
     assert.ok(r.height >= 44 && r.width >= 44, `issue button ${r.width}x${r.height}`);
   });

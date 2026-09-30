@@ -40,7 +40,7 @@
     "test:orphans": "tsx src/tests/orphaned-suggestion-marks.test.ts",
     "test:remap": "tsx src/tests/mark-position-remap.test.ts",
     "test:agent-key-dialog": "tsx src/tests/agent-key-dialog.browser.test.ts",
-    "test:chat": "tsx src/tests/chat.test.ts",
+    "test:chat": "tsx src/tests/chat.test.ts && tsx src/tests/chat-next-step.test.ts",
     "test:proxy": "tsx src/tests/proxy-marks.test.ts",
     "test:tiers": "tsx src/tests/line-tiers.test.ts",
     "test:dialect": "tsx src/tests/proof-dialect.test.ts && tsx src/tests/proof-dialect-server.test.ts",

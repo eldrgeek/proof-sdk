@@ -9,10 +9,13 @@
 .pch-count:empty { display: none; }
 .pch-count[data-unread="true"] { background: #dc2626; color: #fff; }
 .pch[data-collapsed="true"] > :not(.pch-head) { display: none !important; }
-.pch-empty { margin: 0; color: #646b73; font-size: 12px; }
-/* In the rail the placeholder says it; the empty note shows only in the phone sheet. */
-.prw-chat .pch-empty { display: none; }
-.pch-empty[hidden] { display: none; }
+.pch-next-step { margin: 0; padding: 8px 10px; border: 1px solid #e7e5df; border-radius: 10px; background: #f8faff; font-size: 12.5px; line-height: 1.45; color: #374151; }
+.pch-next-step-body { margin: 0 0 6px; }
+.pch-next-step-ask { font-weight: 600; color: #1f2937; }
+.pch-next-step-rec { font-weight: 600; }
+.pch-next-step-go { font-size: 12.5px; font-weight: 600; }
+.pch[data-compact="true"] .pch-list { max-height: 0; overflow: hidden; margin: 0; padding: 0; }
+.pch[data-compact="true"] .pch-line-talk { display: none !important; }
 .pch-list { list-style: none; margin: 0; padding: 0 2px 0 0; display: flex; flex-direction: column; gap: 8px; max-height: min(46vh, 520px); overflow-y: auto; overscroll-behavior: contain; }
 .pch-list:empty { display: none; }
 .pch-msg { padding: 7px 9px; border: 1px solid #e7e5df; border-radius: 10px; background: #fff; overflow-wrap: anywhere; }

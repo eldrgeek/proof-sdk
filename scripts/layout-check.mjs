@@ -220,7 +220,7 @@ async function desktop2(browser, base, style) {
     assert.equal(await page.locator('.aov-toggle').count(), 0);
     assert.equal(await page.locator('#share-banner .anv-people').isVisible(), true);
     // S2a's toolbar (title, Review, People, Share) plus S3's one labelled control for direct Editing.
-    for (const label of c.controls) assert.match(label, /^(Review|People|Share|Waiting on Mike|Edit text|Leave text|Enter Editing|Leave Editing|Undo|Nothing to undo)/, `unexpected toolbar control: ${label}`);
+    for (const label of c.controls) assert.match(label, /^(Review|People|Share|Ada|Guest · set your name|Waiting on Mike|Edit text|Leave text|Enter Editing|Leave Editing|Undo|Nothing to undo)/, `unexpected toolbar control: ${label}`);
     const rails = await page.evaluate(() => ({ left: document.querySelector('.prw-left').getBoundingClientRect().top, right: document.querySelector('.prw-right').getBoundingClientRect().top }));
     assert.ok(rails.left >= c.toolbar.bottom && rails.right >= c.toolbar.bottom, 'a rail sits under the toolbar');
     await page.screenshot({ path: path.join(shots, `${tag}-chrome.png`), clip: { x: 0, y: 0, width: 1440, height: 120 } });
@@ -229,11 +229,12 @@ async function desktop2(browser, base, style) {
     const lines = await amber(page);
     const c = await chrome(page);
     const b = await bar(page);
-    assert.equal(c.pillText, `${lines.length} need you`);
+    assert.equal(c.pillText, `${lines.length} open`);
     assert.equal(b.count, lines.length);
     const team = await page.evaluate(() => Number(document.querySelector('#share-banner .plm-issues-count').dataset.teamCount));
     assert.ok(team >= lines.length, 'All open must include Needs you');
-    assert.match(await page.locator('#share-banner .plm-issues-count').getAttribute('title'), new RegExp(`^${lines.length} need you; ${team} open for the team`));
+    const title = await page.locator('#share-banner .plm-issues-count').getAttribute('title');
+    assert.match(title ?? '', new RegExp(`^${lines.length} open for you \\(the amber dots\\); the team has ${team} open\\.`));
   });
   await check(`${tag}: Next goes to the lines that need you first`, async () => {
     const lines = await amber(page);
@@ -398,7 +399,7 @@ async function phone2(browser, base, style) {
     assert.equal(c.toolbar.top, 0);
     assert.equal(c.undo, null);
     assert.ok(!c.seg || c.seg.width === 0);
-    assert.equal(c.pillText, `${(await amber(page)).length} need you`);
+    assert.equal(c.pillText, `${(await amber(page)).length} open`);
     for (const selector of ['[data-accord-review-toggle]', '.anv-people', '.share-pill-share-btn > button']) {
       const box = await page.locator(`#share-banner ${selector}`).boundingBox();
       assert.ok(box && box.height >= 44 && box.x >= 0 && box.x + box.width <= 391, selector);

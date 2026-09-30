@@ -223,7 +223,7 @@ import {
   getAgentFacePalette,
   type AgentFamily,
 } from '../ui/agent-identity-icon';
-import { getViewerName, promptForName } from '../ui/name-prompt';
+import { getViewerName, guestViewerLabel, hasStoredViewerName, promptForName } from '../ui/name-prompt';
 import {
   initAgentIntegration,
   handleMarksChange as agentHandleMarksChange,
@@ -1120,6 +1120,7 @@ class ProofEditorImpl implements ProofEditor {
   private pendingShareSuggestionReviewView: EditorView | null = null;
   private suggestDefaultApplied = false;
   private shareViewerName: string | null = null;
+  private shareViewerChip: HTMLButtonElement | null = null;
   private isReadOnly: boolean = false;
   private shareAllowLocalEdits: boolean = true;
   private shareContentFilterEnabled: boolean = false;
@@ -1536,34 +1537,24 @@ class ProofEditorImpl implements ProofEditor {
       const context = contextResponse && 'doc' in contextResponse
         ? contextResponse
         : null;
-      const wantsNamePrompt = options?.promptForName ?? true;
-      const canActInDocument = Boolean(context?.capabilities?.canComment || context?.capabilities?.canEdit);
       const existingViewerName = getViewerName();
-      this.shareViewerName = existingViewerName ?? this.shareViewerName ?? this.deriveDefaultShareViewerName();
-      setCurrentActorValue(`human:${this.shareViewerName || 'Anonymous'}`);
-      shareClient.setViewerName(this.shareViewerName || 'Anonymous');
-      collabClient.setLocalUser(
-        { name: this.shareViewerName || 'Anonymous' },
-        shareClient.getSlug() ?? undefined
-      );
-      if (wantsNamePrompt && canActInDocument && !existingViewerName) {
-        void promptForName()
-          .then((name) => {
-            const resolvedName = typeof name === 'string' && name.trim().length > 0
-              ? name.trim()
-              : this.deriveDefaultShareViewerName();
-            this.shareViewerName = resolvedName;
-            setCurrentActorValue(`human:${resolvedName}`);
-            shareClient.setViewerName(resolvedName);
-            collabClient.setLocalUser(
-              { name: resolvedName },
-              shareClient.getSlug() ?? undefined
-            );
-          })
-          .catch((error) => {
-            console.warn('[share] name prompt failed', error);
-          });
+      this.shareViewerName = existingViewerName ?? this.shareViewerName ?? guestViewerLabel();
+      if (existingViewerName) {
+        setCurrentActorValue(`human:${existingViewerName}`);
+        shareClient.setViewerName(existingViewerName);
+        collabClient.setLocalUser(
+          { name: existingViewerName },
+          shareClient.getSlug() ?? undefined
+        );
+      } else {
+        setCurrentActorValue('guest:Guest');
+        shareClient.setViewerName(guestViewerLabel());
+        collabClient.setLocalUser(
+          { name: guestViewerLabel() },
+          shareClient.getSlug() ?? undefined
+        );
       }
+      this.updateShareViewerChip();
 
       const doc = context?.doc ?? await shareClient.fetchDocument();
       if (!doc) {
@@ -1808,6 +1799,42 @@ class ProofEditorImpl implements ProofEditor {
         if (attemptSeq !== this.shareInitAttemptSeq) return;
         void this.initFromShare(options);
       }, delayMs);
+    }
+  }
+
+  private updateShareViewerChip(): void {
+    if (!this.shareViewerChip) return;
+    const stored = getViewerName();
+    if (stored) {
+      this.shareViewerChip.textContent = stored;
+      this.shareViewerChip.title = 'Your display name on marks and chat';
+    } else {
+      this.shareViewerChip.textContent = 'Guest · set your name';
+      this.shareViewerChip.title = 'Choose how your name appears';
+    }
+  }
+
+  private applyResolvedViewerName(name: string): void {
+    const resolvedName = name.trim().length > 0 ? name.trim() : 'Anonymous';
+    this.shareViewerName = resolvedName;
+    setCurrentActorValue(`human:${resolvedName}`);
+    shareClient.setViewerName(resolvedName);
+    collabClient.setLocalUser(
+      { name: resolvedName },
+      shareClient.getSlug() ?? undefined
+    );
+    this.updateShareViewerChip();
+  }
+
+  private async ensureViewerNameForWrite(): Promise<boolean> {
+    if (hasStoredViewerName()) return true;
+    try {
+      const name = await promptForName();
+      this.applyResolvedViewerName(typeof name === 'string' ? name : 'Anonymous');
+      return true;
+    } catch (error) {
+      console.warn('[share] name prompt failed', error);
+      return false;
     }
   }
 
@@ -3846,6 +3873,17 @@ class ProofEditorImpl implements ProofEditor {
     syncStatusInline.append(syncDot, syncLabel);
     this.updateShareBannerSyncDisplay();
 
+    const viewerChip = document.createElement('button');
+    viewerChip.type = 'button';
+    viewerChip.className = 'share-pill-viewer';
+    viewerChip.onclick = () => {
+      void promptForName()
+        .then((name) => { this.applyResolvedViewerName(typeof name === 'string' ? name : 'Anonymous'); })
+        .catch((error) => { console.warn('[share] name prompt failed', error); });
+    };
+    this.shareViewerChip = viewerChip;
+    this.updateShareViewerChip();
+
     const shareBtn = this.createShareMenuButton();
     const peopleBtn = document.createElement('button');
     peopleBtn.type = 'button';
@@ -3872,7 +3910,7 @@ class ProofEditorImpl implements ProofEditor {
     hidden.setAttribute('aria-hidden', 'true');
     banner.replaceChildren(
       ...(this.readingWalk ? [this.readingWalk.documentsToggle] : []),
-      group('center', title, syncStatusInline),
+      group('center', title, viewerChip, syncStatusInline),
       group('right', reviewControl, suggestToggle, lineMarksUi.alignedEl, peopleBtn, shareBtn),
       hidden,
       this.createShareOverflowButton(),
@@ -4169,6 +4207,7 @@ class ProofEditorImpl implements ProofEditor {
         apiBase: () => shareClient.getApiBaseUrl(),
         authHeaders: () => shareClient.getShareAuthHeaders(),
         actor: () => getCurrentActor(),
+        beforeAct: () => this.ensureViewerNameForWrite(),
         canComment: () => this.collabCanComment,
         reviewTeamActors: view => Object.values(getMarkMetadataWithQuotes(view.state))
           .filter(mark => ['insert', 'delete', 'replace', 'comment'].includes(mark.kind ?? ''))
@@ -4382,6 +4421,7 @@ class ProofEditorImpl implements ProofEditor {
           this.updateShareOverflowBadge();
         },
         closeOtherSheets: () => { walkUi.closeSheets(); this.playmakerReview?.closePanel(); },
+        beforePost: () => this.ensureViewerNameForWrite(),
       });
       this.chat.mountIn(walkUi.chatSlot);
       const chatUi = this.chat;

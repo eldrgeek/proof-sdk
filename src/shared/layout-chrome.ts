@@ -105,14 +105,13 @@ export const SETTINGS_POLICY = {
 
 /** Issue counts never claim alignment. Mike, 2026-09-23 (usability brief). */
 export function issuesPillText(viewerCount: number, _teamCount: number): string {
-  if (viewerCount > 0) return `${viewerCount} ${viewerCount === 1 ? 'Issue' : 'Issues'}`;
-  return '0 Issues';
+  return `${viewerCount} open`;
 }
 
 /** The pill's tooltip lead: the viewer's count, then the team's. */
 export function issuesPillTitle(viewerCount: number, teamCount: number): string {
-  const mine = viewerCount === 0 ? 'Nothing needs you' : `${viewerCount} ${viewerCount === 1 ? 'line needs' : 'lines need'} you (the amber dots)`;
-  const team = teamCount === 0 ? 'the team has nothing open' : `the team has ${teamCount} open ${teamCount === 1 ? 'Issue' : 'Issues'}`;
+  const mine = `${viewerCount} open for you (the amber dots)`;
+  const team = teamCount === 0 ? 'the team has nothing open' : `the team has ${teamCount} open`;
   return `${mine}; ${team}.`;
 }
 

@@ -597,8 +597,8 @@ async function runViewportCases(browser, base, created, label, viewport) {
         if (!ask) throw new Error('final ask missing');
         await lm.answerAsk(ask.id, 'yes', 'Confirmed.');
       });
-      await waitFor(p, () => document.querySelector('.plm-issues-count')?.textContent === '0 need you' && Boolean(document.querySelector('.anv-issue[data-settled="true"]')));
-      assert.equal(await p.locator(SEL.issuesCount).innerText(), '0 need you', 'status did not update');
+      await waitFor(p, () => document.querySelector('.plm-issues-count')?.textContent === '0 open' && Boolean(document.querySelector('.anv-issue[data-settled="true"]')));
+      assert.equal(await p.locator(SEL.issuesCount).innerText(), '0 open', 'status did not update');
       assert.equal(await toggle.isVisible(), true, 'Review control disappeared');
       assert.equal(await toggle.getAttribute('aria-expanded'), 'true', 'panel closed');
       assert.equal(await p.locator(SEL.reviewScopeNeedsYou).isVisible(), true, 'scope controls disappeared');

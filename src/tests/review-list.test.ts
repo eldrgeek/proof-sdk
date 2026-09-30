@@ -26,7 +26,7 @@ test('scopes count passages once even when multiple participants need the same p
 });
 test('scope labels always name their scope, including zero and one', () => {
   for (const count of [0, 1, 12]) {
-    assert.equal(reviewCountLabel('needs-you', count), `${count} need you`);
+    assert.equal(reviewCountLabel('needs-you', count), `${count} open`);
     assert.equal(reviewCountLabel('all-open', count), `${count} open`);
   }
 });
