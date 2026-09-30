@@ -171,7 +171,7 @@ async function run(browser, style) {
       const s = await lm(mike);
       assert.equal(s.aids.uncertainIssues, 1);
       // The Issues pill title listed kinds. The Review count names its scope. Mike, 2026-09-23 (usability brief).
-      assert.match(await mike.locator('#share-banner .plm-issues-count').getAttribute('title'), /^\d+ need you; \d+ open for the team/);
+      assert.match(await mike.locator('#share-banner .plm-issues-count').getAttribute('title'), /^\d+ open for you \(the amber dots\); the team has \d+ open\./);
       await mike.waitForTimeout(250);
       await mike.screenshot({ path: path.join(shots, `${tag}-1-uncertain.png`) });
     });

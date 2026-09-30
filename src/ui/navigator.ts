@@ -187,7 +187,7 @@ export class NavigatorUI {
     }
     this.nextBtn.disabled = open.count === 0 && !this.session.rows.some(row => row.done);
     this.clearSettledBtn.disabled = !this.session.rows.some(row => row.done);
-    this.issuesEmpty.textContent = this.scope === 'needs-you' ? 'Nothing needs you.' : 'Nothing is open.';
+    this.issuesEmpty.textContent = 'Nothing is open.';
     this.issuesEmpty.hidden = this.session.rows.length > 0 || !lm.isLoaded();
     this.renderIssues();
     if (this.tab === 'outline') this.renderOutline(force);

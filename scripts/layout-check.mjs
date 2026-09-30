@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Browser check for the Accord layout redesign (Ren's proposal, Mike ruled 2026-09-21: "build the
 // layout that you proposed"). It grows one stage at a time; each stage's checks stay.
-//   Stage 1: the status bar under the page (Line N of M, "You marked up to line K", Issues left,
+//   Stage 1: the status bar under the page (Line N of M, "You marked up to line K",open,
 //            Reading / Writing), the "You marked up to here" rule in the page, and two highlight
 //            states only (blue bar = you are here, amber margin dot = needs you).
 //   Stage 2: the menu bar, the one toolbar row, the Share dialog, the settings in View.
@@ -187,11 +187,11 @@ async function desktop(browser, base, style) {
     assert.ok(b.modeRight !== null && b.right - b.modeRight <= 24, 'the state word is not at the right end of the bar');
     await page.screenshot({ path: path.join(shots, `${tag}-statusbar.png`), clip: { x: 0, y: 840, width: 1440, height: 60 } });
   });
-  await check(`${tag}: it says "Line N of M", "Issues left" and "Reading"; the rail head no longer holds the line or the mode chip`, async () => {
+  await check(`${tag}: it says "Line N of M", an open count and "Reading"; the rail head no longer holds the line or the mode chip`, async () => {
     const b = await bar(page);
     const w = await walk(page);
     assert.equal(b.line, `Line ${w.target + 1} of ${w.lines}`);
-    assert.match(b.issues, /^\d+ Issues? left$|^Nothing needs you$/);
+    assert.match(b.issues, /^\d+ open$/);
     assert.equal(b.mode, 'Reading');
     assert.notEqual(b.modeTag, 'BUTTON', 'Reading / Writing is state, not a switch');
     assert.match(b.marked, /No marks from you yet/);
@@ -250,12 +250,12 @@ async function desktop(browser, base, style) {
     assert.equal((await bar(page)).line, `Line ${L.S2 + 1} of 25`);
   });
 
-  await check(`${tag}: amber dots are the lines that need you, and the bar's Issues left equals their number`, async () => {
+  await check(`${tag}: amber dots are open for you, and the bar's open count equals their number`, async () => {
     const lines = await amber(page);
     assert.deepEqual(lines, [L.ASK, L.CHANGE, L.COMMENT, L.ASK2]);
     const b = await bar(page);
     assert.equal(b.count, lines.length);
-    assert.equal(b.issues, `${lines.length} Issues left`);
+    assert.equal(b.issues, `${lines.length} open`);
     const colors = await page.evaluate(() => [...document.querySelectorAll('.plm-dot .plm-glyph')].map(g => getComputedStyle(g).backgroundColor));
     assert.equal(colors.filter(c => c === 'rgb(217, 140, 0)').length, lines.length, 'another dot is amber');
   });
@@ -306,7 +306,7 @@ async function phone(browser, base, style) {
     assert.ok(Math.abs(strip.y + strip.height - 844) <= 2, `strip bottom ${strip.y + strip.height}`);
     assert.match(await page.locator('.prw-strip-where').innerText(), /^Line 1 of 25$/);
     assert.equal(b.line, 'Line 1 of 25');
-    assert.match(b.issues, /^4 Issues left$/);
+    assert.match(b.issues, /^4open$/);
     const chip = await page.locator('.soma-feedback-root').boundingBox().catch(() => null);
     if (chip) assert.ok(chip.y + chip.height <= strip.y + 1, 'the feedback chip covers the strip');
     await page.screenshot({ path: path.join(shots, `${tag}-statusbar.png`) });
@@ -407,11 +407,11 @@ async function desktop2(browser, base, style) {
     const lines = await amber(page);
     const c = await chrome(page);
     const b = await bar(page);
-    assert.equal(c.pillText, `${lines.length} need you`);
+    assert.equal(c.pillText, `${lines.length} open`);
     assert.equal(b.count, lines.length);
     const team = await page.evaluate(() => Number(document.querySelector('#share-banner .plm-issues-count').dataset.teamCount));
     assert.ok(team >= lines.length, 'All open must include Needs you');
-    assert.match(await page.locator('#share-banner .plm-issues-count').getAttribute('title'), new RegExp(`^${lines.length} need you; ${team} open for the team`));
+    assert.match(await page.locator('#share-banner .plm-issues-count').getAttribute('title'), new RegExp(`^${lines.length} open for you \\(the amber dots\\); the team has ${team} open\\.`));
   });
   await check(`${tag}: Next goes to the lines that need you first`, async () => {
     const lines = await amber(page);
@@ -570,7 +570,7 @@ async function phone2(browser, base, style) {
     assert.equal(c.toolbar.top, 0);
     assert.equal(c.undo, null);
     assert.ok(!c.seg || c.seg.width === 0);
-    assert.equal(c.pillText, `${(await amber(page)).length} need you`);
+    assert.equal(c.pillText, `${(await amber(page)).length} open`);
     for (const selector of ['[data-accord-review-toggle]', '.anv-people', '.share-pill-share-btn > button']) {
       const box = await page.locator(`#share-banner ${selector}`).boundingBox();
       assert.ok(box && box.height >= 44 && box.x >= 0 && box.x + box.width <= 391, selector);
@@ -699,8 +699,8 @@ async function desktop3(browser, base, style) {
     const lines = await amber(page);
     const items = await page.evaluate(() => [...document.querySelectorAll('.prw-left .anv-issue')].map(b => ({ line: Number(b.dataset.line), title: b.querySelector('.anv-issue-title').textContent, kind: b.querySelector('.anv-issue-kind').textContent })));
     assert.deepEqual(items.map(i => i.line), lines);
-    assert.equal(await page.locator('.prw-left .anv-tab[data-tab="issues"] .anv-badge').textContent(), `${lines.length} need you`);
-    assert.equal((await chrome(page)).pillText, `${lines.length} need you`);
+    assert.equal(await page.locator('.prw-left .anv-tab[data-tab="issues"] .anv-badge').textContent(), `${lines.length} open`);
+    assert.equal((await chrome(page)).pillText, `${lines.length} open`);
     assert.match(items[0].kind, new RegExp(`^Ask · line ${L.ASK + 1}$`));
     assert.match(items[1].kind, new RegExp(`^Change from \\w+ · line ${L.CHANGE + 1}$`));
     assert.match(items[2].kind, new RegExp(`^Comment from \\w+ · line ${L.COMMENT + 1}$`));

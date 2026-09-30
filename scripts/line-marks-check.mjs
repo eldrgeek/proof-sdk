@@ -161,7 +161,7 @@ async function desktop(browser, base) {
   });
   await check(`${tag}: Review names its scope and excludes unread lines`, async () => {
     await waitFor(page, () => document.querySelector('.plm-dot[data-line="0"]')?.dataset.status === 'seen');
-    assert.equal(await page.locator('#share-banner .plm-issues-count').textContent(), '0 need you');
+    assert.equal(await page.locator('#share-banner .plm-issues-count').textContent(), '0 open');
     assert.ok(await page.locator('[data-accord-review-toggle]').isVisible());
   });
   await check(`${tag}: Seen on line 1 lowers the count`, async () => {
@@ -289,7 +289,7 @@ async function phone(browser, base) {
     assert.ok(h <= 60, `bar height ${h}`);
     const btn = page.locator('[data-accord-review-toggle]');
     assert.ok(await btn.isVisible(), 'issue button hidden');
-    assert.equal(await page.locator('#share-banner .plm-issues-count').innerText(), '0 need you');
+    assert.equal(await page.locator('#share-banner .plm-issues-count').innerText(), '0 open');
     const r = await btn.boundingBox();
     assert.ok(r.height >= 44 && r.width >= 44, `issue button ${r.width}x${r.height}`);
   });
@@ -328,7 +328,7 @@ async function phone(browser, base) {
     assert.ok(box.height >= 44, `Agree button ${box.height}px tall`);
     await agree.tap();
     await waitFor(page, () => document.querySelector('.plm-dot[data-line="1"]')?.dataset.status === 'agreed');
-    assert.equal(await page.locator('#share-banner .plm-issues-count').innerText(), '0 need you');
+    assert.equal(await page.locator('#share-banner .plm-issues-count').innerText(), '0 open');
   });
   await check(`${tag}: Reject asks for a reason on the phone`, async () => {
     if (await page.locator('.prw-right.prw-sheet-open').count()) await page.locator('.prw-strip-grab').tap();

@@ -141,6 +141,8 @@ export interface LineMarksHost {
   apiBase(): string;
   authHeaders(): Record<string, string>;
   actor(): string;
+  /** Guest name prompt before the first mark, comment or chat message. */
+  beforeAct?(): Promise<boolean>;
   canComment(): boolean;
   reviewMarks(view: EditorView): ReviewMarkLike[];
   /** Step 1b: a click on a margin dot. Return true when the reading walk took it (no popover). */
@@ -547,9 +549,15 @@ export class LineMarksUI {
     if (document.visibilityState === 'visible') void this.refresh();
   };
 
+  private async allowedToAct(): Promise<boolean> {
+    if (!this.host.beforeAct) return true;
+    return this.host.beforeAct();
+  }
+
   private async writeMark(line: DocLine, status: StatusChoice, reason?: string, via: MarkVia = 'click'): Promise<boolean> {
     const slug = this.host.slug();
     if (!slug) return false;
+    if (!PASSIVE_VIAS.has(via) && via !== 'edit' && via !== 'correct' && !(await this.allowedToAct())) return false;
     // The one Undo (Mike, 2026-09-19): every deliberate mark is undoable. Passive reads (dwell,
     // a section sweep, a Familiar's proxy) and marks carried over an edit are not actions.
     if (!PASSIVE_VIAS.has(via) && via !== 'edit' && via !== 'correct') this.recordMarkUndo(line, status, reason, via);
@@ -1032,6 +1040,7 @@ export class LineMarksUI {
 
   /** Records the viewer's answer: Yes / Not yet / No in their own words. */
   async answerAsk(askId: string, choice: AskChoice, words: string): Promise<boolean> {
+    if (!(await this.allowedToAct())) return false;
     const slug = this.host.slug();
     const view = this.askViews.find(v => v.ask.id === askId);
     if (!slug || !view || view.lineIndex === null || !this.canMark) return false;
@@ -3023,6 +3032,7 @@ export class LineMarksUI {
    * `explain` on the server, with an explain.requested event). Never marks the line.
    */
   async explainLine(index: number, question = ''): Promise<boolean> {
+    if (!(await this.allowedToAct())) return false;
     const line = this.lines[index];
     if (!line || !this.canMark) return false;
     const ais = (this.summary?.team ?? []).filter(isAiActor).map(actor => actorLabel(actor));
@@ -3073,6 +3083,7 @@ export class LineMarksUI {
    * required — the caller has already chosen one of THREAD_ASK_CHOICES.
    */
   async startThread(input: { lines: number[]; text: string; asks: ThreadAsks; selection?: string | null; waitingOn?: string[] }): Promise<string | null> {
+    if (!(await this.allowedToAct())) return null;
     const indices = [...new Set(input.lines)].filter(index => this.lines[index]).sort((a, b) => a - b);
     if (indices.length === 0 || !this.canCommentHere()) return null;
     const text = input.text.trim();
