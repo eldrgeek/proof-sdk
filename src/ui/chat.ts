@@ -159,6 +159,8 @@ export class ChatUI {
   private sending = false;
   private listSig = '';
   private lastUnread = -1;
+  /** Last chat poll payload: unchanged polls skip re-render and line-marks work. */
+  private lastChatFingerprint: string | null = null;
   private lineCountCache: { sig: string; counts: Map<number, number> } = { sig: '', counts: new Map() };
   /** Test hooks. */
   private readonly sent: number[] = [];
@@ -327,10 +329,19 @@ export class ChatUI {
       });
       if (!response.ok) return;
       const body = await response.json() as { messages?: ProofChatMessage[]; cursor?: number; candidates?: MentionCandidate[]; labels?: Record<string, string>; canPost?: boolean };
+      const incoming = Array.isArray(body.messages) ? body.messages : [];
+      const fingerprint = JSON.stringify({
+        messages: incoming,
+        cursor: body.cursor ?? null,
+        candidates: body.candidates ?? null,
+        labels: body.labels ?? null,
+        canPost: body.canPost !== false,
+      });
+      if (fingerprint === this.lastChatFingerprint) return;
+      this.lastChatFingerprint = fingerprint;
       registerActorLabels(body.labels ?? {});
       if (Array.isArray(body.candidates)) this.candidates = body.candidates;
       this.canPost = body.canPost !== false;
-      const incoming = Array.isArray(body.messages) ? body.messages : [];
       const known = new Set(this.messages.map(m => m.id));
       for (const message of incoming) if (!known.has(message.id)) this.messages.push(message);
       this.messages.sort((a, b) => a.id - b.id);

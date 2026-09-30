@@ -575,7 +575,9 @@ export function buildLineStates(lines: DocLine[], lineMarks: LineMark[]): LineSt
       // Step B3b: a cosmetic edit carries the mark to the new text.
       const target = findCarryTarget(lines, mark.anchor, cache);
       if (target) resolved = { lineIndex: target.index, current: true, carried: true };
-      else {
+      else if (mark.status !== 'skimmed') {
+        // Stale skims are dropped below (staleSkimIsNotAChange) whatever the lapse search finds,
+        // so skip it for them: on Waiting on Mike it was 90 of 106 searches (ac-jdm).
         // Accord round 2 stage C: a substantive edit does NOT carry, but the mark must still land
         // on the line the text became, so the lapse is reported on the right line (and reported at
         // all when the line's kind changed too). This beats resolveLineAnchor's ordinal guess.
@@ -916,6 +918,8 @@ export function computeIssues(input: {
   /** Line tiers (src/shared/line-tiers.ts tierIssueInput). Absent: every line is a decision line. */
   tiers?: TierIssueInput;
 }): IssueSummary {
+  // Built here on purpose: callers hold states that applyDecay has already changed, and issues
+  // are counted on the undecayed marks (server/line-marks.ts buildIssueReport). Do not pass those in.
   const states = buildLineStates(input.lines, input.lineMarks);
   const issues: ProofIssue[] = [];
   const tierView = new Map<number, TierIssueView>();

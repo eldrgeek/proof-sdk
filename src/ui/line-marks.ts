@@ -402,6 +402,9 @@ export class LineMarksUI {
   private restampTimer: ReturnType<typeof setTimeout> | null = null;
   private fetchSeq = 0;
   private writesInFlight = 0;
+  /** Last line-marks poll payload (serverNow omitted): unchanged polls skip recompute. */
+  private lastPollFingerprint: string | null = null;
+  private lastPollRecomputeAt = 0;
   private menu: HTMLElement | null = null;
   private menuCleanup: (() => void) | null = null;
   private started = false;
@@ -506,6 +509,14 @@ export class LineMarksUI {
       };
       // A newer fetch or a local write superseded this answer.
       if (seq !== this.fetchSeq || this.writesInFlight > 0) return;
+      const { serverNow, ...pollBody } = body;
+      const fingerprint = JSON.stringify(pollBody);
+      // Unchanged marks: skip the recompute (ac-jdm; it froze large Accords ~1 s every 4 s). Still
+      // recompute once a minute, because time-limited marks decay on the clock, not on the poll.
+      const now = Date.now();
+      if (fingerprint === this.lastPollFingerprint && now - this.lastPollRecomputeAt < 60_000) return;
+      this.lastPollFingerprint = fingerprint;
+      this.lastPollRecomputeAt = now;
       this.serverMarks = Array.isArray(body.lineMarks) ? body.lineMarks : [];
       this.serverAsks = Array.isArray(body.asks) ? body.asks : [];
       this.serverFlags = Array.isArray(body.flags) ? body.flags : [];
@@ -522,8 +533,8 @@ export class LineMarksUI {
       this.blind = body.settings?.blind === true;
       this.immediateActors = body.settings?.immediateMoveActors ?? [];
       this.blindInfo = body.blind ?? null;
-      const serverNow = body.serverNow ? Date.parse(body.serverNow) : NaN;
-      if (Number.isFinite(serverNow)) this.clockSkewMs = serverNow - Date.now();
+      const parsedServerNow = serverNow ? Date.parse(serverNow) : NaN;
+      if (Number.isFinite(parsedServerNow)) this.clockSkewMs = parsedServerNow - Date.now();
       this.owners = Array.isArray(body.owners) ? body.owners : [];
       this.agentKeyActors = Array.isArray(body.agentKeyActors) ? body.agentKeyActors : [];
       this.canApprove = body.viewer?.canApprove === true;

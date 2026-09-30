@@ -25,7 +25,7 @@
     "test:agent-join": "tsx src/tests/agent-join.test.ts",
     "check:agent-join": "node scripts/agent-join-check.mjs",
     "test:agent-keys": "tsx src/tests/agent-key-duplicate-cookies.test.ts && tsx src/tests/agent-key-session-issuance.test.ts && tsx src/tests/agent-keys.test.ts && tsx src/tests/agent-key-collab-revocation.test.ts && tsx src/tests/share-event-poller.test.ts",
-    "test:line-marks": "tsx src/tests/line-marks.test.ts",
+    "test:line-marks": "tsx src/tests/line-marks.test.ts && tsx src/tests/line-marks-wom-build.test.ts",
     "test:reading-walk": "tsx src/tests/reading-walk.test.ts",
     "test:scroll-camera": "tsx src/tests/scroll-camera.test.ts",
     "test:editing-first": "tsx src/tests/editing-first.test.ts",
