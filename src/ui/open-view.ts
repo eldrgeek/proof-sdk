@@ -82,7 +82,7 @@ export class OpenViewUI {
     this.host.folding()?.setClean(clean);
     this.headerText.textContent = this.host.folding()?.countText() ?? 'Loading open items…';
     this.wholeControl.textContent = this.host.folding()?.toggleLabel() ?? 'Show the whole Accord';
-    this.wholeControl.disabled = !this.host.folding()?.debugState().ready;
+    this.wholeControl.disabled = !this.host.folding()?.isReady();
     this.headerText.hidden = clean || !FOLDED_VIEW_POLICY.countLine;
     this.headerEl.hidden = clean || !FOLDED_VIEW_POLICY.countLine;
     this.headerEl.dataset.view = this.view;

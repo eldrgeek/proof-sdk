@@ -3,6 +3,7 @@ import type { EditorView } from '@milkdown/kit/prose/view';
 import { TextSelection, type Transaction } from '@milkdown/kit/prose/state';
 import { extractLines, type DocLine } from '../shared/line-marks';
 import { captureSectionScope, computeSections, sectionByHeading, type DocSection, type SectionScope, type SectionAgreementOffer } from '../shared/folding';
+import { FoldHiddenLineCache } from '../shared/folding-hidden-lines';
 import { FOLDED_VIEW_POLICY, foldedCountText, initialShown, mapShown, remapByContent, touchesHidden } from '../shared/folded-view';
 import { headingSlug } from '../editor/plugins/markdown-link-click';
 import { ySyncPluginKey } from 'y-prosemirror';
@@ -14,6 +15,8 @@ export interface FoldingHost { slug(): string | null; lineMarks(): LineMarksUI; 
 const PHONE_QUERY = '(max-width: 700px)'; // Same breakpoint as the page's phone strip.
 function isPhone(): boolean { return window.matchMedia(PHONE_QUERY).matches; }
 type Snapshot = Pick<FoldUpdate, 'shown' | 'expanded' | 'context' | 'whole'>;
+
+export { hiddenLineSetBuildCount, resetHiddenLineSetBuildCountForTests } from '../shared/folding-hidden-lines';
 
 export class FoldingUI {
   private readonly layer = document.createElement('div');
@@ -29,6 +32,7 @@ export class FoldingUI {
   private unsubscribe: (() => void) | null = null;
   private readonly listeners = new Set<() => void>();
   private readonly snapshots = new Set<Snapshot>();
+  private readonly hiddenLineCache = new FoldHiddenLineCache();
 
   constructor(private readonly host: FoldingHost) {
     this.layer.className = 'pfold-layer';
@@ -76,13 +80,22 @@ export class FoldingUI {
   private update(update: FoldUpdate): void {
     const view = this.view(); if (!view) return;
     this.applyingFold = true;
-    setFoldView(view, update); this.refreshLines(); this.queueRender(); this.notify();
+    setFoldView(view, update);
+    this.invalidateHiddenLineCache();
+    this.refreshLines(); this.queueRender(); this.notify();
     queueMicrotask(() => { this.applyingFold = false; });
+  }
+  private invalidateHiddenLineCache(): void {
+    this.hiddenLineCache.invalidate();
+  }
+  private hiddenLineSet(): ReadonlySet<number> {
+    return this.hiddenLineCache.hiddenLines(this.lines, this.state());
   }
   private refreshLines(): void {
     const view = this.view(); if (!view) return;
     this.lines = extractLines(view.state.doc);
     this.sections = computeSections(this.lines, view.state.doc.childCount);
+    this.invalidateHiddenLineCache();
   }
   private sync(): void {
     if (!this.started) return;
@@ -141,11 +154,9 @@ export class FoldingUI {
     const section = sectionByHeading(this.sections, index); if (!section) return 0;
     return this.host.lineMarks().reviewViews()['all-open'].lines.filter(i => i >= index && i < section.lineEnd).length;
   }
-  hiddenLines(): ReadonlySet<number> {
-    const s = this.state();
-    return new Set(!s || s.whole || s.clean ? [] : this.lines.filter(l => !s.visible.has(l.pos)).map(l => l.index));
-  }
-  isHidden(index: number): boolean { return this.hiddenLines().has(index); }
+  hiddenLines(): ReadonlySet<number> { return this.hiddenLineSet(); }
+  isHidden(index: number): boolean { return this.hiddenLineSet().has(index); }
+  isReady(): boolean { return Boolean(this.state()?.ready); }
   isWhole(): boolean { return this.state()?.whole ?? false; }
   toggleLabel(): string { return this.isWhole() ? 'Show only open items' : 'Show the whole Accord'; }
   countText(): string {
