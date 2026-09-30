@@ -1,0 +1,8 @@
+.accord-move-handle { pointer-events:auto; cursor:grab; border:0; background:transparent; color:var(--text-muted, #667085); padding:2px 4px; font-size:16px; line-height:20px; touch-action:none; user-select:none; }
+.plm-gutter > .accord-move-handle { position:absolute; }
+.accord-drop-line { position:fixed; height:3px; background:#2563eb; z-index:10000; pointer-events:none; }
+.accord-moving, .accord-moving * { cursor:grabbing !important; user-select:none !important; }
+.accord-item-outline { padding:20px 8px; min-height:300px; }
+.accord-outline-item { display:block; width:100%; text-align:left; border:0; border-bottom:1px solid #e5e7eb; color:inherit; background:transparent; padding:10px 12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:grab; }
+.accord-outline-on .ProseMirror, .accord-outline-on .pfold-layer, .accord-outline-on .plm-gutter { display:none !important; }
+@media (max-width:700px) { .accord-move-handle { display:none !important; } .accord-outline-item { cursor:pointer; } }

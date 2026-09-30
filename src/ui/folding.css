@@ -1,0 +1,69 @@
+/* Proof Documents Step B2: folding (Claude Opus 5, 2026-09-18). */
+/* A folded section's body: hidden in the view only (a node decoration, never the document). */
+/* Folded text stays out of the layout and in the page's find index.
+   display:none would hide it from Ctrl+F. hidden=until-found (set on the node)
+   fires beforematch so a match can open the section. A browser without
+   until-found still gets display:none from the :not() rule. */
+.ProseMirror .pfold-hidden:not([hidden="until-found"]) { display: none !important; }
+.ProseMirror .pfold-hidden[hidden="until-found"] { content-visibility: hidden; }
+/* Room at the right of every top-level heading for its fold chip. */
+body.pfold-on .ProseMirror > :is(h1, h2, h3, h4, h5, h6) { padding-right: 72px; }
+
+.pfold-layer { position: absolute; top: 0; left: 0; width: 100%; height: 0; z-index: 41; pointer-events: none; }
+.pfold-chip {
+  position: absolute; pointer-events: auto; display: inline-flex; align-items: center; gap: 4px;
+  min-width: 44px; padding: 0 8px; box-sizing: border-box; justify-content: center;
+  border: 1px solid #e3e2dc; border-radius: 999px; background: #fffefb; color: #4b5563; cursor: pointer;
+  font: 600 12px/1 system-ui, -apple-system, sans-serif; font-variant-numeric: tabular-nums;
+  -webkit-tap-highlight-color: transparent;
+}
+.pfold-chip > * { pointer-events: none; }
+.pfold-chip:hover { background: #f3f4f6; border-color: #c3c8d0; }
+.pfold-chip:focus-visible { outline: 2px solid #2563eb; outline-offset: 1px; }
+.pfold-caret { font-size: 14px; line-height: 1; color: #4b5563; }
+.pfold-badge { min-width: 12px; text-align: center; }
+/* "Issues remain" (amber) and "issues resolved" (green check). */
+.pfold-chip[data-state="issues"] .pfold-badge { color: #92400e; }
+.pfold-chip[data-state="resolved"] .pfold-badge { color: #15803d; }
+.pfold-chip[data-folded="true"] { border-color: #c3c8d0; background: #f8f7f3; }
+.pfold-chip[data-folded="true"][data-state="issues"] { background: #fef3c7; border-color: #fde68a; }
+.pfold-chip[data-folded="true"][data-state="resolved"] { background: #dcfce7; border-color: #bbf7d0; }
+.pfold-chip[data-folded="true"] .pfold-caret { color: #26303c; }
+
+/* Marking a folded section (the mark box). */
+.plm-section-note { margin: 0 0 8px; padding: 6px 8px; border-radius: 8px; background: #eff6ff; color: #1e3a8a; font-size: 12px; }
+.plm-section-hint { margin: 8px 0 0; padding: 6px 8px; border-radius: 8px; background: #fef2f2; color: #991b1b; font-size: 12px; }
+.plm-section-hint[hidden] { display: none; }
+.plm-section-hint button { margin-left: 6px; border: none; background: none; color: #1d4ed8; text-decoration: underline; cursor: pointer; font: inherit; padding: 0; }
+.plm-toast-action { margin-left: 12px; border: none; background: none; color: #93c5fd; font: 600 14px system-ui, sans-serif; cursor: pointer; text-decoration: underline; padding: 0; }
+
+/* Phones: 36 px chips (the margin dots' size), 44 px controls. */
+@media (max-width: 700px) {
+  body.pfold-on .ProseMirror > :is(h1, h2, h3, h4, h5, h6) { padding-right: 60px; }
+  .pfold-chip { min-width: 52px; font-size: 13px; }
+}
+
+/* A folded heading: a dashed rule under it says "there is more here". */
+.ProseMirror .pfold-folded-heading { border-bottom: 1px dashed #c3c8d0; padding-bottom: 2px; }
+
+/* The count line never disappears when the last open item closes. */
+.aov-header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; border: 0; background: transparent; padding: 8px 0; }
+.aov-whole-toggle { border: 0; background: transparent; color: #1d4ed8; text-decoration: underline; cursor: pointer; font: inherit; padding: 4px 0; }
+.ProseMirror .aov-rule { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 28px; padding: 3px 0; border: 0; background: transparent; color: #71717a; cursor: pointer; font: 12px/1.3 system-ui, sans-serif; }
+.aov-rule-line { height: 1px; background: #d4d4d8; flex: 1; }
+.aov-rule-label { white-space: nowrap; min-width: 9em; text-align: right; }
+.aov-rule-entry { list-style: none !important; }
+.ProseMirror .aov-rule-row > td { padding: 0 8px; border: 0; }
+.aov-rule:focus-visible, .aov-whole-toggle:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+body.aov-in-accord .aov-header { display: none; }
+@media (max-width: 700px) {
+  .ProseMirror .aov-rule { min-height: var(--fold-rule-target, 44px); }
+  /* Two lines stay reserved for the count, so a count that grows onto a second line never moves
+     the page. The control keeps a 44 px touch target without spending 44 px of a phone's height:
+     its hit area reaches past its box. Step 2 review, 2026-09-25: the box was 108 px of a 566 px
+     reading area at 390x844, and pushed the first paragraph past the scroll camera's band. */
+  .aov-header { row-gap: 2px; }
+  .aov-header-text { flex-basis: 100%; min-height: 3em; }
+  .aov-whole-toggle { position: relative; padding: 2px 0; }
+  .aov-whole-toggle::after { content: ''; position: absolute; left: -8px; right: -8px; top: 50%; height: 44px; transform: translateY(-50%); }
+}

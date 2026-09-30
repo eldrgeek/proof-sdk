@@ -9,9 +9,14 @@ function decodeCookieValue(value: string): string {
 }
 
 export function getCookie(req: Request, name: string): string | null {
-  const header = req.header('cookie');
-  if (typeof header !== 'string' || !header.trim()) return null;
+  return getCookies(req, name)[0] ?? null;
+}
 
+export function getCookies(req: Request, name: string): string[] {
+  const header = req.header('cookie');
+  if (typeof header !== 'string' || !header.trim()) return [];
+
+  const values: string[] = [];
   const parts = header.split(';');
   for (const part of parts) {
     const trimmed = part.trim();
@@ -21,10 +26,10 @@ export function getCookie(req: Request, name: string): string | null {
     const key = trimmed.slice(0, eq).trim();
     if (key !== name) continue;
     const raw = trimmed.slice(eq + 1);
-    return decodeCookieValue(raw.trim());
+    values.push(decodeCookieValue(raw.trim()));
   }
 
-  return null;
+  return values;
 }
 
 export function shareTokenCookieName(slug: string): string {

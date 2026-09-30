@@ -7,6 +7,17 @@ type ShareCollabHydrationEquivalenceArgs = {
   liveYjsHydrationMarkdown: string | null;
 };
 
+type ShareEditHydrationGateArgs = {
+  baseAllowLocalEdits: boolean;
+  hasCompletedInitialCollabHydration: boolean;
+  isCollabHydratedForEditing: boolean;
+};
+
+export type ShareEditHydrationGate = {
+  allowLocalEdits: boolean;
+  shouldKickCollabHydration: boolean;
+};
+
 export function isShareCollabHydrationEquivalent(
   args: ShareCollabHydrationEquivalenceArgs,
 ): boolean {
@@ -20,4 +31,27 @@ export function isShareCollabHydrationEquivalent(
     return true;
   }
   return args.editorHydrationMarkdown === args.liveYjsHydrationMarkdown;
+}
+
+export function evaluateShareEditHydrationGate(
+  args: ShareEditHydrationGateArgs,
+): ShareEditHydrationGate {
+  if (!args.baseAllowLocalEdits) {
+    return {
+      allowLocalEdits: false,
+      shouldKickCollabHydration: false,
+    };
+  }
+
+  if (args.hasCompletedInitialCollabHydration) {
+    return {
+      allowLocalEdits: true,
+      shouldKickCollabHydration: false,
+    };
+  }
+
+  return {
+    allowLocalEdits: args.isCollabHydratedForEditing,
+    shouldKickCollabHydration: !args.isCollabHydratedForEditing,
+  };
 }

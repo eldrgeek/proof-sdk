@@ -1,3 +1,7 @@
+import { agentJoinInstructions, agentJoinPath } from '../src/shared/agent-join.js';
+import { normalizeReviewStyle } from '../src/editor/review-style.js';
+import { injectSomaFeedback } from './soma-page.js';
+import { somaAuthHead } from './library/soma-page.js';
 import { createHash } from 'crypto';
 import { Router, type Request, type Response } from 'express';
 import { readFileSync } from 'fs';
@@ -5,13 +9,11 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import {
   noteDocumentLiveCollabLease,
-  canMutateByOwnerIdentity,
-  resolveDocumentAccessRole,
   upsertActiveCollabConnection,
 } from './db.js';
 import type { ShareRole } from './share-types.js';
 import { recordShareLinkOpen } from './metrics.js';
-import { getCookie, shareTokenCookieName } from './cookies.js';
+import { shareTokenCookieName } from './cookies.js';
 import { handleShareMarkdown, shareMarkdownBodyParser } from './routes.js';
 import { getSnapshotHtml, getSnapshotPublicUrl } from './snapshot.js';
 import { stripProofSpanTags } from './proof-span-strip.js';
@@ -25,13 +27,11 @@ import {
   ALT_SHARE_TOKEN_HEADER_FORMAT,
   AUTH_HEADER_FORMAT,
   TOKEN_FROM_URL_HINT,
-  TOKEN_MISSING_HINT,
 } from './agent-guidance.js';
 import {
   buildSharePreviewModel,
   renderShareMetaTags,
   renderShareOgPng,
-  resolvePublicOrigin,
   type SharePreviewModel,
 } from './share-preview.js';
 import {
@@ -39,6 +39,13 @@ import {
   buildProofSdkDocumentPaths,
   buildProofSdkLinks,
 } from './proof-sdk-routes.js';
+import { getPublicOrigin, isSecureRequest } from './public-origin.js';
+import { resolveSharePageAccess } from './share-page-access.js';
+import { getGuestAccessMode, touchInvite } from './document-team.js';
+import { renderSignInRequiredHtml } from './document-team-routes.js';
+import { productName } from '../src/shared/product-identity.js';
+
+export { getPublicOrigin, isSecureRequest } from './public-origin.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -95,31 +102,6 @@ function wantsMarkdown(req: Request): boolean {
   return accept.includes('text/markdown') || accept.includes('text/x-markdown');
 }
 
-function isSecureRequest(req: Request): boolean {
-  if (req.secure) return true;
-  const proto = (req.header('x-forwarded-proto') || '').split(',')[0]?.trim().toLowerCase();
-  return proto === 'https';
-}
-
-function getPublicOrigin(req: Request): string {
-  const configured = process.env.PROOF_PUBLIC_ORIGIN?.trim();
-  if (configured) return resolvePublicOrigin(configured);
-  const host = req.get('host') || '';
-  if (!host) return resolvePublicOrigin(null);
-  return `${isSecureRequest(req) ? 'https' : 'http'}://${host}`;
-}
-
-function deriveShareCapabilities(role: ShareRole, shareState: string): { canRead: boolean; canComment: boolean; canEdit: boolean } {
-  const isOwner = role === 'owner_bot';
-  // Product decision: non-owners cannot access paused/revoked shares at all.
-  const canRead = shareState === 'ACTIVE' || (isOwner && shareState !== 'DELETED');
-  const canEdit = isOwner
-    ? (shareState === 'ACTIVE' || shareState === 'PAUSED')
-    : (role === 'editor' && shareState === 'ACTIVE');
-  const canComment = shareState === 'ACTIVE' && (role === 'commenter' || role === 'editor' || isOwner);
-  return { canRead, canComment, canEdit };
-}
-
 // SPA fallback: serve index.html for /d/:slug routes
 // Rewrite relative asset paths to absolute so they work from /d/ subpath
 let shareHtml: string | null = null;
@@ -168,6 +150,7 @@ function buildLiveViewerLeaseConnectionId(
 function buildShareRuntimeConfigScript(slug: string, shareToken?: string | null): string {
   const commentUiDefaultMode = normalizeCommentUiMode(process.env.PROOF_COMMENT_UI_DEFAULT_MODE);
   const configLines = [
+    `window.__PROOF_CONFIG__.defaultReviewStyle = ${JSON.stringify(normalizeReviewStyle(process.env.PROOF_DEFAULT_REVIEW_STYLE))};`,
     shareToken ? `window.__PROOF_CONFIG__.shareSlug = ${JSON.stringify(slug)};` : '',
     shareToken ? `window.__PROOF_CONFIG__.shareToken = ${JSON.stringify(shareToken)};` : '',
     commentUiDefaultMode ? `window.__PROOF_CONFIG__.commentUiDefaultMode = ${JSON.stringify(commentUiDefaultMode)};` : '',
@@ -192,7 +175,7 @@ function injectShareHtmlDiscoveryTags(
   const opsApi = proofSdkPaths.ops;
   const fullMetaTags = renderShareMetaTags(preview);
   const pageTitle = fullMetaTags.match(/<title>[\s\S]*?<\/title>/i)?.[0]
-    ?? `<title>${escapeHtml(`${preview.title} | Proof`)}</title>`;
+    ?? `<title>${escapeHtml(`${preview.title} | ${productName()}`)}</title>`;
   const metaTags = [
     fullMetaTags.replace(/<title>[\s\S]*?<\/title>\n?/i, ''),
     `<meta name="agent-api" content="${escapeHtml(agentApi)}">`,
@@ -200,8 +183,8 @@ function injectShareHtmlDiscoveryTags(
   ].join('\n');
   const configScript = buildShareRuntimeConfigScript(slug, shareToken);
 
-  const instructionMarkup = `<h2>Proof Shared Document</h2>
-  <p>This is a collaborative document on Proof. To read or edit it programmatically:</p>
+  const instructionMarkup = `<h2>${escapeHtml(productName())} Shared Document</h2>
+  <p>This is a collaborative document on ${escapeHtml(productName())}. To read or edit it programmatically:</p>
   <ul>
     <li>Fetch this URL with <code>Accept: application/json</code> to get content + API links.</li>
     <li>Fetch this URL with <code>Accept: text/markdown</code> to get raw markdown.</li>
@@ -210,6 +193,7 @@ function injectShareHtmlDiscoveryTags(
     <li>Full API docs: <a href="/agent-docs">/agent-docs</a></li>
     <li>No browser automation needed — use plain HTTP requests (curl/web_fetch).</li>
   </ul>
+  <p>${escapeHtml(agentJoinInstructions(slug))}</p>
   <p>Auth: If this URL includes <code>?token=</code>, send it as <code>${escapeHtml(AUTH_HEADER_FORMAT)}</code>.</p>`;
 
   // Readability extraction differs across agents:
@@ -222,7 +206,7 @@ function injectShareHtmlDiscoveryTags(
   const agentDiv = `<div id="agent-instructions" style="position:absolute;left:-10000px;top:auto;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:pre-wrap;" aria-hidden="true">
   <h3>Document Content</h3>
   <pre>${escapeHtml(markdown)}</pre>
-  <h2>Proof Shared Document</h2>
+  <h2>${escapeHtml(productName())} Shared Document</h2>
   ${instructionMarkup}
 </div>`;
 
@@ -237,6 +221,52 @@ function injectShareHtmlDiscoveryTags(
   }
   out = out.replace(/<body\b[^>]*>/i, (match) => `${match}\n${noscript}\n${agentDiv}`);
   return out;
+}
+
+export function injectLibraryMemberIntoShareHtml(html: string, name: string, slug: string = ''): string {
+  const memberJson = JSON.stringify({ name }).replace(/</g, '\\u003c');
+  const slugJson = JSON.stringify(slug).replace(/</g, '\\u003c');
+  const script = `<script>
+window.__PROOF_LIBRARY_MEMBER__=${memberJson};
+(function () {
+  var slug = ${slugJson};
+  if (slug) {
+    window.addEventListener('proof:editor-ready', function () {
+      fetch('/library/api/visits/' + encodeURIComponent(slug), {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({event: 'open'})
+      }).catch(function () {});
+    }, {once: true});
+    window.addEventListener('pagehide', function () {
+      fetch('/library/api/visits/' + encodeURIComponent(slug), {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({event: 'leave'}),
+        keepalive: true
+      }).catch(function () {});
+    });
+  }
+  function linkWordmark() {
+    var links = document.querySelectorAll('#share-banner a');
+    for (var i = 0; i < links.length; i += 1) {
+      if (links[i].textContent === ${JSON.stringify(productName())}) {
+        links[i].href = '/';
+        links[i].title = 'Back to Documents';
+        links[i].removeAttribute('target');
+        links[i].removeAttribute('rel');
+      }
+    }
+  }
+  new MutationObserver(linkWordmark).observe(document.documentElement, {childList: true, subtree: true});
+  document.addEventListener('DOMContentLoaded', linkWordmark);
+})();
+</script>`;
+  // A signed-in person's SOMA admin check lapses after a day unless the browser renews it with a
+  // fresh token, and only the library pages loaded the script that does. Mike opens Accords by
+  // their links, so from a day after signing in he lost Owner rights on documents the tools made
+  // (the Share dialog then hid the link setting). Document pages now renew it too (2026-09-25).
+  const soma = somaAuthHead();
+  return html.includes('</head>') ? html.replace('</head>', () => `${soma}${script}\n</head>`) : `${soma}${script}${html}`;
 }
 
 /**
@@ -277,7 +307,7 @@ function renderAgentFriendlyHtml(
     : AUTH_HEADER_FORMAT;
   const authNote = token
     ? `<p><strong>Auth:</strong> Use the token from the URL as <code>Authorization: Bearer ${escapeHtml(token)}</code></p>`
-    : '<p><strong>Auth:</strong> No token detected. Ask for a tokenized link for API access.</p>';
+    : `<p><strong>Join:</strong> ${escapeHtml(agentJoinInstructions(slug))}</p>`;
   const writeGuidance = mutationReady
     ? `
     <li><strong>Edit (append/replace/insert):</strong> <code>curl -X POST "${escapeHtml(editUrl)}" -H "Content-Type: application/json" -H "${authHeader}" -d '{"by":"ai:assistant","operations":[{"op":"append","section":"Notes","content":"\\n\\nNew bullet."}]}'</code></li>
@@ -297,8 +327,8 @@ function renderAgentFriendlyHtml(
   ${buildShareRuntimeConfigScript(slug, token)}
 </head>
 <body>
-  <h1>Proof Shared Document</h1>
-  <p>This is a collaborative document in Proof.</p>
+  <h1>${escapeHtml(productName())} Shared Document</h1>
+  <p>This is a collaborative document in ${escapeHtml(productName())}.</p>
 
   <h2>Document Content</h2>
   <pre>${escapeHtml(markdown)}</pre>
@@ -351,12 +381,14 @@ function renderUnavailableHtml(preview: SharePreviewModel, message: string): str
 shareWebRoutes.get('/og/share/:slug.png', async (req: Request, res: Response) => {
   const slug = Array.isArray(req.params.slug) ? (req.params.slug[0] ?? '') : (req.params.slug ?? '');
   const doc = slug ? (getCanonicalReadableDocumentSync(slug, 'share') ?? null) : null;
+  // Invite person: a private document's preview image shows neither its title nor its text.
+  const hidePreview = Boolean(doc && getGuestAccessMode(slug) === 'private');
   const preview = buildSharePreviewModel({
     slug,
     origin: getPublicOrigin(req),
     doc: doc ? {
-      title: doc.title,
-      markdown: doc.markdown,
+      title: hidePreview ? 'Private document' : doc.title,
+      markdown: hidePreview ? '' : doc.markdown,
       updatedAt: doc.updated_at,
       shareState: doc.share_state,
       revision: doc.revision,
@@ -374,36 +406,26 @@ shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
   const origin = getPublicOrigin(req);
 
   const doc = slug ? (getCanonicalReadableDocumentSync(slug, 'share') ?? null) : null;
-  const tokenFromCookie = slug ? getCookie(req, shareTokenCookieName(slug)) : null;
-  const roleFromQuery = slug && tokenFromQuery ? resolveDocumentAccessRole(slug, tokenFromQuery) : null;
-  const queryOwner = Boolean(doc && tokenFromQuery && canMutateByOwnerIdentity(doc, tokenFromQuery));
-  const roleFromCookie = slug && tokenFromCookie ? resolveDocumentAccessRole(slug, tokenFromCookie) : null;
-  const cookieOwner = Boolean(doc && tokenFromCookie && canMutateByOwnerIdentity(doc, tokenFromCookie));
+  const pageAccess = resolveSharePageAccess(req, res, slug, doc);
+  const { librarySession, attestedSession, token, tokenSource, roleFromToken } = pageAccess;
 
-  // Prefer URL token over cookie when it is valid, but allow a valid cookie to win if the query token is stale.
-  let token: string | null = null;
-  let roleFromToken: ShareRole | null = null;
-  let tokenSource: 'query:token' | 'cookie' | 'none' = 'none';
-  if (tokenFromQuery && (roleFromQuery || queryOwner)) {
-    token = tokenFromQuery;
-    roleFromToken = roleFromQuery;
-    tokenSource = 'query:token';
-  } else if (tokenFromCookie && (roleFromCookie || cookieOwner)) {
-    token = tokenFromCookie;
-    roleFromToken = roleFromCookie;
-    tokenSource = 'cookie';
+  // Invite person: a private document opened without access. No snapshot fallback, no content.
+  if (doc && pageAccess.signInRequired) {
+    recordShareLinkOpen('failure', 'SIGN_IN_REQUIRED');
+    res.setHeader('Cache-Control', 'no-store');
+    if (wantsJson(req) || wantsMarkdown(req)) {
+      res.status(401).json({ success: false, slug, code: 'SIGN_IN_REQUIRED', error: 'Sign in to open this document' });
+      return;
+    }
+    res.status(401).type('html').send(renderSignInRequiredHtml(req, slug));
+    return;
   }
+  if (pageAccess.inviteId) touchInvite(pageAccess.inviteId);
 
-  // If the share is PAUSED/REVOKED, only the owner can access the live web UI.
-  // Everyone else should see a generic unavailable page (no snapshot content).
-  const ownerOverride = Boolean(doc
-    && doc.share_state !== 'DELETED'
-    && (roleFromToken === 'owner_bot' || canMutateByOwnerIdentity(doc, token ?? '')));
-
-  if (doc && doc.share_state !== 'ACTIVE' && !ownerOverride) {
+  if (doc && !pageAccess.capabilities.canRead) {
     recordShareLinkOpen('failure', doc.share_state);
     const role = roleFromToken ?? 'editor';
-    const capabilities = deriveShareCapabilities(role, doc.share_state);
+    const capabilities = pageAccess.capabilities;
     const status = doc.share_state === 'DELETED' ? 410 : 404;
     const preview = buildSharePreviewModel({
       slug,
@@ -481,15 +503,16 @@ shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
       res.status(404).type('text/plain').send('Document not found');
       return;
     }
-    res.type('text/markdown').send(stripProofSpanTags(doc.markdown ?? ''));
+    res.setHeader('Link', `<${agentJoinPath(slug)}>; rel="join"`);
+    res.type('text/markdown').send(`${stripProofSpanTags(doc.markdown ?? '')}\n\n<!-- ${agentJoinInstructions(slug)} -->\n`);
     return;
   }
 
   if (wantsJson(req)) {
-    // Product decision: tokenless shares default to editable access (slug is the secret).
-    const role = roleFromToken ?? 'editor';
+    // Invite person: without a token the role is the tokenless access (member, invitee or guest).
+    const role = roleFromToken ?? pageAccess.role ?? 'viewer';
     const shareState = doc?.share_state ?? (slug ? 'MISSING' : 'UNKNOWN');
-    const capabilities = deriveShareCapabilities(role, shareState);
+    const capabilities = pageAccess.capabilities;
     const origin = getPublicOrigin(req);
     const editV2Enabled = isFeatureEnabled(process.env.AGENT_EDIT_V2_ENABLED);
     const mutationReady = doc ? isCanonicalReadMutationReady(doc) : false;
@@ -543,7 +566,7 @@ shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
         : {}),
       hint: tokenSource === 'query:token'
         ? TOKEN_FROM_URL_HINT
-        : TOKEN_MISSING_HINT,
+        : agentJoinInstructions(slug),
     });
     return;
   }
@@ -652,5 +675,20 @@ shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
     } : null,
     shareState: doc?.share_state ?? 'MISSING',
   });
-  res.type('html').send(injectShareHtmlDiscoveryTags(shareHtml ?? '', slug, doc?.markdown ?? '', preview, configShareToken));
+  const responseHtml = injectShareHtmlDiscoveryTags(
+    shareHtml ?? '',
+    slug,
+    doc?.markdown ?? '',
+    preview,
+    configShareToken,
+  );
+  res.type('html').send(
+    librarySession
+      ? injectSomaFeedback(injectLibraryMemberIntoShareHtml(responseHtml, librarySession.member.name, slug), 'editor', librarySession.member)
+      // Cross invitation: an attested person is signed in, so the page uses their name rather than
+      // asking them to choose one. It still grants them nothing a guest does not have.
+      : attestedSession
+        ? injectSomaFeedback(injectLibraryMemberIntoShareHtml(responseHtml, attestedSession.member.name, ''), 'editor', attestedSession.member)
+        : injectSomaFeedback(responseHtml, 'editor'),
+  );
 });

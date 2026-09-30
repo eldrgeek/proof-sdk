@@ -11,6 +11,7 @@
  * - Agent cursor/selection is separate from user's cursor/selection
  */
 
+import { isEditing } from '../editing-guard';
 import { $ctx, $prose } from '@milkdown/kit/utils';
 import { Plugin, PluginKey } from '@milkdown/kit/prose/state';
 import { Decoration, DecorationSet } from '@milkdown/kit/prose/view';
@@ -566,6 +567,8 @@ export function getAgentCursorState(view: EditorView): AgentCursorState | null {
  * Scroll a position into view smoothly
  */
 function scrollIntoView(view: EditorView, pos: number): void {
+  // Editing first: an agent's cursor never moves the view while the person is typing.
+  if (isEditing()) return;
   try {
     const coords = view.coordsAtPos(pos);
     const editorRect = view.dom.getBoundingClientRect();

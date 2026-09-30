@@ -87,8 +87,10 @@ async function run(): Promise<void> {
     const stateSecond = await fetch(`${base}/d/ratelimit/bridge/state`, { method: 'GET' });
     const stateThird = await fetch(`${base}/d/ratelimit/bridge/state`, { method: 'GET' });
 
-    assert.equal(stateFirst.status, 503, 'First state call should still be no-viewer 503');
-    assert.equal(stateSecond.status, 503, 'Second state call should still be no-viewer 503');
+    // ac-ok7 (2026-09-25): an unknown document answers 404 at once (no viewer fallback without a
+    // stored document); the rate limit still counts those requests.
+    assert.equal(stateFirst.status, 404, 'First state call on an unknown document is 404');
+    assert.equal(stateSecond.status, 404, 'Second state call on an unknown document is 404');
     assert.equal(stateThird.status, 429, 'Third state call should hit rate limit');
 
     const rateBody = await stateThird.json() as {

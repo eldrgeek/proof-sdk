@@ -1,0 +1,343 @@
+/* Proof Documents Step 1b: reading layout and reading walk (Claude Opus 5, 2026-09-18). */
+body.prw-on {
+  --prw-left: 256px;
+  --prw-right: 344px;
+  --prw-collapsed: 44px;
+  --prw-gap: 12px;
+  --prw-text: 760px;
+}
+body.prw-on.prw-left-collapsed { --prw-left: var(--prw-collapsed); }
+body.prw-on.prw-right-collapsed { --prw-right: var(--prw-collapsed); }
+
+/* Desktop: three columns. The rails are fixed; the page between them holds the text column. */
+@media (min-width: 701px) {
+  body.prw-on #app { padding-left: var(--prw-left); padding-right: var(--prw-right); box-sizing: border-box; }
+  body.prw-on #editor-container { max-width: var(--prw-text); margin: 0 auto; }
+  body.prw-on #app #editor,
+  body.prw-on[data-review-style="playmaker"] #app #editor {
+    /* 64 px, not 24: the per-line counts ("1 proposal") sit in this gutter (usability brief,
+       2026-09-23, "counts stay visible without hover"). At 24 px the Review panel covered all
+       but their first letters (step 2 review, 2026-09-25). */
+    padding-right: 64px !important;
+    padding-bottom: calc(100vh - 120px) !important;
+  }
+  body.prw-on .pm-review-panel:not(.pm-review-panel-docked) { display: none !important; }
+}
+
+.prw-rail {
+  position: fixed; top: var(--prw-top, 108px); bottom: 12px; z-index: 60; box-sizing: border-box;
+  display: flex; flex-direction: column; min-height: 0;
+  background: #fffefb; color: #26303c; border: 1px solid #e3e2dc; border-radius: 14px;
+  font: 14px/1.45 system-ui, -apple-system, sans-serif;
+}
+/* The left rail stops above the feedback chip (fixed bottom-left). */
+.prw-left { bottom: 72px; left: var(--prw-gap); width: calc(var(--prw-left) - 2 * var(--prw-gap)); }
+.prw-right { right: var(--prw-gap); width: calc(var(--prw-right) - 2 * var(--prw-gap)); }
+.prw-rail-head { display: flex; align-items: center; gap: 8px; padding: 10px 10px 8px 14px; border-bottom: 1px solid #ecebe6; flex-shrink: 0; }
+.prw-rail-head strong { font-size: 14px; }
+/* Step B6: who you are, on its own row under the right rail's title. */
+.prw-right .prw-rail-head { flex-wrap: wrap; }
+.prw-me { order: 10; flex-basis: 100%; min-width: 0; margin: 0; font-size: 12px; color: #4b5563; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prw-me-name { font-weight: 600; color: #26303c; }
+.prw-me-badge { display: inline-block; margin-right: 4px; color: #15803d; font-weight: 700; }
+.prw-me-guest { margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: #fef3c7; color: #92400e; font-size: 11px; }
+.prw-me-signin { color: #2563eb; font-weight: 600; text-decoration: none; }
+.prw-me-signin:hover { text-decoration: underline; }
+.prw-right .prw-collapse { margin-left: auto; }
+.prw-status { margin: 0; flex: 1; color: #646b73; font-size: 12px; font-variant-numeric: tabular-nums; }
+.prw-all { margin-left: auto; font-size: 12px; color: #2563eb; text-decoration: none; }
+.prw-collapse { width: 32px; height: 32px; flex-shrink: 0; border: 1px solid #e3e2dc; border-radius: 8px; background: #fff; color: #4b5563; cursor: pointer; font: 600 14px/1 system-ui, sans-serif; }
+.prw-collapse:hover { background: #f3f4f6; }
+.prw-rail-body { overflow: auto; padding: 10px 12px 14px; flex: 1; min-height: 0; }
+
+/* Collapsed: a narrow strip with only the toggle. */
+body.prw-left-collapsed .prw-left,
+body.prw-right-collapsed .prw-right { width: calc(var(--prw-collapsed) - 8px); }
+body.prw-left-collapsed .prw-left { left: 4px; }
+body.prw-right-collapsed .prw-right { right: 4px; }
+body.prw-left-collapsed .prw-left .prw-rail-body,
+body.prw-left-collapsed .prw-left .prw-rail-head > :not(.prw-collapse),
+body.prw-right-collapsed .prw-right .prw-rail-body,
+body.prw-right-collapsed .prw-right .prw-rail-head > :not(.prw-collapse) { display: none; }
+body.prw-left-collapsed .prw-left .prw-rail-head,
+body.prw-right-collapsed .prw-right .prw-rail-head { padding: 6px 2px; justify-content: center; border-bottom: none; }
+
+/* Documents */
+.prw-docs { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.prw-doc { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 6px 8px; border-radius: 8px; color: inherit; text-decoration: none; }
+.prw-doc:hover { background: #f3f4f6; }
+.prw-doc[aria-current="page"] { background: #eef2ff; font-weight: 600; }
+.prw-doc-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prw-doc-count { flex-shrink: 0; min-width: 20px; padding: 1px 6px; border-radius: 999px; background: #f3f4f6; color: #4b5563; font-size: 11px; text-align: center; font-variant-numeric: tabular-nums; }
+.prw-doc-count[data-kind="issues"] { background: #fef3c7; color: #92400e; }
+.prw-empty { margin: 4px 2px; color: #646b73; font-size: 13px; }
+
+/* The focus line */
+.prw-focus {
+  position: absolute; pointer-events: none; z-index: 20; border-radius: 6px;
+  /* Accord layout stage 1: one "you are here" look, strong enough to see (Mike 2026-09-19: a 5% wash was invisible). */
+  background: rgba(37, 99, 235, 0.10); box-shadow: inset 5px 0 0 #2563eb; mix-blend-mode: multiply;
+  transition: top .12s ease, height .12s ease;
+}
+.prw-focus[hidden] { display: none; }
+/* Accord round 2 stage A: the line an edit is open on. Same hue, turned up: a solid left bar and a
+   stronger tint, so the edit has a visible edge (HIGHLIGHT_POLICY: no third colour). */
+.prw-focus[data-editing="true"] { background: rgba(37, 99, 235, 0.18); box-shadow: inset 5px 0 0 #2563eb, 0 0 0 1px rgba(37, 99, 235, 0.45); }
+
+/* Right rail content */
+.prw-provisional { flex-shrink: 0; margin: 8px 12px 0; padding: 8px 10px; border-radius: 10px; background: #f0fdf4; border: 1px dashed #16a34a; }
+.prw-provisional[hidden] { display: none; }
+.prw-commit { min-height: 32px; padding: 0 12px; border: none; border-radius: 8px; background: #16a34a; color: #fff; font: 600 13px system-ui, sans-serif; cursor: pointer; }
+.prw-error { margin: 6px 0 0; color: #b91c1c; font-size: 12px; }
+.prw-linebox .plm-box { margin-top: 4px; }
+.prw-box-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.prw-keys { color: #8a9099; font-size: 11px; white-space: nowrap; }
+.prw-changes { margin-top: 14px; padding-top: 10px; border-top: 1px solid #ecebe6; }
+.prw-changes[hidden] { display: none; }
+.prw-changes-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.prw-step { color: #646b73; font-size: 12px; font-variant-numeric: tabular-nums; }
+.prw-step-nav { display: flex; gap: 6px; margin: 8px 0; }
+.prw-step-nav button, .prw-card-actions button, .prw-card > button {
+  min-height: 32px; padding: 4px 10px; border: 1px solid #d4d4cf; border-radius: 8px; background: #fff; color: inherit;
+  font: 600 12px/1.3 system-ui, sans-serif; cursor: pointer;
+}
+.prw-step-nav button:disabled { opacity: .45; cursor: default; }
+.prw-card { margin: 8px 0; padding: 8px 10px; border: 1px solid #e3e2dc; border-left: 3px solid var(--review-author, #9ca3af); border-radius: 8px; background: #fff; }
+.prw-card[data-current="true"] { box-shadow: 0 0 0 2px #2563eb; }
+.prw-card-who { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+.prw-card-who span { color: #646b73; }
+.prw-card-body { margin: 4px 0 6px; overflow-wrap: anywhere; font-size: 13px; }
+.prw-card-body del { color: #991b1b; }
+.prw-card-body ins { text-decoration: none; background: rgba(34, 197, 94, .18); }
+.prw-card-body blockquote { margin: 0; padding-left: 8px; border-left: 2px solid #d4d4cf; color: #4b5563; }
+.prw-card-body p { margin: 4px 0 0; }
+.prw-reply { color: #4b5563; font-size: 12px; }
+.prw-card-note { margin: 0 0 6px; color: #166534; font-size: 12px; }
+.prw-link { border: none; background: none; padding: 0; color: #2563eb; cursor: pointer; font: inherit; text-decoration: underline; }
+.prw-card-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.prw-accept { border-color: #86efac !important; }
+.prw-reject { border-color: #fca5a5 !important; }
+.prw-card textarea { box-sizing: border-box; width: 100%; min-height: 64px; margin: 8px 0 6px; padding: 8px; border: 1px solid #949ca8; border-radius: 8px; font: inherit; }
+.prw-hint { margin: 8px 0 0; color: #8a9099; font-size: 11px; }
+
+/* The PlayMaker Marks panel, docked in the right rail: part of the rail, not a floating card. */
+.prw-dock:not(:empty) { margin-top: 14px; padding-top: 10px; border-top: 1px solid #ecebe6; }
+.pm-review-panel.pm-review-panel-docked {
+  position: static !important; width: auto !important; max-height: none !important; overflow: visible !important;
+  padding: 0 !important; border: none !important; border-radius: 0 !important; box-shadow: none !important; background: transparent !important;
+}
+.pm-review-panel.pm-review-panel-docked h2 { font-size: 15px; }
+
+/* Phones: one column. The rails are bottom sheets opened from the ⋯ menu. */
+@media (max-width: 700px) {
+  body.prw-on #app #editor { padding-bottom: calc(100vh - 80px) !important; }
+  .prw-rail { display: none; }
+  .prw-rail.prw-sheet-open {
+    display: flex; left: 0 !important; right: 0 !important; top: auto !important; bottom: var(--proof-keyboard-offset, 0px) !important;
+    width: 100% !important; max-height: min(78dvh, 600px); border-radius: 16px 16px 0 0; z-index: 10002;
+    box-shadow: 0 -8px 32px #16223833; padding-bottom: env(safe-area-inset-bottom);
+  }
+  .prw-rail.prw-sheet-open .prw-rail-body, .prw-rail.prw-sheet-open .prw-rail-head > * { display: revert; }
+  .prw-rail.prw-sheet-open .prw-rail-head { display: flex; padding: 10px 12px; }
+  .prw-sheet-open .prw-collapse { width: 44px; height: 44px; font-size: 22px; border: none; }
+  .prw-sheet-open .prw-step-nav button, .prw-sheet-open .prw-card-actions button, .prw-sheet-open .prw-commit { min-height: 44px; font-size: 14px; }
+  .prw-keys { display: none; }
+}
+
+/* Step B3b: the reading-speed setting, on its own row under "who you are". */
+.prw-rate { order: 11; flex-basis: 100%; display: flex; align-items: center; gap: 6px; margin: 2px 0 0; font-size: 12px; color: #4b5563; }
+.prw-rate select { font: inherit; padding: 1px 4px; border: 1px solid #d2d6dc; border-radius: 6px; background: #fff; color: #26303c; }
+.prw-rate-need { color: #9ca3af; font-variant-numeric: tabular-nums; }
+@media (max-width: 700px) {
+  .prw-rate select { min-height: 36px; font-size: 14px; }
+}
+
+/* Proof Documents Step B4c: an AI change's rationale and "Ask why" (Claude Opus 5, 2026-09-19). */
+.prw-why { margin: 0 0 6px; padding: 6px 8px; border-radius: 6px; background: #f5f3ff; color: #4c1d95; font-size: 12px; }
+.prw-why-label { font-weight: 600; }
+.prw-why-by { color: #6b7280; }
+.prw-ask-why { display: inline-block; margin: 0 0 6px; font-size: 12px; }
+.prw-ask-why:disabled { color: #6b7280; text-decoration: none; cursor: default; }
+
+/* Proof Documents Step B4e (Claude Opus 5, 2026-09-19): a review bundle as one card. */
+.prw-bundle { margin: 8px 0; padding: 8px 10px; border: 1px solid #c7d2fe; border-left: 4px solid var(--review-author, #6366f1); border-radius: 8px; background: #fbfbff; }
+.prw-bundle[data-stale="true"] { border-color: #fcd34d; background: #fffbeb; }
+.prw-bundle-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin-bottom: 6px; }
+.prw-bundle-tag { padding: 1px 6px; border-radius: 999px; background: #e0e7ff; color: #3730a3; font: 700 10px/16px system-ui, sans-serif; text-transform: uppercase; letter-spacing: .04em; }
+.prw-bundle-title { font-size: 13px; }
+.prw-bundle-by { color: #6b7280; font-size: 12px; }
+.prw-bundle-passages { margin: 0 0 6px; padding-left: 18px; font-size: 12px; }
+.prw-bundle-passage { margin: 0 0 6px; }
+.prw-bundle-passage[data-stale="true"] { color: #92400e; }
+.prw-bundle-where { display: inline-block; min-width: 48px; color: #6b7280; font-weight: 600; }
+.prw-bundle-change del { color: #b91c1c; }
+.prw-bundle-change ins { color: #15803d; text-decoration: none; background: #dcfce7; border-radius: 3px; padding: 0 2px; }
+.prw-bundle-result { display: block; margin-top: 2px; color: #374151; }
+.prw-bundle-stale { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px; background: #fef3c7; color: #92400e; font-size: 11px; font-weight: 600; }
+.prw-bundle-note { margin: 0 0 6px; padding: 6px 8px; border-radius: 6px; background: #f3f4f6; color: #374151; font-size: 12px; }
+.prw-bundle-status { margin: 0 0 6px; color: #4b5563; font-size: 12px; }
+.prw-bundle-fallback { margin: 6px 0 0; color: #92400e; font-size: 12px; font-weight: 600; }
+
+/* Proof Documents Step B7: the chat's place in the rail, and the unread-mention badge on the toggle. */
+.prw-chat { flex: 0 1 auto; display: flex; flex-direction: column; min-height: 0; max-height: 50%; padding: 8px 12px 10px; border-top: 1px solid #e3e2dc; }
+.prw-chat:empty { display: none; }
+.prw-chat > .pch { flex: 1 1 auto; min-height: 0; }
+.prw-chat .pch-list { flex: 1 1 auto; min-height: 0; max-height: none; }
+body.prw-right-collapsed .prw-right .prw-chat { display: none; }
+@media (max-width: 700px) { .prw-chat { display: none; } }
+.prw-collapse { position: relative; }
+.prw-badge {
+  position: absolute; top: -6px; right: -6px; min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box;
+  border-radius: 999px; background: #dc2626; color: #fff; font: 700 10px/16px system-ui, sans-serif; text-align: center;
+}
+/* Editing first (2026-09-19): "changed by <name> — meaning changed" above the line's marks. */
+.prw-edit-note { margin: 4px 0 6px; font-size: 12px; color: #92400e; }
+.prw-edit-note[data-kind="correct"] { color: #4b5563; }
+
+/* The selected passage keeps the same highlight after hover. Mike, 2026-09-23. */
+
+
+/* Touch focus (Claude Opus 5, 2026-09-19): the current line is unmistakable without hover. */
+.prw-strip { display: none; }
+body.prw-touch .prw-focus {
+  background: rgba(37, 99, 235, 0.11); box-shadow: inset 6px 0 0 #2563eb, 0 0 0 1px rgba(37, 99, 235, .25);
+}
+body.prw-strip-on .prw-strip:not([hidden]) {
+  display: flex; align-items: center; gap: 8px; position: fixed; z-index: 9000; left: 0; right: 0;
+  bottom: var(--proof-keyboard-offset, 0px); box-sizing: border-box;
+  min-height: var(--prw-strip-h, 64px); padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px)) 12px;
+  background: #fffefb; border-top: 1px solid #d9dde3; box-shadow: 0 -6px 20px #16223822;
+  border-left: 6px solid #2563eb; font: 13px/1.3 system-ui, -apple-system, sans-serif; color: #26303c;
+}
+.prw-strip-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.prw-strip-where { font-weight: 600; font-size: 12px; color: #1d4ed8; }
+.prw-strip-status { font-size: 12px; color: #4b5563; }
+.prw-strip-status[data-status="agreed"], .prw-strip-status[data-status="approved"] { color: #15803d; font-weight: 600; }
+.prw-strip-status[data-status="rejected"] { color: #b91c1c; font-weight: 600; }
+.prw-strip-status[data-status="changed"] { color: #b45309; font-weight: 600; }
+.prw-strip-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #6b7280; font-size: 12px; }
+.prw-strip-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.prw-strip-actions button {
+  min-width: 56px; min-height: 48px; padding: 0 10px; border-radius: 12px; border: 1px solid #d4d4cf;
+  background: #fff; color: #26303c; font: 600 14px system-ui, sans-serif; cursor: pointer;
+}
+/* Reserve the strip's height so it never covers the end of the text; lift the feedback chip above it. */
+body.prw-strip-on #app #editor { padding-bottom: calc(100vh - 80px + var(--prw-strip-h, 64px)) !important; }
+body.prw-strip-on .soma-feedback-root { bottom: calc(var(--prw-strip-h, 64px) + 12px + env(safe-area-inset-bottom, 0px)); }
+/* The Feedback chip is position:fixed at z-index 9999 and sits on the phone's
+   Comment button (usability test 2026-09-28). Hide it while a selection toolbar
+   or the comment composer is open so the tap reaches Comment and the composer. */
+body:has(.mark-selection-bar[style*="display: flex"]) .soma-feedback-root,
+body:has(.mark-mobile-strip:not([style*="display: none"]):not([style*="display:none"]) .mark-mobile-strip-actions) .soma-feedback-root,
+body:has(.mark-popover.mark-popover-composer[style*="display: block"]) .soma-feedback-root,
+body:has(.mark-selection-bar[style*="display: flex"]) .soma-feedback-root *,
+body:has(.mark-mobile-strip:not([style*="display: none"]):not([style*="display:none"]) .mark-mobile-strip-actions) .soma-feedback-root *,
+body:has(.mark-popover.mark-popover-composer[style*="display: block"]) .soma-feedback-root * {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+body.prw-strip-on .plm-toast { bottom: calc(var(--prw-strip-h, 64px) + 16px); }
+
+/* Writing mode (2026-09-21, src/shared/reading-keys.ts): the caret blinks only while writing, and
+   the rail head says which mode the keys are in. */
+body.prw-on.pw-reading .ProseMirror { caret-color: transparent; }
+.prw-mode { flex-shrink: 0; min-height: 26px; padding: 2px 8px; border: 1px solid #d6d3cb; border-radius: 999px; background: #fff; color: #4b5563; font: 600 11px/1.2 system-ui, sans-serif; cursor: pointer; white-space: nowrap; }
+.prw-mode[data-mode="writing"] { background: #eef2ff; border-color: #c7d2fe; color: #3730a3; }
+.prw-mode:hover { background: #f3f4f6; }
+.prw-mode[data-mode="writing"]:hover { background: #e0e7ff; }
+
+/* Rail scrolling (2026-09-21, rail-follow.ts): each list scrolls on its own and never hands the
+   scroll on to the page; a list the person scrolled up in offers "New below ↓". */
+.prw-rail, .prw-rail-body, .prw-scroll-root { overscroll-behavior: contain; }
+.prw-follow-pill { display: block; position: sticky; bottom: 6px; z-index: 3; margin: 6px auto 0; min-height: 28px; padding: 3px 12px; border: 1px solid #bfdbfe; border-radius: 999px; background: #eff6ff; color: #1d4ed8; font: 600 12px/1.2 system-ui, sans-serif; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+.prw-follow-pill[hidden] { display: none; }
+.pch > .prw-follow-pill { position: relative; bottom: auto; align-self: center; margin: -36px auto 6px; }
+.prw-provisional[data-state="error"] { background: #fef2f2; border: 1px solid #fecaca; }
+.prw-provisional[data-state="error"] .prw-error { margin: 0; }
+
+/* Accord layout stage 1 (Claude Opus 5, 2026-09-21, Ren's proposal "Status bar under the page"):
+   a fixed 28 px bar at the bottom of the page column, between the rails. It never scrolls away. */
+.pst-bar {
+  position: fixed; z-index: 58; bottom: 0; left: var(--prw-left, 0px); right: var(--prw-right, 0px);
+  box-sizing: border-box; height: 28px; display: flex; align-items: center; gap: 0; padding: 0 14px;
+  background: #fff; border-top: 1px solid #e3e6ea; color: #333; white-space: nowrap; overflow: hidden;
+  font: 12.5px/1.2 system-ui, -apple-system, sans-serif; font-variant-numeric: tabular-nums;
+}
+.pst-sep { flex-shrink: 0; width: 1px; height: 14px; margin: 0 12px; background: #e3e6ea; }
+.pst-line b { font-weight: 600; }
+.pst-marked { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.pst-marked-link { border: none; background: none; padding: 0; margin: 0; color: #2456b8; font: inherit; cursor: pointer; }
+.pst-marked-link:hover { text-decoration: underline; }
+.pst-ago { color: #6b7280; }
+.pst-issues { flex-shrink: 0; padding-right: 10px; }
+.pst-issues[data-count="0"] { color: #166534; }
+.pst-provisional { display: inline-flex; align-items: center; color: #166534; }
+.pst-provisional[hidden] { display: none; }
+.pst-save { margin-left: 6px; min-height: 22px; padding: 0 10px; border: none; border-radius: 6px; background: #16a34a; color: #fff; font: 600 12px system-ui, sans-serif; cursor: pointer; }
+.pst-bar .pst-mode {
+  margin-left: auto; flex-shrink: 0; min-height: 0; padding: 2px 8px; border: none; border-radius: 6px;
+  background: #eef3ff; color: #2f6fed; font: 600 12.5px/1.3 system-ui, sans-serif; cursor: default;
+}
+.pst-bar .pst-mode[data-mode="writing"] { background: #fef3c7; color: #92400e; }
+.pst-bar .pst-mode:hover { background: #eef3ff; }
+.pst-bar .pst-mode[data-mode="writing"]:hover { background: #fef3c7; }
+/* Accord round 2 stage A (Mike, 2026-09-22: "there should be some better indication that we are in
+   editing mode"): "Editing line N" in the same blue as the "you are here" bar — the one hue
+   intensified, not a third colour (HIGHLIGHT_POLICY). */
+.pst-bar .pst-mode[data-mode="editing"],
+.pst-bar .pst-mode[data-mode="editing"]:hover { background: #2563eb; color: #fff; }
+/* "Proposed — …" after a leave posted. It fades in place; it is never a modal and never takes focus. */
+.pst-notice { flex-shrink: 1; min-width: 0; margin-left: 12px; overflow: hidden; text-overflow: ellipsis; color: #166534; font-weight: 600; }
+.pst-notice[hidden] { display: none; }
+/* The phone's door: there is no Cmd+Enter on a phone, so Done is visible while editing. */
+
+/* A touch strip (tablets, phones) docks at the very bottom: the bar sits right above it. */
+body.prw-strip-on .pst-bar { bottom: calc(var(--proof-keyboard-offset, 0px) + var(--prw-strip-h, 64px) + env(safe-area-inset-bottom, 0px)); }
+/* Toasts and the feedback chip sit above the bar. */
+body.pst-on .plm-toast { bottom: 40px; }
+@media (min-width: 701px) {
+  body.pst-on.prw-left-collapsed .soma-feedback-root { bottom: calc(28px + 12px + env(safe-area-inset-bottom, 0px)); }
+}
+
+/* The "You marked up to here" rule (Slack's new-messages line), an overlay in the gap after the
+   viewer's last explicit mark: it never moves the text. */
+.pst-rule { position: absolute; z-index: 21; pointer-events: none; height: 0; display: flex; align-items: center; gap: 10px; color: #2f6fed; }
+.pst-rule[hidden] { display: none; }
+.pst-rule::before, .pst-rule::after { content: ""; flex: 1; border-top: 1.5px solid #2f6fed; }
+.pst-rule-label { flex-shrink: 0; padding: 0 2px; background: transparent; font: 600 11.5px/1 system-ui, -apple-system, sans-serif; white-space: nowrap; }
+
+/* Phones: one compact line above the bottom strip (stage 3 folds it into the strip). */
+@media (max-width: 700px) {
+  .pst-bar { left: 0; right: 0; height: 24px; padding: 0 10px; font-size: 12px; bottom: var(--proof-keyboard-offset, 0px); z-index: 8999; }
+  .pst-sep { margin: 0 7px; }
+  .pst-marked-label { display: none; }
+  .pst-marked[data-empty], .pst-marked[data-empty] + .pst-sep { display: none; }
+  .pst-ago { display: none; }
+  .pst-bar .pst-mode { margin-left: auto; padding-left: 8px; }
+  .pst-marked-link::before { content: "Marked to "; color: #333; }
+  .pst-provisional > span:not(.pst-sep) { display: none; }
+  body.pst-on .soma-feedback-root { bottom: calc(24px + 8px + env(safe-area-inset-bottom, 0px)); }
+  body.pst-on.prw-strip-on .soma-feedback-root { bottom: calc(var(--prw-strip-h, 64px) + 24px + 12px + env(safe-area-inset-bottom, 0px)); }
+  body.pst-on.prw-strip-on .plm-toast { bottom: calc(var(--prw-strip-h, 64px) + 40px); }
+  .pst-rule-label { font-size: 11px; }
+}
+
+/* The selected-passage anchor owns compensation; native anchoring would apply it twice. */
+body.prw-on { overflow-anchor: none; }
+
+/* Persistent completion text wraps without replacing mode or navigation controls. */
+.pst-bar:has(.pst-completion:not([hidden])) { height: auto; min-height: 28px; flex-wrap: wrap; overflow: visible; }
+.pst-completion { white-space: normal; line-height: 1.4; padding: 4px; color: #166534; }
+.pst-completion[hidden] { display: none; }
+.prw-strip:has(.pst-completion:not([hidden])) { flex-wrap: wrap; }
+.prw-strip .pst-completion { flex: 0 0 100%; font-size: 12px; }
+.anv-detail { padding: 8px; border-bottom: 1px solid #dde2ea; }
+.anv-detail:has(> [hidden]):not(:has(> :not([hidden]))) { display: none; }
+
+/* Identity remains reachable in the compact toolbar and in People. */
+#share-banner .prw-me { margin: 0; padding: 0; border: 0; font-size: 10px; line-height: 12px; min-width: 0; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+#share-banner .prw-me span + span { margin-left: 3px; }
+#share-banner .prw-me-signin { color: #1d4ed8; }
+.prw-guest-signin { color: #1d4ed8; text-decoration: underline; }
+
+.prw-guest-notice { position: fixed; top: calc(var(--prw-chrome, 60px) + 4px); left: 50%; transform: translateX(-50%); z-index: 9000; max-width: calc(100vw - 24px); width: max-content; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; color: #334155; box-shadow: 0 2px 8px #0001; font: 12px/1.4 system-ui; }

@@ -1,3 +1,6 @@
+import { moveDocumentAsync } from './document-engine.js';
+import { setImmediateMoveActors } from './moves.js';
+import { redactSuggestionDecisions, blindReadView, readBlindView, redactAsk, redactTtl, filterBlindEvents, visibleAlternative } from './blind-view.js';
 import { createHash } from 'crypto';
 import { Router, type Request, type Response } from 'express';
 import {
@@ -5,10 +8,12 @@ import {
   addDocumentEvent,
   bumpDocumentAccessEpoch,
   getDocumentBySlug,
+  listDocumentAgentKeys,
   getDocumentProjectionBySlug,
   listDocumentEvents,
   rebuildDocumentBlocks,
   resolveDocumentAccessRole,
+  resolveDocumentAccess,
 } from './db.js';
 import {
   activateDurableCollabQuarantine,
@@ -22,6 +27,7 @@ import {
   getLoadedCollabMarkdownForVerification,
   getLoadedCollabMarkdownFromFragment,
   getLoadedCollabFragmentTextHash,
+  getAgentPresenceExpiresAt,
   hasAgentPresenceInLoadedCollab,
   isCanonicalReadMutationReady,
   invalidateLoadedCollabDocument,
@@ -37,6 +43,52 @@ import {
   verifyAuthoritativeMutationBaseStable,
 } from './collab.js';
 import { canonicalizeStoredMarks, type StoredMark } from '../src/formats/marks.js';
+import { buildIssueReport, computeServerLines, listCanonicalLineMarks, resolveAgentLineTarget, viewerParticipantStatus, writeAgentLineMark } from './line-marks.js';
+import { TIER_POLICY } from '../src/shared/line-tiers.js';
+import { evaluateDocumentTiers, listTierRecords, serializeTierViews, writeTiers } from './line-tiers.js';
+import { bindFamiliar, familiarOf, briefFor, issueReportFor, listFamiliars, proxyStateReport, resolveHuman, serializeBrief, writeAgentProxyMarks } from './proxy-marks.js';
+import { EVIDENCE_POLICY, PROXY_POLICY, isClaimedMark } from '../src/shared/proxy-marks.js';
+import { buildSinceYou, freezeIfAligned, listSnapshotInfos, scheduleAlignmentCheck, sendSnapshotFile } from './alignment.js';
+import { documentReviewAlignment } from './review-alignment.js';
+import { agentKeyActor, anchorForLine as anchorForDocLine } from '../src/shared/line-marks.js';
+import { decideActor } from './identity.js';
+import { answerAgentAsk, buildAskReport, createAskOnLine, createAgentAsk, listAgentAsks, listCanonicalAsks, reaskAsk, withdrawAsk } from './asks.js';
+import { ASK_POLICY, askTeamActors, oneLine } from '../src/shared/asks.js';
+import { getPublicOrigin } from './public-origin.js';
+import {
+  CROSS_INVITE_POLICY,
+  activeAttestations,
+  agentKeyViewForToken,
+  allowCrossInvite,
+  confirmNomination,
+  createAttestation,
+  createNomination,
+  displayName as crossDisplayName,
+  documentProvenance,
+  listAgentKeyViews,
+  listNominations,
+} from './cross-invitation.js';
+import { createAgentDo, listAgentDos, reviseDo, revokeDo, runDo, withdrawDo } from './do.js';
+import { DO_POLICY, DO_OPERATIONS } from '../src/shared/do.js';
+import {
+  aidsReport,
+  checkSuggestionWhy,
+  clearFlag,
+  clearObjection,
+  createAgentObjection,
+  keepObjection,
+  recordSuggestionNote,
+  suggestionNoteFields,
+  writeAgentFlag,
+  writeAgentNote,
+  type SuggestionNoteFields,
+} from './review-aids.js';
+import { ISSUE_PRIORITY, REJECT_CHIPS, SITTING_BUDGET, UNCERTAIN_POLICY, WHY_POLICY } from '../src/shared/review-aids.js';
+import { OBJECTION_POLICY } from '../src/shared/objections.js';
+import { normalizeActorString } from '../src/shared/identity.js';
+
+/** Step B3: edit/v2 conflicts that an insertAfter ask retries (a keystroke landed meanwhile). */
+const ASK_INSERT_RETRY_CODES = new Set(['STALE_REVISION', 'STALE_BASE', 'PROJECTION_STALE', 'LIVE_REF_DRIFT']);
 import {
   deriveCollabApplied,
   deriveCursorApplied,
@@ -44,9 +96,38 @@ import {
 } from './agent-collab-status.js';
 import {
   executeDocumentOperationAsync,
+  finalizeSuggestionsBatchAsync,
   type AsyncDocumentMutationContext,
   type EngineExecutionResult,
 } from './document-engine.js';
+import {
+  addToBundle,
+  alternativesReport,
+  bundleField,
+  bundleReport,
+  checkBundleField,
+  checkTtl,
+  clearTtl,
+  decideAlternative,
+  decideBundle,
+  offerAlternative,
+  pickAlternative,
+  setBlindSetting,
+  setTtl,
+  ttlReport,
+  withdrawAlternative,
+  type LineEditor,
+} from './proof-extras.js';
+import { redactIssues, serializeExplain, termsReport } from './proof-extras-eval.js';
+import { getProofSettings, listExplains } from './proof-extras-store.js';
+import { BUNDLE_POLICY } from '../src/shared/bundles.js';
+import { ALT_POLICY } from '../src/shared/alternatives.js';
+import { BLIND_POLICY, objectionLinesRevealed, proxyVisibleTo } from '../src/shared/blind.js';
+import { EXPLAIN_POLICY, TERM_POLICY } from '../src/shared/explain.js';
+import { TTL_POLICY } from '../src/shared/ttl.js';
+import { getChatMessage, listChatMessages, mentionCandidates, postChatMessage, serializeChatMessage } from './chat.js';
+import { CHAT_POLICY, type ChatSuggestionRef } from '../src/shared/chat.js';
+import type { DocLine as ProofDocLine } from '../src/shared/line-marks.js';
 import {
   recordAgentMutation,
   recordCollabRouteLatency,
@@ -130,6 +211,8 @@ import {
   releaseMutationReservation,
   type MutationReservation,
 } from './mutation-idempotency.js';
+import { EXPORT_FORMATS, EXPORT_FORMAT_ERROR, exportProofDocument, historyNotesForState, normalizeExportFormat } from './proof-dialect.js';
+import { productName } from '../src/shared/product-identity.js';
 
 export const agentRoutes = Router({ mergeParams: true });
 
@@ -840,7 +923,8 @@ function checkAuth(
   }
 
   const secret = getPresentedSecret(req, slug);
-  const role = secret ? resolveDocumentAccessRole(slug, secret) : null;
+  const access = secret ? resolveDocumentAccess(slug, secret) : null;
+  const role = access?.role ?? null;
   const effectiveShareState = getEffectiveShareStateForRole(doc, role, Boolean(secret && role));
 
   if (effectiveShareState === 'REVOKED' && role !== 'owner_bot') {
@@ -865,6 +949,7 @@ function checkAuth(
     });
     return null;
   }
+  agentRequestTokenIds.set(req, access?.tokenId ?? null);
   return role;
 }
 
@@ -881,7 +966,7 @@ function sendMutationResponse(
       ...existingHelp,
       reportBug: buildReportBugHelp({
         slug: context.slug,
-        suggestedSummary: `Proof API trouble on ${context.route}`,
+        suggestedSummary: `${productName()} API trouble on ${context.route}`,
         suggestedContext: 'Include what you were trying to do, the response code/message, and any requestId or slug you have.',
         suggestedEvidence: [
           'The failing request URL, method, status, and response body',
@@ -1012,6 +1097,10 @@ function maybeLogMarkHydrationMismatch(
   });
 }
 
+// Capture at authentication, before asynchronous mutations can yield to revocation.
+// Owner credentials resolve to null; never accept attribution from the request body.
+const agentRequestTokenIds = new WeakMap<Request, string | null>();
+
 type AgentParticipation = {
   presenceEntry: Record<string, unknown>;
   cursorHint?: { quote?: string; ttlMs?: number } | null;
@@ -1034,8 +1123,6 @@ function ensureAgentPresenceForAuthenticatedCall(
     upgradeProvisionalAutoPresence(req, slug, id);
   }
 
-  if (hasAgentPresenceInLoadedCollab(slug, id)) return false;
-
   const now = new Date().toISOString();
   const entry = {
     id,
@@ -1045,6 +1132,8 @@ function ensureAgentPresenceForAuthenticatedCall(
     status: 'active',
     details,
     at: now,
+    expiresAt: getAgentPresenceExpiresAt(now),
+    tokenId: agentRequestTokenIds.get(req) ?? null,
   };
   const activity = {
     type: 'agent.presence',
@@ -1162,6 +1251,7 @@ function buildParticipationFromMutation(
     avatar: identity.avatar,
     status: 'editing',
     details: options?.details ?? '',
+    tokenId: agentRequestTokenIds.get(req) ?? null,
     at: now,
   };
   const quote = (options?.quote ?? extractCursorQuote(slug, body)) ?? null;
@@ -1190,6 +1280,7 @@ function applyParticipationToLoadedCollab(
     try {
       cursorApplied = applyAgentCursorHintToLoadedCollab(slug, {
         id: String(participation.presenceEntry.id),
+        tokenId: typeof participation.presenceEntry.tokenId === 'string' ? participation.presenceEntry.tokenId : null,
         quote: participation.cursorHint.quote,
         ttlMs: participation.cursorHint.ttlMs,
         name: typeof participation.presenceEntry.name === 'string' ? participation.presenceEntry.name : undefined,
@@ -1661,6 +1752,7 @@ function notifyCollabMutation(
         try {
           cursorApplied = applyAgentCursorHintToLoadedCollab(slug, {
             id: String(participation.presenceEntry.id),
+            tokenId: typeof participation.presenceEntry.tokenId === 'string' ? participation.presenceEntry.tokenId : null,
             quote: participation.cursorHint.quote,
             ttlMs: participation.cursorHint.ttlMs,
             name: typeof participation.presenceEntry.name === 'string' ? participation.presenceEntry.name : undefined,
@@ -2047,7 +2139,7 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
   body._links = links;
   const agent: Record<string, unknown> = {
     ...(isRecord(body.agent) ? body.agent : {}),
-    what: 'Proof is a collaborative document editor. This is a shared doc.',
+    what: `${productName()} is a collaborative document editor. This is a shared doc.`,
     docs: AGENT_DOCS_PATH,
     createApi: CANONICAL_CREATE_API_PATH,
     stateApi: `/documents/${slug}/state`,
@@ -2094,7 +2186,7 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
       ...(isRecord(body.help) ? body.help : {}),
       reportBug: buildReportBugHelp({
         slug,
-        suggestedSummary: 'Proof projection looks stale while reading document state.',
+        suggestedSummary: `${productName()} projection looks stale while reading document state.`,
         suggestedContext: 'State or snapshot returned fallback content, stale metadata, or warned that projection repair is pending.',
         suggestedEvidence: [
           'The full /state or /snapshot response payload',
@@ -2103,6 +2195,172 @@ agentRoutes.get('/:slug/state', async (req: Request, res: Response) => {
         ],
       }),
     };
+  }
+
+  // Proof Documents Step 1: line marks, the team and the Issue list, computed from the same
+  // markdown this response returns (before span stripping, which the line parser does itself).
+  if (typeof body.markdown === 'string' || typeof body.content === 'string') {
+    try {
+      // Step B3: asks are evaluated against the same lines, and open ones are Issues.
+      let askReport: ReturnType<typeof buildAskReport> | null = null;
+      const report = await buildIssueReport(
+        slug,
+        typeof body.markdown === 'string' ? body.markdown : String(body.content),
+        isRecord(body.marks) ? body.marks : doc?.marks,
+        {
+          asks: (lines) => { const built = buildAskReport(slug, lines); askReport = built; return built.issueInputs; },
+          teamExtra: askTeamActors(listCanonicalAsks(slug)),
+        },
+      );
+      body.asks = (askReport as ReturnType<typeof buildAskReport> | null)?.asks ?? [];
+      links.asks = { method: 'GET', href: `/api/agent/${slug}/asks` };
+      links.createAsk = { method: 'POST', href: `/api/agent/${slug}/asks` };
+      body.lineMarks = report.lineMarks;
+      body.lines = report.lines;
+      body.sections = report.sections;
+      body.issues = report.issues;
+      // Step B3c: an aligned report freezes a snapshot (once per distinct aligned state).
+      let snapshot: Awaited<ReturnType<typeof freezeIfAligned>>['snapshot'] = null;
+      try {
+        snapshot = (await freezeIfAligned(slug, typeof body.markdown === 'string' ? body.markdown : String(body.content), report)).snapshot;
+      } catch (error) {
+        console.warn('[agent-routes] snapshot freeze failed', { slug, error: String(error) });
+      }
+      links.snapshots = { method: 'GET', href: `/api/agent/${slug}/snapshots` };
+      links.sinceYou = { method: 'GET', href: `/api/agent/${slug}/since-you` };
+      body.carriedMarks = report.carried;
+      // Step B4c/B4d: uncertain flags, AI review notes, open objections; each Issue has a priority.
+      body.flags = report.flags;
+      body.reviewNotes = report.reviewNotes;
+      body.objections = report.objections;
+      body.reviewAidsPolicy = { why: WHY_POLICY, rejectChips: REJECT_CHIPS, uncertain: UNCERTAIN_POLICY, priority: ISSUE_PRIORITY, sitting: SITTING_BUDGET, objections: OBJECTION_POLICY };
+      links.flags = { method: 'GET', href: `/api/agent/${slug}/flags` };
+      links.notes = { method: 'GET', href: `/api/agent/${slug}/notes` };
+      links.objections = { method: 'GET', href: `/api/agent/${slug}/objections` };
+      // Steps B4e + B4f: bundles, open alternatives, times-to-live (expiry evaluated at
+      // `evaluatedAt`), Explain threads, defined terms and the document's settings (blind).
+      body.bundles = report.bundles;
+      body.alternatives = report.alternatives;
+      body.ttls = report.ttls;
+      // {do} action lines (safe slice: approval only by a signed-in person; execution not enabled).
+      body.dos = report.dos;
+      body.doPolicy = { executionEnabled: DO_POLICY.executionEnabled, approvalSingleUse: DO_POLICY.approvalSingleUse, operations: Object.keys(DO_OPERATIONS) };
+      links.dos = { method: 'GET', href: `/api/agent/${slug}/dos` };
+      links.createDo = { method: 'POST', href: `/api/agent/${slug}/dos` };
+      body.explains = report.explains;
+      body.terms = report.terms;
+      body.settings = report.settings;
+      body.evaluatedAt = report.evaluatedAt;
+      body.disagreementLines = report.disagreementLines;
+      // Line tiers: decision lines need each person's mark; a context line an AI read is enough.
+      body.tiers = report.tiers;
+      body.tierPolicy = TIER_POLICY;
+      // Dialect import: history notes (marks an import could not make live; they never count).
+      try { body.dialectHistory = historyNotesForState(slug, report.docLines ?? []); } catch { body.dialectHistory = []; }
+      links.export = { method: 'GET', href: `/api/agent/${slug}/export?format=proof-dialect`, formats: EXPORT_FORMATS };
+      links.tiers = { method: 'GET', href: `/api/agent/${slug}/tiers` };
+      links.setTiers = { method: 'POST', href: `/api/agent/${slug}/tiers` };
+      body.proofExtrasPolicy = { bundles: BUNDLE_POLICY, alternatives: ALT_POLICY, blind: BLIND_POLICY, explain: EXPLAIN_POLICY, terms: { ...TERM_POLICY, sectionPattern: String(TERM_POLICY.sectionPattern), linePatterns: TERM_POLICY.linePatterns.map(String) }, ttl: TTL_POLICY };
+      links.bundles = { method: 'GET', href: `/api/agent/${slug}/bundles` };
+      links.alternatives = { method: 'GET', href: `/api/agent/${slug}/alternatives` };
+      links.ttl = { method: 'GET', href: `/api/agent/${slug}/ttl` };
+      links.explains = { method: 'GET', href: `/api/agent/${slug}/explains` };
+      links.terms = { method: 'GET', href: `/api/agent/${slug}/terms` };
+      links.settings = { method: 'GET', href: `/api/agent/${slug}/settings` };
+      // Step B4f: blind marking. The caller sees other members' positions only on lines it has
+      // marked itself (the owner credential with no "by" reads everything).
+      let revealedLines: Set<number> | null = null;
+      if (report.settings.blind) {
+        const viewer = blindViewer(req, slug, role);
+        body.blind = { on: true, viewer: viewer ?? null };
+        if (viewer !== undefined) {
+          const lines = report.docLines ?? [];
+          const view = blindReadView(slug, lines, viewer, report.lineMarks)!;
+          body.marks = redactSuggestionDecisions(isRecord(body.marks) ? body.marks : {}, view);
+          revealedLines = view.revealed;
+          body.lineMarks = view.lineMarks;
+          body.dialectHistory = historyNotesForState(slug, lines, view.revealed);
+          body.tiers = serializeTierViews(evaluateDocumentTiers(slug, lines, view.lineMarks, viewer), lines);
+          body.sections = report.sections.map(({ issues: _issues, ...section }) => section);
+          // Mike, 2026-09-23 (usability brief): the status and the rest of /state must not
+          // disclose a hidden rejection through an objection's reason, condition or Issue.
+          const visibleObjections = report.objections.filter(objection => {
+            const covered = objection.lines as Array<{ lineIndex: number | null }>;
+            return objectionLinesRevealed(covered.map(line => line.lineIndex), view.revealed);
+          });
+          const visibleObjectionIds = new Set(visibleObjections.map(objection => objection.id));
+          body.objections = visibleObjections;
+          body.issues = redactIssues(report.issues, view.revealed).filter(issue =>
+            issue.type !== 'objection' || visibleObjectionIds.has(issue.objectionId));
+          body.ttls = report.ttls.map(ttl => redactTtl(ttl, view));
+          body.asks = (body.asks as Array<Record<string, unknown>>).map(ask => redactAsk(ask, view));
+          body.alternatives = redactAltSets(report.alternatives, view.revealed, viewer ?? '');
+          body.disagreementLines = report.disagreementLines.filter(index => view.revealed.has(index));
+          body.carriedMarks = report.carried.filter(c => view.revealed.has(c.lineIndex) || actorKeyOf(c.by) === actorKeyOf(viewer ?? ''));
+          body.blind = { on: true, viewer, revealedLines: [...view.revealed].sort((a, b) => a - b), hiddenPositions: view.hidden };
+        }
+      }
+      // Familiar proxy marks: each person's Familiar and its current proxies, listed apart from
+      // lineMarks. They never count: `alignment` above is computed without them.
+      let unratifiedProxies = 0;
+      try {
+        const blindOn = report.settings.blind;
+        const viewer = blindOn ? blindViewer(req, slug, role) : undefined;
+        const proxyReport = proxyStateReport(slug, report, isRecord(body.marks) ? body.marks : doc?.marks, { viewer });
+        body.familiars = proxyReport.familiars;
+        body.proxies = proxyReport.proxies;
+        unratifiedProxies = proxyReport.unratified;
+        body.proxyPolicy = { ...PROXY_POLICY, evidence: EVIDENCE_POLICY };
+        links.proxyMarks = { method: 'POST', href: `/api/agent/${slug}/marks/proxy` };
+        links.familiars = { method: 'GET', href: `/api/agent/${slug}/familiars` };
+      } catch (error) {
+        console.warn('[agent-routes] proxy report failed', { slug, error: String(error) });
+      }
+      // Evidence: an AI line mark without evidence is "claimed".
+      if (Array.isArray(body.lineMarks)) {
+        body.lineMarks = (body.lineMarks as Array<Record<string, unknown>>).map(mark => (isClaimedMark(mark as { by: string; hidden?: boolean; evidence?: string | null }) ? { ...mark, claimed: true } : mark));
+      }
+      // Mike, 2026-09-23 (usability brief): publish status from visible positions.
+      /**
+       * Under blind marking this is recomputed from the marks this caller is allowed to see.
+       * participantStatus.aligned answers: has everyone seen the current text, with nobody rejecting it?
+       */
+      body.participantStatus = viewerParticipantStatus(
+        report,
+        Array.isArray(body.lineMarks) ? body.lineMarks as typeof report.lineMarks : report.lineMarks,
+        revealedLines,
+      );
+      const accordAlignment = documentReviewAlignment(slug, report, isRecord(body.marks) ? body.marks : doc?.marks);
+      body.alignment = {
+        ...(revealedLines ? {} : { aligned: accordAlignment.aligned, counts: accordAlignment.counts }),
+        team: accordAlignment.team,
+        owners: report.owners,
+        unratifiedProxies,
+        proxyRule: 'Proxy marks from a Familiar never count until their person ratifies them',
+        lastSnapshot: snapshot ? { ...snapshot, ledger: `/api/agent/${slug}/snapshots/${snapshot.id}.md` } : null,
+        teamRule: 'In accord when All open has zero items: the same pending proposals, asks and threads as the page. Team includes owners, reviewers, proposal authors and people who accepted or rejected, askers, addressees and active agent keys. Reading alone is not an issue. Snapshot confirmation still uses the legacy rule.',
+      };
+      links.lineMark = { method: 'POST', href: `/api/agent/${slug}/marks/line` };
+      // Cross invitation: who is on this document and how each of them got in. An open nomination
+      // is an Issue above; the chain here is what an audit system reads (actor, authority, basis,
+      // evidence, time).
+      try {
+        body.nominations = listNominations(slug);
+        body.attestations = activeAttestations(slug);
+        body.agents = listAgentKeyViews(slug).filter(key => !key.revokedAt).map(key => ({
+          actor: key.actor, name: key.label, sponsor: key.sponsorActor, sponsorName: key.sponsorName,
+          runtime: key.runtime, suspended: key.suspended, allowDirectInvite: key.allowDirectInvite,
+        }));
+        body.provenance = documentProvenance(slug);
+        links.team = { method: 'GET', href: `/api/agent/${slug}/team` };
+        links.nominate = { method: 'POST', href: `/api/agent/${slug}/team/nominations` };
+        links.attest = { method: 'POST', href: `/api/agent/${slug}/team/attestations` };
+      } catch (error) {
+        console.warn('[agent-routes] provenance failed', { slug, error: String(error) });
+      }
+    } catch (error) {
+      console.warn('[agent-routes] line-mark report failed', { slug, error: String(error) });
+    }
   }
 
   // Strip all Proof span tags from agent-facing markdown so agents see clean text.
@@ -2247,7 +2505,7 @@ agentRoutes.get('/:slug/snapshot', async (req: Request, res: Response) => {
         ...(isRecord(result.body.help) ? result.body.help : {}),
         reportBug: buildReportBugHelp({
           slug,
-          suggestedSummary: 'Proof snapshot returned stale or inconsistent block data.',
+          suggestedSummary: `${productName()} snapshot returned stale or inconsistent block data.`,
           suggestedContext: 'Snapshot returned stale fallback content, a projection warning, or an internal read error.',
           suggestedEvidence: [
             'The full /snapshot response payload',
@@ -2267,7 +2525,7 @@ agentRoutes.get('/:slug/snapshot', async (req: Request, res: Response) => {
       help: {
         reportBug: buildReportBugHelp({
           slug,
-          suggestedSummary: 'Proof failed to build a snapshot for this document.',
+          suggestedSummary: `${productName()} failed to build a snapshot for this document.`,
           suggestedContext: 'The snapshot endpoint returned an internal error while I was trying to read the document.',
           suggestedEvidence: [
             'The failing /snapshot request URL and response body',
@@ -2279,6 +2537,111 @@ agentRoutes.get('/:slug/snapshot', async (req: Request, res: Response) => {
     });
   }
 });
+
+/**
+ * After a successful edit/v2 commit: confirm the collab state and tell open pages. Shared by
+ * POST /edit/v2 and Step B3's POST /asks with insertAfter (an ask on a new line).
+ */
+async function settleEditV2Success(req: Request, slug: string, editV2Body: Record<string, unknown>, result: { status: number; body: unknown }): Promise<void> {
+  if (!(result.status >= 200 && result.status < 300 && isRecord(result.body))) return;
+  const participation = buildParticipationFromMutation(req, slug, editV2Body, { details: 'edit.v2' });
+  if (isSingleWriterEditEnabled()) {
+    const priorCollab = isRecord(result.body.collab) ? result.body.collab : {};
+    const collabApplied = priorCollab.status === 'confirmed';
+    let presenceApplied = false;
+    let cursorApplied = false;
+    if (collabApplied) {
+      const appliedParticipation = applyParticipationToLoadedCollab(slug, participation);
+      presenceApplied = appliedParticipation.presenceApplied;
+      cursorApplied = appliedParticipation.cursorApplied;
+    }
+    result.body = {
+      ...result.body,
+      collab: {
+        ...priorCollab,
+        canonicalStatus: typeof priorCollab.canonicalStatus === 'string'
+          ? priorCollab.canonicalStatus
+          : (collabApplied ? 'confirmed' : 'pending'),
+      },
+      presenceApplied,
+      cursorApplied,
+    };
+    if (collabApplied) {
+      broadcastToRoom(slug, { type: 'document.updated', source: 'agent-edit-v2', timestamp: new Date().toISOString() });
+    }
+  } else {
+    if (TEST_EDIT_V2_POST_COMMIT_DELAY_MS > 0) {
+      await sleep(TEST_EDIT_V2_POST_COMMIT_DELAY_MS);
+    }
+    const priorCollab = isRecord(result.body.collab) ? result.body.collab : {};
+    const priorConfirmed = priorCollab.status === 'confirmed';
+    const {
+      reason: _priorReason,
+      status: _priorStatus,
+      markdownStatus: _priorMarkdownStatus,
+      fragmentStatus: _priorFragmentStatus,
+      canonicalStatus: _priorCanonicalStatus,
+      canonicalExpectedHash: _priorCanonicalExpectedHash,
+      canonicalObservedHash: _priorCanonicalObservedHash,
+      ...priorCollabRest
+    } = priorCollab;
+    const includeCanonicalDiagnostics = shouldIncludeCanonicalDiagnostics();
+    const activeCollabClients = getActiveCollabClientCount(slug);
+    if (priorConfirmed && activeCollabClients === 0) {
+      result.body = {
+        ...result.body,
+        collab: {
+          ...priorCollabRest,
+          ...priorCollab,
+          canonicalStatus: typeof priorCollab.canonicalStatus === 'string' ? priorCollab.canonicalStatus : 'confirmed',
+          ...(includeCanonicalDiagnostics
+            ? {
+                canonicalExpectedHash: priorCollab.canonicalExpectedHash ?? null,
+                canonicalObservedHash: priorCollab.canonicalObservedHash ?? null,
+              }
+            : {}),
+        },
+      };
+      broadcastToRoom(slug, { type: 'document.updated', source: 'agent-edit-v2', timestamp: new Date().toISOString() });
+    } else {
+      const collabStatus = await notifyCollabMutation(
+        slug,
+        participation,
+        {
+          verify: true,
+          source: 'edit.v2',
+          stabilityMs: EDIT_COLLAB_STABILITY_MS,
+          fallbackBarrier: !priorConfirmed,
+          strictLiveDoc: true,
+          apply: false,
+        },
+      );
+      result.body = {
+        ...result.body,
+        collab: {
+          ...priorCollabRest,
+          status: collabStatus.confirmed ? 'confirmed' : 'pending',
+          markdownStatus: collabStatus.confirmed && collabStatus.markdownConfirmed ? 'confirmed' : 'pending',
+          fragmentStatus: collabStatus.confirmed && collabStatus.fragmentConfirmed ? 'confirmed' : 'pending',
+          canonicalStatus: collabStatus.canonicalConfirmed ? 'confirmed' : 'pending',
+          ...(includeCanonicalDiagnostics
+            ? {
+                canonicalExpectedHash: collabStatus.canonicalExpectedHash ?? null,
+                canonicalObservedHash: collabStatus.canonicalObservedHash ?? null,
+              }
+            : {}),
+          ...(collabStatus.confirmed ? {} : { reason: collabStatus.reason ?? 'sync_timeout' }),
+        },
+      };
+      result.status = collabStatus.confirmed ? 200 : 202;
+
+      if (collabStatus.confirmed) {
+        // Only broadcast document.updated after collab confirmation attempt is complete.
+        broadcastToRoom(slug, { type: 'document.updated', source: 'agent-edit-v2', timestamp: new Date().toISOString() });
+      }
+    }
+  }
+}
 
 agentRoutes.post('/:slug/edit/v2', async (req: Request, res: Response) => {
   const mutationRoute = 'POST /edit/v2';
@@ -2313,103 +2676,7 @@ agentRoutes.post('/:slug/edit/v2', async (req: Request, res: Response) => {
     },
   });
   if (result.status >= 200 && result.status < 300 && isRecord(result.body)) {
-    const participation = buildParticipationFromMutation(req, slug, editV2Body, { details: 'edit.v2' });
-    if (isSingleWriterEditEnabled()) {
-      const priorCollab = isRecord(result.body.collab) ? result.body.collab : {};
-      const collabApplied = priorCollab.status === 'confirmed';
-      let presenceApplied = false;
-      let cursorApplied = false;
-      if (collabApplied) {
-        const appliedParticipation = applyParticipationToLoadedCollab(slug, participation);
-        presenceApplied = appliedParticipation.presenceApplied;
-        cursorApplied = appliedParticipation.cursorApplied;
-      }
-      result.body = {
-        ...result.body,
-        collab: {
-          ...priorCollab,
-          canonicalStatus: typeof priorCollab.canonicalStatus === 'string'
-            ? priorCollab.canonicalStatus
-            : (collabApplied ? 'confirmed' : 'pending'),
-        },
-        presenceApplied,
-        cursorApplied,
-      };
-      if (collabApplied) {
-        broadcastToRoom(slug, { type: 'document.updated', source: 'agent-edit-v2', timestamp: new Date().toISOString() });
-      }
-    } else {
-      if (TEST_EDIT_V2_POST_COMMIT_DELAY_MS > 0) {
-        await sleep(TEST_EDIT_V2_POST_COMMIT_DELAY_MS);
-      }
-      const priorCollab = isRecord(result.body.collab) ? result.body.collab : {};
-      const priorConfirmed = priorCollab.status === 'confirmed';
-      const {
-        reason: _priorReason,
-        status: _priorStatus,
-        markdownStatus: _priorMarkdownStatus,
-        fragmentStatus: _priorFragmentStatus,
-        canonicalStatus: _priorCanonicalStatus,
-        canonicalExpectedHash: _priorCanonicalExpectedHash,
-        canonicalObservedHash: _priorCanonicalObservedHash,
-        ...priorCollabRest
-      } = priorCollab;
-      const includeCanonicalDiagnostics = shouldIncludeCanonicalDiagnostics();
-      const activeCollabClients = getActiveCollabClientCount(slug);
-      if (priorConfirmed && activeCollabClients === 0) {
-        result.body = {
-          ...result.body,
-          collab: {
-            ...priorCollabRest,
-            ...priorCollab,
-            canonicalStatus: typeof priorCollab.canonicalStatus === 'string' ? priorCollab.canonicalStatus : 'confirmed',
-            ...(includeCanonicalDiagnostics
-              ? {
-                  canonicalExpectedHash: priorCollab.canonicalExpectedHash ?? null,
-                  canonicalObservedHash: priorCollab.canonicalObservedHash ?? null,
-                }
-              : {}),
-          },
-        };
-        broadcastToRoom(slug, { type: 'document.updated', source: 'agent-edit-v2', timestamp: new Date().toISOString() });
-      } else {
-        const collabStatus = await notifyCollabMutation(
-          slug,
-          participation,
-          {
-            verify: true,
-            source: 'edit.v2',
-            stabilityMs: EDIT_COLLAB_STABILITY_MS,
-            fallbackBarrier: !priorConfirmed,
-            strictLiveDoc: true,
-            apply: false,
-          },
-        );
-        result.body = {
-          ...result.body,
-          collab: {
-            ...priorCollabRest,
-            status: collabStatus.confirmed ? 'confirmed' : 'pending',
-            markdownStatus: collabStatus.confirmed && collabStatus.markdownConfirmed ? 'confirmed' : 'pending',
-            fragmentStatus: collabStatus.confirmed && collabStatus.fragmentConfirmed ? 'confirmed' : 'pending',
-            canonicalStatus: collabStatus.canonicalConfirmed ? 'confirmed' : 'pending',
-            ...(includeCanonicalDiagnostics
-              ? {
-                  canonicalExpectedHash: collabStatus.canonicalExpectedHash ?? null,
-                  canonicalObservedHash: collabStatus.canonicalObservedHash ?? null,
-                }
-              : {}),
-            ...(collabStatus.confirmed ? {} : { reason: collabStatus.reason ?? 'sync_timeout' }),
-          },
-        };
-        result.status = collabStatus.confirmed ? 200 : 202;
-
-        if (collabStatus.confirmed) {
-          // Only broadcast document.updated after collab confirmation attempt is complete.
-          broadcastToRoom(slug, { type: 'document.updated', source: 'agent-edit-v2', timestamp: new Date().toISOString() });
-        }
-      }
-    }
+    await settleEditV2Success(req, slug, editV2Body, result);
   } else if (isRecord(result.body)) {
     storeIdempotentMutationResult(replay, mutationRoute, slug, result.status, result.body);
   } else {
@@ -2980,7 +3247,7 @@ agentRoutes.post('/:slug/edit', async (req: Request, res: Response) => {
       docs: AGENT_DOCS_PATH,
     },
     agent: {
-      what: 'Proof is a collaborative document editor. This is a shared doc.',
+      what: `${productName()} is a collaborative document editor. This is a shared doc.`,
       docs: AGENT_DOCS_PATH,
       createApi: CANONICAL_CREATE_API_PATH,
       stateApi: `/documents/${slug}/state`,
@@ -3039,6 +3306,8 @@ agentRoutes.post('/:slug/presence', (req: Request, res: Response) => {
         ? body.summary
         : '',
     at: now,
+    expiresAt: getAgentPresenceExpiresAt(now),
+    tokenId: agentRequestTokenIds.get(req) ?? null,
   };
 
   const activity = {
@@ -3067,7 +3336,7 @@ agentRoutes.post('/:slug/presence', (req: Request, res: Response) => {
       docs: AGENT_DOCS_PATH,
     },
     agent: {
-      what: 'Proof is a collaborative document editor. This is a shared doc.',
+      what: `${productName()} is a collaborative document editor. This is a shared doc.`,
       docs: AGENT_DOCS_PATH,
       createApi: CANONICAL_CREATE_API_PATH,
       stateApi: `/documents/${slug}/state`,
@@ -3168,7 +3437,12 @@ agentRoutes.post('/:slug/ops', async (req: Request, res: Response) => {
   }
 
   const secret = getPresentedSecret(req, slug);
-  const role = secret ? resolveDocumentAccessRole(slug, secret) : null;
+  const access = secret ? resolveDocumentAccess(slug, secret) : null;
+  const role = access?.role ?? null;
+  if (!role) {
+    sendMutationResponse(res, 401, { success: false, error: 'Missing or invalid share token', code: 'UNAUTHORIZED' }, { route: mutationRoute, slug });
+    return;
+  }
   const effectiveShareState = getEffectiveShareStateForRole(doc, role, Boolean(secret && role));
   const denied = authorizeDocumentOp(op, role, role === 'owner_bot', effectiveShareState);
   if (denied) {
@@ -3191,6 +3465,13 @@ agentRoutes.post('/:slug/ops', async (req: Request, res: Response) => {
     return;
   }
 
+  agentRequestTokenIds.set(req, access?.tokenId ?? null);
+  // Step B4c: suggestion.add carries a "why" like the suggest-* routes.
+  let opsWhyGate: WhyGate | null = null;
+  if (op === 'suggestion.add') {
+    opsWhyGate = suggestionWhyGate(req, res, slug, payload, mutationRoute);
+    if (!opsWhyGate) return;
+  }
   const participationBody = { ...asPayload(req.body), ...payload };
   ensureAgentPresenceForAuthenticatedCall(req, slug, participationBody, 'ops.request');
   const requestId = readRequestId(req);
@@ -3221,7 +3502,7 @@ agentRoutes.post('/:slug/ops', async (req: Request, res: Response) => {
     return;
   }
 
-  let rewriteGate: ReturnType<typeof evaluateRewriteLiveClientGate> | null = null;
+  let rewriteGate: ReturnType<typeof evaluateRewriteLiveClientGateWithOptions> | null = null;
   const preBarrierMutationBase = (
     op === 'rewrite.apply'
     && mutationContext.precondition?.mode === 'token'
@@ -3379,6 +3660,7 @@ agentRoutes.post('/:slug/ops', async (req: Request, res: Response) => {
   if (op === 'rewrite.apply' && result.status >= 200 && result.status < 300 && rewriteGate) {
     result.body = annotateRewriteDisruptionMetadata(result.body, rewriteGate);
   }
+  if (opsWhyGate) { finishSuggestionNote(res, slug, opsWhyGate, result); await finishSuggestionBundle(slug, opsWhyGate, result); }
   storeIdempotentMutationResult(replay, mutationRoute, slug, result.status, result.body);
   if (result.status >= 200 && result.status < 300 && op !== 'rewrite.apply') {
     await notifyCollabMutation(
@@ -3415,6 +3697,1082 @@ agentRoutes.post('/:slug/marks/comment', async (req: Request, res: Response) => 
   sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
 });
 
+// Proof Documents Step 1: set one line's status mark for this agent (or clear it with "unseen").
+// Body: { status, reason?, by?, lineIndex | hash[, occurrence] | ref | quote }.
+// Step B2 batch forms (one request, one transaction): { status, lines: [target, ...] } and
+// { status, section: target } (a heading; marks every line of its section).
+// A line mark never changes the document's text, so no base token is needed; the target is
+// resolved against the current text, and a hash that no longer exists returns 409 LINE_CHANGED.
+agentRoutes.post('/:slug/marks/line', async (req: Request, res: Response) => {
+  const mutationRoute = 'POST /marks/line';
+  const slug = getSlug(req);
+  if (!slug) {
+    sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute });
+    return;
+  }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const replay = await maybeReplayIdempotentMutation(req, res, slug, mutationRoute, mutationRoute);
+  if (replay.handled) return;
+  const payload = asPayload(req.body);
+  // Step B6: an agent key marks as its own AI; only the owner credential may name a human.
+  const actor = resolveAgentActor(req, slug, payload, role);
+  if (!actor.ok) {
+    sendMutationResponse(res, actor.status, actor.body, { route: mutationRoute, slug });
+    return;
+  }
+  const by = actor.by;
+  await recoverCanonicalDocumentIfNeeded(slug, 'state');
+  const state = await executeDocumentOperationAsync(slug, 'GET', '/state');
+  const stateBody = asPayload(state.body);
+  const markdown = typeof stateBody.markdown === 'string' ? stateBody.markdown : (getDocumentBySlug(slug)?.markdown ?? '');
+  const result = await writeAgentLineMark(slug, markdown, payload, { by, canApprove: role === 'owner_bot' });
+  if (result.status === 200) scheduleAlignmentCheck(slug);
+  storeIdempotentMutationResult(replay, mutationRoute, slug, result.status, result.body);
+  if (result.status >= 200 && result.status < 300) {
+    notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'line_mark.set' }), { apply: false });
+  }
+  sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+});
+
+// ============================================================================
+// Accord dialect export (2026-09-19): the document and every mark stored beside it as one
+// markdown file. ?format=proof-dialect (default; alias accord-dialect) | criticmarkup | plain; ?authored=1 adds
+// "authored" marks. Import is POST /share/markdown with format=proof-dialect|criticmarkup|auto.
+// ============================================================================
+
+agentRoutes.get('/:slug/export', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  const role = checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  // Naming tail: format=accord-dialect is an alias of proof-dialect (FORMAT_ALIASES).
+  const format = normalizeExportFormat(req.query.format);
+  if (!format) {
+    res.status(400).json({ success: false, code: 'INVALID_FORMAT', error: EXPORT_FORMAT_ERROR });
+    return;
+  }
+  try {
+    const state = await currentAgentState(slug);
+    const doc = getDocumentBySlug(slug);
+    const viewer = blindViewer(req, slug, role) ?? null;
+    const result = await exportProofDocument(slug, { markdown: state.markdown, marks: state.marks, format, title: doc?.title ?? null, viewer, authored: req.query.authored === '1' });
+    res.setHeader('Content-Type', result.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${result.filename.replace(/"/g, '')}"`);
+    res.setHeader('X-Proof-Export-Warnings', String(result.warnings.length));
+    res.setHeader('X-Proof-Export-Counts', JSON.stringify(result.counts));
+    res.status(200).send(result.text);
+  } catch (error) {
+    console.error('[agent-routes] export failed', { slug, error: String(error) });
+    res.status(500).json({ success: false, code: 'EXPORT_FAILED', error: 'Export failed' });
+  }
+});
+
+// ============================================================================
+// Line tiers (Mike, 2026-09-19): decision lines and context lines
+// ============================================================================
+
+// Body: { tier: "decision" | "context", reason?, lines: [target, ...] } or { tier, ...target } for one
+// line (target = { lineIndex | hash[, occurrence] | ref | quote }). Any AI collaborator (or the owner
+// credential) may tag; an AI's context tag shows as "AI proposed context" until a person confirms it.
+agentRoutes.post('/:slug/tiers', async (req: Request, res: Response) => {
+  const route = 'POST /tiers';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route }); return; }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body);
+  const actor = resolveAgentActor(req, slug, payload, role);
+  if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route, slug }); return; }
+  const state = await currentAgentState(slug);
+  const lines = await computeServerLines(state.markdown);
+  const targets = Array.isArray(payload.lines) ? payload.lines : [payload];
+  if (targets.length === 0) { sendMutationResponse(res, 400, { success: false, code: 'INVALID_LINES', error: '"lines" must be a non-empty array' }, { route, slug }); return; }
+  if (targets.length > TIER_POLICY.maxLinesPerRequest) { sendMutationResponse(res, 400, { success: false, code: 'BATCH_TOO_LARGE', error: `At most ${TIER_POLICY.maxLinesPerRequest} lines per request` }, { route, slug }); return; }
+  const resolved = [];
+  for (let i = 0; i < targets.length; i += 1) {
+    const raw = targets[i];
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { sendMutationResponse(res, 400, { success: false, code: 'INVALID_LINES', error: `lines[${i}] is not a target object`, index: i }, { route, slug }); return; }
+    const item = raw as Record<string, unknown>;
+    const target = resolveAgentLineTarget(lines, item.target && typeof item.target === 'object' ? item.target as Record<string, unknown> : item);
+    if (!target.ok) {
+      sendMutationResponse(res, target.status, { success: false, code: target.code, error: Array.isArray(payload.lines) ? `lines[${i}]: ${target.error}` : target.error, index: i, ...(target.candidates ? { candidates: target.candidates } : {}) }, { route, slug });
+      return;
+    }
+    resolved.push(target.line);
+  }
+  const before = evaluateDocumentTiers(slug, lines, listCanonicalLineMarks(slug));
+  const result = writeTiers(slug, { by: actor.by, tier: payload.tier, reason: payload.reason, lines: resolved, before, markdown: state.markdown, rawMarks: state.marks, source: 'agent' });
+  if (result.status === 200) scheduleAlignmentCheck(slug);
+  sendMutationResponse(res, result.status, result.body, { route, slug });
+});
+
+// The document's tiers now (every tagged or context line) and the full history of tags.
+agentRoutes.get('/:slug/tiers', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  const role = checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const state = await currentAgentState(slug);
+  const lines = await computeServerLines(state.markdown);
+  const view = blindReadView(slug, lines, blindViewer(req, slug, role));
+  const evaluation = evaluateDocumentTiers(slug, lines, view?.lineMarks ?? listCanonicalLineMarks(slug), view?.viewer);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    success: true,
+    tiers: serializeTierViews(evaluation, lines),
+    history: listTierRecords(slug).map(record => ({ id: record.id, tier: record.tier, by: record.by, at: record.at, reason: record.reason ?? null, byAuthor: record.byAuthor === true, excerpt: record.anchor.excerpt })),
+    policy: TIER_POLICY,
+  });
+});
+
+// ============================================================================
+// Familiar proxy marks (Mike, 2026-09-19)
+// ============================================================================
+
+/** The AI of the agent key this request presents (null when it presents none). */
+function presentedKeyActor(req: Request, slug: string): string | null {
+  const tokenId = agentRequestTokenIds.get(req) ?? null;
+  if (!tokenId) return null;
+  const key = listDocumentAgentKeys(slug).find(k => k.tokenId === tokenId && !k.revokedAt);
+  return key ? agentKeyActor(key.label) : null;
+}
+
+// The bound Familiar marks lines for its person. Body: { for: "human:<email>", lines: [{ target, status:
+// agreed | seen | rejected-suggested | unseen, confidence: 0..1, evidence }] }. Never counts until ratified.
+agentRoutes.post('/:slug/marks/proxy', async (req: Request, res: Response) => {
+  const route = 'POST /marks/proxy';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route }); return; }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body);
+  const actor = resolveAgentActor(req, slug, payload, role);
+  if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route, slug }); return; }
+  const keyActor = presentedKeyActor(req, slug);
+  const viaAgentKey = Boolean(keyActor) && keyActor === actor.by;
+  const result = await writeAgentProxyMarks(slug, await currentAgentMarkdown(slug), payload, { actor: actor.by, viaAgentKey });
+  sendMutationResponse(res, result.status, result.body, { route, slug });
+});
+
+// A person's brief: while blind, only that person, their Familiar or the owner credential.
+agentRoutes.get('/:slug/marks/proxy', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  const role = checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const state = await currentAgentState(slug);
+  const report = await issueReportFor(slug, state.markdown, state.marks);
+  res.setHeader('Cache-Control', 'no-store');
+  if (typeof req.query.for === 'string') {
+    const human = resolveHuman(slug, req.query.for);
+    if (!human) { res.status(400).json({ success: false, code: 'INVALID_FOR', error: '"for" must name a verified person: human:<email>' }); return; }
+    const viewer = report.settings.blind ? blindViewer(req, slug, role) : undefined;
+    const binding = familiarOf(slug, human);
+    if (viewer !== undefined && !proxyVisibleTo({ for: human, familiar: binding?.familiar ?? '' }, viewer)) {
+      res.status(403).json({ success: false, code: 'BLIND_PROXY_PRIVATE', error: 'This blind brief belongs to the person and their Familiar' }); return;
+    }
+    res.json({ success: true, brief: serializeBrief(briefFor(slug, human, report, state.marks, undefined, viewer)), policy: PROXY_POLICY });
+    return;
+  }
+  const viewer = report.settings.blind ? blindViewer(req, slug, role) : undefined;
+  res.json({ success: true, ...proxyStateReport(slug, report, state.marks, { viewer }), policy: PROXY_POLICY });
+});
+
+agentRoutes.get('/:slug/familiars', (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, familiars: listFamiliars(slug), policy: { bindRequiresVerifiedSession: PROXY_POLICY.bindRequiresVerifiedSession, familiarMustBeActiveKey: PROXY_POLICY.familiarMustBeActiveKey } });
+});
+
+// Scripts: the owner credential binds a named person's Familiar: { for: "human:<email>", familiar: "ai:<key>" | null }.
+// People choose their own in the page; an agent key can never choose (it would pick itself).
+agentRoutes.post('/:slug/familiars', async (req: Request, res: Response) => {
+  const route = 'POST /familiars';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route }); return; }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body);
+  if (role !== 'owner_bot' || presentedKeyActor(req, slug)) {
+    sendMutationResponse(res, 403, { success: false, code: 'OWNER_CREDENTIAL_REQUIRED', error: 'A person chooses their own Familiar in the page (My Familiar); scripts need the owner credential' }, { route, slug });
+    return;
+  }
+  const human = resolveHuman(slug, payload.for);
+  if (!human) { sendMutationResponse(res, 400, { success: false, code: 'INVALID_FOR', error: '"for" must name a verified person: human:<email>' }, { route, slug }); return; }
+  const result = bindFamiliar(slug, { human, familiar: payload.familiar ?? null, by: 'owner-credential', source: 'agent' });
+  sendMutationResponse(res, result.status, result.body, { route, slug });
+});
+
+// ============================================================================
+// Proof Documents Step B3: {ask} decision lines
+// ============================================================================
+
+/**
+ * Step B6: the actor an agent request acts as (server/identity.ts decideActor).
+ *   agent key         -> its own AI (ai:<key-name>); a "by" naming anyone else is 403 ACTOR_MISMATCH;
+ *   owner credential  -> the "by" it names (scripts; may name a verified human, human:<email>);
+ *   other share token -> the "ai:" it names, never a human and never a key's AI.
+ */
+function resolveAgentActor(req: Request, slug: string, payload: Record<string, unknown>, role: ShareRole):
+  { ok: true; by: string } | { ok: false; status: number; body: Record<string, unknown> } {
+  const tokenId = agentRequestTokenIds.get(req) ?? null;
+  const keys = listDocumentAgentKeys(slug).filter(key => !key.revokedAt);
+  const keyLabel = tokenId ? keys.find(key => key.tokenId === tokenId)?.label ?? null : null;
+  const decision = decideActor({
+    mode: 'agent',
+    typedBy: payload.by,
+    agentKeyLabel: keyLabel,
+    ownerCredential: role === 'owner_bot',
+    activeKeyActors: keys.map(key => agentKeyActor(key.label)),
+  });
+  if (!decision.ok) return decision;
+  return { ok: true, by: decision.actor };
+}
+
+function actorKeyOf(actor: string): string {
+  return String(actor ?? '').normalize('NFC').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+/**
+ * Mike, 2026-09-23 (usability brief): only a bound key or owner credential grants reveal.
+ * Typed AI names on ordinary share tokens reveal nothing. The owner credential with no `by`
+ * keeps the administrative view (undefined); an unverified caller gets the empty viewer.
+ */
+function blindViewer(req: Request, slug: string, role: ShareRole): string | undefined {
+  const key = presentedKeyActor(req, slug);
+  if (key) return key;
+  const typed = typeof req.query.by === 'string' ? req.query.by : undefined;
+  if (role === 'owner_bot') {
+    if (!typed && BLIND_POLICY.ownerCredentialSeesAll) return undefined;
+    const actor = resolveAgentActor(req, slug, { by: typed }, role);
+    return actor.ok ? actor.by : '';
+  }
+  return '';
+}
+
+/** Step B4f: alternative picks as a blind viewer may see them. */
+function redactAltSets(sets: Array<Record<string, unknown>>, revealed: ReadonlySet<number>, viewer: string): Array<Record<string, unknown>> {
+  const me = actorKeyOf(viewer);
+  return sets.map(set => {
+    const index = typeof set.lineIndex === 'number' ? set.lineIndex : null;
+    if (index !== null && revealed.has(index)) return set;
+    return {
+      ...set,
+      unanimous: null,
+      disagree: false,
+      summary: 'Picks are hidden until you mark this line (blind marking)',
+      openFor: undefined,
+      picks: Array.isArray(set.picks) ? (set.picks as Array<Record<string, unknown>>).map(p => (actorKeyOf(String(p.by ?? '')) === me ? p : { by: p.by, choice: null, hidden: true })) : set.picks,
+    };
+  });
+}
+
+async function currentAgentMarkdown(slug: string): Promise<string> {
+  await recoverCanonicalDocumentIfNeeded(slug, 'state');
+  const state = await executeDocumentOperationAsync(slug, 'GET', '/state');
+  const stateBody = asPayload(state.body);
+  return typeof stateBody.markdown === 'string' ? stateBody.markdown : (getDocumentBySlug(slug)?.markdown ?? '');
+}
+
+// List every live ask with its answers, evaluated against the current text.
+agentRoutes.get('/:slug/asks', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  const role = checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const markdown = await currentAgentMarkdown(slug);
+  const result = await listAgentAsks(slug, markdown);
+  const view = await readBlindView(slug, markdown, blindViewer(req, slug, role));
+  if (view && Array.isArray(result.body.asks)) result.body.asks = result.body.asks.map(ask => redactAsk(ask, view));
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(result.status).json(result.body);
+});
+
+// Create an ask. Body: { recommend, to?, ifYes?, by?, <line target> } where the line target is
+// lineIndex | hash[, occurrence] | ref | quote (as for /marks/line), or { insertAfter, text } to
+// add a new line after a block and make it the ask in one call (needs edit access).
+agentRoutes.post('/:slug/asks', async (req: Request, res: Response) => {
+  const mutationRoute = 'POST /asks';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute }); return; }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body);
+  const actor = resolveAgentActor(req, slug, payload, role);
+  if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route: mutationRoute, slug }); return; }
+  const replay = await maybeReplayIdempotentMutation(req, res, slug, mutationRoute, mutationRoute);
+  if (replay.handled) return;
+  const finish = (status: number, body: Record<string, unknown>) => {
+    storeIdempotentMutationResult(replay, mutationRoute, slug, status, body);
+    if (status >= 200 && status < 300) {
+      notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'ask.create' }), { apply: false });
+    }
+    sendMutationResponse(res, status, body, { route: mutationRoute, slug });
+  };
+
+  if (payload.insertAfter === undefined) {
+    const result = await createAgentAsk(slug, await currentAgentMarkdown(slug), payload, actor.by);
+    finish(result.status, result.body);
+    return;
+  }
+
+  // insertAfter + text: one new line after a block, then the ask on it.
+  if (role !== 'editor' && role !== 'owner_bot') {
+    finish(403, { success: false, code: 'EDIT_REQUIRED', error: 'Adding a line needs edit access; ask on an existing line instead' });
+    return;
+  }
+  const text = oneLine(payload.text, 2000);
+  if (!text) { finish(400, { success: false, code: 'TEXT_REQUIRED', error: '"text" (the question line, one line) is required with insertAfter' }); return; }
+  if (!oneLine(payload.recommend, ASK_POLICY.maxRecommend)) {
+    finish(400, { success: false, code: 'RECOMMEND_REQUIRED', error: 'An ask carries one recommendation line ("recommend"): what you would do, not a menu' });
+    return;
+  }
+  const beforeLines = await computeServerLines(await currentAgentMarkdown(slug));
+  let blockRef: string | null = null;
+  if (typeof payload.insertAfter === 'string' && /^b\d+$/i.test(payload.insertAfter)) {
+    blockRef = payload.insertAfter.toLowerCase();
+  } else if (isRecord(payload.insertAfter)) {
+    const target = resolveAgentLineTarget(beforeLines, payload.insertAfter);
+    if (!target.ok) { finish(target.status, { success: false, code: target.code, error: `insertAfter: ${target.error}`, ...(target.candidates ? { candidates: target.candidates } : {}) }); return; }
+    blockRef = `b${target.line.block + 1}`;
+  }
+  if (!blockRef) { finish(400, { success: false, code: 'INVALID_INSERT_AFTER', error: '"insertAfter" must be a block ref like "b3" or a line target like {"quote": "..."}' }); return; }
+  const insertedBlock = Number(blockRef.slice(1)); // 0-based index of the new block
+  let edit: { status: number; body: unknown } | null = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const snapshot = await buildAgentSnapshot(slug);
+    const revision = isRecord(snapshot.body) && typeof snapshot.body.revision === 'number' ? snapshot.body.revision : null;
+    if (revision === null) { edit = { status: 409, body: { success: false, code: 'SNAPSHOT_UNAVAILABLE', error: 'The document is not ready for edits; retry shortly' } }; break; }
+    const editBody = { by: actor.by, baseRevision: revision, operations: [{ op: 'insert_after', ref: blockRef, blocks: [{ markdown: text }] }] };
+    edit = await applyAgentEditV2(slug, editBody);
+    if (edit.status >= 200 && edit.status < 300) {
+      await settleEditV2Success(req, slug, editBody, edit);
+      break;
+    }
+    const code = isRecord(edit.body) ? edit.body.code : null;
+    if (!ASK_INSERT_RETRY_CODES.has(String(code))) break;
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  if (!edit || edit.status < 200 || edit.status >= 300) {
+    finish(edit?.status ?? 500, { ...(isRecord(edit?.body) ? edit!.body as Record<string, unknown> : {}), success: false, stage: 'insert' });
+    return;
+  }
+  const afterLines = await computeServerLines(await currentAgentMarkdown(slug));
+  const wanted = afterLines.filter(line => line.block === insertedBlock);
+  const plain = text.replace(/[*_`~\[\]]/g, '').slice(0, 40);
+  const line = wanted.find(candidate => candidate.text.includes(plain)) ?? wanted[0];
+  if (!line) { finish(500, { success: false, code: 'INSERTED_LINE_NOT_FOUND', error: `The line was added but could not be found for the ask; ask on it with {"ref": "b${insertedBlock + 1}"}` }); return; }
+  const result = createAskOnLine(slug, line, afterLines, { by: actor.by, to: payload.to, recommend: payload.recommend, ifYes: payload.ifYes, source: 'agent' });
+  if (result.status === 200) result.body.inserted = { ref: `b${insertedBlock + 1}`, lineIndex: line.index, text: line.text };
+  finish(result.status, result.body);
+});
+
+// An AI answers an ask it was asked (or records its view). Body: { choice: yes|not_yet|no, words?, by? }.
+agentRoutes.post('/:slug/asks/:askId/answer', async (req: Request, res: Response) => {
+  const mutationRoute = 'POST /asks/:id/answer';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute }); return; }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body);
+  const actor = resolveAgentActor(req, slug, payload, role);
+  if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route: mutationRoute, slug }); return; }
+  const askId = String(req.params.askId ?? '');
+  const result = await answerAgentAsk(slug, await currentAgentMarkdown(slug), askId, payload, actor.by, true);
+  if (result.status === 200) scheduleAlignmentCheck(slug);
+  sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+});
+
+// ============================================================================
+// {do} action lines (safe slice, 2026-09-18). An AI may propose, revise, revoke and withdraw;
+// only a signed-in person approves (on the page), and nothing runs: execution is not enabled.
+// ============================================================================
+
+agentRoutes.get('/:slug/dos', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  const result = await listAgentDos(slug, await currentAgentMarkdown(slug));
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(result.status).json(result.body);
+});
+
+// Propose a {do} on an existing line. Body: { <line target>, action: <Pulse v1 action>, to?, presser?, retryBudget?, by? }.
+agentRoutes.post('/:slug/dos', async (req: Request, res: Response) => {
+  const mutationRoute = 'POST /dos';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute }); return; }
+  const role = checkAuth(req, res, slug, ['editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body);
+  const actor = resolveAgentActor(req, slug, payload, role);
+  if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route: mutationRoute, slug }); return; }
+  const result = await createAgentDo(slug, await currentAgentMarkdown(slug), payload, actor.by);
+  if (result.status === 200) {
+    notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'do.create' }), { apply: false });
+    scheduleAlignmentCheck(slug);
+  }
+  sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+});
+
+// Revise: a new action (higher revision), presser, retryBudget or to. Voids any approval.
+agentRoutes.post('/:slug/dos/:doId/revise', async (req: Request, res: Response) => {
+  const mutationRoute = 'POST /dos/:id/revise';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute }); return; }
+  const role = checkAuth(req, res, slug, ['editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body);
+  const actor = resolveAgentActor(req, slug, payload, role);
+  if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route: mutationRoute, slug }); return; }
+  const lines = await computeServerLines(await currentAgentMarkdown(slug));
+  const result = reviseDo(slug, lines, { id: String(req.params.doId ?? ''), by: actor.by, isOwner: role === 'owner_bot', action: payload.action, presser: payload.presser, retryBudget: payload.retryBudget, to: payload.to });
+  sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+});
+
+// Approval is never done through the agent API: an AI, a key or a share token is not a signed-in person.
+agentRoutes.post('/:slug/dos/:doId/approve', (_req: Request, res: Response) => {
+  res.status(403).json({ success: false, code: 'SIGNED_IN_PERSON_REQUIRED', error: 'Only a person signed in to this site can approve a {do}, on the page. Ask them (an {ask} line works).' });
+});
+
+// Revoke the live approval (the proposer, or the owner credential). Always safe.
+agentRoutes.post('/:slug/dos/:doId/revoke', async (req: Request, res: Response) => {
+  const mutationRoute = 'POST /dos/:id/revoke';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute }); return; }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body);
+  const actor = resolveAgentActor(req, slug, payload, role);
+  if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route: mutationRoute, slug }); return; }
+  const lines = await computeServerLines(await currentAgentMarkdown(slug));
+  const result = revokeDo(slug, lines, { id: String(req.params.doId ?? ''), actor: actor.by, isOwner: role === 'owner_bot' });
+  sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+});
+
+// Run: always refused in this build (409 EXECUTION_NOT_ENABLED).
+agentRoutes.post('/:slug/dos/:doId/run', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body);
+  const actor = resolveAgentActor(req, slug, payload, role);
+  if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
+  const lines = await computeServerLines(await currentAgentMarkdown(slug));
+  const result = await runDo(slug, lines, { id: String(req.params.doId ?? ''), actor: actor.by, source: 'agent' });
+  res.status(result.status).json(result.body);
+});
+
+agentRoutes.delete('/:slug/dos/:doId', async (req: Request, res: Response) => {
+  const mutationRoute = 'DELETE /dos/:id';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute }); return; }
+  const role = checkAuth(req, res, slug, ['editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body);
+  const actor = resolveAgentActor(req, slug, payload, role);
+  if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route: mutationRoute, slug }); return; }
+  const lines = await computeServerLines(await currentAgentMarkdown(slug));
+  const result = withdrawDo(slug, lines, { id: String(req.params.doId ?? ''), by: actor.by, isOwner: role === 'owner_bot' });
+  if (result.status === 200) scheduleAlignmentCheck(slug);
+  sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+});
+
+// ============================================================================
+// Proof Documents Step B3c: aligned snapshots and "Since you"
+// ============================================================================
+
+// Every aligned snapshot of the document, newest first (no text; follow `ledger` or `json`).
+agentRoutes.get('/:slug/snapshots', (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    success: true,
+    snapshots: listSnapshotInfos(slug).map(info => ({
+      ...info,
+      ledger: `/api/agent/${slug}/snapshots/${info.id}.md`,
+      json: `/api/agent/${slug}/snapshots/${info.id}`,
+    })),
+  });
+});
+
+// One snapshot: <id>.md is the markdown ledger, <id> the JSON (markdown, marks, asks, team).
+agentRoutes.get('/:slug/snapshots/:file', (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  const role = checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  sendSnapshotFile(res, slug, String(req.params.file ?? ''), blindViewer(req, slug, role) === undefined);
+});
+
+// What changed since this AI last marked a line on purpose (or since the last aligned snapshot).
+// An agent key reads as its own AI; the owner credential may pass ?by= for anyone.
+agentRoutes.get('/:slug/since-you', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  const role = checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const actor = resolveAgentActor(req, slug, typeof req.query.by === 'string' ? { by: req.query.by } : {}, role);
+  if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
+  const viewer = getProofSettings(slug).blind ? blindViewer(req, slug, role) : undefined;
+  const report = await buildSinceYou(slug, viewer ?? actor.by);
+  res.setHeader('Cache-Control', 'no-store');
+  if (!report) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  res.json({ success: true, ...report });
+});
+
+// The asker re-asks (reopens it for everyone; may update recommend / ifYes / to).
+agentRoutes.post('/:slug/asks/:askId/reask', async (req: Request, res: Response) => {
+  const mutationRoute = 'POST /asks/:id/reask';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute }); return; }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body);
+  const actor = resolveAgentActor(req, slug, payload, role);
+  if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route: mutationRoute, slug }); return; }
+  const result = reaskAsk(slug, { id: String(req.params.askId ?? ''), by: actor.by, isOwner: role === 'owner_bot', recommend: payload.recommend, ifYes: payload.ifYes, to: payload.to });
+  sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+});
+
+// The asker withdraws an ask (the line stays; its answers stay in the event log).
+agentRoutes.delete('/:slug/asks/:askId', async (req: Request, res: Response) => {
+  const mutationRoute = 'DELETE /asks/:id';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute }); return; }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body ?? {});
+  const actor = resolveAgentActor(req, slug, { ...payload, ...(typeof req.query.by === 'string' ? { by: req.query.by } : {}) }, role);
+  if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route: mutationRoute, slug }); return; }
+  const result = withdrawAsk(slug, { id: String(req.params.askId ?? ''), by: actor.by, isOwner: role === 'owner_bot' });
+  if (result.status === 200) scheduleAlignmentCheck(slug);
+  sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+});
+
+// ============================================================================
+// Cross invitation (Mike Wolf, 2026-09-19): an AI brings a human in.
+//
+// Two moves, and the difference between them is the whole point:
+//   POST /team/nominations   proposes a person. Nothing is emailed and the person gets no access
+//                            until a human owner confirms (or an Owner granted this AI standing
+//                            permission to invite directly on this document).
+//   POST /team/attestations  states who someone is. That grants read and comment once they sign
+//                            in with that address, and never a mark that counts.
+//
+// Both always need the AI's own agent key (not the owner credential, not another share token),
+// are rate-limited, are shown in the people dialog, and carry the AI's own words for the human
+// who reads them. An AI acting on instructions it found inside a document is exactly the risk the
+// confirm step exists for: text in a document can never, by itself, cause an invitation.
+// ============================================================================
+
+/** The AI making this call: its agent key, its key row, and its sponsor. Never a person. */
+/** Standing permission only: an Owner already said this AI may invite here without being asked. */
+async function confirmNominationAsInvitation(req: Request, slug: string, nomination: Parameters<typeof confirmNomination>[0]['nomination'], by: string) {
+  const result = await confirmNomination({
+    slug, nomination, by, byMemberId: null,
+    origin: getPublicOrigin(req),
+    inviterName: `${crossDisplayName(by, slug)} (an AI on this document)`,
+    title: getDocumentBySlug(slug)?.title?.trim() || 'Untitled document',
+  });
+  return { status: result.status, body: { ...result.body, directInvite: true, note: 'An owner of this document gave you standing permission to invite people here, so the invitation was sent. It is recorded with your name.' } };
+}
+
+function agentKeyCaller(req: Request, res: Response, slug: string, route: string): { actor: string; key: ReturnType<typeof agentKeyViewForToken> } | null {
+  const tokenId = agentRequestTokenIds.get(req) ?? null;
+  const key = agentKeyViewForToken(slug, tokenId);
+  if (!key || key.revokedAt) {
+    sendMutationResponse(res, 403, {
+      success: false, code: 'AGENT_KEY_REQUIRED',
+      error: 'This is an AI\'s own move: send it with the agent key a person created for you ("Add agent"), not with a share token or the owner credential.',
+    }, { route, slug });
+    return null;
+  }
+  return { actor: key.actor, key };
+}
+
+agentRoutes.get('/:slug/team', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    success: true,
+    provenance: documentProvenance(slug),
+    agents: listAgentKeyViews(slug).filter(key => !key.revokedAt).map(key => ({
+      actor: key.actor, name: key.label, sponsor: key.sponsorActor, sponsorName: key.sponsorName,
+      runtime: key.runtime, suspended: key.suspended, allowDirectInvite: key.allowDirectInvite,
+      provenance: key.provenanceLabel,
+    })),
+    nominations: listNominations(slug),
+    attestations: activeAttestations(slug),
+    policy: {
+      aiMayAdmitAi: CROSS_INVITE_POLICY.aiMayAdmitAi,
+      attestedRole: CROSS_INVITE_POLICY.attestedRole,
+      attestedMarksCount: CROSS_INVITE_POLICY.attestedMarksCount,
+      confidences: CROSS_INVITE_POLICY.confidences,
+    },
+  });
+});
+
+agentRoutes.get('/:slug/team/nominations', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, nominations: listNominations(slug) });
+});
+
+// Body: { email, name?, why }. Creates a nomination, never an invitation — unless an Owner gave
+// this AI standing permission to invite directly on this document (allowDirectInvite).
+agentRoutes.post('/:slug/team/nominations', async (req: Request, res: Response) => {
+  const mutationRoute = 'POST /team/nominations';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute }); return; }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const caller = agentKeyCaller(req, res, slug, mutationRoute);
+  if (!caller) return;
+  const payload = asPayload(req.body);
+  if (!allowCrossInvite([
+    [`nom:doc:${slug}`, CROSS_INVITE_POLICY.nominationsPerDocumentPerHour],
+    [`nom:ai:${slug}:${caller.actor}`, CROSS_INVITE_POLICY.nominationsPerAiPerHour],
+  ])) {
+    sendMutationResponse(res, 429, { success: false, code: 'RATE_LIMITED', error: 'Too many nominations in the last hour. Try again later.' }, { route: mutationRoute, slug });
+    return;
+  }
+  const created = createNomination({ slug, by: caller.actor, email: payload.email, name: payload.name, why: payload.why });
+  if (!created.ok) {
+    sendMutationResponse(res, created.status, { success: false, code: created.code, error: created.error }, { route: mutationRoute, slug });
+    return;
+  }
+  // Standing permission: an Owner said this AI may invite on this document without being asked.
+  if (caller.key?.allowDirectInvite) {
+    const invited = await confirmNominationAsInvitation(req, slug, created.nomination, caller.actor);
+    sendMutationResponse(res, invited.status, invited.body, { route: mutationRoute, slug });
+    return;
+  }
+  scheduleAlignmentCheck(slug);
+  sendMutationResponse(res, created.created ? 201 : 200, {
+    success: true,
+    nomination: created.nomination,
+    created: created.created,
+    invited: false,
+    emailed: false,
+    note: 'Nothing was emailed and nobody gained access. An owner of this document sees this as an Issue and decides: Confirm sends the invitation, Decline closes it.',
+  }, { route: mutationRoute, slug });
+});
+
+agentRoutes.get('/:slug/team/attestations', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, attestations: activeAttestations(slug) });
+});
+
+// Body: { email, basis, confidence }. Presence, not authority: read and comment, never a mark
+// that counts. Only an AI whose sponsor is still a member of this document may attest.
+agentRoutes.post('/:slug/team/attestations', async (req: Request, res: Response) => {
+  const mutationRoute = 'POST /team/attestations';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute }); return; }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const caller = agentKeyCaller(req, res, slug, mutationRoute);
+  if (!caller) return;
+  if (CROSS_INVITE_POLICY.attestationNeedsLiveSponsor && (!caller.key?.sponsorActor || !caller.key.sponsorActive)) {
+    sendMutationResponse(res, 403, {
+      success: false, code: 'SPONSOR_NOT_A_MEMBER',
+      error: 'You can vouch for someone only while the person who added you is a member of this document.',
+    }, { route: mutationRoute, slug });
+    return;
+  }
+  const payload = asPayload(req.body);
+  if (!allowCrossInvite([
+    [`att:doc:${slug}`, CROSS_INVITE_POLICY.attestationsPerDocumentPerHour],
+    [`att:ai:${slug}:${caller.actor}`, CROSS_INVITE_POLICY.attestationsPerAiPerHour],
+  ])) {
+    sendMutationResponse(res, 429, { success: false, code: 'RATE_LIMITED', error: 'Too many attestations in the last hour. Try again later.' }, { route: mutationRoute, slug });
+    return;
+  }
+  const created = createAttestation({ slug, by: caller.actor, email: payload.email, basis: payload.basis, confidence: payload.confidence });
+  if (!created.ok) {
+    sendMutationResponse(res, created.status, { success: false, code: created.code, error: created.error }, { route: mutationRoute, slug });
+    return;
+  }
+  sendMutationResponse(res, created.created ? 201 : 200, {
+    success: true,
+    attestation: created.attestation,
+    created: created.created,
+    grants: {
+      role: CROSS_INVITE_POLICY.attestedRole,
+      marksCount: CROSS_INVITE_POLICY.attestedMarksCount,
+      note: `${created.attestation.email} can read and comment on this document once signed in with that address. Their marks, answers, picks and approvals are refused (NOT_VERIFIED) until a person invites them.`,
+    },
+  }, { route: mutationRoute, slug });
+});
+
+// ============================================================================
+// Proof Documents Steps B4c + B4d: review aids and objections
+// ============================================================================
+
+interface WhyGate { by: string; fields: SuggestionNoteFields; warn: boolean; bundle?: { id: string; title: string | null; why: string | null } | null }
+
+/**
+ * Step B4c: checks an AI suggestion's "why" before it is added (WHY_POLICY.enforce). Sends the
+ * refusal and returns null when refused.
+ */
+function suggestionWhyGate(req: Request, res: Response, slug: string, payload: Record<string, unknown>, route: string): WhyGate | null {
+  const fields = suggestionNoteFields(payload);
+  if ('error' in fields) {
+    sendMutationResponse(res, fields.error.status, fields.error.body, { route, slug });
+    return null;
+  }
+  const tokenId = agentRequestTokenIds.get(req) ?? null;
+  const key = tokenId ? listDocumentAgentKeys(slug).find(k => k.tokenId === tokenId && !k.revokedAt) ?? null : null;
+  const typed = typeof payload.by === 'string' && payload.by.trim() ? payload.by : 'ai:unknown';
+  const by = key ? agentKeyActor(key.label) : normalizeActorString(typed);
+  // An agent key's suggestion names its own AI when it does not say who wrote it (Step B6 rule
+  // for marks; before this, such suggestions showed as "unknown").
+  if (key && (typeof payload.by !== 'string' || !payload.by.trim())) payload.by = by;
+  const check = checkSuggestionWhy({ by, viaAgentKey: Boolean(key), fields });
+  if (check.refuse) {
+    sendMutationResponse(res, check.refuse.status, check.refuse.body, { route, slug });
+    return null;
+  }
+  // Step B4e: { bundle: { id, title, why } } adds the new suggestion to that review bundle.
+  const bundle = bundleField(payload);
+  if (bundle && 'error' in bundle) {
+    sendMutationResponse(res, bundle.error.status, bundle.error.body, { route, slug });
+    return null;
+  }
+  if (bundle) {
+    const refused = checkBundleField(slug, bundle);
+    if (refused) { sendMutationResponse(res, refused.status, refused.body, { route, slug }); return null; }
+  }
+  return { by, fields, warn: check.warn, bundle };
+}
+
+/** Step B4c: after a suggestion was added, store its note and add the missing-why warning. */
+function finishSuggestionNote(res: Response, slug: string, gate: WhyGate, result: { status: number; body: unknown }): void {
+  if (result.status < 200 || result.status >= 300 || !isRecord(result.body)) return;
+  const markId = typeof result.body.markId === 'string' ? result.body.markId : '';
+  try {
+    const note = recordSuggestionNote(slug, markId, gate.by, gate.fields);
+    if (note) result.body.note = { why: note.why, rejectHints: note.rejectHints, priority: note.priority, priorityReason: note.priorityReason };
+  } catch (error) {
+    console.warn('[agent-routes] suggestion note failed', { slug, error: String(error) });
+  }
+  if (gate.warn) {
+    res.setHeader(WHY_POLICY.warningHeader, WHY_POLICY.warningCode);
+    const warnings = Array.isArray(result.body.warnings) ? result.body.warnings : [];
+    result.body.warnings = [...warnings, { code: WHY_POLICY.warningCode, message: 'Add a one-line "why" to AI suggestions: readers see it beside the change. It will be required.' }];
+  }
+}
+
+async function currentAgentState(slug: string): Promise<{ markdown: string; marks: unknown }> {
+  await recoverCanonicalDocumentIfNeeded(slug, 'state');
+  const state = await executeDocumentOperationAsync(slug, 'GET', '/state');
+  const body = asPayload(state.body);
+  const doc = getDocumentBySlug(slug);
+  return {
+    markdown: typeof body.markdown === 'string' ? body.markdown : (doc?.markdown ?? ''),
+    marks: isRecord(body.marks) ? body.marks : doc?.marks,
+  };
+}
+
+/** A small POST route with the agent's actor resolved (B6); `run` does the work. */
+function aidRoute(path: string, route: string, roles: ShareRole[], run: (ctx: { req: Request; slug: string; by: string; role: ShareRole; payload: Record<string, unknown> }) => Promise<{ status: number; body: Record<string, unknown> }>): void {
+  agentRoutes.post(path, async (req: Request, res: Response) => {
+    const slug = getSlug(req);
+    if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route }); return; }
+    const role = checkAuth(req, res, slug, roles);
+    if (!role) return;
+    const payload = asPayload(req.body);
+    const actor = resolveAgentActor(req, slug, payload, role);
+    if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route, slug }); return; }
+    const result = await run({ req, slug, by: actor.by, role, payload });
+    if (result.status === 200) scheduleAlignmentCheck(slug);
+    sendMutationResponse(res, result.status, result.body, { route, slug });
+  });
+}
+
+// Step B4c: every AI review note (why / reject hints / priority), open flags and objections.
+for (const [path, key] of [['/:slug/notes', 'notes'], ['/:slug/flags', 'flags'], ['/:slug/objections', 'objections']] as const) {
+  agentRoutes.get(path, async (req: Request, res: Response) => {
+    const slug = getSlug(req);
+    if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+    const role = checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot']);
+    if (!role) return;
+    const state = await currentAgentState(slug);
+    const report = await aidsReport(slug, state.markdown, state.marks);
+    const view = await readBlindView(slug, state.markdown, blindViewer(req, slug, role));
+    if (view && key === 'objections') {
+      const visible = (o: unknown) => isRecord(o) && Array.isArray(o.lines) && objectionLinesRevealed(o.lines.map(l => l.lineIndex), view.revealed);
+      report.objections = report.objections.filter(visible);
+      report.closedObjections = report.closedObjections.filter(visible);
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    if (key === 'notes') res.json({ success: true, notes: report.notes, policy: { why: WHY_POLICY, rejectChips: REJECT_CHIPS, priority: ISSUE_PRIORITY } });
+    else if (key === 'flags') res.json({ success: true, flags: report.flags, policy: UNCERTAIN_POLICY });
+    else res.json({ success: true, objections: report.objections, closed: req.query.closed === '1' ? report.closedObjections : undefined, policy: OBJECTION_POLICY });
+  });
+}
+
+// Step B4c: an AI's note on a suggestion ({ markId }) or a line (a line target):
+// { why?, rejectHints?, priority? (1-5, with priorityReason; null clears) }.
+aidRoute('/:slug/notes', 'POST /notes', ['commenter', 'editor', 'owner_bot'], async ({ slug, by, payload }) =>
+  writeAgentNote(slug, (await currentAgentState(slug)).markdown, payload, by));
+
+// Step B4c: flag a line uncertain: { <line target>, note? }.
+aidRoute('/:slug/flags', 'POST /flags', ['commenter', 'editor', 'owner_bot'], async ({ slug, by, payload }) =>
+  writeAgentFlag(slug, (await currentAgentState(slug)).markdown, payload, by));
+
+// Step B4c: clear a flag (the flagger, or the owner credential).
+aidRoute('/:slug/flags/:flagId/clear', 'POST /flags/:id/clear', ['commenter', 'editor', 'owner_bot'], async ({ req, slug, by, role }) =>
+  clearFlag(slug, { id: String(req.params.flagId ?? ''), by, isOwner: role === 'owner_bot', source: 'agent' }));
+
+// Step B4d: object to one or more lines: { lines: [<line target>, ...] | <line target>, reason, condition? }.
+aidRoute('/:slug/objections', 'POST /objections', ['commenter', 'editor', 'owner_bot'], async ({ slug, by, payload }) => {
+  const state = await currentAgentState(slug);
+  return createAgentObjection(slug, state.markdown, state.marks, payload, by);
+});
+
+// Step B4d: the objector clears it; the owner credential overrides it with { reason }.
+aidRoute('/:slug/objections/:objectionId/clear', 'POST /objections/:id/clear', ['commenter', 'editor', 'owner_bot'], async ({ req, slug, by, role, payload }) =>
+  clearObjection(slug, { id: String(req.params.objectionId ?? ''), by, isOwner: role === 'owner_bot', reason: payload.reason, source: 'agent' }));
+
+// Step B4d: the objector saw the repair and still objects.
+aidRoute('/:slug/objections/:objectionId/keep', 'POST /objections/:id/keep', ['commenter', 'editor', 'owner_bot'], async ({ req, slug, by }) => {
+  const state = await currentAgentState(slug);
+  return keepObjection(slug, { id: String(req.params.objectionId ?? ''), by, markdown: state.markdown, rawMarks: state.marks, source: 'agent' });
+});
+
+// ============================================================================
+// Proof Documents Steps B4e + B4f: bundles, alternatives, blind marking, Explain, times-to-live
+// ============================================================================
+
+/**
+ * Step B4e: accepts or rejects several suggestions as one mutation (the engine's batch), then
+ * waits for live collaboration to converge, like POST /marks/accept.
+ */
+export function bundleApplier(req: Request | null, slug: string, by: string): (markIds: string[], action: 'accept' | 'reject') => Promise<{ status: number; body: Record<string, unknown> }> {
+  return async (markIds, action) => {
+    // A person's newest typing or a page's own accept may still be settling: retry like a keystroke race.
+    let result = await finalizeSuggestionsBatchAsync(slug, markIds, action === 'accept' ? 'accepted' : 'rejected', by);
+    for (let attempt = 0; attempt < 12 && result.status === 409 && isRecord(result.body) && ASK_INSERT_RETRY_CODES.has(String(result.body.code)); attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      result = await finalizeSuggestionsBatchAsync(slug, markIds, action === 'accept' ? 'accepted' : 'rejected', by);
+    }
+    const body = isRecord(result.body) ? result.body : {};
+    if (result.status < 200 || result.status >= 300) return { status: result.status, body };
+    const payload = { by, markIds };
+    const collabStatus = await notifyCollabMutation(
+      slug,
+      req ? buildParticipationFromMutation(req, slug, payload, { details: `bundle.${action}` }) : null,
+      { verify: true, source: action === 'accept' ? 'marks.accept' : 'marks.reject', stabilityMs: EDIT_COLLAB_STABILITY_MS, strictLiveDoc: true, apply: false },
+    );
+    if (!collabStatus.confirmed) {
+      return { status: 409, body: { success: false, code: 'COLLAB_SYNC_FAILED', error: 'The bundle was applied but did not converge to the live document yet; re-read /state', reason: collabStatus.reason ?? 'sync_timeout' } };
+    }
+    return { status: 200, body: { success: true, markIds: body.markIds ?? markIds } };
+  };
+}
+
+/**
+ * Step B4f: replaces one line's text with an edit/v2 operation (a normal edit): the whole block
+ * when the line is its block (keeping a heading's, quote's or list marker's prefix), else a find /
+ * replace of the line's text inside its block. Retries a keystroke race like an ask's insert.
+ */
+export function lineEditor(req: Request | null, slug: string): LineEditor {
+  return async (line: ProofDocLine, lines: ProofDocLine[], text: string, by: string) => {
+    let last: { status: number; body: Record<string, unknown> } = { status: 409, body: { success: false, error: 'Not attempted' } };
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const snapshot = await buildAgentSnapshot(slug);
+      const snapBody = isRecord(snapshot.body) ? snapshot.body : {};
+      const revision = typeof snapBody.revision === 'number' ? snapBody.revision : null;
+      const blocks = Array.isArray(snapBody.blocks) ? snapBody.blocks as Array<Record<string, unknown>> : [];
+      const block = blocks[line.block];
+      if (revision === null || !block) return { status: 409, body: { success: false, code: 'SNAPSHOT_UNAVAILABLE', error: 'The document is not ready for edits; retry shortly' } };
+      const ref = `b${line.block + 1}`;
+      const blockMarkdown = typeof block.markdown === 'string' ? block.markdown : '';
+      // An earlier attempt may have landed although it reported a conflict: then it is done.
+      if (attempt > 0 && blockMarkdown.includes(text) && !blockMarkdown.includes(line.text)) {
+        return { status: 200, body: { success: true, alreadyApplied: true } };
+      }
+      const alone = lines.filter(candidate => candidate.block === line.block).length === 1;
+      let operation: Record<string, unknown> | null = null;
+      if (blockMarkdown.includes(line.text)) {
+        operation = { op: 'find_replace_in_block', ref, find: line.text, replace: text };
+      } else if (alone) {
+        const prefix = (blockMarkdown.match(/^(#{1,6}\s+|>\s+|[-*+]\s+|\d+[.)]\s+)/) ?? [''])[0];
+        operation = { op: 'replace_block', ref, block: { markdown: `${prefix}${text}` } };
+      }
+      if (!operation) return { status: 409, body: { success: false, code: 'ALT_APPLY_FAILED', error: 'This line has formatting the server cannot rewrite safely; edit it by hand to the chosen wording' } };
+      const editBody = { by, baseRevision: revision, operations: [operation] };
+      const edit = await applyAgentEditV2(slug, editBody);
+      last = { status: edit.status, body: isRecord(edit.body) ? edit.body : {} };
+      if (edit.status >= 200 && edit.status < 300) {
+        if (req) await settleEditV2Success(req, slug, editBody, edit);
+        else broadcastToRoom(slug, { type: 'document.updated', source: 'agent-edit-v2', timestamp: new Date().toISOString() });
+        return last;
+      }
+      if (!ASK_INSERT_RETRY_CODES.has(String(last.body.code))) return last;
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    return last;
+  };
+}
+
+const editorFor = lineEditor;
+
+// Step B4e: bundles (GET: open ones; ?closed=1 adds decided ones).
+agentRoutes.get('/:slug/bundles', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  const state = await currentAgentState(slug);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, bundles: await bundleReport(slug, state.markdown, state.marks, req.query.closed === '1'), policy: BUNDLE_POLICY });
+});
+
+// Step B4e: group existing suggestions: { id?, title, why?, markIds: [...] } (an existing id appends).
+aidRoute('/:slug/bundles', 'POST /bundles', ['commenter', 'editor', 'owner_bot'], async ({ slug, by, payload }) => {
+  const state = await currentAgentState(slug);
+  return addToBundle(slug, {
+    by, bundle: { id: typeof payload.id === 'string' ? payload.id : null, title: payload.title, why: payload.why },
+    markIds: payload.markIds, markdown: state.markdown, rawMarks: state.marks, source: 'agent',
+  });
+});
+
+// Step B4e: accept or reject a whole bundle (edit access). Accept refuses with 409 BUNDLE_STALE.
+for (const action of ['accept', 'reject'] as const) {
+  aidRoute(`/:slug/bundles/:bundleId/${action}`, `POST /bundles/:id/${action}`, ['editor', 'owner_bot'], async ({ req, slug, by }) => {
+    const state = await currentAgentState(slug);
+    const id = String(req.params.bundleId ?? '');
+    const marks = typeof state.marks === 'string' ? JSON.parse(state.marks) : state.marks;
+    if (marks?.[`${id}:remove`]?.move) return moveDocumentAsync(slug, by, {}, { id, action });
+    return decideBundle(slug, { id, by, action, markdown: state.markdown, rawMarks: state.marks, apply: bundleApplier(req, slug, by) });
+  });
+}
+
+// Step B4f: open alternatives per line (?closed=1 adds the folded history).
+agentRoutes.get('/:slug/alternatives', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  const role = checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const state = await currentAgentState(slug);
+  const report = await alternativesReport(slug, state.markdown, state.marks, req.query.closed === '1');
+  let sets = report.sets;
+  if (getProofSettings(slug).blind) {
+    const viewer = blindViewer(req, slug, role);
+    if (viewer !== undefined) {
+      const lines = await computeServerLines(state.markdown);
+      const view = blindReadView(slug, lines, viewer)!;
+      sets = redactAltSets(sets, view.revealed, viewer);
+      if (report.closed) report.closed = report.closed.filter(alt => visibleAlternative(alt, view));
+    }
+  }
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, alternatives: sets, ...(report.closed ? { closed: report.closed } : {}), policy: ALT_POLICY });
+});
+
+// Step B4f: offer another wording: { <line target>, text }.
+aidRoute('/:slug/alternatives', 'POST /alternatives', ['commenter', 'editor', 'owner_bot'], async ({ req, slug, by, payload }) => {
+  const state = await currentAgentState(slug);
+  return offerAlternative(slug, { by, target: payload, text: payload.text, markdown: state.markdown, rawMarks: state.marks, source: 'agent', applyEdit: editorFor(req, slug) });
+});
+
+// Step B4f: pick a wording: { <line target>, choice: "original" | <alternative id> | "1".."9" }.
+aidRoute('/:slug/alternatives/pick', 'POST /alternatives/pick', ['commenter', 'editor', 'owner_bot'], async ({ req, slug, by, payload }) => {
+  const state = await currentAgentState(slug);
+  return pickAlternative(slug, { by, target: payload, choice: payload.choice, markdown: state.markdown, rawMarks: state.marks, source: 'agent', applyEdit: editorFor(req, slug) });
+});
+
+// Step B4f: the owner credential decides between the wordings.
+aidRoute('/:slug/alternatives/decide', 'POST /alternatives/decide', ['owner_bot'], async ({ req, slug, by, role, payload }) => {
+  const state = await currentAgentState(slug);
+  return decideAlternative(slug, { by, isOwner: role === 'owner_bot', target: payload, choice: payload.choice, markdown: state.markdown, rawMarks: state.marks, applyEdit: editorFor(req, slug) });
+});
+
+aidRoute('/:slug/alternatives/:altId/withdraw', 'POST /alternatives/:id/withdraw', ['commenter', 'editor', 'owner_bot'], async ({ req, slug, by, role }) =>
+  withdrawAlternative(slug, { id: String(req.params.altId ?? ''), by, isOwner: role === 'owner_bot' }));
+
+// Step B4f: the document's settings (blind marking); the owner credential changes them.
+agentRoutes.get('/:slug/settings', (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, settings: getProofSettings(slug), policy: { blind: BLIND_POLICY } });
+});
+aidRoute('/:slug/settings', 'POST /settings', ['owner_bot'], async ({ slug, by, role, payload }) =>
+  setBlindSetting(slug, { blind: payload.blind, by, isOwner: role === 'owner_bot', source: 'agent' }));
+
+// Step B4f: Explain threads (answer by replying on the thread) and the defined terms.
+agentRoutes.get('/:slug/explains', (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, explains: listExplains(slug).map(serializeExplain), policy: EXPLAIN_POLICY });
+});
+agentRoutes.get('/:slug/terms', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  const state = await currentAgentState(slug);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, terms: termsReport(await computeServerLines(state.markdown)) });
+});
+
+// Step B4f: times-to-live. GET evaluates expiry now (lazily); POST sets one: { <line target>, ttl: "7d" }.
+agentRoutes.get('/:slug/ttl', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  const role = checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const state = await currentAgentState(slug);
+  res.setHeader('Cache-Control', 'no-store');
+  const view = await readBlindView(slug, state.markdown, blindViewer(req, slug, role));
+  const ttls = await ttlReport(slug, state.markdown, state.marks);
+  res.json({ success: true, evaluatedAt: new Date().toISOString(), ttls: view ? ttls.map(ttl => redactTtl(ttl, view)) : ttls, policy: TTL_POLICY });
+});
+aidRoute('/:slug/ttl', 'POST /ttl', ['commenter', 'editor', 'owner_bot'], async ({ req, slug, by, payload, role }) => {
+  const state = await currentAgentState(slug);
+  const result = await setTtl(slug, { by, target: payload, ttl: payload.ttl, markdown: state.markdown, source: 'agent' });
+  const view = await readBlindView(slug, state.markdown, blindViewer(req, slug, role));
+  if (view && isRecord(result.body.ttl)) result.body.ttl = redactTtl(result.body.ttl, view);
+  return result;
+});
+aidRoute('/:slug/ttl/:ttlId/clear', 'POST /ttl/:id/clear', ['commenter', 'editor', 'owner_bot'], async ({ req, slug, by, role }) =>
+  clearTtl(slug, { id: String(req.params.ttlId ?? ''), by, isOwner: role === 'owner_bot', source: 'agent' }));
+// Step B4f: an AI answers "still true?": { stillTrue: true | false, why? }.
+aidRoute('/:slug/ttl/:ttlId/check', 'POST /ttl/:id/check', ['commenter', 'editor', 'owner_bot'], async ({ req, slug, by, payload }) =>
+  checkTtl(slug, { id: String(req.params.ttlId ?? ''), by, stillTrue: payload.stillTrue, why: payload.why, markdown: (await currentAgentState(slug)).markdown, source: 'agent' }));
+
+/** Step B4e: after a suggestion was added with a `bundle` field, add it to that bundle. */
+async function finishSuggestionBundle(slug: string, gate: WhyGate, result: { status: number; body: unknown }): Promise<void> {
+  if (!gate.bundle || result.status < 200 || result.status >= 300 || !isRecord(result.body)) return;
+  const markId = typeof result.body.markId === 'string' ? result.body.markId : '';
+  if (!markId) return;
+  try {
+    const state = await currentAgentState(slug);
+    const added = await addToBundle(slug, { by: gate.by, bundle: gate.bundle, markIds: [markId], markdown: state.markdown, rawMarks: state.marks, source: 'agent' });
+    result.body.bundle = added.status === 200 ? added.body.bundle : { error: added.body };
+  } catch (error) {
+    result.body.bundle = { error: String(error) };
+  }
+}
+
 agentRoutes.post('/:slug/marks/suggest-replace', async (req: Request, res: Response) => {
   const mutationRoute = 'POST /marks/suggest-replace';
   const slug = getSlug(req);
@@ -3423,6 +4781,9 @@ agentRoutes.post('/:slug/marks/suggest-replace', async (req: Request, res: Respo
     return;
   }
   if (!checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot'])) return;
+  // Step B4c: an AI's suggestion carries a one-line "why" (WHY_POLICY).
+  const whyGate = suggestionWhyGate(req, res, slug, asPayload(req.body), mutationRoute);
+  if (!whyGate) return;
   const routeKey = mutationRoute;
   const replay = await maybeReplayIdempotentMutation(req, res, slug, mutationRoute, routeKey);
   if (replay.handled) return;
@@ -3430,6 +4791,8 @@ agentRoutes.post('/:slug/marks/suggest-replace', async (req: Request, res: Respo
   const mutationContext = await enforceMutationPrecondition(res, slug, mutationRoute, 'suggestion.add', payload, replay);
   if (!mutationContext) return;
   const result = await executeDocumentOperationAsync(slug, 'POST', '/marks/suggest-replace', payload, mutationContext);
+  finishSuggestionNote(res, slug, whyGate, result);
+  await finishSuggestionBundle(slug, whyGate, result);
   storeIdempotentMutationResult(replay, mutationRoute, slug, result.status, result.body);
   if (result.status >= 200 && result.status < 300) {
     notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'suggestion.add.replace' }), { apply: false });
@@ -3445,6 +4808,9 @@ agentRoutes.post('/:slug/marks/suggest-insert', async (req: Request, res: Respon
     return;
   }
   if (!checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot'])) return;
+  // Step B4c: an AI's suggestion carries a one-line "why" (WHY_POLICY).
+  const whyGate = suggestionWhyGate(req, res, slug, asPayload(req.body), mutationRoute);
+  if (!whyGate) return;
   const routeKey = mutationRoute;
   const replay = await maybeReplayIdempotentMutation(req, res, slug, mutationRoute, routeKey);
   if (replay.handled) return;
@@ -3452,6 +4818,8 @@ agentRoutes.post('/:slug/marks/suggest-insert', async (req: Request, res: Respon
   const mutationContext = await enforceMutationPrecondition(res, slug, mutationRoute, 'suggestion.add', payload, replay);
   if (!mutationContext) return;
   const result = await executeDocumentOperationAsync(slug, 'POST', '/marks/suggest-insert', payload, mutationContext);
+  finishSuggestionNote(res, slug, whyGate, result);
+  await finishSuggestionBundle(slug, whyGate, result);
   storeIdempotentMutationResult(replay, mutationRoute, slug, result.status, result.body);
   if (result.status >= 200 && result.status < 300) {
     notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'suggestion.add.insert' }), { apply: false });
@@ -3467,6 +4835,9 @@ agentRoutes.post('/:slug/marks/suggest-delete', async (req: Request, res: Respon
     return;
   }
   if (!checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot'])) return;
+  // Step B4c: an AI's suggestion carries a one-line "why" (WHY_POLICY).
+  const whyGate = suggestionWhyGate(req, res, slug, asPayload(req.body), mutationRoute);
+  if (!whyGate) return;
   const routeKey = mutationRoute;
   const replay = await maybeReplayIdempotentMutation(req, res, slug, mutationRoute, routeKey);
   if (replay.handled) return;
@@ -3474,11 +4845,159 @@ agentRoutes.post('/:slug/marks/suggest-delete', async (req: Request, res: Respon
   const mutationContext = await enforceMutationPrecondition(res, slug, mutationRoute, 'suggestion.add', payload, replay);
   if (!mutationContext) return;
   const result = await executeDocumentOperationAsync(slug, 'POST', '/marks/suggest-delete', payload, mutationContext);
+  finishSuggestionNote(res, slug, whyGate, result);
+  await finishSuggestionBundle(slug, whyGate, result);
   storeIdempotentMutationResult(replay, mutationRoute, slug, result.status, result.body);
   if (result.status >= 200 && result.status < 300) {
     notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'suggestion.add.delete' }), { apply: false });
   }
   sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+});
+
+// ============================================================================
+// Proof Documents Step B7: chat beside the document. Messages never touch the document's text or
+// Yjs state. A message with `suggestion` first creates a normal suggestion (the same checks as
+// /marks/suggest-*, including WHY_POLICY) and links to it.
+// ============================================================================
+
+/** A Response stand-in that records what a helper would have sent (status, body, headers). */
+function captureResponse(): { res: Response; sent: () => { status: number; body: unknown } | null; headers: Record<string, string> } {
+  let status = 200;
+  let sent: { status: number; body: unknown } | null = null;
+  const headers: Record<string, string> = {};
+  const fake = {
+    headersSent: false,
+    status(code: number) { status = code; return fake; },
+    json(body: unknown) { sent = { status, body }; return fake; },
+    setHeader(name: string, value: string) { headers[name] = String(value); return fake; },
+    getHeader(name: string) { return headers[name]; },
+  };
+  return { res: fake as unknown as Response, sent: () => sent, headers };
+}
+
+const CHAT_SUGGESTION_KINDS = new Set(['replace', 'insert', 'delete']);
+
+/** Creates the suggestion a chat message proposes. Returns the result the suggest route would send. */
+async function chatSuggestion(req: Request, slug: string, by: string, raw: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown>; headers: Record<string, string>; ref?: ChatSuggestionRef; quote?: string }> {
+  const kind = typeof raw.kind === 'string' ? raw.kind : '';
+  if (!CHAT_SUGGESTION_KINDS.has(kind)) return { status: 400, headers: {}, body: { success: false, code: 'INVALID_SUGGESTION', error: '"suggestion.kind" is "replace", "insert" or "delete"' } };
+  const quote = typeof raw.quote === 'string' ? raw.quote : '';
+  if (!quote.trim()) return { status: 400, headers: {}, body: { success: false, code: 'INVALID_SUGGESTION', error: '"suggestion.quote" (the text as the page shows it) is required' } };
+  if (kind !== 'delete' && typeof raw.content !== 'string') return { status: 400, headers: {}, body: { success: false, code: 'INVALID_SUGGESTION', error: '"suggestion.content" is required for replace and insert' } };
+  const payload: Record<string, unknown> = { ...raw, by };
+  delete payload.kind;
+  const route = `POST /chat (suggestion.${kind})`;
+  const capture = captureResponse();
+  const gate = suggestionWhyGate(req, capture.res, slug, payload, route);
+  if (!gate) {
+    const sent = capture.sent();
+    return { status: sent?.status ?? 400, body: isRecord(sent?.body) ? sent!.body as Record<string, unknown> : { success: false }, headers: capture.headers };
+  }
+  const context = await enforceMutationPrecondition(capture.res, slug, route, 'suggestion.add', payload);
+  if (!context) {
+    const sent = capture.sent();
+    return { status: sent?.status ?? 409, body: isRecord(sent?.body) ? sent!.body as Record<string, unknown> : { success: false }, headers: capture.headers };
+  }
+  const result = await executeDocumentOperationAsync(slug, 'POST', `/marks/suggest-${kind}`, payload, context);
+  finishSuggestionNote(capture.res, slug, gate, result);
+  await finishSuggestionBundle(slug, gate, result);
+  const body = isRecord(result.body) ? result.body as Record<string, unknown> : {};
+  if (result.status < 200 || result.status >= 300) return { status: result.status, body, headers: capture.headers };
+  notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: `suggestion.add.${kind}` }), { apply: false });
+  const markId = typeof body.markId === 'string' ? body.markId : '';
+  const why = typeof payload.why === 'string' && payload.why.trim() ? payload.why.trim().slice(0, 300) : null;
+  return {
+    status: result.status, body, headers: capture.headers, quote,
+    ref: { markId, kind: kind as ChatSuggestionRef['kind'], quote: quote.slice(0, 2000), content: typeof raw.content === 'string' ? raw.content.slice(0, 4000) : null, why },
+  };
+}
+
+// GET ?after=<id>&limit=<n>: messages after the cursor, oldest first (or the newest page), each
+// with `pointers` resolved against the current lines.
+agentRoutes.get('/:slug/chat', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  const afterRaw = typeof req.query.after === 'string' ? Number(req.query.after) : NaN;
+  const limitRaw = typeof req.query.limit === 'string' ? Number(req.query.limit) : NaN;
+  const after = Number.isFinite(afterRaw) && afterRaw >= 0 ? afterRaw : null;
+  const messages = listChatMessages(slug, { after, limit: Number.isFinite(limitRaw) ? limitRaw : undefined });
+  const lines = await computeServerLines(await currentAgentMarkdown(slug));
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    success: true,
+    messages: messages.map(message => serializeChatMessage(message, lines)),
+    cursor: messages.length ? messages[messages.length - 1].id : (after ?? 0),
+    mentionable: mentionCandidates(slug),
+    policy: CHAT_POLICY,
+  });
+});
+
+// POST { text, lines?: [<line target>], replyTo?, mentions?, suggestion?: { kind, quote, content, why, ... } }
+agentRoutes.post('/:slug/chat', async (req: Request, res: Response) => {
+  const route = 'POST /chat';
+  const slug = getSlug(req);
+  if (!slug) { sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route }); return; }
+  const role = checkAuth(req, res, slug, ['commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const payload = asPayload(req.body);
+  const actor = resolveAgentActor(req, slug, payload, role);
+  if (!actor.ok) { sendMutationResponse(res, actor.status, actor.body, { route, slug }); return; }
+  if (payload.lines !== undefined && !Array.isArray(payload.lines)) {
+    sendMutationResponse(res, 400, { success: false, code: 'INVALID_LINES', error: '"lines" is a list of line targets ({"quote": ...}, {"lineIndex": 3}, {"ref": "b4"})' }, { route, slug });
+    return;
+  }
+  const targets = Array.isArray(payload.lines) ? payload.lines : [];
+  if (targets.length > CHAT_POLICY.maxLines) {
+    sendMutationResponse(res, 400, { success: false, code: 'TOO_MANY_LINES', error: `At most ${CHAT_POLICY.maxLines} line pointers per message` }, { route, slug });
+    return;
+  }
+  if (payload.replyTo !== undefined && payload.replyTo !== null && !getChatMessage(slug, Number(payload.replyTo))) {
+    sendMutationResponse(res, 404, { success: false, code: 'REPLY_TARGET_NOT_FOUND', error: '"replyTo" names no message in this document\'s chat' }, { route, slug });
+    return;
+  }
+  let lines = await computeServerLines(await currentAgentMarkdown(slug));
+  const anchors: unknown[] = [];
+  for (const [index, raw] of targets.entries()) {
+    const target = Number.isInteger(raw) ? { lineIndex: raw } : typeof raw === 'string' && /^b\d+$/i.test(raw) ? { ref: raw } : raw;
+    if (!isRecord(target)) { sendMutationResponse(res, 400, { success: false, code: 'INVALID_LINES', error: `lines[${index}] is not a line target`, index }, { route, slug }); return; }
+    const found = resolveAgentLineTarget(lines, target);
+    if (!found.ok) {
+      sendMutationResponse(res, found.status, { success: false, code: found.code, error: `lines[${index}]: ${found.error}`, index, ...(found.candidates ? { candidates: found.candidates } : {}) }, { route, slug });
+      return;
+    }
+    anchors.push(anchorForDocLine(found.line));
+  }
+  let suggestion: ChatSuggestionRef | null = null;
+  let suggestionBody: Record<string, unknown> | null = null;
+  if (payload.suggestion !== undefined && payload.suggestion !== null) {
+    if (!isRecord(payload.suggestion)) {
+      sendMutationResponse(res, 400, { success: false, code: 'INVALID_SUGGESTION', error: '"suggestion" is an object: { kind, quote, content, why }' }, { route, slug });
+      return;
+    }
+    const made = await chatSuggestion(req, slug, actor.by, payload.suggestion as Record<string, unknown>);
+    for (const [name, value] of Object.entries(made.headers)) res.setHeader(name, value);
+    if (!made.ref || made.status < 200 || made.status >= 300) {
+      sendMutationResponse(res, made.status, { ...made.body, success: false, stage: 'suggestion' }, { route, slug });
+      return;
+    }
+    suggestion = made.ref;
+    suggestionBody = made.body;
+    lines = await computeServerLines(await currentAgentMarkdown(slug));
+    // The message points at the suggestion's line when it names no line itself.
+    if (anchors.length === 0 && CHAT_POLICY.suggestionPointsAtItsLine && made.quote) {
+      const found = resolveAgentLineTarget(lines, { quote: made.quote.split('\n')[0].slice(0, 200) });
+      if (found.ok) anchors.push(anchorForDocLine(found.line));
+    }
+  }
+  const result = postChatMessage(slug, {
+    by: actor.by, text: payload.text, anchors, mentions: payload.mentions, replyTo: payload.replyTo, suggestion, source: 'agent', lines,
+  });
+  if (result.status === 200) {
+    notifyCollabMutation(slug, buildParticipationFromMutation(req, slug, payload, { details: 'chat.message' }), { apply: false });
+    if (suggestionBody) result.body.suggestion = { markId: suggestion?.markId, status: 'pending', ...(suggestionBody.note ? { note: suggestionBody.note } : {}), ...(suggestionBody.warnings ? { warnings: suggestionBody.warnings } : {}), ...(suggestionBody.bundle ? { bundle: suggestionBody.bundle } : {}) };
+  }
+  sendMutationResponse(res, result.status, result.body, { route, slug });
 });
 
 agentRoutes.post('/:slug/marks/accept', async (req: Request, res: Response) => {
@@ -3901,14 +5420,15 @@ agentRoutes.post('/:slug/clone-from-canonical', async (req: Request, res: Respon
   sendMutationResponse(res, responseStatus, responseBody, { route: mutationRoute, slug });
 });
 
-agentRoutes.get('/:slug/events/pending', (req: Request, res: Response) => {
+agentRoutes.get('/:slug/events/pending', async (req: Request, res: Response) => {
   const slug = getSlug(req);
   if (!slug) {
     recordCollabRouteLatency('events_pending', 'invalid_slug', 0);
     res.status(400).json({ success: false, error: 'Invalid slug' });
     return;
   }
-  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  const role = checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot']);
+  if (!role) return;
   const after = Number.parseInt(String(req.query.after ?? '0'), 10);
   const limit = Number.parseInt(String(req.query.limit ?? '100'), 10);
   const events = listDocumentEvents(slug, Number.isFinite(after) ? Math.max(0, after) : 0, Number.isFinite(limit) ? limit : 100);
@@ -3933,9 +5453,12 @@ agentRoutes.get('/:slug/events/pending', (req: Request, res: Response) => {
       },
     });
   }
+  const view = await readBlindView(slug, await currentAgentMarkdown(slug), blindViewer(req, slug, role));
+  const visibleEvents = view ? filterBlindEvents(slug, events, view) : events;
+  res.setHeader('Cache-Control', 'no-store');
   res.json({
     success: true,
-    events: events.map((event) => ({
+    events: visibleEvents.map((event) => ({
       id: event.id,
       type: event.event_type,
       data: (() => {
@@ -3971,6 +5494,15 @@ agentRoutes.post('/:slug/events/ack', (req: Request, res: Response) => {
   const acked = ackDocumentEvents(slug, Math.trunc(upToId), by);
   res.json({ success: true, acked });
 });
+
+// ac-l71: register before the generic engine fallback below.
+aidRoute('/:slug/moves', 'POST /moves', ['commenter', 'editor', 'owner_bot'], ({ slug, by, payload }) => moveDocumentAsync(slug, by, payload));
+for (const action of ['accept', 'reject'] as const) {
+  aidRoute(`/:slug/moves/:moveId/${action}`, `POST /moves/:id/${action}`, ['editor', 'owner_bot'], ({ req, slug, by }) =>
+    moveDocumentAsync(slug, by, {}, { id: String(req.params.moveId), action }));
+}
+aidRoute('/:slug/move-settings', 'POST /move-settings', ['owner_bot'], async ({ slug, by, role, payload }) =>
+  setImmediateMoveActors(slug, payload.immediateMoveActors, by, role === 'owner_bot'));
 
 agentRoutes.use(async (req: Request, res: Response) => {
   const slug = getSlug(req);

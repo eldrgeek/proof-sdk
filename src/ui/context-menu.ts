@@ -7,6 +7,8 @@
  * - Add Comment for Proof
  */
 
+import { productName } from '../shared/product-identity';
+
 import type { EditorView } from '@milkdown/kit/prose/view';
 import { showAgentInputDialog } from './agent-input-dialog';
 import { comment as addComment } from '../editor/plugins/marks';
@@ -53,7 +55,7 @@ function createMenuElement(): HTMLElement {
     <div class="proof-context-menu-items">
       <button class="proof-context-menu-item" data-action="ask-proof">
         <span class="proof-context-menu-icon">💬</span>
-        <span>Ask Proof...</span>
+        <span>Ask ${productName()}...</span>
         <span class="proof-context-menu-shortcut">⇧⌘P</span>
       </button>
       <div class="proof-context-menu-item has-submenu" data-action="quick-actions">
@@ -75,7 +77,7 @@ function createMenuElement(): HTMLElement {
       <div class="proof-context-menu-separator"></div>
       <button class="proof-context-menu-item" data-action="add-comment">
         <span class="proof-context-menu-icon">📝</span>
-        <span>Add Comment for Proof</span>
+        <span>Add Comment for ${productName()}</span>
         <span class="proof-context-menu-shortcut">⇧⌘K</span>
       </button>
     </div>

@@ -1,0 +1,18 @@
+/* The one Undo in the right rail (Mike, 2026-09-19). */
+.pundo { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 10px; }
+.pundo[hidden] { display: none; }
+.pundo-btn {
+  min-height: 32px; padding: 4px 12px; border: 1px solid #d4d4cf; border-radius: 8px; background: #fff;
+  color: #26303c; font: 600 12px/1.3 system-ui, -apple-system, sans-serif; cursor: pointer;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pundo-btn:hover:not(:disabled) { background: #f3f4f6; border-color: #b6bcc4; }
+.pundo-btn:disabled { opacity: .45; cursor: default; }
+.pundo-redo { flex-shrink: 0; }
+.pundo-notice { flex-basis: 100%; margin: 2px 0 0; font-size: 12px; color: #166534; }
+.pundo-notice[data-ok="false"] { color: #b45309; }
+
+/* Phones: the strip and the sheet are small, so the Undo button is a full-width row. */
+@media (max-width: 700px) {
+  .pundo-btn { min-height: 44px; flex: 1; }
+}

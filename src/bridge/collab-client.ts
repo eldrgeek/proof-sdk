@@ -1,3 +1,5 @@
+import { COLLAB_VERSION_POLICY } from '../shared/collab-version';
+import { isPendingSuggestion } from '../shared/suggestion-status.js';
 import * as Y from 'yjs';
 import { HocuspocusProvider } from '@hocuspocus/provider';
 import type { Awareness } from 'y-protocols/awareness';
@@ -15,7 +17,7 @@ export type CollabSyncStatus = {
   offlineSinceMs: number | null;
 };
 type SyncStatusHandler = (status: CollabSyncStatus) => void;
-export type CollabTerminalCloseReason = 'unshared' | 'permission-denied' | null;
+export type CollabTerminalCloseReason = 'unshared' | 'permission-denied' | 'reload-required' | null;
 type MarksHandler = (marks: Record<string, unknown>) => void;
 type DocumentUpdatedHandler = () => void;
 
@@ -85,14 +87,19 @@ function getLocalStorage(): Storage | null {
   }
 }
 
-function encodeBase64(bytes: Uint8Array): string {
+export function encodeBase64(bytes: Uint8Array): string {
   if (typeof window === 'undefined') {
     return Buffer.from(bytes).toString('base64');
   }
   let binary = '';
-  const chunk = 0x8000;
+  const chunk = 0x2000;
   for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    const end = Math.min(bytes.length, i + chunk);
+    let encodedChunk = '';
+    for (let j = i; j < end; j += 1) {
+      encodedChunk += String.fromCharCode(bytes[j]);
+    }
+    binary += encodedChunk;
   }
   return btoa(binary);
 }
@@ -237,6 +244,34 @@ export class CollabClient {
       unsyncedChanges: this.unsyncedChanges,
       pendingLocalUpdates: this.durablePendingUpdates.length,
       offlineSinceMs: this.connectionStatus === 'disconnected' ? this.lastDisconnectAt : null,
+    });
+  }
+
+  private deliverAfterYjsTransaction(ydoc: Y.Doc, deliver: () => void): void {
+    queueMicrotask(() => {
+      if (this.ydoc !== ydoc) return;
+      try {
+        deliver();
+      } catch (error) {
+        console.error('[collab] Failed to apply Yjs update', error,
+          error instanceof Error ? error.stack : String(error));
+        // Preserve buffered local edits, then obtain a fresh server-backed document.
+        // A failed view update must not leave the page reporting a successful sync.
+        this.flushPendingLocalStateForUnload();
+        if (typeof window !== 'undefined') {
+          // Reload at most once a minute, so a failure that repeats on every load leaves
+          // its error on screen instead of reloading the page in a loop.
+          const reloadKey = 'proof-collab-recovery-reload-at';
+          let lastReloadAt = 0;
+          try { lastReloadAt = Number(window.sessionStorage.getItem(reloadKey) || 0); } catch { /* storage unavailable */ }
+          if (Date.now() - lastReloadAt > 60_000) {
+            try { window.sessionStorage.setItem(reloadKey, String(Date.now())); } catch { /* storage unavailable */ }
+            window.location.reload();
+          }
+        } else {
+          throw error;
+        }
+      }
     });
   }
 
@@ -408,8 +443,10 @@ export class CollabClient {
       try {
         Y.applyUpdate(ydoc, update, 'durable-replay');
         nextUpdates.push(encoded);
-      } catch {
-        // skip invalid update entries
+      } catch (error) {
+        console.error('[collab] Failed to replay durable Yjs update', error,
+          error instanceof Error ? error.stack : String(error));
+        // Initial provider sync still fetches the authoritative server document.
       }
     }
     return nextUpdates;
@@ -589,7 +626,7 @@ export class CollabClient {
       document: ydoc,
       preserveConnection: false,
       parameters: this.getProviderParameters(session),
-      token: () => this.activeSession?.token ?? null,
+      token: () => this.activeSession?.token ?? '',
     });
 
     ydoc.on('update', (update, origin) => {
@@ -602,11 +639,21 @@ export class CollabClient {
 
     const markdownText = ydoc.getText('markdown');
     const marksMap = ydoc.getMap('marks');
+    let marksDeliveryQueued = false;
     marksMap.observe((_event, transaction) => {
       if (!this.marksHandler) return;
       if (transaction.origin === 'local-marks-sync') return;
       if (this.applyingLocalMarks) return;
-      this.marksHandler(this.readMarks());
+      // Shallow Y.Map observers run before y-prosemirror's deep fragment observer.
+      // Dispatching marks here sees the new Yjs tree with the old PM mapping: cursor
+      // resolution can throw, and anchor hydration can write stale text back to Yjs.
+      // Deliver the latest snapshot only after all observers have finished.
+      if (marksDeliveryQueued) return;
+      marksDeliveryQueued = true;
+      this.deliverAfterYjsTransaction(ydoc, () => {
+        marksDeliveryQueued = false;
+        this.marksHandler?.(this.readMarks());
+      });
     });
 
     provider.on('awarenessChange', (event: { states: Array<unknown> }) => {
@@ -658,6 +705,7 @@ export class CollabClient {
     provider.on('authenticationFailed', (event: { reason?: string }) => {
       const reason = typeof event?.reason === 'string' ? event.reason : 'permission-denied';
       this.lastAuthenticationFailureReason = reason;
+      if (reason === COLLAB_VERSION_POLICY.reloadReason) this.requireReload();
       this.connectionStatus = 'disconnected';
       this.hasSynced = false;
       this.lastDisconnectAt = Date.now();
@@ -674,7 +722,8 @@ export class CollabClient {
       this.emitSyncStatus();
     });
 
-    provider.on('close', () => {
+    provider.on('close', ({ event }: { event?: { reason?: string } }) => {
+      if (event?.reason === COLLAB_VERSION_POLICY.reloadReason) this.requireReload();
       this.emitSyncStatus();
     });
 
@@ -714,6 +763,15 @@ export class CollabClient {
     }
   }
 
+  requireReload(): void {
+    this.terminalCloseReason = 'reload-required';
+    this.connectionStatus = 'disconnected';
+    this.hasSynced = false;
+    this.flushPendingLocalStateForUnload();
+    this.provider?.disconnect();
+    this.emitSyncStatus();
+  }
+
   softRefreshSession(session: CollabSessionInfo): boolean {
     if (!this.provider || !this.ydoc || this.requiresHardReconnect(session)) return false;
 
@@ -727,7 +785,7 @@ export class CollabClient {
 
     this.provider.setConfiguration({
       parameters: this.getProviderParameters(session),
-      token: () => this.activeSession?.token ?? null,
+      token: () => this.activeSession?.token ?? '',
     });
     this.provider.configuration.websocketProvider.setConfiguration({
       parameters: this.getProviderParameters(session),
@@ -811,7 +869,7 @@ export class CollabClient {
     const mergedMarks: Record<string, unknown> = { ...marks };
     this.marksMap.forEach((value, key) => {
       if (mergedMarks[key] !== undefined) return;
-      if (!shouldPreserveMissingLocalMark(value)) return;
+      if (!isPendingSuggestion(value) && !shouldPreserveMissingLocalMark(value)) return;
       mergedMarks[key] = value as unknown;
     });
     const currentKeys = Object.keys(currentMarksSnapshot);

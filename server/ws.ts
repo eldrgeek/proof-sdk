@@ -1,3 +1,4 @@
+import { COLLAB_VERSION_POLICY, supportsSuggestionStatus } from '../src/shared/collab-version.js';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { IncomingMessage } from 'http';
 import crypto from 'crypto';
@@ -234,6 +235,10 @@ export function setupWebSocket(wss: WebSocketServer): void {
         const claims = getCollabSessionClaims(collabToken);
         if (!claims) {
           ws.close(4401, 'Invalid or expired collab session token');
+          return;
+        }
+        if (!supportsSuggestionStatus(claims.client)) {
+          ws.close(COLLAB_VERSION_POLICY.reloadCode, COLLAB_VERSION_POLICY.reloadReason);
           return;
         }
         if (slug && slug !== claims.slug) {

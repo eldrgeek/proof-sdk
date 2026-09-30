@@ -1,3 +1,5 @@
+import { withHumanReviewWrite } from '../review-mark-origin';
+import { getReviewStyle, REVIEW_STYLE_EVENT } from '../review-style';
 import { $prose } from '@milkdown/kit/utils';
 import { Plugin, PluginKey } from '@milkdown/kit/prose/state';
 import type { EditorView } from '@milkdown/kit/prose/view';
@@ -37,6 +39,15 @@ import { canCommentInRuntime, canEditInRuntime } from './share-permissions';
 import { resolveQuoteRange } from '../utils/text-range';
 
 const markPopoverKey = new PluginKey('mark-popover');
+
+/**
+ * Mike, 2026-09-19: "When I clicked it put up the built-in review mechanism which we want to
+ * drop." A click or tap on text under a comment or suggestion places the caret, like Google Docs;
+ * the thread shows in the reading walk's right rail. The composer (Comment on a selection) stays.
+ */
+export const MARK_POPOVER_POLICY = {
+  textClickOpensThread: false,
+} as const;
 const controllers = new WeakMap<EditorView, MarkPopoverController>();
 type PopoverMode = 'thread' | 'suggestion' | 'composer' | null;
 type RenderMode = 'legacy-popover' | 'mobile-sheet';
@@ -159,6 +170,32 @@ function getTopViewportInset(margin: number): number {
     inset = Math.max(inset, Math.ceil(rect.bottom + margin));
   }
   return inset;
+}
+
+// Since Accord step 1 (2026-09-24) the chat, the status bar above it and the phone strip are fixed
+// to the foot of the screen. The phone's Comment row must stay above them: on a 375x667 phone a
+// selection low on the page put the row under the status bar, which took the tap (mobile-check,
+// step 2 review, 2026-09-25).
+const BOTTOM_FIXED_OVERLAY_SELECTORS = ['.prw-chat-bottom', '.pst-bar', '.prw-strip'] as const;
+
+function getBottomViewportLimit(viewportHeight: number): number {
+  let limit = viewportHeight;
+  try {
+    for (const selector of BOTTOM_FIXED_OVERLAY_SELECTORS) {
+      for (const element of document.querySelectorAll(selector)) {
+        if (!(element instanceof HTMLElement) || element.hidden || element.closest('[hidden]')) continue;
+        const style = window.getComputedStyle(element);
+        if (style.position !== 'fixed' && style.position !== 'sticky') continue;
+        if (style.display === 'none' || style.visibility === 'hidden') continue;
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0 || rect.top <= 0 || rect.top >= viewportHeight) continue;
+        limit = Math.min(limit, Math.floor(rect.top));
+      }
+    }
+  } catch {
+    // A document without layout (unit tests) has no bottom stack.
+  }
+  return limit;
 }
 
 function getAnchorBox(view: EditorView, anchor: MarkRange) {
@@ -387,6 +424,8 @@ class MarkPopoverController {
     if (event.pointerType === 'touch') {
       this.scheduleSelectionPolling();
     }
+    // Editing first: a press on marked text places the caret; it never opens the thread.
+    if (!MARK_POPOVER_POLICY.textClickOpensThread) return;
     const target = event.target as HTMLElement | null;
     const markEl = target?.closest('[data-mark-id]') as HTMLElement | null;
     if (!markEl) return;
@@ -403,6 +442,7 @@ class MarkPopoverController {
   };
 
   private handleEditorClick = (event: MouseEvent) => {
+    if (!MARK_POPOVER_POLICY.textClickOpensThread) return;
     if ((Date.now() - this.lastHandledPointerDownAt) < 450) return;
     const target = event.target as HTMLElement | null;
     const markEl = target?.closest('[data-mark-id]') as HTMLElement | null;
@@ -437,6 +477,7 @@ class MarkPopoverController {
   };
 
   constructor(view: EditorView) {
+    window.addEventListener(REVIEW_STYLE_EVENT, this.reviewStyleChanged);
     this.view = view;
 
     this.popover = document.createElement('div');
@@ -651,6 +692,7 @@ class MarkPopoverController {
   }
 
   destroy(): void {
+    window.removeEventListener(REVIEW_STYLE_EVENT, this.reviewStyleChanged);
     this.close();
     this.clearUndoToast();
     this.resetStripGestureVisual();
@@ -690,6 +732,11 @@ class MarkPopoverController {
     this.undoToast.remove();
     this.clearMobileStripPadding();
   }
+
+  private reviewStyleChanged = (): void => {
+    this.close();
+    this.scheduleMobileStripRender();
+  };
 
   update(view: EditorView): void {
     this.view = view;
@@ -744,6 +791,7 @@ class MarkPopoverController {
     this.cachedActionRangeAt = 0;
     this.renderMode = shouldUseCommentUiV2() ? 'mobile-sheet' : 'legacy-popover';
 
+    this.popover.classList.add('mark-popover-composer');
     setActiveMark(this.view, null);
     setComposeAnchorRange(this.view, range);
     this.ensureAnchorVisible();
@@ -756,6 +804,8 @@ class MarkPopoverController {
     pos?: number | null,
     options?: { threadFocusMode?: ThreadFocusMode },
   ): void {
+    if (getReviewStyle() === 'playmaker') return;
+    this.popover.classList.remove('mark-popover-composer');
     const marks = getMarks(this.view.state);
     const mark = marks.find(item => item.id === markId);
     if (!mark) return;
@@ -791,6 +841,7 @@ class MarkPopoverController {
     }
 
     this.mode = null;
+    this.popover.classList.remove('mark-popover-composer');
     this.activeMarkId = null;
     this.composeRange = null;
     this.composeBy = null;
@@ -969,11 +1020,13 @@ class MarkPopoverController {
       if (!text) return;
       const quote = this.view.state.doc.textBetween(range.from, range.to, '\n', '\n');
       const mark = addComment(this.view, quote, by, text, range);
+      // The PlayMaker style shows threads in its own dialog, so openForMark is a no-op there; close the composer.
+      if (getReviewStyle() === 'playmaker') { this.close(); return; }
       this.openForMark(mark.id);
     };
 
     textarea.addEventListener('keydown', event => {
-      if ((event.key === 'Enter' && event.metaKey) || (this.renderMode === 'mobile-sheet' && event.key === 'Enter' && !event.shiftKey)) {
+      if ((event.key === 'Enter' && (event.metaKey || event.ctrlKey)) || (this.renderMode === 'mobile-sheet' && event.key === 'Enter' && !event.shiftKey)) {
         event.preventDefault();
         submit();
       }
@@ -1098,7 +1151,7 @@ class MarkPopoverController {
         if (!text) return;
         const proof = getProofEditorApi();
         const created = proof?.markReply
-          ? proof.markReply(mark.id, getCurrentActor(), text)
+          ? withHumanReviewWrite(() => proof.markReply(mark.id, getCurrentActor(), text))
           : replyToComment(this.view, mark.id, getCurrentActor(), text);
         if (!created) return;
         if (this.renderMode === 'mobile-sheet') {
@@ -1114,7 +1167,7 @@ class MarkPopoverController {
       };
 
       replyBox.addEventListener('keydown', event => {
-        if ((event.key === 'Enter' && event.metaKey) || (this.renderMode === 'mobile-sheet' && event.key === 'Enter' && !event.shiftKey)) {
+        if ((event.key === 'Enter' && (event.metaKey || event.ctrlKey)) || (this.renderMode === 'mobile-sheet' && event.key === 'Enter' && !event.shiftKey)) {
           event.preventDefault();
           reply();
         }
@@ -1140,14 +1193,14 @@ class MarkPopoverController {
         const proof = getProofEditorApi();
         if (resolved) {
           if (proof?.markUnresolve) {
-            proof.markUnresolve(mark.id);
+            withHumanReviewWrite(() => proof.markUnresolve(mark.id));
           } else {
             unresolveComment(this.view, mark.id);
           }
           this.openForMark(mark.id);
         } else {
           if (proof?.markResolve) {
-            proof.markResolve(mark.id);
+            withHumanReviewWrite(() => proof.markResolve(mark.id));
           } else {
             resolveComment(this.view, mark.id);
           }
@@ -1161,7 +1214,7 @@ class MarkPopoverController {
       installTouchSafeButton(deleteButton, () => {
         const proof = getProofEditorApi();
         if (proof?.markDeleteThread) {
-          proof.markDeleteThread(mark.id);
+          withHumanReviewWrite(() => proof.markDeleteThread(mark.id));
         } else {
           deleteMark(this.view, mark.id);
         }
@@ -1221,18 +1274,31 @@ class MarkPopoverController {
     header.className = 'mark-popover-header';
     header.textContent = 'Suggestion';
 
+    const actor = document.createElement('div');
+    actor.className = 'mark-popover-meta';
+    actor.textContent = `Suggested by ${getActorName(mark.by)}`;
+
     const body = document.createElement('div');
     body.className = 'mark-popover-body';
 
     let detail = '';
     if (mark.kind === 'insert') {
       const data = mark.data as InsertData | undefined;
-      detail = data?.content ?? '';
+      const inserted = data?.content ?? '';
+      detail = inserted
+        ? `Insert: ${inserted}`
+        : 'Insert: (empty)';
     } else if (mark.kind === 'replace') {
       const data = mark.data as ReplaceData | undefined;
-      detail = data?.content ?? '';
+      const replacement = data?.content ?? '';
+      const original = mark.quote ?? '';
+      detail = original
+        ? `Replace: ${original}\nWith: ${replacement || '(empty)'}`
+        : `Replace with: ${replacement || '(empty)'}`;
     } else if (mark.kind === 'delete') {
-      detail = mark.quote ?? '';
+      detail = mark.quote
+        ? `Delete: ${mark.quote}`
+        : 'Delete selected text';
     }
     body.textContent = detail;
 
@@ -1242,12 +1308,12 @@ class MarkPopoverController {
 
     const applyButton = document.createElement('button');
     applyButton.type = 'button';
-    applyButton.textContent = 'Apply';
+    applyButton.textContent = 'Accept';
     installTouchSafeButton(applyButton, () => {
       if (!canEdit) return;
       const proof = getProofEditorApi();
       if (proof?.markAccept) {
-        proof.markAccept(mark.id);
+        withHumanReviewWrite(() => proof.markAccept(mark.id));
       } else {
         acceptSuggestion(this.view, mark.id);
       }
@@ -1261,7 +1327,7 @@ class MarkPopoverController {
       if (!canEdit) return;
       const proof = getProofEditorApi();
       if (proof?.markReject) {
-        proof.markReject(mark.id);
+        withHumanReviewWrite(() => proof.markReject(mark.id));
       } else {
         rejectSuggestion(this.view, mark.id);
       }
@@ -1282,6 +1348,7 @@ class MarkPopoverController {
     actions.appendChild(closeButton);
 
     this.popover.appendChild(header);
+    this.popover.appendChild(actor);
     this.popover.appendChild(body);
     this.popover.appendChild(actions);
   }
@@ -1404,6 +1471,9 @@ class MarkPopoverController {
   }
 
   private renderMobileStrip(): void {
+    // The PlayMaker style lists marks in its own panel, but a phone still needs the
+    // selection actions (Comment, Flag, Suggest): touch has no other way to start a comment.
+    const playmaker = getReviewStyle() === 'playmaker';
     if (!shouldUseCommentUiV2()) {
       this.strip.style.display = 'none';
       this.mobileStripSignature = '';
@@ -1478,7 +1548,7 @@ class MarkPopoverController {
     const comments = this.getMobileCommentData();
     const hasActionRow = this.hasLiveSelection && isMobileTouch();
     const canShowActionRow = hasActionRow && canCommentInRuntime();
-    if (comments.totalCount === 0 && !canShowActionRow) {
+    if ((comments.totalCount === 0 || playmaker) && !canShowActionRow) {
       this.strip.style.display = 'none';
       this.mobileStripSignature = '';
       this.mobileStripExpanded = false;
@@ -1545,11 +1615,16 @@ class MarkPopoverController {
     }
     try {
       if (typeof this.strip.getBoundingClientRect !== 'function') return;
+      // updateSheetViewportOffset pins the strip's bottom for its docked form. The floating row
+      // also has a top, so pinned it stretched to the foot of the screen and measured as tall
+      // as the gap: measure its own size first.
+      this.strip.style.bottom = 'auto';
+      this.strip.style.right = 'auto';
       const vv = window.visualViewport;
       const viewportHeight = getVisualViewportHeight(window.innerHeight, vv ?? null);
       const safeTop = getTopViewportInset(12);
       const stripRect = this.strip.getBoundingClientRect();
-      const maxTop = Math.max(safeTop, viewportHeight - stripRect.height - 12);
+      const maxTop = Math.max(safeTop, getBottomViewportLimit(viewportHeight) - stripRect.height - 12);
       const belowTop = selectionRect.bottom + 10;
       const aboveTop = selectionRect.top - stripRect.height - 10;
       const targetTop = belowTop <= maxTop ? belowTop : clamp(aboveTop, safeTop, maxTop);
@@ -1928,6 +2003,15 @@ export function openCommentComposer(view: EditorView, range: MarkRange, by: stri
   const controller = controllers.get(view);
   if (!controller) return;
   controller.openComposer(range, by);
+}
+
+export function openMarkPopover(view: EditorView, markId: string): boolean {
+  const controller = controllers.get(view);
+  if (!controller) return false;
+  const mark = getMarks(view.state).find((entry) => entry.id === markId);
+  if (!mark) return false;
+  controller.openForMark(markId);
+  return true;
 }
 
 export function captureCommentPopoverDraft(view: EditorView): CommentPopoverDraftSnapshot | null {

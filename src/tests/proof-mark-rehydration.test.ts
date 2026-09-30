@@ -56,12 +56,45 @@ async function run(): Promise<void> {
 
   const db = await import('../../server/db.ts');
   const { executeDocumentOperationAsync } = await import('../../server/document-engine.ts');
-  const { MUTATION_BASE_SCHEMA_VERSION } = await import('../../server/collab.ts');
+  const {
+    __unsafePrimeLoadedDocForTests,
+    loadCanonicalYDoc,
+    MUTATION_BASE_SCHEMA_VERSION,
+  } = await import('../../server/collab.ts');
+  const { mutateCanonicalDocument } = await import('../../server/canonical-document.ts');
   const { rehydrateProofMarksMarkdown } = await import('../../server/proof-mark-rehydration.ts');
   const { repairProofMarksForSlug } = await import('../../server/proof-mark-repair.ts');
 
   try {
     const createdAt = new Date('2026-03-10T18:00:00.000Z').toISOString();
+
+    const guardSlug = `proof-markup-guard-${Math.random().toString(36).slice(2, 10)}`;
+    const guardBase = 'The second act needs one more scene.';
+    const guardDoc = db.createDocument(guardSlug, guardBase, {}, 'Proof markup guard');
+    const corruptMarkId = 'corrupt-insert';
+    const corruptCandidate = [
+      `${guardBase} `,
+      `<span data-proof="suggestion" data-id="${corruptMarkId}" data-by="human:test" data-kind="insert">`,
+      `probe wordssuggestion" data-id="${corruptMarkId}" data-by="human:test" data-kind="insert">probe words`,
+      '</span>',
+    ].join('');
+    const guardedMutation = await mutateCanonicalDocument({
+      slug: guardSlug,
+      nextMarkdown: corruptCandidate,
+      nextMarks: {},
+      source: 'test:proof-markup-guard',
+      baseRevision: guardDoc.revision,
+      strictLiveDoc: false,
+    });
+    assert(!guardedMutation.ok, 'Expected canonical mutation to refuse proof span markup in visible text');
+    if (!guardedMutation.ok) {
+      assertEqual(guardedMutation.code, 'PROOF_MARKUP_TEXT_BLOCKED');
+    }
+    assertEqual(
+      db.getDocumentBySlug(guardSlug)?.markdown,
+      guardBase,
+      'Expected refused proof markup mutation to leave canonical markdown unchanged',
+    );
 
     const acceptSlug = `rehydrate-accept-${Math.random().toString(36).slice(2, 10)}`;
     const fullQuote = 'You can try it yourself right now. A copy of this post is available on Proof. Use the share link there to have Claude, ChatGPT, your claw, or any other agent add their comments.';
@@ -431,6 +464,10 @@ async function run(): Promise<void> {
     const splitRejectSlug = `rehydrate-split-reject-${Math.random().toString(36).slice(2, 10)}`;
     db.createDocument(splitRejectSlug, splitRejectFixture.markdown, splitRejectFixture.marks, 'Split suggestion reject');
     const splitRejectBefore = db.getDocumentBySlug(splitRejectSlug);
+    const splitRejectLiveHandle = await loadCanonicalYDoc(splitRejectSlug);
+    assert(splitRejectLiveHandle, 'Expected split suggestion reject fixture to load into a live Y.Doc');
+    const splitRejectLiveDoc = splitRejectLiveHandle.ydoc;
+    __unsafePrimeLoadedDocForTests(splitRejectSlug, splitRejectLiveDoc);
     const splitRejectResult = await executeDocumentOperationAsync(splitRejectSlug, 'POST', '/marks/reject', {
       markId: splitRejectFixture.suggestionId,
       by: 'human:test',
@@ -456,11 +493,22 @@ async function run(): Promise<void> {
       splitRejectedDoc?.markdown.includes(`data-id="${splitRejectFixture.commentId}"`),
       'Expected split suggestion reject to preserve nested comment markup',
     );
-    assert(
-      (splitRejectedDoc?.access_epoch ?? 0) > (splitRejectBefore?.access_epoch ?? 0),
-      'Expected split suggestion reject to bump access_epoch so stale collab rooms must reload',
+    // C4 applies REST suggestion rejects to the resident Y.Doc; it must not bump
+    // access_epoch and force connected pages to discard that live document.
+    assertEqual(
+      splitRejectedDoc?.access_epoch,
+      splitRejectBefore?.access_epoch,
+      'Expected split suggestion reject to leave access_epoch unchanged',
     );
     const splitRejectedMarks = parseStoredMarks(splitRejectedDoc?.marks);
+    assert(
+      !(splitRejectFixture.suggestionId in splitRejectedMarks),
+      'Expected split suggestion reject to remove suggestion metadata from stored marks',
+    );
+    assert(
+      !splitRejectLiveDoc.getMap('marks').has(splitRejectFixture.suggestionId),
+      'Expected split suggestion reject to remove suggestion metadata from the live Y.Doc',
+    );
     assert(splitRejectFixture.commentId in splitRejectedMarks, 'Expected split suggestion reject to preserve nested comment metadata');
 
     const splitRepairFixture = buildSplitFixture('repair');

@@ -15,6 +15,7 @@ import {
   REPORT_BUG_OPEN_SOURCE_REPO_URL,
 } from './agent-guidance.js';
 import { buildAppsignalCorrelation, type AppsignalCorrelation } from './observability.js';
+import { aDocument } from '../src/shared/product-identity.js';
 
 export type BugReportType = 'bug' | 'performance' | 'ux';
 export type BugReportSeverity = 'blocker' | 'high' | 'medium' | 'low';
@@ -937,7 +938,7 @@ export function getReportBugToolSpec(input: { slugFromPath?: string | null; base
     success: true,
     tool: 'report_bug',
     version: BUG_REPORT_SPEC_VERSION,
-    description: 'Create or update a Proof bug report through one HTTP bridge tool call.',
+    description: `Create or update ${aDocument()} bug report through one HTTP bridge tool call.`,
     method: 'POST',
     auth: 'none',
     endpoint: reportBugUrl,

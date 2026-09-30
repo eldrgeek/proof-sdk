@@ -1,4 +1,11 @@
+import type { StoredMark as MoveStoredMark } from '../src/formats/marks.js';
+import { createMove, decideMove, moveBundles } from '../src/shared/moves.js';
+import { extractLines, actorKey } from '../src/shared/line-marks.js';
+import { resolveAgentLineTarget } from './line-marks.js';
+import { immediateMoveActors } from './moves.js';
 import { randomUUID } from 'crypto';
+import { EditorState } from '@milkdown/kit/prose/state';
+import { Fragment, type Node as ProseMirrorNode, type ResolvedPos } from '@milkdown/kit/prose/model';
 import {
   addDocumentEvent,
   bumpDocumentAccessEpoch,
@@ -27,7 +34,18 @@ import {
   type CanonicalReadableDocument,
 } from './collab.js';
 import { mutateCanonicalDocument, recoverCanonicalDocumentIfNeeded } from './canonical-document.js';
+import {
+  getHeadlessMilkdownParser,
+  parseMarkdownWithHtmlFallback,
+  serializeMarkdown,
+} from './milkdown-headless.js';
 import { canonicalizeStoredMarks } from '../src/formats/marks.js';
+import {
+  buildTextIndex,
+  mapTextOffsetsToRange,
+  resolveQuoteRange,
+  type TextRange,
+} from '../src/editor/utils/text-range.js';
 import {
   canonicalizeAnchorTargetText,
   stripMarkdownVisibleText,
@@ -50,6 +68,11 @@ import {
 } from './proof-mark-rehydration.js';
 import { stripAllProofSpanTags } from './proof-span-strip.js';
 import {
+  isOrphanedSuggestionMark,
+  listOrphanedSuggestionMarks,
+  ORPHANED_SUGGESTION_POLICY,
+} from './proof-mark-orphans.js';
+import {
   recordEditAnchorAmbiguous,
   recordEditAnchorNotFound,
   recordEditAuthoredSpanRemap,
@@ -71,6 +94,7 @@ type StoredMark = {
   resolved?: boolean;
   content?: string;
   status?: 'pending' | 'accepted' | 'rejected';
+  insertStructure?: 'inline' | 'block' | 'table_row';
   target?: AnchorTarget;
   startRel?: string;
   endRel?: string;
@@ -298,6 +322,15 @@ async function getAsyncMutationReadyDocumentWithVisibleFallback(
   return { doc, error: null };
 }
 
+/**
+ * Where a marks-only write goes. Ruling point (fix/suggestion-positions, 2026-09-19): once a
+ * document has persisted collaborative (Yjs) state, the Yjs marks map is what a page loads, so a
+ * marks write must reach it; a write to the documents row alone is lost at the next page open.
+ */
+export const MARKS_WRITE_POLICY = {
+  canonicalWhenYjsPersisted: true,
+} as const;
+
 function buildCanonicalMutationBaseArgs(
   doc: Pick<MutationReadyDocument, 'revision' | 'updated_at'>,
   context?: AsyncDocumentMutationContext,
@@ -342,7 +375,7 @@ function parseRelativeCharOffset(value: unknown): number | null {
   return parsed;
 }
 
-function stripMarkdownWithMapping(markdown: string): { stripped: string; map: number[] } {
+export function stripMarkdownWithMapping(markdown: string): { stripped: string; map: number[] } {
   const source = markdown ?? '';
   const strippedChars: string[] = [];
   const map: number[] = [];
@@ -867,6 +900,24 @@ function findQuoteAnchorInMarkdown(markdown: string, quote: string): QuoteAnchor
   };
 }
 
+function resolveVisibleSuggestionQuote(
+  markdown: string,
+  suppliedQuote: string,
+): { quote: string; anchor: QuoteAnchor } | null {
+  const normalizedSupplied = normalizeQuote(suppliedQuote);
+  if (!normalizedSupplied) return null;
+
+  const visibleQuote = normalizeQuote(stripMarkdownWithMapping(suppliedQuote).stripped);
+  const candidates = [normalizedSupplied, visibleQuote]
+    .filter((candidate, index, all) => candidate && all.indexOf(candidate) === index);
+
+  for (const candidate of candidates) {
+    const anchor = findQuoteAnchorInMarkdown(markdown, candidate);
+    if (anchor) return { quote: candidate, anchor };
+  }
+  return null;
+}
+
 function findRawQuoteSpanInMarkdown(markdown: string, quote: string): { start: number; end: number } | null {
   const anchor = findQuoteAnchorInMarkdown(markdown, quote);
   if (!anchor) return null;
@@ -904,12 +955,38 @@ function replaceFirstOccurrence(source: string, find: string, replace: string): 
   return `${source.slice(0, idx)}${replace}${source.slice(idx + find.length)}`;
 }
 
+function deleteMarkdownRangeWithWhitespaceCleanup(
+  markdown: string,
+  start: number,
+  end: number,
+): string {
+  let deleteStart = start;
+  let deleteEnd = end;
+  const before = markdown[start - 1] ?? '';
+  const after = markdown[end] ?? '';
+  const startsTextBlock = start === 0 || markdown[start - 1] === '\n';
+  const endsTextBlock = end === markdown.length || markdown[end] === '\n';
+
+  if (after === ' ' && (before === ' ' || startsTextBlock)) {
+    deleteEnd += 1;
+  } else if (before === ' ' && endsTextBlock) {
+    deleteStart -= 1;
+  }
+  return `${markdown.slice(0, deleteStart)}${markdown.slice(deleteEnd)}`;
+}
+
 function buildAcceptedSuggestionMarkdown(markdown: string, suggestion: StoredMark): string | null {
   const quote = typeof suggestion.quote === 'string' ? suggestion.quote : '';
   if (!quote) return null;
 
   if (suggestion.kind === 'insert') {
     const content = typeof suggestion.content === 'string' ? suggestion.content : '';
+    if (suggestion.insertStructure === 'inline'
+      || suggestion.insertStructure === 'block'
+      || suggestion.insertStructure === 'table_row') {
+      return markdown;
+    }
+    if (normalizeQuote(content) === normalizeQuote(quote)) return markdown;
     const span = findQuoteSpanInMarkdown(markdown, quote);
     if (span) {
       return `${markdown.slice(0, span.end)}${content}${markdown.slice(span.end)}`;
@@ -922,9 +999,12 @@ function buildAcceptedSuggestionMarkdown(markdown: string, suggestion: StoredMar
   if (suggestion.kind === 'delete') {
     const span = findQuoteSpanInMarkdown(markdown, quote);
     if (span) {
-      return `${markdown.slice(0, span.start)}${markdown.slice(span.end)}`;
+      return deleteMarkdownRangeWithWhitespaceCleanup(markdown, span.start, span.end);
     }
-    return replaceFirstOccurrence(markdown, quote, '');
+    const idx = markdown.indexOf(quote);
+    return idx < 0
+      ? null
+      : deleteMarkdownRangeWithWhitespaceCleanup(markdown, idx, idx + quote.length);
   }
 
   if (suggestion.kind === 'replace') {
@@ -942,6 +1022,18 @@ function buildAcceptedSuggestionMarkdown(markdown: string, suggestion: StoredMar
   }
 
   return markdown;
+}
+
+function orphanedAcceptResult(markId: string): EngineExecutionResult {
+  return {
+    status: 409,
+    body: {
+      success: false,
+      code: ORPHANED_SUGGESTION_POLICY.acceptErrorCode,
+      error: 'Suggestion text no longer exists in the document, so there is nothing to accept; reject it instead',
+      markId,
+    },
+  };
 }
 
 function toStructuredMutationFailureResult(
@@ -969,6 +1061,16 @@ function toStructuredMutationFailureResult(
           success: false,
           code: 'MARK_NOT_HYDRATED',
           error: fallbackAnchorMessage,
+          ...details,
+        },
+      };
+    case 'MARK_ORPHANED':
+      return {
+        status: 409,
+        body: {
+          success: false,
+          code: ORPHANED_SUGGESTION_POLICY.acceptErrorCode,
+          error: failure.error,
           ...details,
         },
       };
@@ -1074,11 +1176,17 @@ function buildAcceptedSuggestionMarkdownFromSelection(
 
   if (suggestion.kind === 'insert') {
     const content = typeof suggestion.content === 'string' ? suggestion.content : '';
+    if (suggestion.insertStructure === 'inline'
+      || suggestion.insertStructure === 'block'
+      || suggestion.insertStructure === 'table_row') {
+      return markdown;
+    }
+    if (normalizeQuote(content) === normalizeQuote(suggestion.quote)) return markdown;
     return `${markdown.slice(0, span.end)}${content}${markdown.slice(span.end)}`;
   }
 
   if (suggestion.kind === 'delete') {
-    return `${markdown.slice(0, span.start)}${markdown.slice(span.end)}`;
+    return deleteMarkdownRangeWithWhitespaceCleanup(markdown, span.start, span.end);
   }
 
   if (suggestion.kind === 'replace') {
@@ -1180,7 +1288,7 @@ function resolveMutationAnchor(
   };
 }
 
-function buildStoredSelectionMetadata(
+export function buildStoredSelectionMetadata(
   markdown: string,
   selection: { sourceStart: number; sourceEnd: number },
   fallbackQuote: string,
@@ -1247,6 +1355,7 @@ function readState(slug: string): EngineExecutionResult {
       content: doc.markdown,
       markdown: doc.markdown,
       marks,
+      orphanedMarks: listOrphanedSuggestionMarks(doc.markdown, marks),
       updatedAt: mutationReady ? doc.updated_at : null,
       revision: mutationReady ? doc.revision : null,
       readSource,
@@ -1291,6 +1400,7 @@ async function readStateAsync(slug: string): Promise<EngineExecutionResult> {
       content: doc.markdown,
       markdown: doc.markdown,
       marks,
+      orphanedMarks: listOrphanedSuggestionMarks(doc.markdown, marks),
       updatedAt: mutationReady ? doc.updated_at : null,
       revision: mutationReady ? doc.revision : null,
       readSource,
@@ -1328,7 +1438,10 @@ function persistMarks(slug: string, marks: Record<string, StoredMark>, actor: st
     });
   }
 
-  if (hasPotentiallyLiveCollabDoc(slug)) {
+  const persistedRow = getDocumentBySlug(slug);
+  const hasPersistedYjsState = typeof persistedRow?.y_state_version === 'number' && persistedRow.y_state_version > 0;
+  if (hasPotentiallyLiveCollabDoc(slug) || (MARKS_WRITE_POLICY.canonicalWhenYjsPersisted && hasPersistedYjsState)) {
+    // A row-only write would be dropped at the next page open (see persistMarksAsync).
     return {
       status: 503,
       body: {
@@ -1502,7 +1615,14 @@ async function persistMarksAsync(
   const yjsBackedMutationBase = context?.mutationBase
     && context.mutationBase.source !== 'projection'
     && context.mutationBase.source !== 'canonical_row';
+  // A document with persisted collaborative state keeps its marks in the Yjs marks map, and a page
+  // that opens it rebuilds the row from that map (projection materialization deliberately does not
+  // resurrect row-only suggestions). A marks write that reached only the row was therefore lost at
+  // the next page open: pending replacements, deletions and attached insertions stored by the
+  // dialect import (patchStoredMarksAsync, which has no route context) vanished that way.
+  // MARKS_WRITE_POLICY.canonicalWhenYjsPersisted sends every such write through the canonical path.
   const shouldCommitCanonical = (Boolean(context?.precondition) && hasPersistedYjsState)
+    || (MARKS_WRITE_POLICY.canonicalWhenYjsPersisted && hasPersistedYjsState)
     || Boolean(yjsBackedMutationBase)
     || (typeof targetMarkdown === 'string'
       && stripEphemeralCollabSpans(targetMarkdown) !== persistedMarkdown);
@@ -1755,14 +1875,19 @@ function addSuggestion(
     );
     quote = selectionMetadata.quote;
   } else {
-    const normalizedMarkdown = normalizeQuote(doc.markdown);
-    const normalizedPlain = normalizeMarkdownForQuote(doc.markdown);
-    if (!normalizedMarkdown.includes(quote) && !normalizedPlain.includes(quote)) {
+    const visibleAnchor = resolveVisibleSuggestionQuote(doc.markdown, quote);
+    if (!visibleAnchor) {
       return {
         status: 409,
         body: { success: false, code: 'ANCHOR_NOT_FOUND', error: 'Suggestion anchor quote not found in document' },
       };
     }
+    quote = visibleAnchor.quote;
+    selectionMetadata = buildStoredSelectionMetadata(
+      doc.markdown,
+      { sourceStart: visibleAnchor.anchor.rawStart, sourceEnd: visibleAnchor.anchor.rawEnd },
+      quote,
+    );
   }
 
   const requestedStatus = typeof body.status === 'string' ? body.status.trim().toLowerCase() : 'pending';
@@ -1836,6 +1961,7 @@ function updateSuggestionStatus(
 
   const marks = parseMarks(doc.marks);
   const existing = marks[markId];
+  if (existing?.move) return { status: 409, body: { success: false, code: 'MOVE_REQUIRES_ASYNC', error: 'Decide this move through /moves/:id/accept or /moves/:id/reject.' } };
   if (!existing) {
     const revisionHint = typeof body.baseRevision === 'number'
       ? body.baseRevision
@@ -1864,6 +1990,12 @@ function updateSuggestionStatus(
         marks,
       },
     };
+  }
+
+  // Connected decisions retain their records. An opposite REST decision must not
+  // apply the proposal's text a second time; only the editor's guarded Undo reopens it.
+  if (existing.status === 'accepted' || existing.status === 'rejected') {
+    return { status: 409, body: { success: false, code: 'MARK_ALREADY_RESOLVED', error: 'Undo the earlier decision before deciding this suggestion again.' } };
   }
 
   if (status !== 'rejected' && hasPotentiallyLiveCollabDoc(slug)) {
@@ -2000,6 +2132,326 @@ function updateSuggestionStatus(
   };
 }
 
+type InsertStructure = 'inline' | 'block' | 'table_row';
+
+type PreparedInsert = {
+  markdown: string;
+  quote: string;
+  range: TextRange;
+  startRel: string;
+  endRel: string;
+  structure: InsertStructure;
+};
+
+type PrepareInsertFailure = {
+  status: number;
+  code: string;
+  error: string;
+};
+
+function findAncestorDepth($pos: ResolvedPos, nodeNames: Set<string>): number | null {
+  for (let depth = $pos.depth; depth > 0; depth -= 1) {
+    if (nodeNames.has($pos.node(depth).type.name)) return depth;
+  }
+  return null;
+}
+
+function collectVisibleRange(doc: ProseMirrorNode, from: number, to: number): TextRange | null {
+  let visibleFrom = Number.POSITIVE_INFINITY;
+  let visibleTo = -1;
+  doc.nodesBetween(from, to, (node, pos) => {
+    if (!node.isText) return true;
+    const nodeFrom = Math.max(from, pos);
+    const nodeTo = Math.min(to, pos + node.nodeSize);
+    if (nodeTo > nodeFrom) {
+      visibleFrom = Math.min(visibleFrom, nodeFrom);
+      visibleTo = Math.max(visibleTo, nodeTo);
+    }
+    return true;
+  });
+  return Number.isFinite(visibleFrom) && visibleTo > visibleFrom
+    ? { from: visibleFrom, to: visibleTo }
+    : null;
+}
+
+function buildRelativeTextAnchors(doc: ProseMirrorNode, range: TextRange): {
+  startRel: string;
+  endRel: string;
+} | null {
+  const index = buildTextIndex(doc);
+  if (!index) return null;
+  let startOffset = -1;
+  let endOffset = -1;
+  for (let offset = 0; offset < index.positions.length; offset += 1) {
+    const pos = index.positions[offset];
+    if (typeof pos !== 'number') continue;
+    if (startOffset < 0 && pos >= range.from) startOffset = offset;
+    if (pos < range.to) endOffset = offset + 1;
+  }
+  return startOffset >= 0 && endOffset > startOffset
+    ? { startRel: `char:${startOffset}`, endRel: `char:${endOffset}` }
+    : null;
+}
+
+function findTableNode(doc: ProseMirrorNode): ProseMirrorNode | null {
+  let table: ProseMirrorNode | null = null;
+  doc.descendants((node) => {
+    if (node.type.name === 'table') {
+      table = node;
+      return false;
+    }
+    return table === null;
+  });
+  return table;
+}
+
+function parseSuggestedTableRow(
+  parser: Awaited<ReturnType<typeof getHeadlessMilkdownParser>>,
+  content: string,
+  columnCount: number,
+): ProseMirrorNode | null {
+  const rowSource = content.trim();
+  if (!rowSource || rowSource.includes('\n') || !rowSource.startsWith('|')) return null;
+  const header = `| ${Array.from({ length: columnCount }, (_, index) => `c${index + 1}`).join(' | ')} |`;
+  const divider = `| ${Array.from({ length: columnCount }, () => '---').join(' | ')} |`;
+  const parsed = parseMarkdownWithHtmlFallback(parser, `${header}\n${divider}\n${rowSource}`);
+  const table = parsed.doc ? findTableNode(parsed.doc) : null;
+  const row = table?.lastChild ?? null;
+  if (!row || row.type.name !== 'table_row' || row.childCount !== columnCount) return null;
+  return row;
+}
+
+const LIST_NODE_NAMES = new Set(['bullet_list', 'ordered_list']);
+
+/**
+ * Where a block insert may go, best first (ac-1kf). Content that is only a list of one kind
+ * ("10. New question") joins the nearest enclosing list of that kind as sibling items after
+ * the anchor's item, which is what the same text means in markdown. Otherwise, and as the
+ * fallback, it goes after the anchor's block at each depth, innermost first.
+ */
+function blockInsertionCandidates(
+  $anchor: ResolvedPos,
+  fragment: Fragment,
+): Array<{ position: number; content: Fragment }> {
+  const candidates: Array<{ position: number; content: Fragment }> = [];
+  let listType: string | null = null;
+  let onlyLists = fragment.childCount > 0;
+  const items: ProseMirrorNode[] = [];
+  fragment.forEach((child) => {
+    if (!LIST_NODE_NAMES.has(child.type.name) || (listType !== null && child.type.name !== listType)) {
+      onlyLists = false;
+      return;
+    }
+    listType = child.type.name;
+    child.forEach((item) => items.push(item));
+  });
+  if (onlyLists && listType !== null && items.length > 0) {
+    for (let depth = $anchor.depth; depth > 1; depth -= 1) {
+      const list = $anchor.node(depth - 1);
+      if ($anchor.node(depth).type.name !== 'list_item' || list.type.name !== listType) continue;
+      const siblings = Fragment.fromArray(items);
+      const index = $anchor.indexAfter(depth - 1);
+      if (list.canReplace(index, index, siblings)) {
+        candidates.push({ position: $anchor.after(depth), content: siblings });
+      }
+      break;
+    }
+  }
+  for (let depth = $anchor.depth; depth > 0; depth -= 1) {
+    const node = $anchor.node(depth);
+    if (!node.isBlock) continue;
+    const parent = $anchor.node(depth - 1);
+    const index = $anchor.indexAfter(depth - 1);
+    if (parent.canReplace(index, index, fragment)) {
+      candidates.push({ position: $anchor.after(depth), content: fragment });
+    }
+  }
+  return candidates;
+}
+
+function textblockTexts(doc: ProseMirrorNode, from = 0, to = doc.content.size): string[] {
+  const texts: string[] = [];
+  doc.nodesBetween(from, to, (node) => {
+    if (!node.isTextblock) return true;
+    texts.push(normalizeQuote(node.textContent));
+    return false;
+  });
+  return texts;
+}
+
+function countTextblockRuns(texts: string[], run: string[]): number {
+  let count = 0;
+  for (let start = 0; start + run.length <= texts.length; start += 1) {
+    if (run.every((text, offset) => texts[start + offset] === text)) count += 1;
+  }
+  return count;
+}
+
+/**
+ * A block insert must still be its own blocks after the document is saved as markdown and
+ * read back. "10. …" nested under a list item's paragraph fails this: markdown cannot start
+ * a list numbered 10 inside a paragraph, so it is saved as an escaped continuation line of
+ * the anchor's own item, and rejecting it later would take the anchor's text with it (ac-1kf).
+ */
+function insertedBlocksSurviveRoundTrip(
+  parser: Awaited<ReturnType<typeof getHeadlessMilkdownParser>>,
+  doc: ProseMirrorNode,
+  from: number,
+  to: number,
+  markdown: string,
+): boolean {
+  const run = textblockTexts(doc, from, to);
+  if (run.length === 0) return true;
+  const reparsed = parseMarkdownWithHtmlFallback(parser, markdown).doc;
+  if (!reparsed) return false;
+  return countTextblockRuns(textblockTexts(reparsed), run) >= countTextblockRuns(textblockTexts(doc), run);
+}
+
+async function prepareInsertSuggestion(
+  markdown: string,
+  anchorQuote: string,
+  content: string,
+  anchorMetadata?: { startRel?: string; endRel?: string } | null,
+): Promise<PreparedInsert | PrepareInsertFailure> {
+  const parser = await getHeadlessMilkdownParser();
+  const parsed = parseMarkdownWithHtmlFallback(parser, markdown);
+  if (!parsed.doc) {
+    return { status: 422, code: 'INVALID_MARKDOWN', error: 'Failed to parse document for insert suggestion' };
+  }
+  const requestedStart = parseRelativeCharOffset(anchorMetadata?.startRel);
+  const requestedEnd = parseRelativeCharOffset(anchorMetadata?.endRel);
+  const textIndex = requestedStart !== null && requestedEnd !== null
+    ? buildTextIndex(parsed.doc)
+    : null;
+  const requestedRange = textIndex
+    ? mapTextOffsetsToRange(textIndex, requestedStart!, requestedEnd!)
+    : null;
+  const anchorRange = requestedRange
+    && normalizeQuote(parsed.doc.textBetween(requestedRange.from, requestedRange.to, '\n', '\n')) === normalizeQuote(anchorQuote)
+    ? requestedRange
+    : resolveQuoteRange(parsed.doc, anchorQuote);
+  if (!anchorRange) {
+    return {
+      status: 409,
+      code: 'ANCHOR_NOT_FOUND',
+      error: 'Suggestion anchor quote could not be placed in the document model',
+    };
+  }
+
+  const state = EditorState.create({ schema: parser.schema, doc: parsed.doc });
+  let tr = state.tr;
+  const $anchor = tr.doc.resolve(anchorRange.to);
+  const tableCellDepth = findAncestorDepth($anchor, new Set(['table_cell', 'table_header']));
+  const hasParagraphBreak = /\r?\n[ \t]*\r?\n/.test(content);
+  const looksLikeTableRow = content.trim().startsWith('|');
+  let structure: InsertStructure = 'inline';
+  let insertedFrom = anchorRange.to;
+  let insertedTo = anchorRange.to;
+  let serializedMarkdown: string | null = null;
+
+  if (tableCellDepth !== null && (hasParagraphBreak || looksLikeTableRow)) {
+    const rowDepth = findAncestorDepth($anchor, new Set(['table_row']));
+    if (rowDepth === null) {
+      return { status: 422, code: 'UNREPRESENTABLE_INSERT', error: 'Table insert is not inside a table row' };
+    }
+    const currentRow = $anchor.node(rowDepth);
+    const suggestedRow = parseSuggestedTableRow(parser, content, currentRow.childCount);
+    if (!suggestedRow) {
+      return {
+        status: 422,
+        code: 'INVALID_TABLE_ROW',
+        error: `Inserted table row must contain exactly ${currentRow.childCount} columns`,
+      };
+    }
+    insertedFrom = $anchor.after(rowDepth);
+    tr = tr.insert(insertedFrom, suggestedRow);
+    insertedTo = insertedFrom + suggestedRow.nodeSize;
+    structure = 'table_row';
+  } else if (looksLikeTableRow) {
+    return {
+      status: 422,
+      code: 'INVALID_TABLE_ROW',
+      error: 'A table row insert must be anchored in a table cell',
+    };
+  } else if (hasParagraphBreak) {
+    const blockSource = content.trim();
+    const blockDoc = parseMarkdownWithHtmlFallback(parser, blockSource).doc;
+    if (!blockDoc || blockDoc.childCount === 0) {
+      return {
+        status: 422,
+        code: 'UNREPRESENTABLE_INSERT',
+        error: 'Inserted block content must contain visible text',
+      };
+    }
+    const candidates = blockInsertionCandidates($anchor, blockDoc.content);
+    if (candidates.length === 0) {
+      return {
+        status: 422,
+        code: 'UNREPRESENTABLE_INSERT',
+        error: 'Inserted block content cannot be placed after the anchor block',
+      };
+    }
+    let placed = false;
+    for (const candidate of candidates) {
+      const attempt = state.tr.insert(candidate.position, candidate.content);
+      const attemptTo = candidate.position + candidate.content.size;
+      const attemptMarkdown = await serializeMarkdown(attempt.doc);
+      if (!insertedBlocksSurviveRoundTrip(parser, attempt.doc, candidate.position, attemptTo, attemptMarkdown)) continue;
+      tr = attempt;
+      insertedFrom = candidate.position;
+      insertedTo = attemptTo;
+      serializedMarkdown = attemptMarkdown;
+      placed = true;
+      break;
+    }
+    if (!placed) {
+      return {
+        status: 422,
+        code: 'UNREPRESENTABLE_INSERT',
+        error: 'Inserted block content would not stay a separate block once the document is saved',
+      };
+    }
+    structure = 'block';
+  } else {
+    try {
+      tr = tr.insert(anchorRange.to, parser.schema.text(content));
+    } catch {
+      return {
+        status: 422,
+        code: 'UNREPRESENTABLE_INSERT',
+        error: 'Inserted content cannot be represented at the anchor position',
+      };
+    }
+    insertedTo = insertedFrom + content.length;
+  }
+
+  const range = collectVisibleRange(tr.doc, insertedFrom, insertedTo);
+  if (!range) {
+    return {
+      status: 422,
+      code: 'INVALID_INSERT_CONTENT',
+      error: 'Inserted suggestion content must contain visible text',
+    };
+  }
+  const quote = normalizeQuote(tr.doc.textBetween(range.from, range.to, '\n', '\n'));
+  const relative = buildRelativeTextAnchors(tr.doc, range);
+  if (!quote || !relative) {
+    return {
+      status: 422,
+      code: 'INVALID_INSERT_CONTENT',
+      error: 'Inserted suggestion content could not be anchored',
+    };
+  }
+
+  return {
+    markdown: serializedMarkdown ?? await serializeMarkdown(tr.doc),
+    quote,
+    range,
+    ...relative,
+    structure,
+  };
+}
+
 async function addSuggestionAsync(
   slug: string,
   body: JsonRecord,
@@ -2045,14 +2497,103 @@ async function addSuggestionAsync(
       );
       quote = selectionMetadata.quote;
     } else {
-      const normalizedMarkdown = normalizeQuote(doc.markdown);
-      const normalizedPlain = normalizeMarkdownForQuote(doc.markdown);
-      if (!normalizedMarkdown.includes(quote) && !normalizedPlain.includes(quote)) {
+      const visibleAnchor = resolveVisibleSuggestionQuote(doc.markdown, quote);
+      if (!visibleAnchor) {
         return {
           status: 409,
           body: { success: false, code: 'ANCHOR_NOT_FOUND', error: 'Suggestion anchor quote not found in document' },
         };
       }
+      quote = visibleAnchor.quote;
+      // B8c removed the function-level resolvedSelection (its insert path uses selectionMetadata),
+      // so C5's visible-quote span is kept local to this branch.
+      const visibleSelection = {
+        sourceStart: visibleAnchor.anchor.rawStart,
+        sourceEnd: visibleAnchor.anchor.rawEnd,
+      };
+      selectionMetadata = buildStoredSelectionMetadata(
+        doc.markdown,
+        visibleSelection,
+        quote,
+      );
+    }
+
+    if (kind === 'insert') {
+      const content = body.content as string;
+      if (content.length === 0) {
+        return { status: 400, body: { success: false, error: 'Missing content' } };
+      }
+      const prepared = await prepareInsertSuggestion(doc.markdown, quote, content, selectionMetadata);
+      if ('error' in prepared) {
+        return {
+          body: {
+            success: false,
+            code: prepared.code,
+            error: prepared.error,
+          },
+          status: prepared.status,
+        };
+      }
+
+      const id = randomUUID();
+      const now = new Date().toISOString();
+      const marks = parseMarks(doc.marks);
+      marks[id] = {
+        kind,
+        by,
+        createdAt: now,
+        quote: prepared.quote,
+        content,
+        status: 'pending',
+        startRel: prepared.startRel,
+        endRel: prepared.endRel,
+        range: prepared.range,
+        insertStructure: prepared.structure,
+      };
+
+      const mutation = await mutateCanonicalDocument({
+        slug,
+        nextMarkdown: prepared.markdown,
+        nextMarks: marks as unknown as Record<string, unknown>,
+        source: `engine:suggestion.insert.added:${by}`,
+        ...buildCanonicalMutationBaseArgs(doc, context),
+        strictLiveDoc: true,
+        guardPathologicalGrowth: true,
+        incrementalFragmentUpdate: true,
+      });
+      if (!mutation.ok) {
+        return {
+          status: mutation.status,
+          body: {
+            success: false,
+            code: mutation.code,
+            error: mutation.error,
+            ...(mutation.retryWithState ? { retryWithState: mutation.retryWithState } : {}),
+          },
+        };
+      }
+
+      const eventId = addDocumentEvent(
+        slug,
+        'suggestion.insert.added',
+        { markId: id, by, quote: prepared.quote, content },
+        by,
+        mutationContextIdempotencyKey(context),
+        mutationContextIdempotencyRoute(context),
+      );
+      return {
+        status: 200,
+        body: {
+          success: true,
+          eventId,
+          markId: id,
+          shareState: mutation.document.share_state,
+          updatedAt: mutation.document.updated_at,
+          content: mutation.document.markdown,
+          markdown: mutation.document.markdown,
+          marks: parseMarks(mutation.document.marks),
+        },
+      };
     }
 
     const id = randomUUID();
@@ -2065,7 +2606,7 @@ async function addSuggestionAsync(
       && Number(body.range.to) > Number(body.range.from)
       ? { from: Number(body.range.from), to: Number(body.range.to) }
       : null;
-    marks[id] = {
+    const suggestion: StoredMark = {
       kind,
       by,
       createdAt: now,
@@ -2081,6 +2622,29 @@ async function addSuggestionAsync(
         : (selectionMetadata?.endRel ?? (anchor ? `char:${anchor.strippedEnd}` : undefined)),
       ...(providedRange ? { range: providedRange } : {}),
     };
+    marks[id] = suggestion;
+
+    const preflight = await finalizeSuggestionThroughRehydration({
+      markdown: doc.markdown,
+      marks: { [id]: suggestion },
+      markId: id,
+      action: 'accept',
+      clearResolutionTombstone: true,
+    });
+    if (!preflight.ok) {
+      const anchorFailure = preflight.code === 'MARK_NOT_HYDRATED'
+        || preflight.code === 'REQUIRED_MARKS_MISSING';
+      return {
+        status: anchorFailure ? 409 : 422,
+        body: {
+          success: false,
+          code: anchorFailure ? 'ANCHOR_NOT_FOUND' : 'INVALID_SUGGESTION_CONTENT',
+          error: anchorFailure
+            ? 'Suggestion anchor cannot be mapped to visible document text'
+            : `Suggestion cannot be applied safely: ${preflight.error}`,
+        },
+      };
+    }
 
     return persistMarksAsync(slug, doc, marks, by, `suggestion.${kind}.added`, {
       markId: id,
@@ -2130,13 +2694,19 @@ async function addSuggestionAsync(
     );
     quote = selectionMetadata.quote;
   } else {
-    const anchorCheck = findQuoteAnchorInMarkdown(doc.markdown, quote);
-    if (!anchorCheck) {
+    const visibleAnchor = resolveVisibleSuggestionQuote(doc.markdown, quote);
+    if (!visibleAnchor) {
       return {
         status: 409,
         body: { success: false, code: 'ANCHOR_NOT_FOUND', error: 'Suggestion anchor quote not found in document' },
       };
     }
+    quote = visibleAnchor.quote;
+    selectionMetadata = buildStoredSelectionMetadata(
+      doc.markdown,
+      { sourceStart: visibleAnchor.anchor.rawStart, sourceEnd: visibleAnchor.anchor.rawEnd },
+      quote,
+    );
   }
 
   const id = randomUUID();
@@ -2225,6 +2795,73 @@ async function addSuggestionAsync(
   };
 }
 
+async function removeSuggestionWithoutTextChange(
+  slug: string,
+  doc: { markdown: string; revision: number },
+  marks: Record<string, StoredMark>,
+  markId: string,
+  existing: StoredMark,
+  status: 'accepted' | 'rejected',
+  actor: string,
+  sourceTag: string,
+  context?: AsyncDocumentMutationContext,
+): Promise<EngineExecutionResult> {
+  const nextMarks = { ...marks };
+  delete nextMarks[markId];
+  const mutation = await mutateCanonicalDocument({
+    slug,
+    nextMarkdown: doc.markdown,
+    nextMarks: nextMarks as unknown as Record<string, unknown>,
+    source: `engine:${status}:${actor}:${sourceTag}`,
+    baseRevision: doc.revision,
+    strictLiveDoc: true,
+    guardPathologicalGrowth: true,
+    resolvedSuggestionId: markId,
+  });
+  if (!mutation.ok) {
+    return {
+      status: mutation.status,
+      body: {
+        success: false,
+        code: mutation.code,
+        error: mutation.error,
+        ...(mutation.retryWithState ? { retryWithState: mutation.retryWithState } : {}),
+      },
+    };
+  }
+
+  const eventId = addDocumentEvent(
+    slug,
+    `suggestion.${status}`,
+    { markId, status, by: actor },
+    actor,
+    mutationContextIdempotencyKey(context),
+    mutationContextIdempotencyRoute(context),
+  );
+  upsertMarkTombstone(slug, markId, status, mutation.document.revision);
+  const updatedMarks = parseMarks(mutation.document.marks);
+  const responseMarks: Record<string, StoredMark> = {
+    ...updatedMarks,
+    [markId]: {
+      ...existing,
+      ...(updatedMarks[markId] ?? {}),
+      status,
+    },
+  };
+  return {
+    status: 200,
+    body: {
+      success: true,
+      eventId,
+      shareState: mutation.document.share_state,
+      updatedAt: mutation.document.updated_at,
+      content: mutation.document.markdown,
+      markdown: mutation.document.markdown,
+      marks: responseMarks,
+    },
+  };
+}
+
 async function updateSuggestionStatusAsync(
   slug: string,
   body: JsonRecord,
@@ -2257,6 +2894,10 @@ async function updateSuggestionStatusAsync(
   }
 
   const actor = typeof body.by === 'string' && body.by.trim() ? body.by.trim() : 'owner';
+  if (existing.move) return moveDocumentAsync(slug, actor, {}, { id: markId, action: status === 'accepted' ? 'accept' : 'reject' });
+  // This async path is used by REST. Its persistence helpers update the same
+  // authoritative Y.Doc for accepts and rejects, so a successful reject must not
+  // bump the epoch or clear the Yjs history after that live apply.
   if (existing.status === status) {
     return {
       status: 200,
@@ -2267,6 +2908,12 @@ async function updateSuggestionStatusAsync(
         marks,
       },
     };
+  }
+
+  // Connected decisions retain their records. An opposite REST decision must not
+  // apply the proposal's text a second time; only the editor's guarded Undo reopens it.
+  if (existing.status === 'accepted' || existing.status === 'rejected') {
+    return { status: 409, body: { success: false, code: 'MARK_ALREADY_RESOLVED', error: 'Undo the earlier decision before deciding this suggestion again.' } };
   }
 
   if (existing.kind !== 'insert' && existing.kind !== 'delete' && existing.kind !== 'replace') {
@@ -2287,14 +2934,19 @@ async function updateSuggestionStatusAsync(
       const updated = getDocumentBySlug(slug);
       const resolvedRevision = typeof updated?.revision === 'number' ? updated.revision : (doc.revision + 1);
       upsertMarkTombstone(slug, markId, status, resolvedRevision);
-      if (status === 'rejected') {
-        if ((updated?.access_epoch ?? doc.access_epoch) === doc.access_epoch) {
-          bumpDocumentAccessEpoch(slug);
-        }
-        invalidateCollabDocument(slug);
-      }
     }
     return result;
+  }
+
+  // ORPHANED_SUGGESTION_POLICY: the suggestion's text is gone from the document. Rejecting it
+  // only removes the stored mark (there is no text to restore); accepting it has nothing to apply.
+  // This runs before any anchor resolution or rehydration so an orphan can never be re-anchored
+  // onto unrelated text.
+  if (isOrphanedSuggestionMark(doc.markdown, existing, markId)) {
+    if (status === 'rejected') {
+      return removeSuggestionWithoutTextChange(slug, doc, marks, markId, existing, status, actor, 'orphan', context);
+    }
+    return orphanedAcceptResult(markId);
   }
 
   let marksForRehydration = marks;
@@ -2341,67 +2993,14 @@ async function updateSuggestionStatusAsync(
   if (!structuredResult.ok) {
     if (
       status === 'rejected'
-      && structuredResult.code === 'MARK_NOT_HYDRATED'
-      && canRejectSuggestionWithoutHydration(doc.markdown, existing)
+      && (structuredResult.code === 'MARK_ORPHANED'
+        || (structuredResult.code === 'MARK_NOT_HYDRATED'
+          && canRejectSuggestionWithoutHydration(doc.markdown, existing)))
     ) {
-      const nextMarks = { ...marks };
-      delete nextMarks[markId];
-      const mutation = await mutateCanonicalDocument({
-        slug,
-        nextMarkdown: doc.markdown,
-        nextMarks: nextMarks as unknown as Record<string, unknown>,
-        source: `engine:${status}:${actor}:fallback`,
-        baseRevision: doc.revision,
-        strictLiveDoc: true,
-        guardPathologicalGrowth: true,
-      });
-      if (!mutation.ok) {
-        return {
-          status: mutation.status,
-          body: {
-            success: false,
-            code: mutation.code,
-            error: mutation.error,
-            ...(mutation.retryWithState ? { retryWithState: mutation.retryWithState } : {}),
-          },
-        };
-      }
-
-      const eventId = addDocumentEvent(
-        slug,
-        `suggestion.${status}`,
-        { markId, status, by: actor },
-        actor,
-        mutationContextIdempotencyKey(context),
-        mutationContextIdempotencyRoute(context),
+      return removeSuggestionWithoutTextChange(
+        slug, doc, marks, markId, existing, status, actor,
+        structuredResult.code === 'MARK_ORPHANED' ? 'orphan' : 'fallback', context,
       );
-      upsertMarkTombstone(slug, markId, status, mutation.document.revision);
-      const updatedMarks = parseMarks(mutation.document.marks);
-      const responseMarks: Record<string, StoredMark> = {
-        ...updatedMarks,
-        [markId]: {
-          ...existing,
-          ...(updatedMarks[markId] ?? {}),
-          status,
-        },
-      };
-      if ((mutation.document.access_epoch ?? doc.access_epoch) === doc.access_epoch) {
-        bumpDocumentAccessEpoch(slug);
-      }
-      invalidateCollabDocument(slug);
-
-      return {
-        status: 200,
-        body: {
-          success: true,
-          eventId,
-          shareState: mutation.document.share_state,
-          updatedAt: mutation.document.updated_at,
-          content: mutation.document.markdown,
-          markdown: mutation.document.markdown,
-          marks: responseMarks,
-        },
-      };
     }
     return toStructuredMutationFailureResult(structuredResult, 'Suggestion anchor quote not found in document');
   }
@@ -2414,6 +3013,7 @@ async function updateSuggestionStatusAsync(
     ...buildCanonicalMutationBaseArgs(doc, context),
     strictLiveDoc: true,
     guardPathologicalGrowth: true,
+    resolvedSuggestionId: markId,
   });
   if (!mutation.ok) {
     return {
@@ -2445,13 +3045,6 @@ async function updateSuggestionStatusAsync(
       status,
     },
   };
-  if (status === 'rejected') {
-    if ((mutation.document.access_epoch ?? doc.access_epoch) === doc.access_epoch) {
-      bumpDocumentAccessEpoch(slug);
-    }
-    invalidateCollabDocument(slug);
-  }
-
   return {
     status: 200,
     body: {
@@ -2462,6 +3055,115 @@ async function updateSuggestionStatusAsync(
       content: mutation.document.markdown,
       markdown: mutation.document.markdown,
       marks: responseMarks,
+    },
+  };
+}
+
+/**
+ * Proof Documents Step B4e: accept (or reject) several suggestions as ONE mutation (a review
+ * bundle). Each suggestion is finalized in turn on an in-memory copy of the markdown and marks;
+ * if any fails, nothing is written. Then one canonical mutation, one tombstone and one event per
+ * suggestion. Authorship: Claude Opus 5 (worker proof-bundles), 2026-09-19.
+ */
+export async function finalizeSuggestionsBatchAsync(
+  slug: string,
+  markIds: string[],
+  status: 'accepted' | 'rejected',
+  by: string,
+  context?: AsyncDocumentMutationContext,
+): Promise<EngineExecutionResult> {
+  const ready = await getAsyncMutationReadyDocumentWithVisibleFallback(slug, context);
+  if (ready.error) return ready.error;
+  const doc = ready.doc;
+  const ids = [...new Set(markIds.filter(id => typeof id === 'string' && id))];
+  if (ids.length === 0) return { status: 400, body: { success: false, error: 'No suggestions to finalize' } };
+  let markdown = doc.markdown;
+  let marks = parseMarks(doc.marks);
+  const moves = ids.filter(id => marks[id]?.move);
+  if (moves.length) {
+    const bundles = new Set(moves.map(id => (marks[id] as MoveStoredMark).move!.spec.id));
+    if (moves.length !== ids.length || bundles.size !== 1) return { status: 409, body: { success: false, code: 'MOVE_REQUIRES_BUNDLE', error: 'Decide each move as one bundle before using a mixed text batch.' } };
+    return moveDocumentAsync(slug, by, {}, { id: moves[0], action: status === 'accepted' ? 'accept' : 'reject' });
+  }
+  const done: string[] = [];
+  for (const markId of ids) {
+    const existing = marks[markId];
+    if (!existing) return { status: 404, body: { success: false, code: 'MARK_NOT_FOUND', error: `Suggestion ${markId} not found; nothing was changed`, markId } };
+    if (existing.kind !== 'insert' && existing.kind !== 'delete' && existing.kind !== 'replace') {
+      return { status: 400, body: { success: false, code: 'NOT_A_SUGGESTION', error: `${markId} is not a suggestion; nothing was changed`, markId } };
+    }
+    if (existing.status === status) continue;
+    if (isOrphanedSuggestionMark(markdown, existing, markId)) {
+      if (status === 'accepted') {
+        return { ...orphanedAcceptResult(markId), body: { ...orphanedAcceptResult(markId).body, error: `Suggestion ${markId} no longer has text in the document; nothing was changed` } };
+      }
+      const nextMarks = { ...marks };
+      delete nextMarks[markId];
+      marks = nextMarks;
+      done.push(markId);
+      continue;
+    }
+    let working = marks;
+    if (isRecord(existing.target)) {
+      const parsedTarget = parseAnchorTarget(existing.target);
+      if (!parsedTarget.ok) return { status: 409, body: { success: false, code: 'ANCHOR_NOT_FOUND', error: `Suggestion ${markId} has invalid target metadata; nothing was changed`, markId } };
+      const resolved = resolveMutationAnchor(
+        status === 'accepted' ? 'POST /marks/accept' : 'POST /marks/reject',
+        markdown,
+        parsedTarget.target,
+        'Suggestion anchor quote not found in document',
+      );
+      if (!resolved.ok) return { status: resolved.result.status, body: { ...(isRecord(resolved.result.body) ? resolved.result.body : {}), success: false, markId, error: `Suggestion ${markId} no longer matches the text; nothing was changed` } };
+      const stabilizedTarget = stabilizeAnchorTarget(resolved.logicalSource, resolved.normalizedTarget, resolved.resolved);
+      const selectionMetadata = buildStoredSelectionMetadata(markdown, resolved.resolved.selection, typeof existing.quote === 'string' ? existing.quote : resolved.normalizedTarget.anchor);
+      working = {
+        ...marks,
+        [markId]: {
+          ...existing,
+          target: stabilizedTarget,
+          quote: selectionMetadata.quote,
+          ...(selectionMetadata.startRel ? { startRel: selectionMetadata.startRel } : {}),
+          ...(selectionMetadata.endRel ? { endRel: selectionMetadata.endRel } : {}),
+        },
+      };
+    }
+    const result = await finalizeSuggestionThroughRehydration({ markdown, marks: working as unknown as Parameters<typeof finalizeSuggestionThroughRehydration>[0]['marks'], markId, action: status === 'accepted' ? 'accept' : 'reject' });
+    if (!result.ok) {
+      return { status: 409, body: { success: false, code: result.code, error: `Suggestion ${markId} could not be ${status}: ${result.error}. Nothing was changed.`, markId } };
+    }
+    markdown = result.markdown;
+    marks = result.marks as unknown as typeof marks;
+    done.push(markId);
+  }
+  if (done.length === 0) return { status: 200, body: { success: true, markIds: [], markdown: doc.markdown, marks: parseMarks(doc.marks) } };
+  const mutation = await mutateCanonicalDocument({
+    slug,
+    nextMarkdown: markdown,
+    nextMarks: marks as unknown as Record<string, unknown>,
+    source: `engine:${status}:batch:${by}`,
+    ...buildCanonicalMutationBaseArgs(doc, context),
+    strictLiveDoc: true,
+    guardPathologicalGrowth: true,
+  });
+  if (!mutation.ok) {
+    return { status: mutation.status, body: { success: false, code: mutation.code, error: mutation.error, ...(mutation.retryWithState ? { retryWithState: mutation.retryWithState } : {}) } };
+  }
+  const eventIds: number[] = [];
+  for (const markId of done) {
+    eventIds.push(addDocumentEvent(slug, `suggestion.${status}`, { markId, status, by, batch: done.length }, by, mutationContextIdempotencyKey(context), mutationContextIdempotencyRoute(context)));
+    upsertMarkTombstone(slug, markId, status, mutation.document.revision);
+  }
+  return {
+    status: 200,
+    body: {
+      success: true,
+      markIds: done,
+      eventIds,
+      shareState: mutation.document.share_state,
+      updatedAt: mutation.document.updated_at,
+      content: mutation.document.markdown,
+      markdown: mutation.document.markdown,
+      marks: parseMarks(mutation.document.marks),
     },
   };
 }
@@ -2606,6 +3308,22 @@ async function replyCommentAsync(
   return persistMarksAsync(slug, doc, marks, by, 'comment.replied', { markId, by, text }, context);
 }
 
+/**
+ * Proof dialect import (2026-09-19): rewrites fields of existing marks (their original timestamps,
+ * a comment's reply thread) through the normal mark persistence path, so a loaded live document
+ * stays in step. `patch` receives a copy of the stored marks and returns the next marks.
+ */
+export async function patchStoredMarksAsync(
+  slug: string,
+  patch: (marks: Record<string, StoredMark>) => Record<string, StoredMark>,
+  actor: string,
+): Promise<EngineExecutionResult> {
+  const ready = await getMutationReadyDocumentAsync(slug);
+  if (ready.error) return ready.error;
+  const marks = patch({ ...parseMarks(ready.doc.marks) });
+  return persistMarksAsync(slug, ready.doc, marks, actor, 'dialect.import.marks_patched', {});
+}
+
 function rewriteDocument(_slug: string, _body: JsonRecord): EngineExecutionResult {
   return {
     status: 501,
@@ -2689,4 +3407,47 @@ export async function executeDocumentOperationAsync(
     return replyCommentAsync(slug, body, context);
   }
   return executeDocumentOperation(slug, method, routePath, body);
+}
+
+/** Structural moves use the canonical live-document gate and the same retained decision records
+ * as the page. baseRevision closes the read/apply race with another writer. */
+export async function moveDocumentAsync(slug: string, by: string, payload: Record<string, unknown>,
+  decision?: { id: string; action: 'accept' | 'reject' }): Promise<{ status: number; body: Record<string, unknown> }> {
+  try {
+    const doc = await getAuthoritativeCanonicalReadableDocument(slug);
+    if (!doc) return { status: 404, body: { success: false, error: 'Document not found' } };
+    const parser = await getHeadlessMilkdownParser();
+    const parsed = parseMarkdownWithHtmlFallback(parser, doc.markdown);
+    if (!parsed.doc) throw new Error('Cannot read this document.');
+    const state = EditorState.create({ doc: parsed.doc });
+    const lines = extractLines(parsed.doc);
+    const marks = (typeof doc.marks === 'string' ? JSON.parse(doc.marks) : doc.marks ?? {}) as Record<string, MoveStoredMark>;
+    let next = { ...marks }, id = decision?.id ?? `move-${randomUUID()}`;
+    const tr = state.tr;
+    if (decision) {
+      const key = marks[id]?.move ? id : `${id}:remove`;
+      next = decideMove(tr, marks, key, decision.action, by);
+      id = marks[key].move!.spec.id;
+    } else {
+      const source = resolveAgentLineTarget(lines, (payload.unit ?? {}) as Record<string, unknown>);
+      const place = payload.place as Record<string, unknown> | undefined;
+      const target = resolveAgentLineTarget(lines, (place?.target ?? {}) as Record<string, unknown>);
+      if (!source.ok) return { status: source.status, body: { success: false, code: source.code, error: source.error } };
+      if (!target.ok) return { status: target.status, body: { success: false, code: target.code, error: target.error } };
+      if (place?.side !== 'before' && place?.side !== 'after') return { status: 400, body: { success: false, error: 'place.side must be before or after' } };
+      const members = createMove(parsed.doc, source.line, { line: target.line, side: place.side, section: place.section === true }, payload.section === true, id, by, marks);
+      if (!members) return { status: 200, body: { success: true, noOp: true } };
+      next = { ...marks, ...members };
+      if (immediateMoveActors(slug).includes(actorKey(by))) next = decideMove(tr, next, `${id}:remove`, 'accept', by);
+    }
+    const mutation = await mutateCanonicalDocument({ slug,
+      nextMarkdown: tr.docChanged ? await serializeMarkdown(tr.doc) : doc.markdown,
+      nextMarks: next, source: `engine:move:${by}`, baseRevision: doc.revision,
+      baseUpdatedAt: doc.updated_at, strictLiveDoc: true, guardPathologicalGrowth: true });
+    if (!mutation.ok) return { status: mutation.status, body: { success: false, code: mutation.code, error: mutation.error } };
+    addDocumentEvent(slug, decision ? `move.${decision.action}ed` : 'move.proposed', { id }, by);
+    return { status: 200, body: { success: true, proposal: moveBundles(next).find(b => b.id === id), marks: mutation.marks } };
+  } catch (error) {
+    return { status: 409, body: { success: false, code: 'MOVE_STALE_OR_INVALID', error: error instanceof Error ? error.message : 'Move refused' } };
+  }
 }

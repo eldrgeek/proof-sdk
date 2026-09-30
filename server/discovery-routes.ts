@@ -1,8 +1,10 @@
+import { agentJoinInstructions, AGENT_JOIN_POLICY } from '../src/shared/agent-join.js';
 import { Router, type Request, type Response } from 'express';
 import { readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { resolveShareMarkdownAuthMode } from './hosted-auth.js';
+import { aDocument, productName } from '../src/shared/product-identity.js';
 import {
   AGENT_DOCS_PATH,
   ALT_SHARE_TOKEN_HEADER_FORMAT,
@@ -86,13 +88,13 @@ discoveryRoutes.get('/.well-known/agent.json', (req: Request, res: Response) => 
 
   res.setHeader('Cache-Control', 'public, max-age=300');
   res.json({
-    name: 'Proof Editor',
+    name: productName(),
     description: 'Agent-native markdown editor with collaborative sharing and provenance tracking',
     api_base: apiBase,
     docs_url: docsUrl,
     skill_url: skillUrl,
     setup_url: setupUrl,
-    capabilities: ['create_document', 'share', 'comment', 'suggest', 'rewrite', 'collab', 'provenance'],
+    capabilities: ['create_document', 'share', 'comment', 'suggest', 'rewrite', 'collab', 'provenance', 'request_to_join'],
     auth: {
       methods: authMethods,
       api_key_header: 'Authorization: Bearer <key>',
@@ -103,11 +105,15 @@ discoveryRoutes.get('/.well-known/agent.json', (req: Request, res: Response) => 
         alt_header: ALT_SHARE_TOKEN_HEADER_FORMAT,
       },
     },
+    join: { method: 'POST', url: `${shareBase}/api/agent/{slug}/join`,
+      body: { name: 'Your name', runtime: 'Your model or operator' },
+      instructions: agentJoinInstructions('{slug}').replace(/%7Bslug%7D/g, '{slug}'),
+      expiresInMs: AGENT_JOIN_POLICY.expiresInMs, autoAdmit: AGENT_JOIN_POLICY.autoAdmit },
     quickstart: {
       received_link: {
-        description: 'Given a Proof share URL, read it (and discover state/ops) in one step.',
+        description: `Given ${aDocument()} share URL, read it (and discover state/ops) in one step.`,
         method: 'GET',
-        url: `${shareBase}/d/{slug}?token={token}`,
+        url: `${shareBase}/d/{slug}`,
         headers: { Accept: 'application/json' },
         returns: 'markdown + _links + agent.auth',
       },

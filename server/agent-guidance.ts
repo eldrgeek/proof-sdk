@@ -1,3 +1,5 @@
+import { productName } from '../src/shared/product-identity.js';
+
 export const CANONICAL_CREATE_API_PATH = '/documents';
 export const LEGACY_CREATE_API_PATH = '/api/documents';
 export const COMPAT_CREATE_API_PATH = '/api/share/markdown';
@@ -6,7 +8,7 @@ export const REPORT_BUG_API_PATH = '/api/bridge/report_bug';
 export const REPORT_BUG_DOC_ALIAS_PATH = '/d/:slug/bridge/report_bug';
 export const REPORT_BUG_OPEN_SOURCE_REPO_URL = 'https://github.com/EveryInc/proof-sdk';
 export const ACTIVE_INCIDENT_CODE = 'heavy_load_degradation';
-export const ACTIVE_INCIDENT_SUMMARY = 'Proof performance is currently degraded due to heavy load.';
+export const ACTIVE_INCIDENT_SUMMARY = `${productName()} performance is currently degraded due to heavy load.`;
 export const ACTIVE_INCIDENT_REPORT_HINT = 'If the issue may be related, still report it, but include the timing, request ID, whether retry helped, and whether the symptom looked slow, stale, or timeout-related.';
 export const ACTIVE_INCIDENT_AGENT_NOTE = 'An active performance incident is in progress. Retry once if the action was non-destructive. If it still looks wrong, report the failure with concrete evidence instead of paraphrasing it.';
 export const ACTIVE_INCIDENT_EVIDENCE_EXAMPLES = [
@@ -21,7 +23,7 @@ export const DIRECT_SHARE_AUTH_FIX = 'Add header: Authorization: Bearer <your-ap
 export const AUTH_HEADER_FORMAT = 'Authorization: Bearer <token>';
 export const ALT_SHARE_TOKEN_HEADER_FORMAT = 'x-share-token: <token>';
 export const TOKEN_FROM_URL_HINT = 'If you received a URL with ?token=, use that token as Authorization: Bearer <token> (or x-share-token).';
-export const TOKEN_MISSING_HINT = 'This link has no token. Ask for a tokenized link if you need a stable shareable URL.';
+export const TOKEN_MISSING_HINT = 'To join from this URL, POST /api/agent/<slug>/join with your name and runtime. A person admits your code in the Accord; poll with x-join-token to receive your agent key once.';
 export const CREATE_NO_HEADERS_HINT = `Agents: to create a web doc without client headers, call POST ${CANONICAL_CREATE_API_PATH}.`;
 
 function withOrigin(path: string, origin?: string): string {

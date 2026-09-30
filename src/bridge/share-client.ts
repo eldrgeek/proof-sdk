@@ -1,3 +1,4 @@
+import { CURRENT_COLLAB_CLIENT } from '../shared/collab-version';
 /**
  * Client-side share operations for web viewers.
  * Detects /d/:slug URL, fetches doc from server, manages WebSocket sync.
@@ -126,6 +127,29 @@ export type ShareEventHandler = (message: Record<string, unknown>) => void;
 export type ShareSocketState = 'connecting' | 'connected' | 'disconnected';
 type ShareConnectionStateHandler = (state: ShareSocketState) => void;
 
+export type ShareSuggestionResolutionTransport = 'collab' | 'rest';
+
+export function getShareSuggestionResolutionTransport(state: {
+  collabEnabled: boolean;
+  connectionStatus: 'connecting' | 'connected' | 'disconnected';
+  isSynced: boolean;
+}): ShareSuggestionResolutionTransport {
+  return state.collabEnabled
+    && state.connectionStatus === 'connected'
+    && state.isSynced
+    ? 'collab'
+    : 'rest';
+}
+
+export function runShareSuggestionRestFallback(
+  transport: ShareSuggestionResolutionTransport,
+  mutate: () => void,
+): boolean {
+  if (transport === 'collab') return false;
+  mutate();
+  return true;
+}
+
 const MUTATION_BASE_STATE_RETRY_ATTEMPTS = 4;
 const MUTATION_BASE_STATE_RETRY_DELAY_MS = 100;
 
@@ -147,7 +171,7 @@ export class ShareClient {
   private viewerName: string | null = null;
   private reconnectDelay = 1000;
   private maxReconnectDelay = 30000;
-  private clientVersion = '0.31.0';
+  private clientVersion = CURRENT_COLLAB_CLIENT.version;
   private clientBuild = 'web';
   private clientProtocol = '3';
   private lastObservedUpdatedAt: string | null = null;
@@ -210,7 +234,7 @@ export class ShareClient {
       : null;
     this.clientVersion = (typeof proofConfig.proofClientVersion === 'string' && proofConfig.proofClientVersion.trim())
       ? proofConfig.proofClientVersion.trim()
-      : '0.31.0';
+      : CURRENT_COLLAB_CLIENT.version;
     this.clientBuild = (typeof proofConfig.proofClientBuild === 'string' && proofConfig.proofClientBuild.trim())
       ? proofConfig.proofClientBuild.trim()
       : 'web';
@@ -638,11 +662,48 @@ export class ShareClient {
     return payload;
   }
 
+  hasShareCredential(): boolean {
+    return Boolean(this.shareToken?.trim());
+  }
+
+  async listAgentKeys(): Promise<import('../ui/agent-key-dialog').AgentKeyList> {
+    const response = await fetch(`${this.getApiBase()}/documents/${this.slug}/agent-keys`, {
+      headers: this.getShareAuthHeaders(),
+    });
+    if (!response.ok) throw new Error('Could not load agent keys');
+    const body = await response.json();
+    // Cross invitation: older servers answer with keys only; treat the runtime field as optional.
+    return { keys: body.keys ?? [], runtimeRequired: body.runtimeRequired === true, runtimeSuggestions: body.runtimeSuggestions ?? [] };
+  }
+
+  /** Cross invitation: the sponsor names the AI and says what is running it. */
+  async createAgentKey(label: string, runtime = ''): Promise<import('../ui/agent-key-dialog').AgentKey & { token: string }> {
+    const response = await fetch(`${this.getApiBase()}/documents/${this.slug}/agent-keys`, {
+      method: 'POST', headers: { ...this.getShareAuthHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label, runtime }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({})) as { error?: string };
+      throw new Error(response.status === 429
+        ? 'Too many keys requested; try again in a minute.'
+        : body.error || 'Could not create an agent key. Check your editing access.');
+    }
+    return response.json();
+  }
+
+  async revokeAgentKey(tokenId: string): Promise<void> {
+    const response = await fetch(`${this.getApiBase()}/documents/${this.slug}/agent-keys/${encodeURIComponent(tokenId)}`, {
+      method: 'DELETE', headers: { ...this.getShareAuthHeaders(), 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    if (!response.ok) throw new Error('Could not revoke the agent key');
+  }
+
   async fetchPendingEvents(
     after: number,
     options?: { token?: string; limit?: number },
   ): Promise<SharePendingEventsResponse | ShareRequestError | null> {
-    if (!this.slug) return null;
+    if (!this.slug || !(options?.token?.trim() || this.hasShareCredential())) return null;
     const params = new URLSearchParams();
     params.set('after', String(Math.max(0, Math.trunc(after))));
     params.set('limit', String(Math.max(1, Math.min(200, Math.trunc(options?.limit ?? 100)))));

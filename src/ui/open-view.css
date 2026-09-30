@@ -1,0 +1,112 @@
+/* Full document and explicit agreed copy. Mike, 2026-09-23 (usability brief). */
+.aov-header {
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border-left: 3px solid #d4d4d8;
+  background: #fafafa;
+  border-radius: 0 8px 8px 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+@media (max-width: 700px) {
+  .aov-header { margin-bottom: 10px; padding: 6px 12px; }
+}
+.aov-header[hidden] { display: none; }
+.aov-header[data-view="accord"] { border-left-color: #a1a1aa; }
+
+.aov-header-text { margin: 0; color: #3f3f46; }
+.aov-header-text[hidden] { display: none; }
+.aov-header-link { color: #1d4ed8; text-underline-offset: 2px; }
+.aov-header-link:hover { color: #1e3a8a; }
+
+/* ------------------------------------------ the Accord view reads clean */
+
+/*
+ * "no marks, no threads, no margin chrome". Everything hidden here is chrome ABOUT the text, never
+ * the text itself: the margin and its dots, the Margin rail, the strip, the fold chips, the ask
+ * cards, the thread marks and the review-mark colouring. The words stay exactly as they are.
+ */
+body.aov-in-accord .plm-gutter,
+body.aov-in-accord .plm-dot,
+body.aov-in-accord .prw-right,
+body.aov-in-accord .pst-rule,
+body.aov-in-accord .prw-strip,
+body.aov-in-accord .plm-thread-mark,
+body.aov-in-accord .amg-tabs,
+body.aov-in-accord .prw-focus,
+body.aov-in-accord .pfold-chip,
+body.aov-in-accord .pfold-layer,
+body.aov-in-accord .ProseMirror .pask,
+body.aov-in-accord .ProseMirror .pask-inline-tag,
+body.aov-in-accord .plm-alts,
+body.aov-in-accord .plm-objection,
+body.aov-in-accord .pdo-box {
+  display: none !important;
+}
+/* A comment or a suggestion in the text reads as ordinary words in the Accord. */
+body.aov-in-accord .ProseMirror [data-mark-id] {
+  background: transparent !important;
+  color: inherit !important;
+  border: 0 !important;
+  text-decoration: none !important;
+  box-shadow: none !important;
+}
+body.aov-in-accord.prw-on #editor-container { max-width: var(--prw-text); }
+/* The reading walk's two highlights are chrome too: the Accord reads as a document. */
+body.aov-in-accord .prw-line-focus,
+body.aov-in-accord [data-prw-focus="true"] { background: transparent !important; box-shadow: none !important; }
+
+/* The Navigator's Issues tab keeps a settled row in place too. */
+.anv-issue[data-settled="true"] .anv-issue-title {
+  text-decoration: line-through;
+  color: #a1a1aa;
+}
+.anv-issue[data-settled="true"] { opacity: 0.55; }
+
+/* The Navigator's Issues tab keeps its settled rows in place too, with the same control. */
+.anv-settled-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid #f4f4f5;
+}
+.anv-settled-tools[hidden] { display: none; }
+.anv-settled-count { color: #a1a1aa; font-size: 11px; }
+.anv-clear-settled {
+  appearance: none;
+  border: 1px solid #e4e4e7;
+  background: #fff;
+  color: #52525b;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 7px;
+  cursor: pointer;
+}
+.anv-clear-settled:hover { background: #f4f4f5; }
+
+.anv-review-tools { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; }
+.anv-review-tools button { min-height: 32px; padding: 2px 8px; border: 1px solid #d4d4d8; border-radius: 6px; background: white; color: #374151; cursor: pointer; }
+.anv-review-tools button[aria-pressed="true"] { background: #eef3ff; border-color: #2563eb; }
+.anv-review-tools button:disabled { opacity: .5; cursor: default; }
+.anv-review-tools button:focus-visible, .anv-review-toggle:focus-visible, .anv-people:focus-visible, .anv-issue:focus-visible { outline: 2px solid #2563eb; outline-offset: -2px; }
+#anv-pane-issues { overflow-anchor: none; }
+.anv-badge { background: transparent; color: #92400e; padding: 0 2px; font-size: 10px; }
+.anv-tab[data-tab="issues"] { flex-wrap: wrap; gap: 2px; }
+.anv-review-toggle, .anv-people { border: 1px solid #d4d4d8; border-radius: 8px; min-height: 32px; background: white; padding: 4px 8px; color: #374151; cursor: pointer; }
+body.amb-on #share-banner .share-pill-center { flex: 1 1 auto; justify-content: flex-start; max-width: none; }
+body.amb-on #share-banner .share-pill-right { flex: 0 0 auto; }
+@media (max-width: 700px) {
+  body.amb-on #share-banner { padding-left: 6px !important; padding-right: 6px !important; gap: 4px !important; }
+  #share-banner .share-pill-group { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+  #share-banner .anv-review-toggle { flex-direction: column; gap: 0; padding: 2px 5px; font-size: 11px; }
+  #share-banner .anv-review-toggle .plm-issues-count { display: inline; padding: 0; background: transparent; font-size: 10px; }
+  #share-banner .anv-people { font-size: 11px; padding: 2px 5px; }
+  body.amb-on #share-banner .share-pill-share-btn { display: inline-flex !important; }
+  body.amb-on #share-banner .share-pill-share-btn > button { padding: 0 5px !important; font-size: 11px !important; }
+  .anv-review-toggle, .anv-people, .anv-review-tools button { min-height: 44px; }
+  .aov-header { font-size: 12px; }
+}
+
+body.amb-on #share-banner .share-pill-hidden { display: none !important; }

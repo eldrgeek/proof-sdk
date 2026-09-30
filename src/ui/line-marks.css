@@ -1,0 +1,304 @@
+/* Proof Documents Step 1: line marks (Claude Opus 5, 2026-09-18). */
+/* Room for the margin dots: the text starts right of them at every width. */
+body.plm-on #editor { padding-left:calc(var(--provenance-bar-width, 6px) + 48px) !important; }
+.plm-gutter { position:absolute; top:0; left:0; width:0; height:0; z-index:40; }
+.plm-dot {
+  position:absolute; display:inline-flex; align-items:center; justify-content:center;
+  padding:0; margin:0; border:none; background:transparent; cursor:pointer; border-radius:50%;
+  font:700 12px/1 system-ui,-apple-system,sans-serif; color:#fff; -webkit-tap-highlight-color:transparent;
+}
+.plm-dot > * { pointer-events:none; }
+.plm-dot .plm-glyph {
+  display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; border-radius:50%;
+  box-sizing:border-box; border:1.5px solid #c3c8d0; background:#fff; color:#fff; font-size:11px; line-height:1;
+  transition:transform .12s ease, border-color .12s ease;
+}
+.plm-dot:hover .plm-glyph, .plm-dot:focus-visible .plm-glyph { transform:scale(1.2); border-color:#6b7280; }
+.plm-dot:focus-visible { outline:2px solid #2563eb; outline-offset:1px; }
+.plm-dot[data-issue="false"][data-status="unseen"] .plm-glyph { border-color:#e5e7eb; }
+.plm-dot[data-status="seen"] .plm-glyph { background:#9ca3af; border-color:#9ca3af; }
+.plm-dot[data-status="agreed"] .plm-glyph { background:#16a34a; border-color:#16a34a; }
+.plm-dot[data-status="approved"] .plm-glyph { background:#0d9488; border-color:#0d9488; }
+.plm-dot[data-status="rejected"] .plm-glyph { background:#dc2626; border-color:#dc2626; }
+.plm-dot[data-status="changed"] .plm-glyph { background:#fff; border-color:#d97706; color:#d97706; }
+.plm-pips { position:absolute; left:-2px; top:50%; transform:translate(-100%,-50%); display:flex; flex-direction:column; gap:2px; }
+.plm-pips i { display:block; width:5px; height:5px; border-radius:50%; background:#9ca3af; }
+.plm-pips i[data-status="agreed"] { background:#16a34a; }
+.plm-pips i[data-status="approved"] { background:#0d9488; }
+.plm-pips i[data-status="rejected"] { background:#dc2626; }
+.plm-pips i[data-status="changed"] { background:#fff; box-shadow:inset 0 0 0 1.5px #d97706; }
+
+.plm-menu {
+  position:fixed; width:280px; max-width:calc(100vw - 16px); box-sizing:border-box; z-index:10002;
+  background:#fffefb; color:#26303c; border:1px solid #d4d4cf; border-radius:12px; padding:12px;
+  box-shadow:0 12px 40px #16223833; font:14px/1.45 system-ui,-apple-system,sans-serif;
+}
+.plm-menu-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.plm-menu-head strong { font-size:14px; }
+.plm-close { width:32px; height:32px; border:none; background:transparent; font-size:22px; line-height:1; cursor:pointer; color:#4b5563; border-radius:8px; }
+.plm-excerpt { margin:4px 0 8px; color:#646b73; font-size:12px; overflow-wrap:anywhere; }
+.plm-changed { margin:0 0 8px; padding:6px 8px; border-radius:8px; background:#fffbeb; color:#92400e; font-size:12px; }
+.plm-actions { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+.plm-choice {
+  display:flex; align-items:center; gap:6px; min-height:36px; padding:6px 10px; border:1px solid #d4d4cf; border-radius:8px;
+  background:#fff; color:inherit; font:600 13px/1.2 system-ui,-apple-system,sans-serif; cursor:pointer; text-align:left;
+}
+.plm-choice:hover { background:#f3f4f6; }
+.plm-choice:disabled { opacity:.45; cursor:default; }
+.plm-choice[aria-pressed="true"] { border-color:#26303c; box-shadow:inset 0 0 0 1px #26303c; }
+.plm-choice-glyph { display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; border-radius:50%; color:#fff; font-size:11px; background:#9ca3af; flex-shrink:0; }
+.plm-choice[data-status="agreed"] .plm-choice-glyph { background:#16a34a; }
+.plm-choice[data-status="approved"] .plm-choice-glyph { background:#0d9488; }
+.plm-choice[data-status="rejected"] .plm-choice-glyph { background:#dc2626; }
+.plm-clear { grid-column:1 / -1; justify-content:center; font-weight:500; color:#4b5563; }
+.plm-reason { display:flex; gap:6px; margin-top:8px; }
+.plm-reason[hidden] { display:none; }
+.plm-reason input { flex:1; min-width:0; min-height:36px; padding:6px 8px; border:1px solid #949ca8; border-radius:8px; font:inherit; }
+.plm-reason input[aria-invalid="true"] { border-color:#dc2626; }
+.plm-reason button { min-height:36px; padding:0 12px; border:none; border-radius:8px; background:#dc2626; color:#fff; font:600 13px system-ui,sans-serif; cursor:pointer; }
+.plm-team { list-style:none; margin:10px 0 0; padding:8px 0 0; border-top:1px solid #ecebe6; display:grid; gap:3px; font-size:12px; }
+.plm-team li { display:flex; justify-content:space-between; gap:8px; }
+.plm-team-status { color:#646b73; text-align:right; overflow-wrap:anywhere; }
+.plm-team-status[data-status="agreed"] { color:#15803d; }
+.plm-team-status[data-status="approved"] { color:#0f766e; font-weight:600; }
+.plm-team-status[data-status="rejected"] { color:#b91c1c; }
+.plm-team-status[data-status="changed"] { color:#b45309; }
+
+.plm-issues { display:inline-flex; align-items:center; gap:6px; flex-shrink:0; font:600 12px/1.2 system-ui,-apple-system,sans-serif; }
+.plm-issues-count { white-space:nowrap; padding:4px 8px; border-radius:999px; background:#fef3c7; color:#92400e; font-variant-numeric:tabular-nums; }
+.plm-issues[data-state="aligned"] .plm-issues-count { background:#dcfce7; color:#166534; }
+.plm-issues[data-state="loading"] .plm-issues-count { background:#f3f4f6; color:#6b7280; }
+.plm-next { min-height:32px; padding:0 10px; border:1px solid #d2d6dc; border-radius:16px; background:#fff; color:#26303c; font:inherit; cursor:pointer; white-space:nowrap; }
+.plm-next:disabled { opacity:.45; cursor:default; }
+.plm-next-short { display:none; }
+
+.plm-flash { position:absolute; pointer-events:none; border-radius:8px; background:rgba(250,204,21,.28); box-shadow:0 0 0 2px rgba(234,179,8,.7); animation:plm-flash 2.2s ease forwards; z-index:30; }
+@keyframes plm-flash { 0%,60% { opacity:1; } 100% { opacity:0; } }
+.plm-toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); max-width:calc(100vw - 32px); padding:10px 14px; border-radius:10px; background:#1f2937; color:#fff; font:14px/1.4 system-ui,sans-serif; z-index:10003; }
+
+/* Phones: the dot keeps a 36 px touch target at the text's left edge; the menu is a bottom sheet
+   above the feedback chip (z 9999); the bar shows one compact "N ›" button. */
+@media (max-width:700px) {
+  body.plm-on #editor { padding-left:calc(var(--provenance-bar-width, 6px) + 38px) !important; }
+  .plm-menu.plm-sheet {
+    left:0 !important; right:0; top:auto !important; bottom:var(--proof-keyboard-offset,0px); width:100%; max-width:100%;
+    max-height:min(80dvh,560px); overflow:auto; border-radius:16px 16px 0 0; padding:14px 16px max(18px,env(safe-area-inset-bottom));
+    box-shadow:0 -8px 32px #16223833; font-size:15px;
+  }
+  :is(.plm-sheet, .prw-sheet-open) .plm-close { width:44px; height:44px; font-size:26px; }
+  :is(.plm-sheet, .prw-sheet-open) .plm-choice { min-height:48px; font-size:15px; }
+  :is(.plm-sheet, .prw-sheet-open) .plm-reason input, :is(.plm-sheet, .prw-sheet-open) .plm-reason button { min-height:48px; font-size:16px; }
+  :is(.plm-sheet, .prw-sheet-open) .plm-team { font-size:14px; }
+  #share-banner .plm-issues { gap:0; }
+  #share-banner .plm-issues-count { display:none; }
+  #share-banner .plm-next { min-height:44px; min-width:44px; padding:0 10px; font-size:13px; }
+  #share-banner .plm-next:disabled { opacity:1; }
+  #share-banner .plm-issues[data-state="aligned"] .plm-next { background:#dcfce7; color:#166534; border-color:#bbf7d0; }
+  #share-banner .plm-issues[data-state="issues"] .plm-next { background:#fef3c7; color:#92400e; border-color:#fde68a; }
+  #share-banner .plm-next-long { display:none; }
+  #share-banner .plm-next-short { display:inline; }
+}
+
+/* Step B3b: honest reading (Claude Opus 5, 2026-09-18). A skimmed line: a hollow ring, not Seen. */
+.plm-dot[data-status="skimmed"] .plm-glyph { background:#fff; border:2px solid #9ca3af; }
+.plm-pips i[data-status="skimmed"] { background:#fff; box-shadow:inset 0 0 0 1.5px #9ca3af; }
+/* A mark carried over a small edit: a small tilde badge on the dot. */
+.plm-dot[data-carried="true"]::after {
+  content:"~"; position:absolute; right:1px; bottom:0; width:11px; height:11px; border-radius:50%;
+  background:#fff; color:#6d28d9; font:700 10px/10px system-ui,sans-serif; text-align:center; box-shadow:0 0 0 1px #ddd6fe;
+}
+.plm-carried { margin:6px 0; padding:6px 8px; border-radius:8px; background:#f5f3ff; color:#4c1d95; font-size:12px; }
+.plm-carried p { margin:0 0 4px; }
+.plm-carried-was del { color:#6b7280; }
+.plm-carried-revert { margin-top:2px; }
+.plm-skimmed-note { margin:6px 0; padding:6px 8px; border-radius:8px; background:#f3f4f6; color:#374151; font-size:12px; }
+.plm-team-status[data-carried="true"] { color:#6d28d9; }
+/* Step B3c: "Aligned as of" in the top bar: a link to the snapshot's ledger. */
+.plm-aligned-at { min-height:28px; padding:0 8px; border:none; border-radius:14px; background:transparent; color:#166534; font:600 12px/1.2 system-ui,-apple-system,sans-serif; cursor:pointer; white-space:nowrap; text-decoration:underline; text-underline-offset:2px; }
+.plm-aligned-at[data-state="since"] { color:#6b7280; font-weight:500; }
+.plm-aligned-at:hover { background:#f0fdf4; }
+@media (max-width:700px) {
+  #share-banner .plm-aligned-at { display:none; }
+}
+
+/* Proof Documents Steps B4c + B4d: review aids and objections (Claude Opus 5, 2026-09-19). */
+/* An amber tick left of the dot: its writer flagged the line uncertain. A red one: an open objection. */
+.plm-dot[data-uncertain="true"]::before,
+.plm-dot[data-objection="true"]::before {
+  content:''; position:absolute; right:-4px; top:20%; bottom:20%; width:3px; border-radius:2px; background:#d97706;
+}
+.plm-dot[data-objection="true"]::before { background:#dc2626; }
+.plm-dot[data-uncertain="true"][data-objection="true"]::before { background:linear-gradient(#d97706 50%, #dc2626 50%); }
+.plm-dot[data-selected="true"] .plm-glyph { box-shadow:0 0 0 3px rgba(220,38,38,.35); }
+.plm-link { border:none; background:none; padding:0; color:#2563eb; cursor:pointer; font:inherit; text-decoration:underline; }
+.plm-link:disabled { color:#9ca3af; cursor:default; }
+.plm-reason { flex-wrap:wrap; }
+.plm-reason > input:first-of-type { flex:1 1 100%; }
+.plm-reason .plm-condition { flex:1 1 100%; }
+.plm-reason > button[type="submit"] { margin-left:auto; }
+.plm-reject-scope { flex:1 1 100%; margin:0; font-size:12px; color:#991b1b; }
+.plm-reject-hint { flex:1 1 100%; margin:0; font-size:12px; color:#92400e; }
+.plm-reject-hint[hidden] { display:none; }
+.plm-chips { flex:1 1 100%; display:flex; flex-wrap:wrap; gap:6px; }
+.plm-reason .plm-chip {
+  min-height:32px; padding:0 10px; border:1px solid #d1d5db; border-radius:999px; background:#fff; color:#374151;
+  font:500 12px system-ui,sans-serif; cursor:pointer;
+}
+.plm-reason .plm-chip[data-source="author"] { border-color:#a78bfa; background:#f5f3ff; color:#4c1d95; }
+.plm-reason .plm-chip:hover { border-color:#6b7280; }
+.plm-reason .plm-link { min-height:0; padding:0; background:none; color:#2563eb; font:inherit; }
+.plm-flag { margin:6px 0; font-size:12px; }
+.plm-flag-note { margin:0 0 4px; padding:6px 8px; border-left:3px solid #d97706; border-radius:4px; background:#fffbeb; color:#78350f; }
+.plm-flag-form { display:flex; gap:6px; margin-top:4px; }
+.plm-flag-form[hidden] { display:none; }
+.plm-flag-form input { flex:1; min-width:0; min-height:32px; padding:4px 8px; border:1px solid #949ca8; border-radius:8px; font:inherit; }
+.plm-flag-form button { min-height:32px; padding:0 10px; border:none; border-radius:8px; background:#d97706; color:#fff; font:600 12px system-ui,sans-serif; cursor:pointer; }
+.plm-objection { margin:6px 0; padding:8px; border-left:3px solid #dc2626; border-radius:6px; background:#fef2f2; color:#7f1d1d; font-size:12px; }
+.plm-objection[data-repair="true"] { border-left-color:#2563eb; background:#eff6ff; color:#1e3a8a; }
+.plm-objection p { margin:0 0 4px; }
+.plm-objection-status { color:#6b7280; }
+.plm-objection-repair { font-weight:600; }
+.plm-objection-actions { display:flex; gap:6px; flex-wrap:wrap; }
+.plm-objection-override { display:flex; gap:6px; margin-top:6px; }
+.plm-objection-override[hidden] { display:none; }
+.plm-objection-override input { flex:1; min-width:0; min-height:32px; padding:4px 8px; border:1px solid #949ca8; border-radius:8px; font:inherit; }
+.plm-objection-override button { min-height:32px; padding:0 10px; border:none; border-radius:8px; background:#7f1d1d; color:#fff; font:600 12px system-ui,sans-serif; }
+.plm-why { display:block; flex-basis:100%; color:#6b7280; font-size:11px; }
+.plm-budget { margin:0 0 10px; font-size:12px; }
+.plm-budget-setting { display:flex; align-items:center; gap:6px; color:#4b5563; }
+.plm-budget-setting select { font:inherit; min-height:28px; }
+.plm-budget-status { margin:4px 0; color:#374151; }
+.plm-budget[data-state="reached"] { padding:8px; border-radius:8px; background:#eff6ff; }
+.plm-budget[data-state="reached"] .plm-budget-status { font-weight:600; color:#1e3a8a; }
+.plm-budget-actions { display:flex; gap:6px; }
+@media (max-width: 700px) {
+  :is(.plm-sheet, .prw-sheet-open) .plm-reason .plm-chip { min-height:44px; font-size:14px; }
+  :is(.plm-sheet, .prw-sheet-open) .plm-flag-form input, :is(.plm-sheet, .prw-sheet-open) .plm-flag-form button,
+  :is(.plm-sheet, .prw-sheet-open) .plm-objection-override input, :is(.plm-sheet, .prw-sheet-open) .plm-objection-override button { min-height:44px; font-size:16px; }
+  .prw-right .plm-reason .plm-chip { min-height:44px; font-size:14px; }
+  .plm-budget-setting select { min-height:44px; }
+  .plm-budget-actions .plm-choice { min-height:44px; }
+}
+
+/* Proof Documents Steps B4e + B4f (Claude Opus 5, 2026-09-19): bundles, alternatives, blind
+   marking, Explain, times-to-live, term links. */
+/* Blind: someone's hidden mark is a grey dashed pip; a stale (time-to-live) mark a faded green ring. */
+.plm-pips i[data-status="hidden"] { background:repeating-linear-gradient(45deg,#9ca3af 0 2px,#fff 2px 4px); }
+.plm-pips i[data-status="stale"] { background:#fff; box-shadow:inset 0 0 0 1.5px #86efac; }
+.plm-dot[data-status="stale"] .plm-glyph { background:#fff; border:2px dashed #16a34a; }
+.plm-team-status[data-status="hidden"] { color:#6b7280; font-style:italic; }
+.plm-team-status[data-status="stale"] { color:#15803d; font-style:italic; }
+/* Disagreement revealed: a violet ring round the dot. Competing wordings / a time-to-live: small badges. */
+.plm-dot[data-disagreement="true"] .plm-glyph { box-shadow:0 0 0 3px rgba(124,58,237,.45); }
+.plm-dot[data-alternatives]:not([data-alternatives=""])::after {
+  content:attr(data-alternatives); position:absolute; right:-2px; top:-3px; min-width:12px; height:12px; padding:0 2px; border-radius:6px;
+  background:#2563eb; color:#fff; font:700 9px/12px system-ui,sans-serif; text-align:center;
+}
+.plm-dot[data-ttl="set"] { outline:1px dotted #0891b2; outline-offset:-2px; border-radius:50%; }
+.plm-dot[data-ttl="expired"] { outline:2px dotted #b45309; outline-offset:-2px; border-radius:50%; }
+.plm-disagree { margin:6px 0; padding:6px 8px; border-left:3px solid #7c3aed; border-radius:4px; background:#f5f3ff; color:#4c1d95; font-size:12px; font-weight:600; }
+.plm-blind-note { margin:6px 0; padding:6px 8px; border-radius:6px; background:#f3f4f6; color:#374151; font-size:12px; }
+.plm-alts { margin:6px 0; padding:8px; border-left:3px solid #2563eb; border-radius:6px; background:#eff6ff; font-size:12px; }
+.plm-alts-head { margin:0 0 6px; color:#1e3a8a; }
+.plm-alt { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px; padding:4px 0; border-top:1px solid #dbeafe; cursor:pointer; }
+.plm-alt:first-child { border-top:none; }
+.plm-alt input { margin:0; }
+.plm-alt-key { min-width:16px; padding:0 4px; border-radius:4px; background:#fff; color:#1e3a8a; font:700 11px/16px ui-monospace,monospace; text-align:center; box-shadow:inset 0 0 0 1px #bfdbfe; }
+.plm-alt-text { flex:1 1 60%; min-width:0; color:#111827; }
+.plm-alt-by { flex-basis:100%; padding-left:40px; color:#6b7280; font-size:11px; }
+.plm-alt-decide, .plm-alt-withdraw { font-size:11px; }
+.plm-alts-note { margin:6px 0 0; color:#6b7280; }
+.plm-extras { margin:6px 0; font-size:12px; }
+.plm-extras-links { display:flex; flex-wrap:wrap; gap:4px 12px; }
+.plm-alt-form, .plm-explain-form, .plm-ttl-form { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+.plm-alt-form[hidden], .plm-explain-form[hidden], .plm-ttl-form[hidden] { display:none; }
+.plm-alt-form textarea { flex:1 1 100%; min-height:44px; padding:6px 8px; border:1px solid #949ca8; border-radius:8px; font:inherit; resize:vertical; }
+.plm-explain-form input, .plm-ttl-form input { flex:1; min-width:0; min-height:32px; padding:4px 8px; border:1px solid #949ca8; border-radius:8px; font:inherit; }
+.plm-alt-form button[type="submit"], .plm-explain-form button, .plm-ttl-form button[type="submit"] {
+  min-height:32px; padding:0 10px; border:none; border-radius:8px; background:#2563eb; color:#fff; font:600 12px system-ui,sans-serif; cursor:pointer;
+}
+.plm-ttl-form .plm-ttl-preset { min-height:32px; padding:0 10px; border:1px solid #67e8f9; border-radius:999px; background:#ecfeff; color:#155e75; font:600 12px system-ui,sans-serif; cursor:pointer; }
+.plm-ttl-status { margin:0 0 4px; padding:6px 8px; border-left:3px solid #0891b2; border-radius:4px; background:#ecfeff; color:#155e75; }
+.plm-ttl-status[data-state="expired"] { border-left-color:#b45309; background:#fffbeb; color:#78350f; }
+.plm-alt-history { margin:6px 0; font-size:12px; color:#4b5563; }
+.plm-alt-history ul { margin:4px 0 0; padding-left:18px; }
+.plm-blind { margin:0 0 10px; font-size:12px; }
+.plm-blind[data-on="true"] { padding:6px 8px; border-radius:8px; background:#f5f3ff; }
+.plm-blind-setting { display:flex; align-items:center; gap:6px; color:#4b5563; font-weight:600; }
+.plm-blind-status { margin:4px 0 0; color:#4b5563; }
+/* In the text: the wordings stacked under a line, and a term linked at its first use. */
+.pdx-alts { display:block; margin:6px 0 2px; padding:4px 8px; border-left:3px solid #93c5fd; border-radius:4px; background:#f8fafc; font-size:.88em; line-height:1.4; user-select:none; }
+.pdx-alt { display:flex; gap:8px; align-items:baseline; padding:2px 0; cursor:pointer; color:#1f2937; }
+.pdx-alt[data-mine="true"] .pdx-alt-text { font-weight:600; }
+.pdx-alt[data-mine="true"] .pdx-alt-key { background:#2563eb; color:#fff; }
+.pdx-alt-key { min-width:16px; border-radius:4px; background:#e0e7ff; color:#1e3a8a; font:700 11px/16px ui-monospace,monospace; text-align:center; }
+.pdx-alt-text { flex:1; }
+.pdx-alt-by { color:#6b7280; font-size:.9em; white-space:nowrap; }
+.pdx-alt:first-child .pdx-alt-text { color:#6b7280; font-style:italic; }
+.pdx-term { text-decoration:underline dotted #7c3aed 2px; text-underline-offset:3px; cursor:help; }
+.plm-term-pop { position:fixed; z-index:10002; max-width:300px; padding:10px 12px; border-radius:10px; background:#fff; color:#111827; box-shadow:0 8px 24px rgba(0,0,0,.18); font:13px/1.45 system-ui,-apple-system,sans-serif; }
+.plm-term-pop p { margin:0 0 6px; }
+@media (max-width: 700px) {
+  .plm-alt { min-height:44px; }
+  .plm-alt input { width:20px; height:20px; }
+  .plm-extras-links .plm-link { min-height:44px; }
+  :is(.plm-sheet, .prw-sheet-open) .plm-alt-form button, :is(.plm-sheet, .prw-sheet-open) .plm-explain-form input, :is(.plm-sheet, .prw-sheet-open) .plm-explain-form button,
+  :is(.plm-sheet, .prw-sheet-open) .plm-ttl-form input, :is(.plm-sheet, .prw-sheet-open) .plm-ttl-form button, .plm-ttl-form .plm-ttl-preset { min-height:44px; font-size:16px; }
+  .plm-blind-setting input { width:22px; height:22px; }
+  .plm-blind-setting { min-height:44px; }
+  .pdx-alt { min-height:36px; align-items:center; }
+}
+
+/* Proof Documents Step B7: a speech bubble on a line that chat messages point at. */
+.plm-chat-bubble {
+  position:absolute; z-index:2; min-width:16px; height:14px; padding:0 3px; box-sizing:border-box;
+  display:inline-flex; align-items:center; justify-content:center; border:1px solid #6366f1; border-radius:7px 7px 7px 2px;
+  background:#eef2ff; color:#3730a3; font:700 9px/1 system-ui,-apple-system,sans-serif; cursor:pointer;
+}
+.plm-chat-bubble:hover, .plm-chat-bubble:focus-visible { background:#6366f1; color:#fff; outline:none; }
+@media (max-width:700px) { .plm-chat-bubble { min-width:20px; height:18px; font-size:11px; } }
+
+/* Accord layout stage 1 (Claude Opus 5, 2026-09-21, Ren's proposal): two highlight states only.
+   Amber is kept for one meaning, "needs you": the dot of a line that needs the viewer is a filled
+   amber marker, and the status bar's "N Issues left" counts these dots. The viewer's own mark stays
+   in the dot's label; a writer's uncertain flag is violet now, so amber means only "needs you". */
+.plm-dot[data-needs-you="true"] .plm-glyph { width:12px; height:12px; background:#d98c00; border-color:#d98c00; color:transparent; box-shadow:0 0 0 3px rgba(217,140,0,.18); }
+.plm-dot[data-needs-you="true"]:hover .plm-glyph { border-color:#b37300; }
+.plm-dot[data-uncertain="true"]::before { background:#7c3aed; }
+.plm-dot[data-uncertain="true"][data-objection="true"]::before { background:linear-gradient(#7c3aed 50%, #dc2626 50%); }
+
+/* Polish pass (COS, 2026-09-21): "Marked by N" folds everyone's marks in the Margin's Line tab. */
+.plm-team-fold { margin:10px 0 0; border-top:1px solid #ecebe6; padding-top:6px; font-size:12px; }
+.plm-team-sum { display:flex; align-items:baseline; gap:8px; min-height:28px; padding:4px 2px; cursor:pointer; color:#374151; font-weight:600; list-style:none; }
+.plm-team-sum::-webkit-details-marker { display:none; }
+.plm-team-sum::before { content:'▸'; color:#6b7280; font-size:13px; width:12px; flex:none; }
+.plm-team-fold[open] > .plm-team-sum::before { content:'▾'; }
+.plm-team-detail { margin-left:auto; color:#6b7280; font-weight:400; text-align:right; overflow-wrap:anywhere; }
+.plm-team-fold > .plm-team { margin-top:4px; border-top:none; padding-top:0; }
+@media (max-width: 700px) {
+  .plm-team-sum { min-height:44px; font-size:14px; }
+}
+
+/* Accord round 2 stage C: an agreement whose line changed meaning under it (the lapse rule). */
+.plm-lapsed { margin:6px 0; padding:7px 9px; border-radius:8px; background:#fff7ed; color:#7c2d12; font-size:12px; }
+.plm-lapsed p { margin:0 0 4px; }
+.plm-lapsed p:last-child { margin-bottom:0; }
+.plm-lapsed-was del { color:#9a3412; text-decoration-color:#fdba74; }
+.plm-lapsed-now ins { text-decoration:none; background:#ffedd5; border-radius:3px; padding:0 2px; }
+.plm-dot[data-lapsed="true"]::after { content:"≠"; }
+/* Mike, 2026-09-23 (usability brief): counts stay visible without hover. */
+.plm-review-marker {
+  position: absolute; pointer-events: auto; z-index: 22; min-height: 28px;
+  max-width: 100px; padding: 3px 5px; border: 1px solid #b7c5dc; border-radius: 5px;
+  background: #fff; color: #234b81; font: 11px/1.2 system-ui, sans-serif; cursor: pointer;
+}
+.plm-review-marker:focus-visible, .plm-primary-row button:focus-visible { outline: 3px solid #2563eb; outline-offset: 2px; }
+.plm-primary-row { flex-wrap: wrap; }
+.plm-primary-row .plm-choice { min-height: 44px; }
+@media (max-width: 700px) {
+  .plm-review-marker { max-width: 42px; font-size: 10px; min-height: 40px; overflow-wrap: anywhere; }
+}
+
+/* Reserve space for the count instead of covering passage text. */
+body.prw-on #app #editor { padding-right: 64px !important; }
+.plm-review-marker { max-width: 56px; }

@@ -223,7 +223,7 @@ export async function applySingleWriterMutation(
   const {
     slug,
     markdown,
-    marks,
+    marks: requestedMarks,
     source,
     timeoutMs,
     stabilityMs = 0,
@@ -257,7 +257,7 @@ export async function applySingleWriterMutation(
     const mutation = await mutateCanonicalDocument({
       slug,
       nextMarkdown: markdown,
-      nextMarks: marks,
+      nextMarks: requestedMarks,
       source,
       baseToken: precondition.mode === 'token' ? precondition.value : undefined,
       baseRevision: precondition.mode === 'revision' ? precondition.value : undefined,
@@ -321,6 +321,8 @@ export async function applySingleWriterMutation(
       } satisfies SingleWriterMutationFailure;
     }
 
+    // Verify against the committed marks: their stored positions were mapped through this change.
+    const marks = mutation.marks;
     const verification = await verifyCanonicalDocumentInLoadedCollab(slug, {
       markdown,
       marks,
