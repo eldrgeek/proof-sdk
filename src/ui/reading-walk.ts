@@ -94,7 +94,7 @@ export interface ReadingWalkHost {
   /** Every review mark in the document (the editor's marks state). */
   marks(): Mark[];
   /** The editor's accept / reject / reply / resolve bridge (throws with a message on failure). */
-  decide(ids: string[], action: ReviewAction, text?: string): void;
+  decide(ids: string[], action: ReviewAction, text?: string, bundleId?: string): void;
   /** The PlayMaker Marks panel owner, when the page has one. */
   playmaker(): PlayMakerReview | null;
   /** Current review style ('proof' | 'playmaker'). */
@@ -1748,7 +1748,7 @@ export class ReadingWalkUI {
     }
     const ids = view.pending;
     try {
-      this.host.decide(ids, action);
+      this.host.decide(ids, action, undefined, id);
       this.lastError = '';
       this.bundleDecisions.push({ id, action, ok: true });
       void lm.recordBundleDecision(id, action === 'accept' ? 'accepted' : 'rejected');

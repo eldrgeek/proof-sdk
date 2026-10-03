@@ -111,7 +111,7 @@ import { bindFamiliar, familiarOf, listFamiliars, listProxyMarks, ratifyProxies,
 import { EVIDENCE_POLICY, PROXY_POLICY } from '../src/shared/proxy-marks.js';
 import { clearFlag, clearObjection, createObjection, keepObjection, writeFlag } from './review-aids.js';
 import { listFlags, listObjections, listReviewNotes } from './review-aids-store.js';
-import { clearTtl, decideAlternative, offerAlternative, pickAlternative, recordBundleDecision, recordExplain, setBlindSetting, setTtl, withdrawAlternative } from './proof-extras.js';
+import { clearTtl, decideAlternative, offerAlternative, pickAlternative, recordBundleDecision, reopenBundleDecision, recordExplain, setBlindSetting, setTtl, withdrawAlternative } from './proof-extras.js';
 import { getProofSettings, listAlternatives, listBundles, listExplains, listPicks, listTtls } from './proof-extras-store.js';
 import { closeThread, reopenThread, replyOnThread, startThreadRow, threadRows, undoStartThread } from './threads.js';
 import { lineEditor } from './agent-routes.js';
@@ -2347,6 +2347,11 @@ pageAidRoute('/documents/:slug/bundles/:bundleId/decision', async ({ req, slug, 
   const state = await currentDocumentState(slug);
   if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
   return recordBundleDecision(slug, { id: String(req.params.bundleId ?? ''), by, decision: body.decision, markdown: state.markdown, rawMarks: state.marks });
+});
+pageAidRoute('/documents/:slug/bundles/:bundleId/reopen', async ({ req, slug, by }) => {
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  return reopenBundleDecision(slug, { id: String(req.params.bundleId ?? ''), by, markdown: state.markdown, rawMarks: state.marks });
 });
 // Step B4f: offer another wording { anchor, text }, pick { anchor, choice }, an Owner decides.
 pageAidRoute('/documents/:slug/alternatives', async ({ req, slug, by, body }) => {

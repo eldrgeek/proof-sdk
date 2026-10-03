@@ -2976,6 +2976,13 @@ export class LineMarksUI {
     return result.ok;
   }
 
+  /** Step B4e: undo of a bundle decision on the page reopens the bundle on the server. */
+  async reopenBundleDecision(id: string): Promise<boolean> {
+    const result = await this.postAid(`/bundles/${encodeURIComponent(id)}/reopen`, {});
+    if (result.ok) this.extrasWrites += 1;
+    return result.ok;
+  }
+
   altSetFor(index: number): AltSetView | null { return this.altsByLine.get(index) ?? null; }
 
   private hiddenOnLine(index: number): number {
@@ -3208,7 +3215,7 @@ export class LineMarksUI {
   }
 
   /** How the page acts on a review mark (set by the editor; the Margin's Changes use the same one). */
-  decideOnMark: ((ids: string[], action: 'accept' | 'reject' | 'resolve' | 'reply', text?: string) => void) | null = null;
+  decideOnMark: ((ids: string[], action: 'accept' | 'reject' | 'resolve' | 'reply', text?: string, bundleId?: string) => void) | null = null;
 
   /** Step B4f: an Owner turns blind marking on or off. */
   async setBlind(on: boolean): Promise<boolean> {

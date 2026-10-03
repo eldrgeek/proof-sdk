@@ -171,20 +171,17 @@ async function run(browser, server, style, width) {
     assert.equal(await page.evaluate(() => window.__proofUndo.debugState().depth), bundleDepth + 1);
     await page.locator('.pundo-btn:visible').first().click();
     await page.waitForFunction(t => window.__editorView.state.doc.textContent === t, bundleText);
-    // KNOWN GAP (filed as its own bead): undoing a bundle accept restores the text, but the bundle
-    // stays closed, so the undone bundle is not decided again here. Reject uses a second bundle.
-    await api('/marks/suggest-replace', { quote: 'Passage 3 is here', content: 'Second bundle first replacement', by: 'ai:layout', bundle: { id: 'layout-pair-b', title: 'Two more passages' } });
-    await api('/marks/suggest-replace', { quote: 'Passage 4 is here', content: 'Second bundle second replacement', by: 'ai:layout', bundle: { id: 'layout-pair-b' } });
-    await page.waitForFunction(() => window.__proofLineMarks.debugState().extras.bundles.some(b => b.id === 'layout-pair-b' && b.pending.length === 2 && b.acceptable));
-    const bundleBIds = await page.evaluate(() => window.__proofLineMarks.debugState().extras.bundles.find(b => b.id === 'layout-pair-b').pending);
-    const bundleBText = await text(page);
-    await page.locator('.anv-issue[data-line="6"]').click(); await page.keyboard.press('Backspace');
-    // Rejected members leave the page's mark list; the server records the decision (ac-lhc).
-    await page.waitForFunction(ids => ids.every(id => !window.proof.getAllMarks().some(m => m.id === id && !['accepted', 'rejected'].includes(m.data?.status))), bundleBIds);
+    await page.waitForFunction(() => {
+      const b = window.__proofLineMarks.debugState().extras.bundles.find(x => x.id === 'layout-pair');
+      return b && b.pending.length === 2 && b.acceptable;
+    }, undefined, { timeout: 15_000 });
+    await page.locator('.anv-issue[data-line="4"]').click();
+    await page.keyboard.press('Backspace');
+    await page.waitForFunction(ids => ids.every(id => !window.proof.getAllMarks().some(m => m.id === id && !['accepted', 'rejected'].includes(m.data?.status))), bundleIds);
     const bundleState = await context.request.get(`${server.base}/api/agent/${slug}/state`, { headers: { ...headers, 'x-share-token': token } });
     const bundleMarks = (await bundleState.json()).marks || {};
-    assert.ok(bundleBIds.every(id => bundleMarks[id]?.status === 'rejected'), 'Backspace did not record the bundle members as rejected on the server');
-    assert.equal(await text(page), bundleBText);
+    assert.ok(bundleIds.every(id => bundleMarks[id]?.status === 'rejected'), 'Backspace did not record the bundle members as rejected on the server');
+    assert.equal(await text(page), bundleText);
     // Retained tabs live on the right. Only explicit disclosure folds the document.
     await page.locator('.prw-right .anv-tab[data-tab="outline"]').click();
     assert.equal(await page.locator('.prw-right .anv-outline').isVisible(), true);
