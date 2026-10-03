@@ -95,6 +95,13 @@ export function closeBundleRow(slug: string, id: string, status: BundleStatus, b
     .run(status, at, by, slug, id).changes > 0;
 }
 
+/** Undo of a bundle decision on the page: the bundle goes back to open for another accept or reject. */
+export function reopenBundleRow(slug: string, id: string): boolean {
+  assertWritesAllowed('reopenBundleRow');
+  return getDb().prepare(`UPDATE document_bundles SET status = 'open', closed_at = NULL, closed_by = NULL WHERE document_slug = ? AND id = ? AND status IN ('accepted', 'rejected')`)
+    .run(slug, id).changes > 0;
+}
+
 // ============================================================================
 // Alternatives and picks
 // ============================================================================

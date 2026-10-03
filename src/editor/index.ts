@@ -4274,8 +4274,8 @@ class ProofEditorImpl implements ProofEditor {
       });
       // Accord stage D: a thread's replies and its resolution act on the mark the thread is, so
       // the Margin's Changes and the Discussion use exactly one path into the document.
-      this.lineMarks.decideOnMark = (ids, action, text) => {
-        this.performReviewDecision(ids, action, text);
+      this.lineMarks.decideOnMark = (ids, action, text, bundleId) => {
+        this.performReviewDecision(ids, action, text, bundleId);
         this.playmakerReview?.update();
       };
       this.lineMarks.canTurnThreadBack = id => this.canTurnTypedThreadBack(id);
@@ -4308,8 +4308,8 @@ class ProofEditorImpl implements ProofEditor {
           this.editor?.action(ctx => { marks = getMarks(ctx.get(editorViewCtx).state); });
           return marks;
         },
-        decide: (ids, action, text) => {
-          this.performReviewDecision(ids, action, text);
+        decide: (ids, action, text, bundleId) => {
+          this.performReviewDecision(ids, action, text, bundleId);
           this.playmakerReview?.update();
         },
         playmaker: () => this.playmakerReview,
@@ -4816,7 +4816,7 @@ class ProofEditorImpl implements ProofEditor {
     this.typedDiscussionHistory.delete(id);
   }
 
-  private performReviewDecision(ids: string[], action: ReviewAction, text?: string): void {
+  private performReviewDecision(ids: string[], action: ReviewAction, text?: string, bundleId?: string): void {
     const history = this.getReviewDecisionHistory();
     if (!this.editor) throw new Error('The editor is still loading.');
     this.editor.action(ctx => {
@@ -4854,7 +4854,7 @@ class ProofEditorImpl implements ProofEditor {
         this.scheduleShareSuggestionReviewDisplay(view);
       }
     });
-    this.recordDecisionUndo(ids, action);
+    this.recordDecisionUndo(ids, action, undefined, bundleId);
   }
 
   /**
@@ -4862,7 +4862,7 @@ class ProofEditorImpl implements ProofEditor {
    * Its inverse is the editor's own decision history, which refuses when the text moved under it,
    * so an undo never rewrites what someone typed after the decision.
    */
-  private recordDecisionUndo(ids: string[], action: ReviewAction, description?: string): void {
+  private recordDecisionUndo(ids: string[], action: ReviewAction, description?: string, bundleId?: string): void {
     if (action === 'reply' || ids.length === 0) return;
     const stack = this.lineMarks?.undoStack();
     if (!stack) return;
@@ -4874,17 +4874,30 @@ class ProofEditorImpl implements ProofEditor {
     const moveIds = new Set(ids.map(id => metadata[id]?.move?.spec.id));
     const oneMove = moveIds.size === 1 && !moveIds.has(undefined);
     const what = oneMove ? 'a move' : ids.length === 1 ? (action === 'resolve' ? 'a comment' : 'a change') : `${ids.length} ${action === 'resolve' ? 'comments' : 'changes'}`;
-    const entry = stack.pushSimple(action === 'resolve' ? 'comment' : 'suggestion', description ?? `${verb} ${what}`, () => {
+    const bundleDecision = bundleId && (action === 'accept' || action === 'reject')
+      ? (action === 'accept' ? 'accepted' : 'rejected') as 'accepted' | 'rejected'
+      : null;
+    const entry = stack.pushSimple(action === 'resolve' ? 'comment' : 'suggestion', description ?? `${verb} ${what}`, async () => {
       try {
         const changed = this.restoreReviewDecision(false);
-        return changed ? { ok: true } : { ok: false, reason: 'Not undone: that decision is no longer the newest change to the text.' };
+        if (!changed) return { ok: false, reason: 'Not undone: that decision is no longer the newest change to the text.' };
+        if (bundleId) {
+          const reopened = await this.lineMarks?.reopenBundleDecision(bundleId);
+          if (!reopened) return { ok: false, reason: 'The bundle could not be reopened on the server.' };
+        }
+        return { ok: true };
       } catch (error) {
         return { ok: false, reason: error instanceof Error ? error.message : 'Could not undo that decision.' };
       }
-    }, () => {
+    }, async () => {
       try {
         const changed = this.restoreReviewDecision(true);
-        return changed ? { ok: true } : { ok: false, reason: 'Could not redo that decision.' };
+        if (!changed) return { ok: false, reason: 'Could not redo that decision.' };
+        if (bundleId && bundleDecision) {
+          const recorded = await this.lineMarks?.recordBundleDecision(bundleId, bundleDecision);
+          if (!recorded) return { ok: false, reason: 'The bundle decision could not be recorded again.' };
+        }
+        return { ok: true };
       } catch (error) {
         return { ok: false, reason: error instanceof Error ? error.message : 'Could not redo that decision.' };
       }
@@ -4925,6 +4938,7 @@ class ProofEditorImpl implements ProofEditor {
       this.editor?.action(ctx => {
         const view = ctx.get(editorViewCtx);
         view.dispatch(view.state.tr.setMeta(marksPluginKey, { type: 'SET_METADATA', metadata }).setMeta('addToHistory', false));
+        collabClient.setMarksMetadata(metadata);
         this.scheduleShareSuggestionReviewDisplay(view);
       });
       return changed;

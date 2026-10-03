@@ -20,6 +20,7 @@ import {
   closeAlternativeRow,
   reopenAlternativeRow,
   closeBundleRow,
+  reopenBundleRow,
   clearTtlRow,
   deletePicksForLine,
   getAlternative,
@@ -255,6 +256,35 @@ export async function recordBundleDecision(slug: string, input: { id: string; by
   }, input.by);
   touch(slug, input.by);
   return { status: 200, body: { success: true, bundleId: bundle.id, status: input.decision } };
+}
+
+/**
+ * The page undid a bundle accept or reject: reopen the bundle and refresh its members against the
+ * text (every member must be pending again).
+ */
+export async function reopenBundleDecision(slug: string, input: { id: string; by: string; markdown: string; rawMarks: unknown }): Promise<ExtraResult> {
+  const bundle = getBundle(slug, input.id);
+  if (!bundle) return fail(404, 'BUNDLE_NOT_FOUND', 'No such bundle');
+  if (bundle.status === 'open') return { status: 200, body: { success: true, bundleId: bundle.id, status: 'open', already: true } };
+  if (bundle.status !== 'accepted' && bundle.status !== 'rejected') {
+    return fail(409, 'BUNDLE_NOT_REOPENABLE', `Bundle “${bundle.id}” cannot be reopened from status ${bundle.status}`);
+  }
+  const memberIds = bundle.members.map(m => m.markId);
+  const pending = new Set(reviewMarksFromStored(input.rawMarks).filter(mark => mark.open).map(mark => mark.id));
+  for (const markId of memberIds) {
+    if (!pending.has(markId)) {
+      return fail(409, 'BUNDLE_MEMBERS_NOT_PENDING', 'Every change in the bundle must be pending again before the bundle can reopen', { markId });
+    }
+  }
+  const lines = await computeServerLines(input.markdown);
+  const refreshed = refreshMembers(slug, bundle.members, lines, input.rawMarks);
+  if (!reopenBundleRow(slug, bundle.id)) return fail(409, 'BUNDLE_NOT_REOPENABLE', 'The bundle could not be reopened');
+  updateBundleMembers(slug, bundle.id, refreshed);
+  event(slug, 'bundle.reopened', { bundleId: bundle.id, title: bundle.title, members: memberIds, from: bundle.status, source: 'undo' }, input.by);
+  touch(slug, input.by);
+  const reopened = getBundle(slug, bundle.id)!;
+  const locate = serverSuggestionLocator(slug, lines, input.rawMarks);
+  return { status: 200, body: { success: true, bundleId: bundle.id, status: 'open', bundle: serializeBundle(evaluateBundle(reopened, lines, locate), lines) } };
 }
 
 // ============================================================================

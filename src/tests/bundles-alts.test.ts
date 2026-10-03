@@ -253,6 +253,37 @@ try {
     assert.equal(again.body.code, 'BUNDLE_CLOSED');
   });
 
+  await test('page: reopen puts a closed bundle back when every member is pending again (undo of accept)', async () => {
+    const { reopenBundleDecision } = await import('../../server/proof-extras');
+    const state = await call(`/api/agent/${slug}/state`, 'GET', undefined, K);
+    const closed = await call(`/api/agent/${slug}/bundles?closed=1`, 'GET', undefined, K);
+    const launchBundle = closed.body.bundles.find((x: { id: string }) => x.id === 'launch');
+    assert.ok(launchBundle);
+    const refused = await reopenBundleDecision(slug, { id: 'launch', by: 'human:owner@x.co', markdown: state.body.markdown, rawMarks: state.body.marks });
+    assert.equal(refused.status, 409);
+    assert.equal(refused.body.code, 'BUNDLE_MEMBERS_NOT_PENDING');
+    const stored = state.body.marks as Record<string, Record<string, unknown>>;
+    const marks: Record<string, Record<string, unknown>> = { ...stored };
+    for (const member of launchBundle.members as Array<{ markId: string; kind?: string; quote?: string }>) {
+      const existing = stored[member.markId];
+      marks[member.markId] = {
+        ...(existing ?? {}),
+        kind: member.kind ?? existing?.kind ?? 'replace',
+        status: 'pending',
+        quote: member.quote ?? existing?.quote ?? '',
+        by: existing?.by ?? 'ai:claude',
+      };
+    }
+    const reopened = await reopenBundleDecision(slug, { id: 'launch', by: 'human:owner@x.co', markdown: doc, rawMarks: marks });
+    assert.equal(reopened.status, 200, JSON.stringify(reopened.body));
+    assert.equal(reopened.body.status, 'open');
+    assert.equal((reopened.body.bundle as { status?: string })?.status, 'open');
+    const { getBundle } = await import('../../server/proof-extras-store');
+    assert.equal(getBundle(slug, 'launch')?.status, 'open');
+    const events = await call(`/api/agent/${slug}/events/pending?after=0`, 'GET', undefined, K);
+    assert.ok(events.body.events.some((e: { type?: string; data?: { bundleId?: string } }) => e.type === 'bundle.reopened' && e.data?.bundleId === 'launch'));
+  });
+
   await test('agent: offer an alternative; picks by every member make it the line (a normal edit) and fold the rest', async () => {
     const offered = await call(`/api/agent/${slug}/alternatives`, 'POST', { quote: 'Budget line stays', text: 'Budget line rises 5 percent for the quarter.' }, K);
     assert.equal(offered.status, 200, JSON.stringify(offered.body));
