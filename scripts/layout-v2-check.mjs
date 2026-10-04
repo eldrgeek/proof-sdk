@@ -199,6 +199,16 @@ async function run(browser, server, style, width) {
       const b = window.__proofLineMarks.debugState().extras.bundles.find(x => x.id === 'layout-pair');
       return b && b.pending.length === 2 && b.acceptable;
     }, undefined, { timeout: 15_000 });
+    let serverBundle = null;
+    for (let i = 0; i < 40 && serverBundle?.status !== 'open'; i += 1) {
+      const list = await context.request.get(`${server.base}/api/agent/${slug}/bundles`, { headers: { ...headers, 'x-share-token': token } });
+      serverBundle = ((await list.json()).bundles ?? []).find(b => b.id === 'layout-pair');
+      if (serverBundle?.status !== 'open') await page.waitForTimeout(150);
+    }
+    assert.equal(serverBundle?.status, 'open', JSON.stringify(serverBundle));
+    const eventList = await context.request.get(`${server.base}/api/agent/${slug}/events/pending?after=0`, { headers: { ...headers, 'x-share-token': token } });
+    const bundleEvents = (await eventList.json()).events ?? [];
+    assert.ok(bundleEvents.some(e => e.type === 'bundle.reopened' && e.data?.bundleId === 'layout-pair'), 'bundle.reopened after undo');
     await page.locator('.anv-issue[data-line="4"]').click();
     await page.keyboard.press('Backspace');
     await page.waitForFunction(ids => ids.every(id => !window.proof.getAllMarks().some(m => m.id === id && !['accepted', 'rejected'].includes(m.data?.status))), bundleIds);

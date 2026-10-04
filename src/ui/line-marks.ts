@@ -345,6 +345,8 @@ export class LineMarksUI {
   private extrasDecoSig = '';
   private extrasDecoQueued = false;
   private extrasWrites = 0;
+  /** In-flight page bundle decisions (accept/reject), keyed by bundle id. */
+  private bundleDecisionFlights = new Map<string, Promise<boolean>>();
   /** Familiar proxy marks: my binding, my Familiar's proxies, my undoable ratifications. */
   private serverFamiliar: FamiliarBinding | null = null;
   private serverProxies: ProxyMark[] = [];
@@ -3014,16 +3016,54 @@ export class LineMarksUI {
 
   bundleList(): BundleView[] { return this.bundleViews; }
 
+  /** Wait until any in-flight recordBundleDecision for this bundle finishes (undo must not race it). */
+  async whenBundleDecisionSettled(id: string): Promise<void> {
+    const flight = this.bundleDecisionFlights.get(id);
+    if (flight) await flight.catch(() => false);
+  }
+
+  private async postBundleAid(
+    path: string,
+    body: Record<string, unknown>,
+    retryCode?: string,
+    attempts = 5,
+  ): Promise<{ ok: boolean; body: Record<string, unknown> }> {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const result = await this.postAid(path, body);
+      if (result.ok) return result;
+      if (retryCode && result.body.code === retryCode && attempt < attempts - 1) {
+        await new Promise(resolve => setTimeout(resolve, 150));
+        continue;
+      }
+      return result;
+    }
+    return { ok: false, body: {} };
+  }
+
   /** Step B4e: the page applied or rejected a bundle in its editor: record it on the server. */
   async recordBundleDecision(id: string, decision: 'accepted' | 'rejected'): Promise<boolean> {
-    const result = await this.postAid(`/bundles/${encodeURIComponent(id)}/decision`, { decision });
-    if (result.ok) this.extrasWrites += 1;
-    return result.ok;
+    const previous = this.bundleDecisionFlights.get(id);
+    const flight = (async (): Promise<boolean> => {
+      if (previous) await previous.catch(() => false);
+      const result = await this.postBundleAid(`/bundles/${encodeURIComponent(id)}/decision`, { decision });
+      if (result.ok) this.extrasWrites += 1;
+      return result.ok;
+    })();
+    this.bundleDecisionFlights.set(id, flight);
+    try {
+      return await flight;
+    } finally {
+      if (this.bundleDecisionFlights.get(id) === flight) this.bundleDecisionFlights.delete(id);
+    }
   }
 
   /** Step B4e: undo of a bundle decision on the page reopens the bundle on the server. */
   async reopenBundleDecision(id: string): Promise<boolean> {
-    const result = await this.postAid(`/bundles/${encodeURIComponent(id)}/reopen`, {});
+    const result = await this.postBundleAid(
+      `/bundles/${encodeURIComponent(id)}/reopen`,
+      {},
+      'BUNDLE_MEMBERS_NOT_PENDING',
+    );
     if (result.ok) this.extrasWrites += 1;
     return result.ok;
   }

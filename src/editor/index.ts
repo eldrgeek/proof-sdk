@@ -4879,6 +4879,7 @@ class ProofEditorImpl implements ProofEditor {
       : null;
     const entry = stack.pushSimple(action === 'resolve' ? 'comment' : 'suggestion', description ?? `${verb} ${what}`, async () => {
       try {
+        if (bundleId) await this.lineMarks?.whenBundleDecisionSettled(bundleId);
         const changed = this.restoreReviewDecision(false);
         if (!changed) return { ok: false, reason: 'Not undone: that decision is no longer the newest change to the text.' };
         if (bundleId) {
@@ -4891,6 +4892,7 @@ class ProofEditorImpl implements ProofEditor {
       }
     }, async () => {
       try {
+        if (bundleId) await this.lineMarks?.whenBundleDecisionSettled(bundleId);
         const changed = this.restoreReviewDecision(true);
         if (!changed) return { ok: false, reason: 'Could not redo that decision.' };
         if (bundleId && bundleDecision) {

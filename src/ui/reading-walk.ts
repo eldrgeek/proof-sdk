@@ -1721,7 +1721,7 @@ export class ReadingWalkUI {
     }
     const ids = view.pending;
     try {
-      this.host.decide(ids, action, undefined, id);
+      this.host.decide(ids, action, undefined, view.bundle.kind !== 'move' ? id : undefined);
       this.lastError = '';
       this.bundleDecisions.push({ id, action, ok: true });
       if (view.bundle.kind !== 'move') void lm.recordBundleDecision(id, action === 'accept' ? 'accepted' : 'rejected');

@@ -251,6 +251,32 @@ async function run(browser, style) {
       assert.equal(await mike.locator('.plm-box, .plm-section-note').count(), 0);
     });
 
+    await check(`${tag}: undo after accept reopens the bundle on the server; reject then closes it`, async () => {
+      await mike.locator('.pundo-btn:visible').first().click();
+      await waitFor(mike, () => {
+        const b = window.__proofLineMarks.debugState().extras.bundles.find(x => x.id === 'launch');
+        return b && b.pending.length === 2 && b.acceptable;
+      });
+      let openBundle = null;
+      for (let i = 0; i < 40 && openBundle?.status !== 'open'; i += 1) {
+        openBundle = (await agent('GET', '/bundles')).body.bundles.find(b => b.id === 'launch');
+        if (openBundle?.status !== 'open') await mike.waitForTimeout(150);
+      }
+      assert.equal(openBundle?.status, 'open', JSON.stringify(openBundle));
+      assert.ok((await events()).some(e => e.type === 'bundle.reopened' && e.data?.bundleId === 'launch'), 'bundle.reopened');
+      assert.match(await lineText(mike, L.LAUNCH), /September 30/);
+      await mike.evaluate(() => window.__proofReadingWalk.openReviewItem(window.__proofReadingWalk.focusIndex()));
+      const card = mike.locator('.prw-right .prw-bundle[data-bundle-id="launch"]');
+      await card.locator('.prw-bundle-reject').click();
+      await waitFor(mike, n => window.__proofLineMarks.lineList()[n]?.text.includes('September 30'), L.LAUNCH);
+      let rejected = null;
+      for (let i = 0; i < 40 && rejected?.status !== 'rejected'; i += 1) {
+        rejected = (await agent('GET', '/bundles?closed=1')).body.bundles.find(b => b.id === 'launch');
+        if (rejected?.status !== 'rejected') await mike.waitForTimeout(250);
+      }
+      assert.equal(rejected?.status, 'rejected', JSON.stringify(rejected));
+    });
+
     await check(`${tag}: a stale bundle refuses on the page too; its changes fall back to one-by-one review, the stale one marked`, async () => {
       await mike.evaluate(i => window.__proofReadingWalk.focusLine(i), L.ALPHA);
       await mike.evaluate(() => window.__proofReadingWalk.openReviewItem(window.__proofReadingWalk.focusIndex()));
