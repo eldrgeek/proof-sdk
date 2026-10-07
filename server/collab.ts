@@ -8356,8 +8356,16 @@ async function persistDoc(
             const latestSnapshot = getLatestYSnapshot(slug);
             const bytesSinceSnapshot = getAccumulatedYUpdateBytesAfter(slug, latestSnapshot?.version ?? 0);
             if (nextUpdateCount >= compactionEvery || bytesSinceSnapshot >= compactionMaxBytes) {
-              const fullSnapshot = Y.encodeStateAsUpdate(cloneAuthoritativeDocState(ydoc));
-              saveYSnapshot(slug, seq, fullSnapshot);
+              // Store the authoritative snapshot the update was just encoded from.
+              // cloneAuthoritativeDocState() builds a fresh Y.Doc, so its item IDs are
+              // unrelated to this update. Loaders replay with getYUpdatesAtOrAfter and
+              // therefore apply `seq` on top of that snapshot; the second lineage
+              // inserts the text again. authoritativeSnapshot shares the update's
+              // lineage, so the overlapping update is a no-op and later deltas still
+              // merge. The seed baseline (persistCanonicalYjsBaseline) is different:
+              // it stores a snapshot at version 1 with no update row, and the first
+              // edit can land at that same seq. Those loaders keep at-or-after.
+              saveYSnapshot(slug, seq, authoritativeSnapshot);
               pruneObsoleteYHistory(slug, seq);
               nextUpdateCount = 0;
             }
