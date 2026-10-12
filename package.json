@@ -48,7 +48,7 @@
     "test:team": "tsx src/tests/document-team.test.ts && tsx src/tests/document-team-soma.test.ts",
     "test:cross-invite": "tsx src/tests/cross-invitation.test.ts",
     "test:ux-consistency": "tsx src/tests/ux-consistency.test.ts",
-    "test:mike-0921": "tsx src/tests/mike-0921.test.ts && tsx src/tests/markdown-link-click.test.ts",
+    "test:mike-0921": "tsx src/tests/mike-0921.test.ts && tsx src/tests/markdown-link-click.test.ts && tsx src/tests/suggestion-links.test.ts",
     "test:layout": "tsx src/tests/layout-status.test.ts && tsx src/tests/layout-chrome.test.ts && tsx src/tests/layout-panels.test.ts",
     "test:threads": "tsx src/tests/threads.test.ts",
     "test:open-view": "tsx src/tests/open-view.test.ts",
