@@ -671,6 +671,30 @@ function backfillDocumentProjections(): void {
   tx();
 }
 
+function syncExistingProjectionVersionsFromDocuments(): void {
+  const d = getDb();
+  // The old startup upsert copied revision and y_state_version from documents.
+  // Keep that sync, and leave health, health_reason, and updated_at alone.
+  d.exec(`
+    UPDATE document_projections
+    SET
+      revision = COALESCE(
+        (SELECT revision FROM documents WHERE slug = document_projections.document_slug),
+        1
+      ),
+      y_state_version = COALESCE(
+        (SELECT y_state_version FROM documents WHERE slug = document_projections.document_slug),
+        0
+      )
+    WHERE EXISTS (
+      SELECT 1
+      FROM documents
+      WHERE slug = document_projections.document_slug
+        AND share_state != 'DELETED'
+    )
+  `);
+}
+
 function getDocumentRevisionForSlug(d: Database.Database, slug: string): number | null {
   const row = d.prepare(`
     SELECT revision
@@ -1070,6 +1094,7 @@ function initDatabase(): void {
   d.exec('CREATE INDEX IF NOT EXISTS idx_document_projections_revision ON document_projections(document_slug, revision)');
   d.exec('CREATE INDEX IF NOT EXISTS idx_document_projections_health ON document_projections(health, updated_at)');
   backfillDocumentProjections();
+  syncExistingProjectionVersionsFromDocuments();
 
   d.exec(`
     CREATE TABLE IF NOT EXISTS events (
@@ -3545,6 +3570,11 @@ export function clearYjsState(documentSlug: string): { clearedUpdates: number; c
       UPDATE documents
       SET y_state_version = 0
       WHERE slug = ?
+    `).run(documentSlug);
+    d.prepare(`
+      UPDATE document_projections
+      SET y_state_version = 0
+      WHERE document_slug = ?
     `).run(documentSlug);
     return { clearedUpdates, clearedSnapshots };
   });
