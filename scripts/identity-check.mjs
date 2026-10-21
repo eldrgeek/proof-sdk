@@ -119,7 +119,7 @@ async function oneGuestControl(page) {
     const me = document.querySelector('#share-banner .prw-me');
     const chips = [...document.querySelectorAll('#share-banner .share-pill-viewer')].filter(visible).length;
     const guestText = [...document.querySelectorAll('#share-banner *')].filter(e => visible(e) && e.children.length === 0 && /\bGuest\b|guest, unverified/.test(e.textContent ?? '')).length;
-    const controls = [...me.querySelectorAll('button, a')].map(e => e.getBoundingClientRect().height);
+    const controls = [...me.querySelectorAll('button, a')].filter(visible).map(e => e.getBoundingClientRect().height);
     const r = me.getBoundingClientRect();
     return { chips, guestText, controls, clipped: me.scrollWidth > me.clientWidth + 1, height: r.height, right: r.right, width: innerWidth,
       setname: me.querySelector('.prw-me-setname') ? me.querySelector('.prw-me-setname').scrollWidth > me.querySelector('.prw-me-setname').clientWidth + 1 : null };

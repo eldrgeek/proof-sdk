@@ -362,6 +362,14 @@ body.prw-on { overflow-anchor: none; }
 #share-banner .prw-me[data-trust='guest'] .prw-me-sep { margin: 0 2px; color: #6b7280; }
 #share-banner .prw-me[data-trust='guest'] .prw-me-signin { display: inline-flex; align-items: center; min-height: 28px; white-space: nowrap; }
 @media (max-width: 700px) {
-  #share-banner .prw-me[data-trust='guest'], #share-banner .prw-me-setname,
-  #share-banner .prw-me[data-trust='guest'] .prw-me-signin { min-height: 44px; }
+  /* A phone bar has no room for a pill: the control keeps the old line's look (no border, shortened
+     with an ellipsis) and only gets the 44 px touch height, so the bar does not grow. */
+  #share-banner .prw-me[data-trust='guest'] {
+    display: flex; flex: 0 1 auto; min-width: 0; overflow: hidden; padding: 0; border: 0; background: transparent;
+    min-height: 44px; box-sizing: border-box;
+  }
+  #share-banner .prw-me-setname { min-height: 44px; min-width: 3em; max-width: 10em; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
+  #share-banner .prw-me[data-trust='guest'] .prw-me-guest { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Sign in is in the phone's ⋯ menu; the bar keeps the name and the guest tag, as before. */
+  #share-banner .prw-me[data-trust='guest'] .prw-me-signin, #share-banner .prw-me[data-trust='guest'] .prw-me-sep { display: none; }
 }
