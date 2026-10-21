@@ -369,7 +369,7 @@ body.prw-on { overflow-anchor: none; }
     min-height: 44px; box-sizing: border-box;
   }
   #share-banner .prw-me-setname { min-height: 44px; min-width: 3em; max-width: 10em; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
-  #share-banner .prw-me[data-trust='guest'] .prw-me-guest { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  /* Sign in is in the phone's ⋯ menu; the bar keeps the name and the guest tag, as before. */
-  #share-banner .prw-me[data-trust='guest'] .prw-me-signin, #share-banner .prw-me[data-trust='guest'] .prw-me-sep { display: none; }
+  #share-banner .prw-me[data-trust='guest'] .prw-me-guest { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The name and Sign in keep their room; the guest tag gives way first. */
+  #share-banner .prw-me[data-trust='guest'] .prw-me-signin { min-height: 44px; flex: none; }
 }
