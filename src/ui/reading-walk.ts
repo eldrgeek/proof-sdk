@@ -25,6 +25,7 @@ import { TextSelection } from '@milkdown/kit/prose/state';
 import { getCurrentActor } from '../editor/actor';
 import { openCommentComposer } from '../editor/plugins/mark-popover';
 import { productIdentity } from '../shared/product-identity';
+import { hasStoredViewerName } from './name-prompt';
 import type { Mark, CommentData, ReplaceData } from '../formats/marks';
 import { getActorName, getMarkColor } from '../formats/marks';
 import { actorKey, isAiActor, type DocLine } from '../shared/line-marks';
@@ -85,6 +86,8 @@ export const TOUCH_FOCUS_POLICY = {
 
 export interface ReadingWalkHost {
   slug(): string | null;
+  /** ac-p9e: opens the name prompt (the guest control in the top bar). */
+  setName?(): void;
   newDocument(): void;
   suggestChange(line: number): boolean;
   canSuggest(): boolean;
@@ -853,6 +856,7 @@ export class ReadingWalkUI {
       close: (id, status) => lm().closeThread(id, status as ThreadStatus),
       reopen: (id) => lm().reopenThread(id),
       reply: (id, text) => lm().replyOnThread(id, text),
+      canReply: view => lm().canReplyOn(view),
       canTurnBack: id => lm().canTurnThreadBack(id),
       turnBack: id => lm().turnThreadBack(id),
       refresh: () => this.renderNow(),
@@ -1464,7 +1468,8 @@ export class ReadingWalkUI {
     const toolbar = document.querySelector('#share-banner .share-pill-center');
     if (toolbar && this.meEl.parentElement !== toolbar) toolbar.append(this.meEl);
     const me = this.host.lineMarks().viewerIdentity();
-    const sig = JSON.stringify([me.actor, me.trust, me.name, me.email ?? '', me.signInUrl ?? '', me.markNeedsSignIn === true, me.attestedBy?.actor ?? '']);
+    const named = hasStoredViewerName();
+    const sig = JSON.stringify([me.actor, me.trust, me.name, me.email ?? '', me.signInUrl ?? '', me.markNeedsSignIn === true, me.attestedBy?.actor ?? '', named]);
     if (this.meEl.dataset.sig === sig) return;
     this.meEl.dataset.sig = sig;
     this.meEl.dataset.trust = me.trust;
@@ -1494,7 +1499,16 @@ export class ReadingWalkUI {
       this.meEl.title = `Marks and answers are recorded as ${me.actor}`;
       return;
     }
-    this.meEl.append(el('span', 'prw-me-name', me.name || 'Anonymous'), el('span', 'prw-me-guest', 'guest, unverified'));
+    // ac-p9e (2026-09-30): ONE guest control in the top bar. The editor's own 'Guest · set your
+    // name' chip sat beside this line, so a signed-out reader saw two guest indicators. Here the
+    // name is the button that sets it ('Guest · set your name' until one is typed), followed by
+    // Sign in; the editor hides its chip while this control is in the bar.
+    const setName = el('button', 'prw-me-name prw-me-setname', named ? (me.name || 'Anonymous') : 'Guest · set your name');
+    setName.type = 'button';
+    setName.title = named ? 'Change how your name appears' : 'Choose how your name appears';
+    setName.onclick = () => this.host.setName?.();
+    this.meEl.append(setName);
+    if (named) this.meEl.append(el('span', 'prw-me-guest', 'guest, unverified'));
     // Invite person (2026-09-19): under the default guest setting a guest reads, comments and
     // chats; marks, answers, picks and approvals need signing in.
     this.meEl.title = me.markNeedsSignIn
@@ -1507,7 +1521,7 @@ export class ReadingWalkUI {
         // Come back here after signing in (read by public/vendor/soma-auth/proof-session.js).
         try { localStorage.setItem('proof:return-to', JSON.stringify({ path: location.pathname + location.search + location.hash, at: Date.now() })); } catch { /* optional */ }
       };
-      this.meEl.append(el('span', 'prw-me-sep', ' — '), link);
+      this.meEl.append(el('span', 'prw-me-sep', ' · '), link);
     }
   }
 
@@ -1591,8 +1605,13 @@ export class ReadingWalkUI {
     this.changesHost.hidden = onLine.length === 0;
     if (onLine.length === 0) return;
     const head = el('div', 'prw-changes-head');
-    head.append(el('strong', undefined, 'Changes on this line'), el('span', 'prw-step', String(onLine.length)));
+    // ac-ane: the count is the number of decisions shown, not records. A move is two records (the
+    // removal and the insertion) but one card and one decision, as a bundle is; counting records made
+    // one pending move read "2".
+    const count = el('span', 'prw-step', '0');
+    head.append(el('strong', undefined, 'Changes on this line'), count);
     this.changesHost.append(head);
+    let cards = 0;
     // Step B4e: a bundle on this line shows as one card (title, why, every passage, one decision).
     const shownBundles = new Set<string>();
     for (const item of onLine) {
@@ -1600,6 +1619,7 @@ export class ReadingWalkUI {
       if (!bundle || shownBundles.has(bundle.bundle.id)) continue;
       shownBundles.add(bundle.bundle.id);
       this.changesHost.append(this.bundleCard(bundle, all));
+      cards += 1;
     }
     for (const item of onLine) {
       const mark = all.get(item.id);
@@ -1611,7 +1631,9 @@ export class ReadingWalkUI {
         current: false,
         passed: false,
       }));
+      cards += 1;
     }
+    count.textContent = String(cards);
     this.changesHost.append(el('p', 'prw-hint', 'Accept or Reject decides a proposal. Scrolling only records reading.'));
   }
 

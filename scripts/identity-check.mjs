@@ -112,6 +112,31 @@ async function openDoc(page, base, slug) {
   await showWholeAccord(page);
 }
 
+/** ac-p9e: the top bar shows one guest control, at the bar's control height, with nothing clipped. */
+async function oneGuestControl(page) {
+  const info = await page.evaluate(() => {
+    const visible = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(e).visibility !== 'hidden'; };
+    const me = document.querySelector('#share-banner .prw-me');
+    const chips = [...document.querySelectorAll('#share-banner .share-pill-viewer')].filter(visible).length;
+    const guestText = [...document.querySelectorAll('#share-banner *')].filter(e => visible(e) && e.children.length === 0 && /\bGuest\b|guest, unverified/.test(e.textContent ?? '')).length;
+    const controls = [...me.querySelectorAll('button, a')].map(e => e.getBoundingClientRect().height);
+    const r = me.getBoundingClientRect();
+    return { chips, guestText, controls, clipped: me.scrollWidth > me.clientWidth + 1, height: r.height, right: r.right, width: innerWidth,
+      setname: me.querySelector('.prw-me-setname') ? me.querySelector('.prw-me-setname').scrollWidth > me.querySelector('.prw-me-setname').clientWidth + 1 : null };
+  });
+  assert.equal(info.chips, 0, 'the old "Guest · set your name" chip still shows beside the guest control');
+  assert.ok(info.guestText <= 2, `more than one guest indicator in the top bar (${info.guestText} guest labels)`);
+  // Never clipped at desktop widths (the bead's 1440 px). A phone bar is narrower than a long typed
+  // name, so there the control may shorten with an ellipsis, but it must stay inside the window.
+  if (info.width > 700) {
+    assert.equal(info.clipped, false, 'the guest control is clipped');
+    assert.equal(info.setname, false, 'the name button is clipped');
+  }
+  assert.ok(info.right <= info.width, `the guest control runs off the window (${info.right} > ${info.width})`);
+  const min = info.width <= 700 ? 44 : 28;
+  assert.ok(info.controls.length >= 1 && info.controls.every(h => h >= min - 0.5), `a guest control is shorter than ${min} px (${info.controls.join(', ')})`);
+}
+
 async function guestPage(browser, base, slug, name, options) {
   const context = await newContext(browser, base, options);
   await context.addInitScript(viewer => { try { localStorage.setItem('proof-share-viewer-name', viewer); } catch {} }, name);
@@ -190,9 +215,31 @@ async function run(browser, style) {
       const me = g.page.locator('#share-banner .prw-me');
       await me.waitFor({ state: 'visible' });
       assert.equal(await me.getAttribute('data-trust'), 'guest');
-      assert.match(await me.innerText(), /Mike Wolf\s*guest, unverified\s*—\s*Sign in/);
+      assert.match(await me.innerText(), /Mike Wolf\s*guest, unverified\s*·\s*Sign in/);
       assert.equal(await me.locator('.prw-me-signin').getAttribute('href'), '/');
+      await oneGuestControl(g.page);
       await g.page.screenshot({ path: path.join(shots, `${tag}-2-guest.png`) });
+    });
+
+    // ac-p9e (2026-09-30): a signed-out reader saw two guest indicators side by side, the editor's
+    // 'Guest · set your name' chip (clipped at 1440) and this line. Now one control reads
+    // 'Guest · set your name · Sign in', is 28 px tall, is not clipped, and its name button opens
+    // the name prompt.
+    await check(`${tag}: a guest with no name sees ONE control, "Guest · set your name · Sign in", unclipped and 28 px tall`, async () => {
+      const ctx = await newContext(browser, base, { viewport: { width: 1440, height: 900 } });
+      await ctx.addInitScript(() => { try { localStorage.removeItem('proof-share-viewer-name'); } catch {} });
+      const page = await ctx.newPage();
+      activePage = page;
+      try {
+        await openDoc(page, base, slug);
+        const me = page.locator('#share-banner .prw-me');
+        await me.waitFor({ state: 'visible' });
+        assert.match(await me.innerText(), /^Guest · set your name\s*·\s*Sign in$/);
+        await oneGuestControl(page);
+        await page.screenshot({ path: path.join(shots, `${tag}-2b-guest-unnamed.png`), clip: { x: 0, y: 0, width: 1440, height: 120 } });
+        await me.locator('.prw-me-setname').click();
+        await page.locator('[data-proof-name-prompt="overlay"]').waitFor({ state: 'visible' });
+      } finally { await ctx.close(); }
     });
 
     await check(`${tag}: an ask to human:<email> is not closed by the guest typing the name; the signed-in person closes it`, async () => {
@@ -252,6 +299,7 @@ async function run(browser, style) {
     assert.equal(await me.getAttribute('data-trust'), 'guest');
     assert.match(await me.innerText(), /guest, unverified/);
     assert.equal(await me.locator('.prw-me-signin').getAttribute('href'), '/');
+    if (await me.isVisible()) await oneGuestControl(pg.page);
     await pg.page.locator('#share-banner .share-pill-overflow').tap();
     await pg.page.getByRole('menuitem', { name: 'Ada — guest, unverified', exact: true }).waitFor({ state: 'visible' });
     assert.ok(await pg.page.getByRole('menuitem', { name: 'Sign in', exact: true }).isVisible(), 'the ⋯ menu has Sign in');

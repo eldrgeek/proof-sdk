@@ -66,6 +66,8 @@ export interface ThreadsHost {
   close(id: string, status: ThreadStatus): Promise<boolean>;
   reopen(id: string): Promise<boolean>;
   reply(id: string, text: string): boolean;
+  /** ac-fwa: false when this viewer cannot reply here (no edit rights, and the thread has no row). */
+  canReply?(view: ThreadView): boolean;
   canTurnBack?(id: string): boolean;
   turnBack?(id: string): Promise<boolean>;
   /** Re-renders Review (after a write). */
@@ -302,6 +304,7 @@ export class ThreadsPanel {
       actions.append(back);
     }
     if (thread.status === 'open') {
+      const canReply = this.host.canReply?.(view) !== false;
       const replyForm = el('form', 'amg-thread-reply-form');
       const input = el('input', 'amg-thread-reply-input');
       input.type = 'text';
@@ -315,13 +318,14 @@ export class ThreadsPanel {
         event.preventDefault();
         const text = input.value.trim();
         if (!text) { input.focus(); return; }
-        this.host.reply(thread.id, text);
+        if (!this.host.reply(thread.id, text)) { input.focus(); return; }
         this.log.push({ action: 'reply', id: thread.id });
         input.value = '';
         this.sig = '';
         this.host.refresh();
       };
-      card.append(replyForm);
+      if (canReply) card.append(replyForm);
+      else card.append(el('p', 'amg-thread-reply-closed', 'Replying to this comment needs edit access. Sign in, or ask the owner for edit access.'));
       if (!this.host.proposalDecisionElsewhere?.(view) && canResolveThread(view, me, { isOwner: this.host.isOwner(), team: this.host.team() })) {
         for (const resolution of resolutionsFor(thread)) {
           const button = el('button', 'amg-thread-resolve', resolution.label);

@@ -39,7 +39,7 @@ import { doViewPlugin } from './plugins/do-view';
 import { proofExtrasViewPlugin } from './plugins/proof-extras-view';
 import { tierViewPlugin } from './plugins/tier-view';
 import { getReviewStyle, setReviewStyle, REVIEW_STYLE_POLICY } from './review-style';
-import { isEditing, isWriting, onWritingChange, setDirectEditing } from './editing-guard';
+import { EDITING_GUARD_POLICY, isEditing, isWriting, onWritingChange, setDirectEditing } from './editing-guard';
 import { ReviewDecisionHistory, keepUndoGroupOpen, reconnectNativeUndoManager } from './review-decision-history';
 import { TypedDiscussionController, type TypedDiscussionRun } from './typed-discussion';
 import { typedDiscussionId, typedDiscussionInsertId, typedItemAt, TYPED_DISCUSSION_POLICY } from '../shared/typed-discussion';
@@ -1802,8 +1802,17 @@ class ProofEditorImpl implements ProofEditor {
     }
   }
 
+  private promptViewerName(): void {
+    void promptForName()
+      .then((name) => { this.applyResolvedViewerName(typeof name === 'string' ? name : 'Anonymous'); })
+      .catch((error) => { console.warn('[share] name prompt failed', error); });
+  }
+
   private updateShareViewerChip(): void {
     if (!this.shareViewerChip) return;
+    // ac-p9e: the reading walk's identity control (name, guest status, Sign in) is the one guest
+    // indicator in the Accord top bar, so this older chip stays hidden while the walk exists.
+    this.shareViewerChip.hidden = Boolean(this.readingWalk);
     const stored = getViewerName();
     if (stored) {
       this.shareViewerChip.textContent = stored;
@@ -3876,11 +3885,7 @@ class ProofEditorImpl implements ProofEditor {
     const viewerChip = document.createElement('button');
     viewerChip.type = 'button';
     viewerChip.className = 'share-pill-viewer';
-    viewerChip.onclick = () => {
-      void promptForName()
-        .then((name) => { this.applyResolvedViewerName(typeof name === 'string' ? name : 'Anonymous'); })
-        .catch((error) => { console.warn('[share] name prompt failed', error); });
-    };
+    viewerChip.onclick = () => this.promptViewerName();
     this.shareViewerChip = viewerChip;
     this.updateShareViewerChip();
 
@@ -4278,6 +4283,8 @@ class ProofEditorImpl implements ProofEditor {
         this.performReviewDecision(ids, action, text, bundleId);
         this.playmakerReview?.update();
       };
+      this.lineMarks.decisionRefusal = () => this.reviewDecisionRefusal();
+      this.lineMarks.markRepliesAllowed = () => this.collabCanEdit;
       this.lineMarks.canTurnThreadBack = id => this.canTurnTypedThreadBack(id);
       this.lineMarks.turnThreadBack = id => this.turnTypedThreadBack(id);
       (window as unknown as { __proofLineMarks?: LineMarksUI }).__proofLineMarks = this.lineMarks;
@@ -4292,6 +4299,7 @@ class ProofEditorImpl implements ProofEditor {
       });
       (window as unknown as { __proofFolding?: FoldingUI }).__proofFolding = this.folding;
       this.readingWalk = new ReadingWalkUI({
+        setName: () => this.promptViewerName(),
         newDocument: () => { void this.newDocument(); },
         slug: () => shareClient.getSlug(),
         suggestChange: (line) => {
@@ -4335,6 +4343,7 @@ class ProofEditorImpl implements ProofEditor {
         },
       });
       (window as unknown as { __proofReadingWalk?: ReadingWalkUI }).__proofReadingWalk = this.readingWalk;
+      this.updateShareViewerChip();
       // Accord round 2 stage B: the scroll camera is pure, so the check unit-tests the offset rule
       // in the page without a DOM (scripts/scroll-camera-check.mjs).
       (window as unknown as { __proofScrollCamera?: unknown }).__proofScrollCamera = { cameraScroll, deadZone, policy: SCROLL_CAMERA_POLICY };
@@ -4626,10 +4635,29 @@ class ProofEditorImpl implements ProofEditor {
     return this.playmakerReview.control;
   }
 
+  /**
+   * ac-fwa: why this viewer cannot decide on a mark right now, in words a person can act on, or
+   * null when they can. A decision (accept, reject, resolve) rewrites the shared document through
+   * the live connection, so it needs edit rights on that connection. A guest on an Accord whose
+   * guests may comment has comment rights only.
+   */
+  private reviewDecisionRefusal(): string | null {
+    if (!this.collabCanEdit) {
+      return this.collabCanComment
+        ? 'You can reply on a thread, but closing it or deciding a change needs edit access. Sign in, or ask the owner for edit access.'
+        : 'Deciding needs edit access. Sign in, or ask the owner for edit access.';
+    }
+    if (!collabClient.getYDoc() || this.getShareSuggestionResolutionTransport() !== 'collab') {
+      return 'This page is not connected to the document right now. Nothing was changed; try again in a moment.';
+    }
+    return null;
+  }
+
   private getReviewDecisionHistory(): ReviewDecisionHistory {
     const doc = collabClient.getYDoc();
-    if (!doc || !this.collabCanEdit || this.getShareSuggestionResolutionTransport() !== 'collab') {
-      throw new Error('Connect to the document before deciding. Your mark is still open.');
+    const refusal = this.reviewDecisionRefusal();
+    if (!doc || refusal) {
+      throw new Error(refusal ?? 'This page is not connected to the document right now. Nothing was changed; try again in a moment.');
     }
     const view = this.editor?.ctx.get(editorViewCtx);
     const manager = view && yUndoPluginKey.getState(view.state)?.undoManager;
@@ -6379,6 +6407,12 @@ class ProofEditorImpl implements ProofEditor {
     document.body.appendChild(banner);
     this.shareBannerResizeObserver = new ResizeObserver(() => this.scheduleBannerLayoutUpdate());
     this.shareBannerResizeObserver.observe(banner);
+    // ac-1cv: crossing the phone width changes the offset (the menu bar shows or hides) even when the
+    // banner keeps its height, so a window resize lays the top out again too.
+    if (!this.bannerLayoutOnResize) {
+      this.bannerLayoutOnResize = () => this.scheduleBannerLayoutUpdate();
+      window.addEventListener('resize', this.bannerLayoutOnResize);
+    }
     this.scheduleBannerLayoutUpdate();
   }
 
@@ -6646,11 +6680,25 @@ class ProofEditorImpl implements ProofEditor {
     }
   }
 
+  private bannerLayoutRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private bannerLayoutOnResize: (() => void) | null = null;
+
   private updateBannerLayout(): void {
     const editor = document.getElementById('editor');
     if (!editor) return;
     // Direct Editing: toolbar label changes must not reflow the document mid-keystroke. Mike, 2026-09-19.
-    if (isWriting()) return;
+    // ac-1cv (2026-09-25): this used to skip while the caret was in the text at all (isWriting), so a
+    // window resized with the caret in the text kept the old padding and the toolbar covered the top
+    // of the document until focus left it. Now the pass waits only while the person is typing
+    // (isEditing: activity within EDITING_GUARD_POLICY.graceMs) and runs once typing pauses.
+    if (isEditing()) {
+      if (this.bannerLayoutRetryTimer) clearTimeout(this.bannerLayoutRetryTimer);
+      this.bannerLayoutRetryTimer = setTimeout(() => {
+        this.bannerLayoutRetryTimer = null;
+        this.scheduleBannerLayoutUpdate();
+      }, EDITING_GUARD_POLICY.graceMs + 50);
+      return;
+    }
 
     const banners: HTMLElement[] = [];
     const shareBanner = document.getElementById('share-banner');

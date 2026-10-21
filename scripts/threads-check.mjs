@@ -419,6 +419,61 @@ async function desktop(browser, base, style) {
   await context.close();
 }
 
+// ac-fwa (2026-10-18): a guest on an Accord whose guests may comment (live's default when sign-in
+// exists) replied on a thread and pressed Close, and saw a raw 'Promise rejection' banner, because
+// both went through the decision history, which needs edit rights. A reply decides nothing, so it
+// posts. Close says in plain words why it cannot. Nothing reaches /api/client-error.
+async function guestCommenter(browser, base, style) {
+  const created = await createDoc(base);
+  const tag = `threads-${style}-1440-guest`;
+  const mode = await fetch(`${base}/api/documents/${created.slug}/team/guest-access`, {
+    method: 'PUT', headers: agentHeaders(created.ownerSecret), body: JSON.stringify({ mode: 'comment' }),
+  });
+  assert.equal(mode.status, 200, `guest-access: ${mode.status}`);
+  const { context, page } = await openDoc(browser, base, created.slug, 'Gus', { viewport: { width: 1440, height: 900 } });
+  activePage = page;
+  const problems = [];
+  page.on('pageerror', error => problems.push(`pageerror: ${error.message}`));
+  page.on('request', request => { if (request.url().includes('/api/client-error')) problems.push(`client-error: ${request.postData()?.slice(0, 200)}`); });
+  await page.evaluate(() => window.addEventListener('unhandledrejection', event => { window.__rejections = [...(window.__rejections ?? []), String(event.reason?.message ?? event.reason)]; }));
+
+  await check(`${tag}: a guest who may comment replies on a thread, and Close says why it cannot`, async () => {
+    assert.deepEqual(await page.evaluate(() => ({ edit: window.proof.collabCanEdit, comment: window.proof.collabCanComment })), { edit: false, comment: true }, 'the guest is a commenter');
+    await page.evaluate(() => window.getSelection()?.removeAllRanges());
+    await focusLine(page, L.CLAIM);
+    await page.keyboard.press('t');
+    await startThread(page, { text: 'A guest asks: is this the Q2 figure?', asks: 'answer' });
+    const card = page.locator('.amg-thread[data-asks="answer"]').first();
+    await card.waitFor({ state: 'visible' });
+    await card.locator('.amg-thread-reply-input').fill('A guest reply that must be kept.');
+    await card.locator('.amg-thread-reply-send').click();
+    await waitFor(page, () => window.__proofLineMarks.allThreads().some(v => v.thread.replies.some(r => r.text === 'A guest reply that must be kept.')));
+    // The reply reached the server: the thread's own row carries it (read with the owner's credential).
+    const deadline = Date.now() + 9000;
+    let stored = false;
+    while (!stored && Date.now() < deadline) {
+      const rows = await fetch(`${base}/api/documents/${created.slug}/line-marks`, { headers: agentHeaders(created.ownerSecret) }).then(r => r.json()).catch(() => ({}));
+      stored = (rows.threads ?? []).some(t => (t.replies ?? []).some(r => r.text === 'A guest reply that must be kept.'));
+      if (!stored) await page.waitForTimeout(250);
+    }
+    assert.ok(stored, 'the guest reply never reached the server');
+    assert.equal(await card.locator('.amg-thread-reply-closed').count(), 0, 'a thread with its own row offers the guest a reply');
+    const close = card.locator('.amg-thread-resolve').first();
+    assert.equal(await close.count(), 1, 'the guest who started the thread is offered a way to close it');
+    await close.click();
+    const toast = page.locator('.plm-toast', { hasText: 'edit access' }).first();
+    await toast.waitFor({ state: 'visible' });
+    assert.match(await toast.innerText(), /Sign in, or ask the owner for edit access/);
+    assert.equal((await threads(page)).find(t => t.text === 'A guest asks: is this the Q2 figure?')?.status, 'open', 'the thread closed while its mark stayed open');
+    await page.screenshot({ path: path.join(shots, `${tag}.png`) });
+    await page.waitForTimeout(500);
+    const rejections = await page.evaluate(() => window.__rejections ?? []);
+    assert.deepEqual([...problems, ...rejections], [], 'a raw error reached the page or /api/client-error');
+    assert.equal(await page.getByText('Promise rejection').count(), 0, 'the raw Promise rejection banner showed');
+  });
+  await context.close();
+}
+
 async function phone(browser, base, style) {
   const created = await createDoc(base);
   const tag = `threads-${style}-390`;
@@ -450,6 +505,7 @@ try {
     const { base, stop } = await startServer(style);
     try {
       await desktop(browser, base, style);
+      await guestCommenter(browser, base, style);
       await phone(browser, base, style);
     } finally {
       await stop();

@@ -25,6 +25,8 @@ export interface FollowerOptions {
   pillHost?: HTMLElement;
   /** A name for the test hook. */
   name: string;
+  /** ac-lav: runs when the pill is clicked, before the list scrolls to its end. */
+  onPill?: () => void;
 }
 
 export class ScrollFollower {
@@ -44,7 +46,11 @@ export class ScrollFollower {
     this.pill.textContent = RAIL_FOLLOW_POLICY.pillLabel;
     this.pill.hidden = true;
     this.pill.addEventListener('mousedown', event => event.preventDefault());
-    this.pill.onclick = () => { this.following = true; this.pill.hidden = true; this.scrollToEnd(); };
+    this.pill.onclick = () => {
+      // ac-lav: a caller may make the pill do more first (the folded chat strip expands).
+      opts.onPill?.();
+      this.following = true; this.pill.hidden = true; this.scrollToEnd();
+    };
     opts.scroller.addEventListener('scroll', this.onScroll, { passive: true });
     opts.scroller.classList.add('prw-scroll-root');
   }
@@ -64,6 +70,16 @@ export class ScrollFollower {
 
   /** The pill, for callers that place it themselves. */
   get pillElement(): HTMLButtonElement { return this.pill; }
+
+  /**
+   * ac-lav: the reader opened this list (the page loaded, or the chat strip expanded or folded):
+   * show its newest item. This is the reader's own action, not incoming content, so it scrolls.
+   */
+  jumpToEnd(): void {
+    this.following = true;
+    this.pill.hidden = true;
+    this.scrollToEnd();
+  }
 
   /** Something new is at the end (items arrived, the focus line changed): offer the pill without scrolling. */
   follow(): void {

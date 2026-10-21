@@ -193,6 +193,36 @@ async function desktop(browser, base, style) {
     await page.screenshot({ path: path.join(shots, `${tag}-topbar.png`), clip: { x: 0, y: 0, width: 1440, height: 220 } });
   });
 
+  // ac-1cv (2026-09-25): the top padding was laid out only while the caret was NOT in the text, so a
+  // window widened from phone width with the caret in the text kept the phone padding (60 px, not
+  // 88) and the toolbar covered the document's first line until focus left the text. Now the pass
+  // waits only while the person types, and runs once typing pauses (EDITING_GUARD_POLICY.graceMs).
+  await check(`${tag}: widening the window with the caret in the text lays out the top again`, async () => {
+    const settledTop = () => page.evaluate(() => {
+      const banner = document.getElementById('share-banner').getBoundingClientRect();
+      const editor = document.getElementById('editor');
+      const first = document.querySelector('.ProseMirror > *').getBoundingClientRect();
+      return { padding: Number.parseFloat(getComputedStyle(editor).paddingTop), bannerBottom: banner.bottom, firstTop: first.top + scrollY };
+    });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    const wide = await settledTop();
+    await page.setViewportSize({ width: 600, height: 900 });
+    await page.waitForTimeout(400);
+    await codeFocusesText(page, 1);
+    // A pointer in the text counts as editing activity, as a person's click does.
+    await page.locator('.ProseMirror > *').nth(1).dispatchEvent('pointerdown');
+    assert.equal(await writing(page), true, 'the caret is not in the text');
+    await page.setViewportSize({ width: 1440, height: 900 });
+    // Within the typing grace plus a margin, the padding is the desktop padding again.
+    await page.waitForFunction(want => Number.parseFloat(getComputedStyle(document.getElementById('editor')).paddingTop) === want, wide.padding, { timeout: 6000, polling: 100 });
+    const after = await settledTop();
+    assert.equal(after.padding, wide.padding, `padding ${after.padding}, desktop ${wide.padding}`);
+    assert.ok(after.firstTop >= after.bannerBottom, `the first line starts under the toolbar (${after.firstTop} < ${after.bannerBottom})`);
+    assert.equal(await writing(page), true, 'the caret left the text');
+    await page.evaluate(() => document.activeElement?.blur());
+    await page.waitForTimeout(200);
+  });
+
   // ---- item 1: links --------------------------------------------------------------------------
   await check(`${tag}: item 1 — hovering a link shows no "Open link" card`, async () => {
     await scrollLineIntoView(page, L.LINKS);
@@ -417,14 +447,16 @@ async function desktop(browser, base, style) {
     // about a line into the document, so line-pointed messages are folded away in the Room and
     // would not fill it. What this check tests — following the end, and the "New below" pill — is
     // about the Room's own messages either way.
+    // Accord layout stage 3 (decision 6): the chat is the Margin's Room tab. It is opened BEFORE the
+    // messages arrive: opening the chat shows its newest message (ac-lav, 2026-10-20), and what is
+    // tested here is messages arriving into an open chat.
+    if (!(await page.evaluate(() => window.__proofChat.debugState().visible))) await page.locator('.prw-chat-bottom .pch-toggle').click();
+    await page.waitForTimeout(300);
     for (let i = 1; i <= 14; i += 1) await created.post('/chat', { by: 'ai:check', text: `Message ${i}: a line of chat long enough to take some room in the rail.` });
     await page.evaluate(() => window.__proofChat?.notifyRemoteChange());
     await waitFor(page, () => (window.__proofChat?.debugState().messages.length ?? 0) >= 14, null, 12_000);
     await page.waitForTimeout(300);
     const list = page.locator('.prw-chat-bottom .pch-list');
-    // Accord layout stage 3 (decision 6): the chat is the Margin's Room tab.
-    if (!(await page.evaluate(() => window.__proofChat.debugState().visible))) await page.locator('.prw-chat-bottom .pch-toggle').click();
-    await page.waitForTimeout(300);
     let f = (await page.evaluate(() => window.__proofChat.debugState().follow));
     assert.ok(f.scrollHeight - f.clientHeight - f.scrollTop > 2, 'incoming messages automatically scrolled the chat');
     await page.locator('.prw-chat-bottom .prw-follow-pill[data-follow="chat"]').click();

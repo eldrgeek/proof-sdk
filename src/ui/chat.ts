@@ -187,7 +187,11 @@ export class ChatUI {
     this.nextStep.setAttribute('aria-live', 'polite');
     this.root.append(this.head, this.nextStep, this.lineTalkBar, this.list, this.composer);
     // Rail scrolling (2026-09-21): the messages keep the newest in view unless the person scrolled up.
-    this.follower = new ScrollFollower({ scroller: this.list, name: 'chat' });
+    // ac-lav: in the folded strip, "New below" opens the chat and goes to the newest message (the
+    // folded list is one message tall, so scrolling it alone looked like nothing happened).
+    this.follower = new ScrollFollower({ scroller: this.list, name: 'chat', onPill: () => {
+      if (this.inMargin() && this.collapsed) this.setCollapsed(false);
+    } });
     this.list.after(this.follower.pillElement);
     // Phone sheet.
     this.sheet.setAttribute('role', 'dialog');
@@ -283,7 +287,7 @@ export class ChatUI {
     this.applyCollapsed();
   }
 
-  private onResize = (): void => { this.place(); this.markReadIfVisible(); };
+  private onResize = (): void => { this.place(); this.markReadIfVisible(); requestAnimationFrame(() => this.fitCompact()); };
 
   private onVisibility = (): void => {
     if (document.visibilityState === 'visible') { void this.refresh(); this.markReadIfVisible(); }
@@ -616,11 +620,50 @@ export class ChatUI {
         : `${n === 1 ? '1 message' : `${n} messages`} about the text \u2014 ${n === 1 ? 'it is a thread on its line' : 'they are threads on their lines'}`;
       this.lineTalkToggle.setAttribute('aria-expanded', String(this.lineTalkOpen));
       // New messages: follow the end, or show "New below ↓" when the person scrolled up.
-      requestAnimationFrame(() => this.follower.follow());
+      // ac-lav: but when the reader opened this view of the chat (the first load, or the strip
+      // expanding or folding), it opens at the newest message, never at the oldest.
+      const view = this.viewKey();
+      const opened = BOTTOM_CHAT_POLICY.opensAtNewest && this.loaded && view !== this.placedView;
+      if (opened) this.placedView = view;
+      requestAnimationFrame(() => {
+        this.fitCompact();
+        if (opened) this.follower.jumpToEnd(); else this.follower.follow();
+      });
+    } else {
+      requestAnimationFrame(() => this.fitCompact());
     }
     this.renderPin();
     this.updateUnread();
     this.markReadIfVisible();
+  }
+
+  /** ac-lav: which view of the chat is showing; a change is the reader opening a new view. */
+  private placedView: string | null = null;
+  private viewKey(): string {
+    return this.inMargin() ? `margin:${this.collapsed}` : isPhone() ? `sheet:${this.sheetOpen}` : `rail:${this.collapsed}`;
+  }
+
+  /**
+   * ac-lav: the folded strip at the bottom has a fixed height, and the next-step card above the
+   * messages can take all of it on a short window. Grow the strip until the newest message shows
+   * whole (up to compactListMaxPx of message, never past compactMaxShare of the window); shrink it
+   * back to the policy height when it no longer needs the room.
+   */
+  private fitCompact(): void {
+    const strip = this.railHost;
+    if (!strip || !this.inMargin() || !this.collapsed || isPhone() || !strip.isConnected) return;
+    const base = BOTTOM_CHAT_POLICY.compactHeightPx;
+    const current = strip.getBoundingClientRect().height;
+    if (current <= 0) return;
+    const last = this.list.lastElementChild as HTMLElement | null;
+    const want = last && !this.list.hidden ? Math.min(last.offsetHeight + 2, BOTTOM_CHAT_POLICY.compactListMaxPx) : 0;
+    const deficit = want - this.list.clientHeight;
+    const cap = Math.max(base, Math.floor(window.innerHeight * BOTTOM_CHAT_POLICY.compactMaxShare));
+    const next = Math.max(base, Math.min(cap, Math.round(current + deficit)));
+    if (Math.abs(next - current) < 1) return;
+    document.body.style.setProperty('--prw-chat-compact', `${next}px`);
+    // The strip grew or shrank: keep the newest message in view if the reader was at the end.
+    if (this.follower.isFollowing()) this.follower.jumpToEnd();
   }
 
   private safeMarks(): Mark[] {
