@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, devices } from 'playwright';
+import { keepBottomChat } from './keep-bottom-chat.mjs';
 import { hoverChangesNothing, selectPassage } from './usability-s1-assertions.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -741,6 +742,7 @@ async function runViewportCases(browser, base, created, label, viewport) {
 async function main() {
   const { base, stop } = await startServer();
   const browser = await chromium.launch();
+  keepBottomChat(browser);
   try {
     await runViewportCases(browser, base, await createFixture(base), '1280x800', DESKTOP);
     await runViewportCases(browser, base, await createFixture(base), '375x812', { ...PHONE, viewport: { width: 375, height: 812 } });

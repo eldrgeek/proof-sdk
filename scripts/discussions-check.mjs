@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, devices } from 'playwright';
+import { keepBottomChat } from './keep-bottom-chat.mjs';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const arg = key => { const i = process.argv.indexOf(key); return i > 0 ? process.argv[i + 1] : null; };
 const styles = arg('--style') ? [arg('--style')] : ['playmaker', 'proof'];
@@ -244,6 +245,7 @@ async function run(browser, server, style, width) {
   } finally { await a.context.close(); await b.context.close(); }
 }
 const browser = await chromium.launch({ headless: true });
+keepBottomChat(browser);
 try {
   // All desktop configurations pass before any phone configuration starts.
   for (const width of widths) for (const style of styles) {

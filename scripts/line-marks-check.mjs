@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, devices } from 'playwright';
+import { keepBottomChat } from './keep-bottom-chat.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const shotsArg = process.argv.indexOf('--shots');
@@ -302,6 +303,7 @@ async function phone(browser, base) {
 
 const { base, stop } = await startServer();
 const browser = await chromium.launch();
+keepBottomChat(browser);
 try {
   await desktop(browser, base);
   await phone(browser, base);
