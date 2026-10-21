@@ -12,9 +12,11 @@
     "dev": "vite",
     "build": "vite build && node scripts/finalize-web-build.mjs",
     "serve": "tsx server/index.ts",
-    "test": "npm run test:proof-sdk && npm run test:server-routes-share",
+    "test": "npm run test:proof-sdk && npm run test:server-routes-share && npm run test:projection-backfill && npm run test:clear-yjs-projection-version",
     "test:proof-sdk": "tsx src/tests/proof-sdk-agent-bridge-client.test.ts",
     "test:server-routes-share": "tsx src/tests/server-routes-and-share.test.ts",
+    "test:projection-backfill": "tsx src/tests/projection-backfill-preserves-quarantine.test.ts",
+    "test:clear-yjs-projection-version": "tsx src/tests/clear-yjs-state-projection-version.test.ts",
     "demo:agent": "npm --workspace proof-example run demo:agent"
   },
   "dependencies": {
