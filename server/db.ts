@@ -636,14 +636,34 @@ function backfillDocumentProjections(): void {
     updated_at: string;
   }>;
 
+  // Insert only rows that are missing. An upsert would rewrite health,
+  // health_reason, and updated_at on every startup and clear quarantines.
+  const insertMissing = d.prepare(`
+    INSERT INTO document_projections (
+      document_slug,
+      revision,
+      y_state_version,
+      markdown,
+      marks_json,
+      plain_text,
+      updated_at,
+      health,
+      health_reason
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'healthy', NULL)
+    ON CONFLICT(document_slug) DO NOTHING
+  `);
+
   const tx = d.transaction(() => {
     for (const row of rows) {
-      upsertDocumentProjectionRow(
+      const markdown = row.markdown ?? '';
+      insertMissing.run(
         row.slug,
-        row.markdown ?? '',
-        row.marks ?? '{}',
         typeof row.revision === 'number' ? row.revision : 1,
         typeof row.y_state_version === 'number' ? row.y_state_version : 0,
+        markdown,
+        row.marks ?? '{}',
+        normalizeProjectionPlainText(markdown),
         row.updated_at,
       );
     }
