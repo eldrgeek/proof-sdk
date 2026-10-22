@@ -289,15 +289,25 @@ async function run(browser, base, style, device) {
         view.dispatch(view.state.tr.setSelection(view.state.selection.constructor.create(view.state.doc, pos - 1)));
       }, TARGET_LINE);
       await page.keyboard.type(TYPED, { delay: 60 });
-      await page.waitForTimeout(1200);
+      // Publishing each keystroke crosses the marks/Yjs boundary. Under load, observe the
+      // proposal itself instead of assuming that boundary has settled after a fixed delay.
+      // Leave the writer running while polling so success still proves the contended case.
+      await page.waitForFunction(typed => window.proof.getAllMarks().some(m =>
+        m.kind === 'insert'
+        && (m.data?.status ?? 'pending') === 'pending'
+        && m.data?.content?.includes(typed)
+      ), TYPED, { timeout: 8_000 }).catch(() => {});
     } finally { await writer2.stop(); }
     const after = await documentState(page);
-    const proposals = await page.evaluate(() => window.proof.getAllMarks().filter(m => m.kind === 'insert' && (m.data?.status ?? 'pending') === 'pending'));
+    const proposals = await page.evaluate(() => window.proof.getAllMarks()
+      .filter(m => m.kind === 'insert' && (m.data?.status ?? 'pending') === 'pending')
+      .map(m => ({ id: m.id, content: m.data?.content ?? null, range: m.range ?? null })));
     return { original, after, proposals };
   })();
   await check(`${tag}: typing on the contended line proposes the words without writing the line twice`, async () => {
     assert.equal(gesture.after.pm[TARGET_LINE], gesture.original + TYPED);
-    assert.ok(gesture.proposals.some(m => m.data.content.includes(TYPED)), 'typed words have no insertion proposal');
+    assert.ok(gesture.proposals.some(m => m.content?.includes(TYPED)),
+      `typed words have no insertion proposal; pending inserts: ${JSON.stringify(gesture.proposals)}`);
   });
   await check(`${tag}: the gesture keeps the document and the Yjs fragment in step`, async () => {
     assert.equal(gesture.after.pm.length, startBlocks, `the document went to ${gesture.after.pm.length} blocks`);
