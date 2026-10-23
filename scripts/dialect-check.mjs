@@ -343,7 +343,15 @@ async function run(browser, style) {
       assert.equal(imp.import.created.suggestions, 17);
       assert.equal(imp.import.created.orphans, 1);
       const again = await exportText(base, imp.slug, typedOwner);
-      assert.equal(again.text, typedFile, diffHint(typedFile, again.text));
+      // Escapes are compared loosely: mdast-util-to-markdown 2.1.3 writes "sk\_live" as the
+      // equivalent "sk_live" (2.1.2 kept the escape), and installs float (package-lock.json is ignored).
+      const unescapeMd = t => t.replace(/\\([!-/:-@[-`{-~])/g, '$1');
+      assert.equal(unescapeMd(again.text), unescapeMd(typedFile), diffHint(typedFile, again.text));
+      // The export itself round-trips byte-identically, whichever escapes the serializer writes.
+      const imp2 = await fetch(`${base}/share/markdown`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': OPERATOR_KEY }, body: JSON.stringify({ markdown: again.text, format: 'proof-dialect' }) }).then(r => r.json());
+      assert.deepEqual(imp2.import?.warnings, []);
+      const third = await exportText(base, imp2.slug, { ...clientHeaders, 'x-share-token': imp2.ownerSecret });
+      assert.equal(third.text, again.text, diffHint(again.text, third.text));
     });
     const changedOnly = text => (text.match(/\[[^\]\n]*\]\{changed [^}]*\}|\{changed [^}]*orphan=1[^}]*\}/g) ?? []).join('\n');
     for (const [vtag, options] of [

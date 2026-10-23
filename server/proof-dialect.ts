@@ -69,6 +69,8 @@ import {
   blockLinesFromMdast,
   buildHandleTable,
   countOccurrences,
+  countOccurrencesTolerant,
+  escapeTolerantPattern,
   handleForActor,
   looksLikeCriticMarkup,
   parseCriticMarkup,
@@ -895,7 +897,7 @@ export async function applyImportedMarks(slug: string, input: {
   const bundleMeta = (parsed.frontMatter.proof?.bundles ?? {}) as Record<string, YamlValue>;
 
   /** Where a source offset sits: its editor line and the raw anchor to use against the stored text. */
-  const anchorFor = (start: number, end: number, allowBlank = false): { anchor: string; occurrence: number; lineIndex: number | null; visible: string } | null => {
+  const anchorFor = (start: number, end: number, allowBlank = false): { anchor: string; occurrence: number; tolerantOccurrence: number; lineIndex: number | null; visible: string } | null => {
     const raw = baseBody.slice(start, end);
     if (!raw.trim() && !(allowBlank && raw)) return null;
     const baseLine = lineAtOffset(baseStarts, start);
@@ -908,7 +910,9 @@ export async function applyImportedMarks(slug: string, input: {
     const lineStartInBase = baseBlock ? (baseStarts[baseBlock.startLine] ?? 0) : start;
     const within = baseBody.slice(lineStartInBase, start);
     const occurrence = countOccurrences(storedBefore, raw) + countOccurrences(within, raw);
-    return { anchor: raw, occurrence, lineIndex, visible: normalizeLineText(visibleFragment(raw)) };
+    // The same count when storing changed backslash escapes ("sk\_live" stored as "sk_live").
+    const tolerantOccurrence = countOccurrencesTolerant(storedBefore, raw) + countOccurrencesTolerant(within, raw);
+    return { anchor: raw, occurrence, tolerantOccurrence, lineIndex, visible: normalizeLineText(visibleFragment(raw)) };
   };
 
   const placeText = async (path: string, payload: Record<string, unknown>, at: ReturnType<typeof anchorFor>): Promise<{ status: number; body: Record<string, unknown> }> => {
@@ -1007,17 +1011,24 @@ export async function applyImportedMarks(slug: string, input: {
     if (!located) return { status: 409, body: { code: 'ANCHOR_NOT_FOUND' } };
     // The same occurrence of the text in the stored markdown.
     let from = -1;
+    let stored = located.anchor;
     for (let k = 0, i = storedBody.indexOf(located.anchor); i >= 0; k += 1, i = storedBody.indexOf(located.anchor, i + located.anchor.length)) {
       if (k === located.occurrence) { from = i; break; }
     }
+    if (from < 0) {
+      // Storing re-serialized the text and changed its escapes (mdast-util-to-markdown 2.1.3
+      // writes "sk\_live" as "sk_live"): find the same occurrence ignoring backslash escapes.
+      const match = [...storedBody.matchAll(escapeTolerantPattern(located.anchor))][located.tolerantOccurrence];
+      if (match?.index !== undefined) { from = match.index; stored = match[0]; }
+    }
     if (from < 0) return { status: 409, body: { code: 'ANCHOR_NOT_FOUND' } };
     const prefix = docNow.markdown.length - storedBody.length;
-    const meta = buildStoredSelectionMetadata(docNow.markdown, { sourceStart: prefix + from, sourceEnd: prefix + from + located.anchor.length }, located.anchor);
+    const meta = buildStoredSelectionMetadata(docNow.markdown, { sourceStart: prefix + from, sourceEnd: prefix + from + stored.length }, stored);
     // A whole new paragraph is a block insertion (rejecting it removes the block).
     const lineStartAt = baseStarts[lineAtOffset(baseStarts, s0)] ?? 0;
     const lineEndAt = (baseStarts[lineAtOffset(baseStarts, e0) + 1] ?? baseBody.length + 1) - 1;
     const block = s0 === lineStartAt && e0 === lineEndAt && (s0 === 0 || baseBody.slice(Math.max(0, s0 - 2), s0) === '\n\n');
-    const quote = meta.quote || located.anchor;
+    const quote = meta.quote || stored;
     const id = generateMarkId();
     storedPatches.push({
       id,
