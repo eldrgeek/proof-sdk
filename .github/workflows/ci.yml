@@ -64,6 +64,10 @@ jobs:
       - name: Click edit check
         run: node scripts/click-edit-check.mjs
 
+      - name: Dialect import and export check
+        # Guards ac-8sj: fails 6 of 18 when the importer cannot find anchors whose escapes changed.
+        run: node scripts/dialect-check.mjs
+
       - name: Upload preview screenshots on failure
         if: failure()
         uses: actions/upload-artifact@v4
