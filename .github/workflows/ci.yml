@@ -9,6 +9,9 @@ on:
       - deploy/vps
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   unit:
     runs-on: ubuntu-latest
