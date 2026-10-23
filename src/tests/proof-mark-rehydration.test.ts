@@ -194,8 +194,10 @@ async function run(): Promise<void> {
     });
     assertEqual(escapedRejectResult.status, 200, `Expected escaped-quote reject to succeed, got ${escapedRejectResult.status}`);
     const escapedRejectedDoc = db.getDocumentBySlug(escapedQuoteSlug);
+    // mdast-util-to-markdown 2.1.3 writes intraword "\_" as the equivalent "_" (2.1.2 kept the
+    // escape), so either form is the preserved text; installs float (package-lock.json is ignored).
     assert(
-      (escapedRejectedDoc?.markdown ?? '').includes('REJECT\\_REPRO\\_QUOTE\\_ESCAPED'),
+      /REJECT\\?_REPRO\\?_QUOTE\\?_ESCAPED/.test(escapedRejectedDoc?.markdown ?? ''),
       'Expected reject to preserve escaped markdown text for quotes with underscores',
     );
     assert(!escapedRejectedDoc?.markdown.includes('data-proof="suggestion"'), 'Expected escaped-quote reject to remove suggestion wrappers');

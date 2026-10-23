@@ -1257,6 +1257,30 @@ export function countOccurrences(hay: string, needle: string): number {
   return count;
 }
 
+/**
+ * A global pattern for `markdown` that ignores backslash escapes before ASCII punctuation, which a
+ * markdown serializer may add or drop without changing the text: mdast-util-to-markdown 2.1.3 writes
+ * "sk\_live" as the equivalent "sk_live" (2.1.2 kept the escape). Added 2026-09-27 (ac-fbw gate).
+ */
+export function escapeTolerantPattern(markdown: string): RegExp {
+  const punct = /[!-/:-@[-`{-~]/;
+  const lit = (c: string) => c.replace(/[.*+?^${}()|[\]\\/-]/g, '\\$&');
+  let source = '';
+  for (let i = 0; i < markdown.length; i += 1) {
+    const c = markdown[i];
+    if (c === '\\' && i + 1 < markdown.length && punct.test(markdown[i + 1])) { source += `\\\\?${lit(markdown[i + 1])}`; i += 1; }
+    else if (punct.test(c)) source += `\\\\?${lit(c)}`;
+    else source += lit(c);
+  }
+  return new RegExp(source, 'g');
+}
+
+/** Counts non-overlapping occurrences of `needle` in `hay`, ignoring backslash escapes (see above). */
+export function countOccurrencesTolerant(hay: string, needle: string): number {
+  if (!needle) return 0;
+  return [...hay.matchAll(escapeTolerantPattern(needle))].length;
+}
+
 // ============================================================================
 // CriticMarkup
 // ============================================================================
