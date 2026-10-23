@@ -379,7 +379,7 @@ Then [add a webhook endpoint](https://example.test/webhooks) for the site.
   const typedSlug = 'dialect-typed';
   // Backslash escapes are compared loosely: mdast-util-to-markdown 2.1.3 writes "sk\_live" as the
   // equivalent "sk_live" (2.1.2 kept the escape), and installs float (package-lock.json is ignored).
-  const unescapeMd = (t: string) => t.replace(/\\([!-/:-@[-`{-~])/g, '$1');
+  const unescapeMd = (t: string) => t.replace(/\\_/g, '_'); // only the underscore escape
   const typedMarks: Record<string, Record<string, unknown>> = {};
   let typedN = 0;
   const typedAt = (sec: number) => new Date(Date.UTC(2026, 8, 18, 2, 0, sec)).toISOString();
@@ -451,6 +451,34 @@ Then [add a webhook endpoint](https://example.test/webhooks) for the site.
     ok(await call(`/api/agent/${r.body.slug}/marks/reject`, 'POST', { markId: done, by: MIKE }, H2), 'reject the insertion in italics');
     const after = await call(`/api/agent/${r.body.slug}/state`, 'GET', undefined, H2);
     assert.ok(after.body.markdown.includes('*Everything that needs you, in one place. An AI records your words and moves the ask to. Every action has a link to the exact page.*'), after.body.markdown.slice(0, 300));
+  });
+
+  await test('mixed escapes: an insertion lands on its own occurrence when the text holds both "sk\\_one" and "sk_one" (ac-8sj)', async () => {
+    // A serializer that drops the escape (mdast-util-to-markdown 2.1.3+) stores both as "sk_one";
+    // an exact search for " sk_one" then finds the first one, which is not the inserted one.
+    const file = `---
+proof:
+  version: 1
+  title: Mixed escapes
+  handles:
+    mike: "human:Mike"
+---
+
+# Mixed escapes
+
+First sk\\_one, then[ sk_one]{changed @mike at=2026-09-18T02:00:40.000Z}.
+`;
+    const r = await call('/api/share/markdown', 'POST', { markdown: file, format: 'proof-dialect' }, OPERATOR);
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.body.import.created.suggestions, 1, JSON.stringify(r.body.import));
+    assert.deepEqual(r.body.import.warnings, []);
+    const H2 = { 'x-share-token': r.body.ownerSecret };
+    const st = await call(`/api/agent/${r.body.slug}/state`, 'GET', undefined, H2);
+    const marks = st.body.marks as Record<string, { kind: string }>;
+    const ins = Object.entries(marks).find(([, m]) => m.kind === 'insert')![0];
+    ok(await call(`/api/agent/${r.body.slug}/marks/reject`, 'POST', { markId: ins, by: MIKE }, H2), 'reject the insertion');
+    const after = await call(`/api/agent/${r.body.slug}/state`, 'GET', undefined, H2);
+    assert.ok(unescapeMd(after.body.markdown).includes('First sk_one, then.'), `rejecting removed the wrong "sk_one":\n${after.body.markdown}`);
   });
 
   console.log(`\n${passed} proof-dialect server tests passed`);

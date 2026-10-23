@@ -1010,17 +1010,14 @@ export async function applyImportedMarks(slug: string, input: {
     const located = anchorFor(s0, e0, true);
     if (!located) return { status: 409, body: { code: 'ANCHOR_NOT_FOUND' } };
     // The same occurrence of the text in the stored markdown.
+    // Storing re-serializes the text and may change its escapes (mdast-util-to-markdown 2.1.3
+    // writes "sk\_live" as "sk_live"), so both the count and the search ignore backslash escapes.
+    // An exact search first would be wrong when the text holds both forms ("x\_y then x_y"):
+    // the exact count and the stored text disagree, and the mark lands on the wrong occurrence.
     let from = -1;
     let stored = located.anchor;
-    for (let k = 0, i = storedBody.indexOf(located.anchor); i >= 0; k += 1, i = storedBody.indexOf(located.anchor, i + located.anchor.length)) {
-      if (k === located.occurrence) { from = i; break; }
-    }
-    if (from < 0) {
-      // Storing re-serialized the text and changed its escapes (mdast-util-to-markdown 2.1.3
-      // writes "sk\_live" as "sk_live"): find the same occurrence ignoring backslash escapes.
-      const match = [...storedBody.matchAll(escapeTolerantPattern(located.anchor))][located.tolerantOccurrence];
-      if (match?.index !== undefined) { from = match.index; stored = match[0]; }
-    }
+    const match = [...storedBody.matchAll(escapeTolerantPattern(located.anchor))][located.tolerantOccurrence];
+    if (match?.index !== undefined) { from = match.index; stored = match[0]; }
     if (from < 0) return { status: 409, body: { code: 'ANCHOR_NOT_FOUND' } };
     const prefix = docNow.markdown.length - storedBody.length;
     const meta = buildStoredSelectionMetadata(docNow.markdown, { sourceStart: prefix + from, sourceEnd: prefix + from + stored.length }, stored);
