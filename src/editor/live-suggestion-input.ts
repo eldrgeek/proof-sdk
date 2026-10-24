@@ -4,6 +4,7 @@
 import type { EditorView } from '@milkdown/kit/prose/view';
 import type { StoredMark } from '../formats/marks';
 import { EDIT_SESSION_POLICY } from '../shared/edit-session';
+import { renderSuggestionLinks } from './suggestion-links';
 
 export const liveSuggestionInputEvent = 'proof:live-suggestion-input';
 export interface LiveSuggestionInput {
@@ -107,6 +108,8 @@ export function syncLiveSuggestionInputs(view: EditorView, metadata: Record<stri
     if (span.dataset.liveContent === content) continue;
     const offset = offsetIn(span);
     span.dataset.liveContent = content;
+    const linksRow = span.parentElement?.querySelector<HTMLElement>('.proof-suggestion-links');
+    if (linksRow) renderSuggestionLinks(linksRow, content);
     if (span.textContent !== content) {
       span.textContent = content;
       if (offset !== null) focusLiveSuggestion(view, span.dataset.markId!, offset);

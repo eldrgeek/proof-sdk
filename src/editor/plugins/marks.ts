@@ -1,5 +1,6 @@
 import { decideMove, moveSourceRange } from '../../shared/moves';
 import { makeLiveSuggestionInput, syncLiveSuggestionInputs } from '../live-suggestion-input';
+import { createSuggestionLinksRow } from '../suggestion-links';
 /**
  * Unified Marks Plugin for ProseMirror/Milkdown
  *
@@ -3796,6 +3797,8 @@ export function createDecorations(
               const widget = document.createElement('span');
               widget.contentEditable = 'false';
               widget.append(span);
+              // Markdown links in the proposed words are also shown as real, clickable links.
+              widget.append(createSuggestionLinksRow(suggestedInsertContent ?? '', mark.id));
               return widget;
             },
             { side: 1, key: `${mark.kind}-insert-${mark.id}`, stopEvent: () => true, ignoreSelection: true }
