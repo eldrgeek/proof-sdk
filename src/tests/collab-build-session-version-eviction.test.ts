@@ -1,3 +1,4 @@
+import { CURRENT_COLLAB_CLIENT } from '../shared/collab-version';
 import { unlinkSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -60,7 +61,7 @@ async function run(): Promise<void> {
     const updated = db.updateDocument(slug, markdownB);
     assert(updated, 'Expected external canonical update to persist');
 
-    const session = collab.buildCollabSession(slug, 'editor', { wsUrlBase: 'ws://localhost:4000/ws' });
+    const session = collab.buildCollabSession(slug, 'editor', { client: CURRENT_COLLAB_CLIENT, wsUrlBase: 'ws://localhost:4000/ws' });
     assert(Boolean(session), 'Expected buildCollabSession to succeed');
     assert(!collab.__unsafeGetLoadedDocForTests(slug), 'Expected buildCollabSession to evict stale loaded doc after persisted version bump');
 

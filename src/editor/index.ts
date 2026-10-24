@@ -1,3 +1,12 @@
+import { MovesUI } from '../ui/moves';
+import { createMove } from '../shared/moves';
+import { applyMoveProposal } from './plugins/marks';
+import { startAgentJoinNotices } from '../ui/agent-join';
+import type { Transaction } from '@milkdown/kit/prose/state';
+import { commitLiveTextInput, liveSuggestionInputEvent, focusLiveSuggestion, type LiveSuggestionInput } from './live-suggestion-input';
+import { readPointerSelectionSoon } from './pointer-selection';
+import { EDIT_SESSION_POLICY } from '../shared/edit-session';
+import { markApiView, isOwnHumanMarkChange, withHumanReviewWrite } from './review-mark-origin';
 /**
  * Proof Editor
  *
@@ -9,6 +18,35 @@
  * - Inline spans are derived from marks when saving/displaying
  */
 
+import { PlayMakerReview, type ReviewAction } from '../ui/playmaker-review';
+import { LineMarksUI } from '../ui/line-marks';
+import { ReadingWalkUI } from '../ui/reading-walk';
+import { ChatUI } from '../ui/chat';
+import { FoldingUI } from '../ui/folding';
+import { UndoUI } from '../ui/undo';
+import { MenuBar, buildMenuItems, type MenuItemSpec, type MenuSpec } from '../ui/menu-bar';
+import { OpenViewUI } from '../ui/open-view';
+import { showShareDialog } from '../ui/share-dialog';
+import { FindBar, showAboutDialog, showKeysDialog, showMarksLegend, showOpenDialog, showWhoDialog } from '../ui/chrome-dialogs';
+import { SCROLL_CAMERA_POLICY, cameraScroll, deadZone } from '../shared/scroll-camera';
+import { MENU_BAR_POLICY, TOOLBAR_POLICY, type ShareTab } from '../shared/layout-chrome';
+import { ClarifyUI } from '../ui/clarify';
+import { EditGestureUI, draftViewPlugin } from '../ui/edit-gesture';
+import { lineMarksViewPlugin } from './plugins/line-marks-view';
+import { foldViewPlugin, FOLD_USER_EDIT } from './plugins/fold-view';
+import { askViewPlugin } from './plugins/ask-view';
+import { doViewPlugin } from './plugins/do-view';
+import { proofExtrasViewPlugin } from './plugins/proof-extras-view';
+import { tierViewPlugin } from './plugins/tier-view';
+import { getReviewStyle, setReviewStyle, REVIEW_STYLE_POLICY } from './review-style';
+import { isEditing, isWriting, onWritingChange, setDirectEditing } from './editing-guard';
+import { ReviewDecisionHistory, keepUndoGroupOpen, reconnectNativeUndoManager } from './review-decision-history';
+import { TypedDiscussionController, type TypedDiscussionRun } from './typed-discussion';
+import { typedDiscussionId, typedDiscussionInsertId, typedItemAt, TYPED_DISCUSSION_POLICY } from '../shared/typed-discussion';
+import { actorKey } from '../shared/line-marks';
+
+import { getAgentPresenceDisplay } from '../shared/agent-presence';
+
 import {
   Editor,
   rootCtx,
@@ -19,8 +57,9 @@ import {
   remarkStringifyOptionsCtx,
   prosePluginsCtx,
 } from '@milkdown/core';
-import { commonmark } from '@milkdown/preset-commonmark';
-import { gfm } from '@milkdown/preset-gfm';
+import { commonmark, hardbreakClearMarkPlugin } from '@milkdown/preset-commonmark';
+import { hardbreakClearMarksPlugin } from './plugins/hardbreak-clear-marks';
+import { gfm, remarkGFMPlugin } from '@milkdown/preset-gfm';
 import { history } from '@milkdown/plugin-history';
 import { collab, collabServiceCtx } from '@milkdown/plugin-collab';
 import { listener, listenerCtx } from '@milkdown/plugin-listener';
@@ -31,10 +70,13 @@ import {
   yCursorPlugin,
   yCursorPluginKey,
   ySyncPluginKey,
+  yUndoPluginKey,
   absolutePositionToRelativePosition,
-  yXmlFragmentToProseMirrorRootNode,
 } from 'y-prosemirror';
 import { applyAwarenessUpdate, removeAwarenessStates } from 'y-protocols/awareness';
+import { installLocalWriteResyncPolicy } from './local-write-resync';
+import { installRemoteChangeScrollPolicy } from './remote-change-scroll';
+import { anchorCaretAround } from './caret-anchor';
 import * as encoding from 'lib0/encoding';
 
 import { proofMarkPlugins } from './schema/proof-marks';
@@ -60,10 +102,12 @@ import {
   toggleSuggestions,
   isSuggestionsEnabled,
   wrapTransactionForSuggestions,
+  clickEditDecisionsMeta,
 } from './plugins/suggestions';
 import {
   markPopoverPlugin,
   openCommentComposer,
+  openMarkPopover,
   captureCommentPopoverDraft,
   restoreCommentPopoverDraft,
   type CommentPopoverDraftSnapshot,
@@ -90,6 +134,8 @@ import { TextSelection } from '@milkdown/kit/prose/state';
 import {
   marksPlugins,
   marksPluginKey,
+  proofMarkActionMeta,
+  prepareSuggestionBatch,
   getMarks,
   getActiveMarkId,
   getMarkMetadata,
@@ -124,6 +170,7 @@ import {
   getAuthorshipStats,
   coalesceMarks,
   updateMarksAfterEdit,
+  clearResolvedMarkTombstones,
   type Mark,
   type MarkKind,
   type MarkRange,
@@ -136,6 +183,7 @@ import {
   findMark,
   resolveMarks,
 } from './plugins/marks';
+import { evaluateShareEditHydrationGate } from './share-collab-hydration-equivalence';
 import {
   executeBatch as executeBatchImpl,
   type BatchOperation,
@@ -144,11 +192,30 @@ import {
 import { syncAgentSessions } from '../analytics/agent-sessions';
 import { initThemePicker, getThemePicker } from '../ui/theme-picker';
 import { fileClient } from '../bridge/file-client';
-import { shareClient, type CollabSessionInfo, type SharePendingEvent } from '../bridge/share-client';
+import {
+  getShareSuggestionResolutionTransport,
+  runShareSuggestionRestFallback,
+  shareClient,
+  type CollabSessionInfo,
+  type ShareOpenContext,
+  type SharePendingEvent,
+  type ShareSuggestionResolutionTransport,
+} from '../bridge/share-client';
 import { collabClient, type CollabSyncStatus } from '../bridge/collab-client';
 import { shouldDeferShareMarksRefresh } from './share-marks-refresh';
+import {
+  reconcileShareMarkMutationBatch,
+  recoverShareMarksAfterMutationFailure,
+  type ShareSuggestionFinalStatus,
+} from './share-mark-mutation';
+import { reconcileAuthoritativeShareDocument } from './share-document-recovery';
+import {
+  createShareSuggestionReviewUpdateScheduler,
+  shouldUpdateShareSuggestionReviewDisplay,
+} from './share-suggestion-review';
 import { collabCursorBuilder, collabSelectionBuilder } from './plugins/collab-cursors';
 import { isAgentScopedId } from '../shared/agent-identity';
+import { documentNoun, pageTitle, productIdentity, productName } from '../shared/product-identity';
 import {
   assignDistinctAgentFamilies,
   createAgentFaceElement,
@@ -156,7 +223,7 @@ import {
   getAgentFacePalette,
   type AgentFamily,
 } from '../ui/agent-identity-icon';
-import { getViewerName, promptForName } from '../ui/name-prompt';
+import { getViewerName, guestViewerLabel, hasStoredViewerName, promptForName } from '../ui/name-prompt';
 import {
   initAgentIntegration,
   handleMarksChange as agentHandleMarksChange,
@@ -179,6 +246,8 @@ import {
 import { keybindingsPlugin, setShowAgentInputCallback, type AgentInputContext } from './plugins/keybindings';
 import { tableKeyboardPlugin } from './plugins/table-keyboard';
 import { showAgentInputDialog } from '../ui/agent-input-dialog';
+import type { InviteResult, TeamState } from '../ui/invite-person-dialog';
+import { ShareEventPoller } from '../bridge/share-event-poller';
 import { initContextMenu } from '../ui/context-menu';
 import {
   initAgentNavigation,
@@ -220,6 +289,10 @@ import {
 import { WebHaptics } from 'web-haptics';
 
 import '../agent/external-agent-bridge';
+
+// Remote Yjs changes never scroll the view (caret stability, 2026-09-19).
+installRemoteChangeScrollPolicy();
+installLocalWriteResyncPolicy();
 
 const LEGACY_REST_FALLBACK = false;
 
@@ -1001,17 +1074,62 @@ export interface ProofEditor {
   isReviewLocked(): boolean;
 }
 
+
+/**
+ * Top bar spacing (Mike, 2026-09-21: "The bar at the top has excess whitespace above and below the
+ * buttons."). Touch targets stay at least 44 px on phones and touch screens.
+ */
+const TOP_BAR_LAYOUT = {
+  /** Desktop: the bar's distance from the top edge (was 18). */
+  desktopTopPx: 8,
+  /** Desktop: padding above and below the buttons (was 16). */
+  desktopPadY: 4,
+  /** Desktop with a mouse: button height (was 48). */
+  desktopTargetPx: 36,
+  /** Phone: the bar's height (44 px targets + 2 px above and below; was 52). */
+  phoneBarPx: 48,
+  /** Space between the bar and the first line of text (was 32; phones also added the desktop's 18 by mistake). */
+  textGapDesktopPx: 16,
+  textGapPhonePx: 12,
+} as const;
+
 class ProofEditorImpl implements ProofEditor {
   editor: Editor | null = null;
   heatMapMode: 'hidden' | 'subtle' | 'background' | 'full' = 'background';
   private isCliMode: boolean = false;
   private isShareMode: boolean = false;
+  private shareBannerSuggestBtnEl: HTMLButtonElement | null = null;
+  private suggestToggleWritingUnsub: (() => void) | null = null;
+  private shareBannerSuggestionReviewBtnEl: HTMLButtonElement | null = null;
+  private shareSuggestionReviewSignature: string = '';
+  private readonly shareSuggestionReviewUpdateScheduler = createShareSuggestionReviewUpdateScheduler(
+    (run: () => void) => {
+      if (typeof window.requestAnimationFrame === 'function') {
+        return window.requestAnimationFrame(() => run());
+      }
+      return window.setTimeout(run, 16);
+    },
+    (frameId: number) => {
+      if (typeof window.cancelAnimationFrame === 'function') {
+        window.cancelAnimationFrame(frameId);
+        return;
+      }
+      window.clearTimeout(frameId);
+    },
+  );
+  private pendingShareSuggestionReviewView: EditorView | null = null;
+  private suggestDefaultApplied = false;
   private shareViewerName: string | null = null;
+  private shareViewerChip: HTMLButtonElement | null = null;
   private isReadOnly: boolean = false;
   private shareAllowLocalEdits: boolean = true;
   private shareContentFilterEnabled: boolean = false;
   private readOnlyBanner: HTMLElement | null = null;
   private reviewLockCount: number = 0;
+  /** Whether this connection's marks were re-applied when it became connected and in sync. */
+  private collabMarksAppliedOnSync = false;
+  /** The editable value last given to each view (updateEditableState skips an unchanged one). */
+  private readonly appliedEditable = new WeakMap<EditorView, boolean>();
   private reviewLockReason: string | null = null;
   private reviewLockBanner: HTMLElement | null = null;
   private reviewInFlight: Promise<unknown> | null = null;
@@ -1035,7 +1153,6 @@ class ProofEditorImpl implements ProofEditor {
   // During session refresh we defer rebinding Milkdown collab until the new provider is synced.
   // This prevents transient empty-doc renders while reconnecting to a fresh Yjs room.
   private pendingCollabRebindOnSync: boolean = false;
-  private pendingCollabRebindResetDoc: boolean = false;
   private collabHydrationAttemptSeq: number = 0;
   private collabHydrationRunning: boolean = false;
   private hasCompletedInitialCollabHydration: boolean = false;
@@ -1044,6 +1161,8 @@ class ProofEditorImpl implements ProofEditor {
   private pendingProjectionPublish: boolean = false;
   private initialMarksSynced: boolean = false;
   private lastReceivedServerMarks: Record<string, StoredMark> = {};
+  private shareRejectedSuggestionIdsBlockedFromAcceptAll = new Set<string>();
+  private liveCollabSuggestionResolutionDepth: number = 0;
   private collabTemplateSeedClaimId: string | null = null;
   private collabTemplateClaimCheckTimer: ReturnType<typeof setTimeout> | null = null;
   private collabTemplateRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1059,11 +1178,43 @@ class ProofEditorImpl implements ProofEditor {
   private refreshBanner: HTMLElement | null = null;
   private toastElement: HTMLElement | null = null;
   private shareMenuCleanup: (() => void) | null = null;
+  /** Invite person: whether this viewer is an Owner who may invite people (null: not checked yet). */
+  private teamCanManage: boolean | null = null;
+  private somaSessionListener: (() => void) | null = null;
   private presenceMenuCleanup: (() => void) | null = null;
   private agentMenuCleanup: (() => void) | null = null;
+  private playmakerReview: PlayMakerReview | null = null;
+  private lineMarks: LineMarksUI | null = null;
+  private readingWalk: ReadingWalkUI | null = null;
+  /** Proof Documents Step B7: chat in the right rail (desktop) or a bottom sheet (phone). */
+  private chat: ChatUI | null = null;
+  private chatUnread = 0;
+  private folding: FoldingUI | null = null;
+  /** Accord round 2 stage C: the Open / Accord toggle, the honest header and the zero moment. */
+  private openViewUI: OpenViewUI | null = null;
+  /** The one Undo (Mike, 2026-09-19): the rail button and Cmd/Ctrl+Z. */
+  private undoUI: UndoUI | null = null;
+  /** Accord layout stage 2: the menu bar, the toolbar's Undo slot, Edit › Find. */
+  private menuBar: MenuBar | null = null;
+  private findBar: FindBar | null = null;
+  private undoPlacementQuery: MediaQueryList | null = null;
+  /** Item 3 (Mike, 2026-09-19): typing "?" after a sentence asks the AIs to clarify it. */
+  private clarifyUI: ClarifyUI | null = null;
+  /** Accord round 2 stage A: leaving an edit posts what was typed (src/ui/edit-gesture.ts). */
+  private editGesture: EditGestureUI | null = null;
+  private movesUI: MovesUI | null = null;
+  private reviewDecisionHistory: ReviewDecisionHistory | null = null;
+  private typedDiscussions: TypedDiscussionController | null = null;
+  private readonly typedDiscussionHistory = new Map<string, { checkpoint: ReturnType<ReviewDecisionHistory['checkpoint']>; entryId?: string }>();
+  private readonly returningTypedThreads = new Set<string>();
+  private reviewDecisionIds = new Set<string>();
+  private capturingReviewDecision = false;
+  private restoringReviewDecision = false;
+  private suggestionReviewMenuCleanup: (() => void) | null = null;
   private shareWelcomeToast: HTMLElement | null = null;
   private shareDocTitle: string = 'Untitled';
   private shareBannerTitleEl: HTMLElement | null = null;
+  private shareBannerResizeObserver: ResizeObserver | null = null;
   private shareBannerAvatarsEl: HTMLElement | null = null;
   private shareBannerAgentSlotEl: HTMLElement | null = null;
   private shareBannerSyncDotEl: HTMLElement | null = null;
@@ -1074,8 +1225,7 @@ class ProofEditorImpl implements ProofEditor {
   private shareStatusTextVisibleUntilMs: number = 0;
   private shareStatusHideTimer: ReturnType<typeof setTimeout> | null = null;
   private shareWsUnsubscribe: (() => void) | null = null;
-  private shareEventPollTimer: ReturnType<typeof setTimeout> | null = null;
-  private shareEventPollInFlight: boolean = false;
+  private shareEventPoller: ShareEventPoller | null = null;
   private shareEventCursor: number = 0;
   private shareLastForcedCollabEventId: number = 0;
   private shareDocumentUpdatedTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1093,6 +1243,7 @@ class ProofEditorImpl implements ProofEditor {
     color: string;
     avatar?: string;
     at: string;
+    expiresAt?: string;
   }>();
   private shareAgentPresenceExpiryTimer: ReturnType<typeof setTimeout> | null = null;
   private shareAgentPresenceCleanup: (() => void) | null = null;
@@ -1121,7 +1272,6 @@ class ProofEditorImpl implements ProofEditor {
   private readonly shareDocumentUpdatedDebounceMs: number = 600;
   private readonly commentPopoverDraftRestoreDelayMs: number = 120;
   private readonly commentPopoverDraftRestoreMaxAttempts: number = 10;
-  private readonly remoteCursorStabilityWindowMs: number = 500;
   // Content/reporting state (used by agent integration + telemetry)
   private initState: 'idle' | 'initializing' | 'ready' = 'idle';
   private revision: number = 0;
@@ -1174,7 +1324,10 @@ class ProofEditorImpl implements ProofEditor {
         ctx.set(defaultValueCtx, '');
       })
       .config(nord)
-      .use(commonmark)
+      // Milkdown's own hard-break plugin appends an empty transaction after every mark change,
+      // which made server mark updates into invisible Undo steps; ours appends only real changes.
+      .use(commonmark.filter(plugin => plugin !== hardbreakClearMarkPlugin))
+      .use(hardbreakClearMarksPlugin)
       .use(gfm)
       // Frontmatter must be registered after commonmark so remark-frontmatter
       // claims `---` before commonmark parses it as a thematic break.
@@ -1220,10 +1373,29 @@ class ProofEditorImpl implements ProofEditor {
       .use(keybindingsPlugin)
       // Allow Backspace to delete empty table rows
       .use(tableKeyboardPlugin)
+      // Proof Documents Step 1: line marks overlay (no decorations, no document changes)
+      .use(lineMarksViewPlugin)
+      .use(draftViewPlugin)
+      // Proof Documents Step B2: folded sections (view-only node decorations)
+      .use(foldViewPlugin)
+      // Proof Documents Step B3: {ask} tags and answer controls (view-only widgets)
+      .use(askViewPlugin)
+      // {do} action lines: Do tags and action controls (view-only widgets; Run is disabled)
+      .use(doViewPlugin)
+      // Proof Documents Step B4f: alternatives stacks and term links (view-only decorations)
+      .use(proofExtrasViewPlugin)
+      // Line tiers: context lines quieter, "Show only decisions" folds them (view-only decorations)
+      .use(tierViewPlugin)
+      // Closed Issues fold for the person who closed them (view-only decorations)
       .use(marksSyncPlugin((actionMarks, view, actionMetadata) => {
         this.handleMarksChange(actionMarks, view, actionMetadata);
       }))
       .config((ctx) => {
+        // remark-gfm otherwise measures serialized Proof <span> wrappers when
+        // aligning table columns, leaving large invisible padding after stripping.
+        ctx.set(remarkGFMPlugin.options.key, {
+          stringLength: (value: string) => stripProofSpanTags(value).length,
+        });
         // Note: remarkProofMarks is now registered via .use(remarkProofMarksPlugin)
         ctx.update(remarkStringifyOptionsCtx, (prev) => ({
           ...prev,
@@ -1365,34 +1537,24 @@ class ProofEditorImpl implements ProofEditor {
       const context = contextResponse && 'doc' in contextResponse
         ? contextResponse
         : null;
-      const wantsNamePrompt = options?.promptForName ?? true;
-      const canActInDocument = Boolean(context?.capabilities?.canComment || context?.capabilities?.canEdit);
       const existingViewerName = getViewerName();
-      this.shareViewerName = existingViewerName ?? this.shareViewerName ?? this.deriveDefaultShareViewerName();
-      setCurrentActorValue(`human:${this.shareViewerName || 'Anonymous'}`);
-      shareClient.setViewerName(this.shareViewerName || 'Anonymous');
-      collabClient.setLocalUser(
-        { name: this.shareViewerName || 'Anonymous' },
-        shareClient.getSlug() ?? undefined
-      );
-      if (wantsNamePrompt && canActInDocument && !existingViewerName) {
-        void promptForName()
-          .then((name) => {
-            const resolvedName = typeof name === 'string' && name.trim().length > 0
-              ? name.trim()
-              : this.deriveDefaultShareViewerName();
-            this.shareViewerName = resolvedName;
-            setCurrentActorValue(`human:${resolvedName}`);
-            shareClient.setViewerName(resolvedName);
-            collabClient.setLocalUser(
-              { name: resolvedName },
-              shareClient.getSlug() ?? undefined
-            );
-          })
-          .catch((error) => {
-            console.warn('[share] name prompt failed', error);
-          });
+      this.shareViewerName = existingViewerName ?? this.shareViewerName ?? guestViewerLabel();
+      if (existingViewerName) {
+        setCurrentActorValue(`human:${existingViewerName}`);
+        shareClient.setViewerName(existingViewerName);
+        collabClient.setLocalUser(
+          { name: existingViewerName },
+          shareClient.getSlug() ?? undefined
+        );
+      } else {
+        setCurrentActorValue('guest:Guest');
+        shareClient.setViewerName(guestViewerLabel());
+        collabClient.setLocalUser(
+          { name: guestViewerLabel() },
+          shareClient.getSlug() ?? undefined
+        );
       }
+      this.updateShareViewerChip();
 
       const doc = context?.doc ?? await shareClient.fetchDocument();
       if (!doc) {
@@ -1407,7 +1569,7 @@ class ProofEditorImpl implements ProofEditor {
       }
 
       // Set title
-      document.title = doc.title ? `${doc.title} - Proof` : 'Shared Document - Proof';
+      document.title = pageTitle(typeof doc.title === 'string' && doc.title.trim() ? doc.title : 'Shared Document', ' - ');
       this.shareDocTitle = typeof doc.title === 'string' && doc.title.trim().length > 0
         ? doc.title.trim()
         : 'Untitled';
@@ -1467,34 +1629,19 @@ class ProofEditorImpl implements ProofEditor {
             ? (marks as Record<string, StoredMark>)
             : {};
           // Hocuspocus can emit a transient empty marks payload before initial sync
-          // and occasionally while local updates are still in flight. If we already
-          // have server marks, avoid clobbering them with that empty map.
+          // or during reconnect. Once synced, an empty map is authoritative even
+          // while content updates are still in flight: it can be a remote resolution.
           if (
             Object.keys(incomingMarks).length === 0
             && Object.keys(this.lastReceivedServerMarks).length > 0
-            && (
-              !this.collabIsSynced
-              || this.collabUnsyncedChanges > 0
-            )
+            && !this.collabIsSynced
           ) {
             return;
           }
 
-          let mergedIncomingMarks = mergePendingServerMarks(this.lastReceivedServerMarks, incomingMarks);
-          if (this.editor) {
-            try {
-              this.editor.action((ctx) => {
-                const view = ctx.get(editorViewCtx);
-                mergedIncomingMarks = mergePendingServerMarks(getMarkMetadata(view.state), incomingMarks);
-              });
-            } catch (error) {
-              console.warn('[collab.onMarks] Failed to merge incoming marks with local state:', error);
-            }
-          }
-
-          this.lastReceivedServerMarks = { ...mergedIncomingMarks };
+          this.lastReceivedServerMarks = { ...incomingMarks };
           this.initialMarksSynced = true;
-          if (Object.keys(mergedIncomingMarks).length > 0 && !this.isEditorDocStructurallyEmpty()) {
+          if (!this.isEditorDocStructurallyEmpty()) {
             this.applyLatestCollabMarksToEditor();
           }
         });
@@ -1505,31 +1652,34 @@ class ProofEditorImpl implements ProofEditor {
           this.updateShareBannerPresenceDisplay();
         });
         collabClient.onSyncStatus((status) => {
+          if (!(status.connectionStatus === 'connected' && status.isSynced)) this.collabMarksAppliedOnSync = false;
           this.updateCollabHealthWindow(status);
           this.collabConnectionStatus = status.connectionStatus;
           this.collabIsSynced = status.isSynced;
           this.collabUnsyncedChanges = status.unsyncedChanges;
           this.collabPendingLocalUpdates = status.pendingLocalUpdates;
           this.updateShareEditGate();
+          if (collabClient.terminalCloseReason === 'reload-required') this.showCollabReloadRequired();
           if (status.connectionStatus === 'disconnected' && collabClient.terminalCloseReason === 'permission-denied') {
             void this.refreshCollabSessionAndReconnect(false);
           }
           if (status.connectionStatus === 'connected' && status.isSynced) {
             if (this.pendingCollabRebindOnSync) {
-              const shouldResetDoc = this.pendingCollabRebindResetDoc;
               this.pendingCollabRebindOnSync = false;
-              this.pendingCollabRebindResetDoc = false;
-              if (shouldResetDoc) {
-                this.connectCollabService(true);
-              } else {
-                this.connectCollabService();
-              }
+              this.connectCollabService();
             }
             this.ensureCollabCursorsInstalled();
             this.applyPendingCollabTemplate();
             this.kickCollabHydration();
-            this.applyLatestCollabMarksToEditor();
-            setTimeout(() => this.applyLatestCollabMarksToEditor(), 150);
+            // Re-apply the server's marks when the page BECOMES connected and in sync, not on every
+            // sync-status event: the collab client emits one per Yjs update, and a re-apply that did
+            // not settle fed a loop of nested Yjs transactions (step 4 review, 2026-09-25; the ac-m23
+            // loop). Marks that change arrive through onMarks above, which applies them itself.
+            if (!this.collabMarksAppliedOnSync) {
+              this.collabMarksAppliedOnSync = true;
+              this.applyLatestCollabMarksToEditor();
+              setTimeout(() => this.applyLatestCollabMarksToEditor(), 150);
+            }
             this.installShareAgentPresenceObservers();
             this.clearErrorBanner();
             this.resetShareInitRetryState();
@@ -1553,7 +1703,6 @@ class ProofEditorImpl implements ProofEditor {
         // initial room sync. Binding against a reset local editor before sync can
         // generate self-inflicted local updates that keep the client stuck syncing.
         this.pendingCollabRebindOnSync = true;
-        this.pendingCollabRebindResetDoc = true;
         this.updateShareEditGate();
         collabClient.connect(collabSession.session);
         this.startCollabRefreshLoop();
@@ -1580,6 +1729,8 @@ class ProofEditorImpl implements ProofEditor {
           this.lastReceivedServerMarks = initialMarks;
           this.initialMarksSynced = true;
         }
+        startAgentJoinNotices(shareClient.getSlug());
+        window.dispatchEvent(new Event('proof:editor-ready'));
         this.showErrorBanner('Live collaboration is currently unavailable for this shared document.');
         return;
       }
@@ -1588,6 +1739,16 @@ class ProofEditorImpl implements ProofEditor {
       if (attemptSeq !== this.shareInitAttemptSeq) return;
       this.clearErrorBanner();
       this.resetShareInitRetryState();
+      startAgentJoinNotices(shareClient.getSlug());
+      window.dispatchEvent(new Event('proof:editor-ready'));
+      void this.checkTeamAccess();
+      // Owner rights ride on the SOMA session, which the page may renew after this first check
+      // (proof-session.js): re-read them when it does, or the Share dialog keeps hiding the
+      // link setting from an Owner until a reload (Mike, 2026-09-25).
+      if (!this.somaSessionListener) {
+        this.somaSessionListener = () => { this.teamCanManage = null; void this.checkTeamAccess(); };
+        window.addEventListener('proof:soma-session', this.somaSessionListener);
+      }
     } catch (error) {
       if (attemptSeq !== this.shareInitAttemptSeq) return;
       console.error('[initFromShare] Failed:', error);
@@ -1641,6 +1802,42 @@ class ProofEditorImpl implements ProofEditor {
     }
   }
 
+  private updateShareViewerChip(): void {
+    if (!this.shareViewerChip) return;
+    const stored = getViewerName();
+    if (stored) {
+      this.shareViewerChip.textContent = stored;
+      this.shareViewerChip.title = 'Your display name on marks and chat';
+    } else {
+      this.shareViewerChip.textContent = 'Guest · set your name';
+      this.shareViewerChip.title = 'Choose how your name appears';
+    }
+  }
+
+  private applyResolvedViewerName(name: string): void {
+    const resolvedName = name.trim().length > 0 ? name.trim() : 'Anonymous';
+    this.shareViewerName = resolvedName;
+    setCurrentActorValue(`human:${resolvedName}`);
+    shareClient.setViewerName(resolvedName);
+    collabClient.setLocalUser(
+      { name: resolvedName },
+      shareClient.getSlug() ?? undefined
+    );
+    this.updateShareViewerChip();
+  }
+
+  private async ensureViewerNameForWrite(): Promise<boolean> {
+    if (hasStoredViewerName()) return true;
+    try {
+      const name = await promptForName();
+      this.applyResolvedViewerName(typeof name === 'string' ? name : 'Anonymous');
+      return true;
+    } catch (error) {
+      console.warn('[share] name prompt failed', error);
+      return false;
+    }
+  }
+
   private deriveDefaultShareViewerName(): string {
     const actor = getCurrentActor();
     if (actor.startsWith('human:')) {
@@ -1657,6 +1854,7 @@ class ProofEditorImpl implements ProofEditor {
     if (!hasShareConfig) return false;
     this.collabCanComment = false;
     this.collabCanEdit = false;
+    this.shareRejectedSuggestionIdsBlockedFromAcceptAll.clear();
     setShareRuntimeCapabilities({ canComment: false, canEdit: false });
 
     this.shareRuntimeActivationInFlight = true;
@@ -1680,6 +1878,7 @@ class ProofEditorImpl implements ProofEditor {
     this.collabUnhealthySinceMs = null;
     this.collabLastRecoveryAttemptMs = 0;
     this.collabSessionRefreshInFlight = false;
+    this.shareRejectedSuggestionIdsBlockedFromAcceptAll.clear();
     this.resetPendingCollabTemplateState(true);
     this.resetShareMarksSyncState();
     this.resetProjectionPublishState();
@@ -1806,7 +2005,10 @@ class ProofEditorImpl implements ProofEditor {
     this.updateShareEditGate();
   }
 
+  private shareMarksAnchored = false;
+
   private resetShareMarksSyncState(): void {
+    this.shareMarksAnchored = false;
     this.initialMarksSynced = false;
     this.lastReceivedServerMarks = {};
   }
@@ -1868,42 +2070,6 @@ class ProofEditorImpl implements ProofEditor {
     return false;
   }
 
-  private normalizeCollabHydrationText(text: string): string {
-    return text.replace(/\s+/g, ' ').trim();
-  }
-
-  private getEditorHydrationText(): string | null {
-    if (!this.editor) return null;
-    let text: string | null = null;
-    this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
-      text = this.normalizeCollabHydrationText(
-        view.state.doc.textBetween(0, view.state.doc.content.size, '\n', '\n'),
-      );
-    });
-    return text;
-  }
-
-  private getYjsFragmentHydrationText(fragment: unknown): string | null {
-    if (!this.editor || !fragment) return null;
-    let text: string | null = null;
-    this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
-      try {
-        const root = yXmlFragmentToProseMirrorRootNode(
-          fragment as any,
-          view.state.schema as any,
-        ) as ProseMirrorNode;
-        text = this.normalizeCollabHydrationText(
-          root.textBetween(0, root.content.size, '\n', '\n'),
-        );
-      } catch {
-        text = null;
-      }
-    });
-    return text;
-  }
-
   private isCollabHydratedForEditing(): boolean {
     if (!this.editor) return false;
     const ydoc = collabClient.getYDoc() as any;
@@ -1914,14 +2080,22 @@ class ProofEditorImpl implements ProofEditor {
     } catch {
       return true;
     }
-    if (this.isYjsFragmentStructurallyEmpty(fragment)) return true;
-    const fragmentText = this.getYjsFragmentHydrationText(fragment);
-    if (fragmentText === null) {
-      return !this.isEditorDocStructurallyEmpty();
-    }
-    const editorText = this.getEditorHydrationText();
-    if (editorText === null) return false;
-    return editorText === fragmentText;
+    let bindingReady = false;
+    this.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      try {
+        const ystate = (ySyncPluginKey.getState(view.state) as any) ?? null;
+        const binding = ystate?.binding;
+        const mapping = binding?.mapping;
+        bindingReady = ystate?.type === fragment
+          && binding?.prosemirrorView === view
+          && mapping instanceof Map
+          && (this.isYjsFragmentStructurallyEmpty(fragment) || mapping.size > 0);
+      } catch {
+        bindingReady = false;
+      }
+    });
+    return bindingReady;
   }
 
   private kickCollabHydration(): void {
@@ -1931,7 +2105,7 @@ class ProofEditorImpl implements ProofEditor {
 
     this.collabHydrationRunning = true;
     const attemptSeq = ++this.collabHydrationAttemptSeq;
-    const maxAttempts = 60;
+    const maxAttempts = 120;
 
     const finish = () => {
       if (attemptSeq === this.collabHydrationAttemptSeq) {
@@ -1946,31 +2120,19 @@ class ProofEditorImpl implements ProofEditor {
         return;
       }
 
-      if (this.isCollabHydratedForEditing()) {
+      const isCollabHydratedForEditing = this.isCollabHydratedForEditing();
+      if (this.hasCompletedInitialCollabHydration || isCollabHydratedForEditing) {
         finish();
-        this.markInitialCollabHydrationComplete();
-        this.updateShareEditGate();
-        this.scheduleContentSync();
+        if (!this.hasCompletedInitialCollabHydration && isCollabHydratedForEditing) {
+          this.markInitialCollabHydrationComplete();
+          this.updateShareEditGate();
+          this.scheduleContentSync();
+        }
         return;
       }
 
-      this.editor.action((ctx) => {
-        const view = ctx.get(editorViewCtx);
-        try {
-          const ystate = (ySyncPluginKey.getState(view.state) as any) ?? null;
-          const binding = ystate?.binding;
-          if (binding && typeof binding._forceRerender === 'function') {
-            binding._forceRerender();
-          }
-        } catch {
-          // ignore; hydration is best-effort
-        }
-      });
-
       if (count >= maxAttempts) {
         finish();
-        this.markInitialCollabHydrationComplete();
-        this.updateShareEditGate();
         return;
       }
       requestAnimationFrame(() => attempt(count + 1));
@@ -2012,7 +2174,7 @@ class ProofEditorImpl implements ProofEditor {
     return markdown;
   }
 
-  private connectCollabService(resetEditorDoc = false): void {
+  private connectCollabService(): void {
     if (!this.editor) return;
     this.editor.action((ctx) => {
       const collabService = ctx.get(collabServiceCtx);
@@ -2036,20 +2198,6 @@ class ProofEditorImpl implements ProofEditor {
         (collabService as any).setAwareness(null);
       } catch {
         // ignore
-      }
-      if (resetEditorDoc) {
-        try {
-          const parser = ctx.get(parserCtx);
-          const emptyDoc = parser('');
-          const resetTr = view.state.tr
-            .replaceWith(0, view.state.doc.content.size, emptyDoc.content)
-            .setMeta('document-load', true)
-            .setMeta(SHARE_CONTENT_FILTER_ALLOW_META, true);
-          view.dispatch(resetTr);
-        } catch (error) {
-          const details = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-          console.warn('[share] failed to reset editor before collab connect', details);
-        }
       }
       collabService.bindDoc(ydoc);
       collabService.connect();
@@ -2112,7 +2260,14 @@ class ProofEditorImpl implements ProofEditor {
 
         const nextPlugins = view.state.plugins.concat(cursorPlugin);
         ctx.set(prosePluginsCtx, nextPlugins);
+        const undoManager = yUndoPluginKey.getState(view.state)?.undoManager;
         view.updateState(view.state.reconfigure({ plugins: nextPlugins }));
+        // Reconfiguration recreates every plugin view. yUndoPlugin destroys its
+        // manager even though PM retains the plugin state and that same manager.
+        // Reattach its Yjs subscriptions after the new selection hooks are installed.
+        if (undoManager && yUndoPluginKey.getState(view.state)?.undoManager === undoManager) {
+          reconnectNativeUndoManager(undoManager);
+        }
       } catch (error) {
         const details = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
         console.warn('[share] failed to install yCursor plugin', details);
@@ -2234,10 +2389,21 @@ class ProofEditorImpl implements ProofEditor {
   private disconnectCollabService(): void {
     if (!this.editor) return;
     this.pendingCollabRebindOnSync = false;
-    this.pendingCollabRebindResetDoc = false;
     this.editor.action((ctx) => {
       const collabService = ctx.get(collabServiceCtx);
       collabService.disconnect();
+    });
+  }
+
+  private showCollabReloadRequired(): void {
+    if (this.collabRefreshTimer) clearInterval(this.collabRefreshTimer);
+    this.collabRefreshTimer = null;
+    this.resetShareInitRetryState();
+    this.showErrorBanner('Reload this page to resume editing. Your unsent changes stay in this tab.', {
+      retryLabel: 'Reload', onRetry: () => {
+        collabClient.flushPendingLocalStateForUnload();
+        window.location.reload();
+      },
     });
   }
 
@@ -2374,6 +2540,7 @@ class ProofEditorImpl implements ProofEditor {
   }
 
   private async refreshCollabSessionAndReconnect(preserveLocalState: boolean): Promise<void> {
+    if (collabClient.terminalCloseReason === 'reload-required') return;
     if (!this.collabEnabled || !this.activeCollabSession) return;
     if (this.collabSessionRefreshInFlight) return;
     this.collabSessionRefreshInFlight = true;
@@ -2381,6 +2548,11 @@ class ProofEditorImpl implements ProofEditor {
     try {
       const refreshed = await shareClient.refreshCollabSession();
       if (this.isShareRequestError(refreshed)) {
+        if (refreshed.error.status === 426) {
+          collabClient.requireReload();
+          this.showCollabReloadRequired();
+          return;
+        }
         console.warn('[share] collab session refresh failed', refreshed.error);
         if (refreshed.error.status === 401 || refreshed.error.status === 403 || refreshed.error.status === 404 || refreshed.error.status === 410) {
           this.teardownCollabRuntimeAfterTerminalRefreshFailure();
@@ -2442,7 +2614,6 @@ class ProofEditorImpl implements ProofEditor {
         reconnectTemplate = null;
       }
       this.pendingCollabRebindOnSync = true;
-      this.pendingCollabRebindResetDoc = !shouldPreserveLocalState || !this.collabCanEdit;
       this.resetProjectionPublishState();
       collabClient.reconnectWithSession(refreshed.session, { preserveLocalState: shouldPreserveLocalState });
       this.resetPendingCollabTemplateState(false);
@@ -2455,7 +2626,6 @@ class ProofEditorImpl implements ProofEditor {
       }
     } catch (error) {
       this.pendingCollabRebindOnSync = false;
-      this.pendingCollabRebindResetDoc = false;
       console.warn('[share] failed to refresh collab session', error);
     } finally {
       this.collabSessionRefreshInFlight = false;
@@ -2501,13 +2671,27 @@ class ProofEditorImpl implements ProofEditor {
       && this.collabConnectionStatus === 'connected'
       && this.collabIsSynced
       && !awaitingTemplateSeed;
-    const hydrated = !baseAllowLocalEdits ? true : this.isCollabHydratedForEditing();
-    if (baseAllowLocalEdits && !hydrated) {
+    const hydrationGate = evaluateShareEditHydrationGate({
+      baseAllowLocalEdits,
+      hasCompletedInitialCollabHydration: this.hasCompletedInitialCollabHydration,
+      isCollabHydratedForEditing: !baseAllowLocalEdits
+        || this.hasCompletedInitialCollabHydration
+        || this.isCollabHydratedForEditing(),
+    });
+    if (hydrationGate.shouldKickCollabHydration) {
       // Prevent "type into blank doc" races that can overwrite remote Yjs state.
       this.kickCollabHydration();
     }
-    const allowLocalEdits = baseAllowLocalEdits && hydrated;
-    this.shareAllowLocalEdits = allowLocalEdits;
+    this.shareAllowLocalEdits = hydrationGate.allowLocalEdits;
+    if (hydrationGate.allowLocalEdits && !this.suggestDefaultApplied) {
+      this.suggestDefaultApplied = true;
+      if (EDIT_SESSION_POLICY.liveProposals) this.enableSuggestions();
+      else this.disableSuggestions();
+      setDirectEditing(false);
+    }
+    if (!this.collabCanEdit) setDirectEditing(false);
+    this.updateSuggestToggleDisplay();
+    this.updateShareSuggestionReviewDisplay();
     // Only block content mutations for true view-only sessions.
     // Avoid using filterTransaction as a temporary "sync lock", since it can deadlock hydration.
     this.setShareContentFilterEnabled(this.collabEnabled && !this.collabCanEdit);
@@ -2542,6 +2726,14 @@ class ProofEditorImpl implements ProofEditor {
       }
       return;
     }
+    if (type === 'line-marks.updated') {
+      this.lineMarks?.notifyRemoteChange();
+      return;
+    }
+    if (type === 'chat.updated') {
+      this.chat?.notifyRemoteChange();
+      return;
+    }
     if (type === 'document.title.updated') {
       if (typeof message.title === 'string') {
         this.applyShareTitle(message.title);
@@ -2561,13 +2753,14 @@ class ProofEditorImpl implements ProofEditor {
       const id = typeof message.id === 'string' ? message.id.trim() : '';
       if (!id || !isAgentScopedId(id)) return;
       const status = typeof message.status === 'string' && message.status.trim() ? message.status.trim() : 'idle';
-      if (status === 'disconnected') {
+      if (status === 'disconnected' || status === 'left') {
         this.shareAgentPresenceFallback.delete(id);
       } else {
         this.shareAgentPresenceFallback.set(id, {
           id,
           name: typeof message.name === 'string' && message.name.trim() ? message.name.trim() : id,
           status,
+          expiresAt: typeof message.expiresAt === 'string' ? message.expiresAt : undefined,
           color: typeof message.color === 'string' && /^#(?:[0-9a-fA-F]{3}){1,2}$/.test(message.color)
             ? message.color
             : '#6366f1',
@@ -2604,6 +2797,14 @@ class ProofEditorImpl implements ProofEditor {
   }
 
   private handlePendingShareEvent(event: SharePendingEvent): void {
+    if (event.type === 'line_mark.updated') {
+      this.lineMarks?.notifyRemoteChange();
+      return;
+    }
+    if (event.type === 'chat.message') {
+      this.chat?.notifyRemoteChange();
+      return;
+    }
     if (this.isMarksPendingShareEvent(event)) {
       this.scheduleShareMarksRefresh();
       return;
@@ -2616,44 +2817,26 @@ class ProofEditorImpl implements ProofEditor {
   }
 
   private startShareEventPoll(): void {
-    if (!this.isShareMode) return;
-    if (this.shareEventPollTimer) return;
-    const tick = async (): Promise<void> => {
-      this.shareEventPollTimer = null;
-      if (!this.isShareMode) return;
-      if (this.shareEventPollInFlight) {
-        this.shareEventPollTimer = setTimeout(() => { void tick(); }, this.shareEventPollMs);
-        return;
-      }
-      this.shareEventPollInFlight = true;
-      try {
+    if (!this.isShareMode || !shareClient.hasShareCredential()) return;
+    this.shareEventPoller ??= new ShareEventPoller(
+      () => this.isShareMode && shareClient.hasShareCredential(),
+      async () => {
         const payload = await shareClient.fetchPendingEvents(this.shareEventCursor, { limit: 100 });
-        if (!this.isShareRequestError(payload) && payload) {
-          for (const event of payload.events) {
-            this.handlePendingShareEvent(event);
-          }
-          if (typeof payload.cursor === 'number' && Number.isFinite(payload.cursor)) {
-            this.shareEventCursor = Math.max(this.shareEventCursor, Math.trunc(payload.cursor));
-          }
-        }
-      } catch {
-        // best-effort fallback for cross-instance refresh signals
-      } finally {
-        this.shareEventPollInFlight = false;
-        if (this.isShareMode) {
-          this.shareEventPollTimer = setTimeout(() => { void tick(); }, this.shareEventPollMs);
-        }
-      }
-    };
-    this.shareEventPollTimer = setTimeout(() => { void tick(); }, this.shareEventPollMs);
+        if (this.isShareRequestError(payload)) return payload.error.status;
+        if (!payload) return 0;
+        if (!this.isShareMode) return 200;
+        for (const event of payload.events) this.handlePendingShareEvent(event);
+        this.shareEventCursor = Math.max(this.shareEventCursor, Math.trunc(payload.cursor));
+        return 200;
+      },
+      this.shareEventPollMs,
+    );
+    this.shareEventPoller.start();
   }
 
   private stopShareEventPoll(): void {
-    if (this.shareEventPollTimer) {
-      clearTimeout(this.shareEventPollTimer);
-      this.shareEventPollTimer = null;
-    }
-    this.shareEventPollInFlight = false;
+    this.shareEventPoller?.stop();
+    this.shareEventPoller = null;
     this.shareEventCursor = 0;
     this.shareLastForcedCollabEventId = 0;
   }
@@ -2721,6 +2904,66 @@ class ProofEditorImpl implements ProofEditor {
     }, this.shareDocumentUpdatedDebounceMs);
   }
 
+  private applyAuthoritativeShareMarks(serverMarks: Record<string, StoredMark>): void {
+    this.lastReceivedServerMarks = { ...serverMarks };
+    this.initialMarksSynced = true;
+    this.applyExternalMarks(serverMarks);
+  }
+
+  private applyAuthoritativeShareDocument(doc: ShareOpenContext['doc']): void {
+    const serverMarks = (doc.marks && typeof doc.marks === 'object' && !Array.isArray(doc.marks))
+      ? doc.marks as Record<string, StoredMark>
+      : {};
+    this.lastReceivedServerMarks = { ...serverMarks };
+    this.initialMarksSynced = true;
+    reconcileAuthoritativeShareDocument({
+      collabConnected: this.collabEnabled && this.collabConnectionStatus === 'connected',
+      markdown: doc.markdown,
+      serverMarks,
+      loadDocument: (markdown) => this.loadDocument(markdown, { allowShareContentMutation: true }),
+      applyServerMarks: (marks) => this.applyExternalMarks(marks),
+    });
+  }
+
+  private async recoverAuthoritativeShareMarks(
+    failure: unknown,
+    fallbackMessage: string,
+    optimisticMarkIds: string[] = [],
+    finalStatus?: ShareSuggestionFinalStatus,
+  ): Promise<void> {
+    const recovery = await recoverShareMarksAfterMutationFailure({
+      failure,
+      fallbackMessage,
+      fetchOpenContext: () => shareClient.fetchOpenContext(),
+      showErrorBanner: (message) => this.showErrorBanner(message),
+      applyServerMarks: (marks) => {
+        this.applyAuthoritativeShareMarks(marks);
+      },
+      applyServerDocument: (doc) => {
+        const marks = doc.marks as Record<string, StoredMark>;
+        const pendingIds = optimisticMarkIds.filter((id) => {
+          const mark = marks[id];
+          return Boolean(mark && mark.status !== 'accepted' && mark.status !== 'rejected');
+        });
+        clearResolvedMarkTombstones(pendingIds);
+        this.applyAuthoritativeShareDocument(doc);
+      },
+      expectedResolutions: finalStatus
+        ? Object.fromEntries(optimisticMarkIds.map((id) => [id, finalStatus]))
+        : undefined,
+    });
+    if (finalStatus === 'rejected') {
+      const unresolvedIds = new Set(recovery.unresolvedIds);
+      for (const id of optimisticMarkIds) {
+        if (unresolvedIds.has(id)) {
+          this.shareRejectedSuggestionIdsBlockedFromAcceptAll.add(id);
+        } else {
+          this.shareRejectedSuggestionIdsBlockedFromAcceptAll.delete(id);
+        }
+      }
+    }
+  }
+
   private getViewerText(otherViewerCount: number): string {
     if (otherViewerCount === 1) return '1 viewer';
     return `${otherViewerCount} viewers`;
@@ -2742,6 +2985,7 @@ class ProofEditorImpl implements ProofEditor {
     if (this.collabConnectionStatus === 'connecting') {
       return { label: 'Connecting...', color: '#f59e0b' };
     }
+    if (collabClient.terminalCloseReason === 'reload-required') return { label: 'Reload to resume editing', color: '#ef4444' };
     if (collabClient.terminalCloseReason === 'unshared') {
       return { label: 'Document is no longer shared', color: '#ef4444' };
     }
@@ -2805,8 +3049,8 @@ class ProofEditorImpl implements ProofEditor {
     return now < this.shareStatusTextVisibleUntilMs;
   }
 
-  private getHumanCollaboratorAvatars(): Array<{ name: string; color: string; initial: string }> {
-    const avatars: Array<{ name: string; color: string; initial: string }> = [];
+  private getHumanCollaboratorAvatars(): Array<{ name: string; color: string; initial: string; state: string }> {
+    const avatars: Array<{ name: string; color: string; initial: string; state: string }> = [];
     const awareness = collabClient.getAwareness();
     if (!awareness) return avatars;
     const states = awareness.getStates?.();
@@ -2829,6 +3073,7 @@ class ProofEditorImpl implements ProofEditor {
         name,
         color,
         initial: name.charAt(0).toUpperCase(),
+        state: state?.cursor ? 'editing' : 'viewing',
       });
     });
     return avatars;
@@ -2879,6 +3124,7 @@ class ProofEditorImpl implements ProofEditor {
     color: string;
     avatar?: string;
     at: string;
+    expiresAt?: string;
   }> {
     return this.collectConnectedAgentEntries().entries;
   }
@@ -2891,6 +3137,7 @@ class ProofEditorImpl implements ProofEditor {
       color: string;
       avatar?: string;
       at: string;
+      expiresAt?: string;
     }>;
     nextExpiryAtMs: number | null;
   } {
@@ -2900,7 +3147,6 @@ class ProofEditorImpl implements ProofEditor {
     }
 
     const nowMs = Date.now();
-    const ttlMs = 60_000;
     let nextExpiryAtMs: number | null = null;
     const entries: Array<{
       id: string;
@@ -2909,6 +3155,7 @@ class ProofEditorImpl implements ProofEditor {
       color: string;
       avatar?: string;
       at: string;
+      expiresAt?: string;
     }> = [];
 
     const pushEntry = (
@@ -2917,23 +3164,24 @@ class ProofEditorImpl implements ProofEditor {
       status: string,
       avatar: string | undefined,
       atRaw: string,
+      expiresAt?: string,
     ) => {
       const at = atRaw.trim();
       if (!at) return;
-      const atMs = Date.parse(at);
-      if (!Number.isFinite(atMs)) return;
-      if ((nowMs - atMs) > ttlMs) return;
-      const expiryAtMs = atMs + ttlMs;
+      const display = getAgentPresenceDisplay({ at, status, expiresAt }, nowMs);
+      if (!display.visible) return;
+      const expiryAtMs = display.nextUpdateAtMs!;
       if (nextExpiryAtMs === null || expiryAtMs < nextExpiryAtMs) {
         nextExpiryAtMs = expiryAtMs;
       }
       entries.push({
         id,
         name,
-        status,
+        status: display.idle ? 'idle' : 'active',
         color: this.getAgentPresenceColor(id),
         avatar,
         at: at,
+        expiresAt,
       });
     };
 
@@ -2947,7 +3195,7 @@ class ProofEditorImpl implements ProofEditor {
         const status = typeof value.status === 'string' && value.status.trim() ? value.status.trim() : 'idle';
         const avatar = typeof value.avatar === 'string' && value.avatar.trim() ? value.avatar.trim() : undefined;
         const at = typeof value.at === 'string' ? value.at : '';
-        pushEntry(id, name, status, avatar, at);
+        pushEntry(id, name, status, avatar, at, value.expiresAt);
       });
     } catch {
       return { entries: [], nextExpiryAtMs: null };
@@ -2956,7 +3204,7 @@ class ProofEditorImpl implements ProofEditor {
     for (const fallback of this.shareAgentPresenceFallback.values()) {
       if (!isAgentScopedId(fallback.id)) continue;
       if (entries.some((entry) => entry.id === fallback.id)) continue;
-      pushEntry(fallback.id, fallback.name, fallback.status, fallback.avatar, fallback.at);
+      pushEntry(fallback.id, fallback.name, fallback.status, fallback.avatar, fallback.at, fallback.expiresAt);
     }
 
     entries.sort((a, b) => {
@@ -3001,6 +3249,31 @@ class ProofEditorImpl implements ProofEditor {
         0%, 100% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.40), 0 0 0 0.5px rgba(0,0,0,0.08); }
         50% { box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.00), 0 0 0 0.5px rgba(0,0,0,0.08); }
       }
+      #share-banner {
+        padding: 16px 16px 16px 24px !important;
+        border-radius: 36px !important;
+        gap: 14px !important;
+        font-size: 15px !important;
+      }
+      #share-banner > a,
+      #share-banner > .share-pill-title,
+      #share-banner > button,
+      #share-banner .share-pill-agent-trigger,
+      #share-banner .share-pill-share-btn > button {
+        min-height: 48px !important;
+        min-width: 44px;
+        font-size: 15px !important;
+      }
+      #share-banner .share-pill-title {
+        line-height: 48px;
+      }
+      #share-banner .share-pill-agent-trigger:not(.has-agents) > span:first-child {
+        font-size: 20px !important;
+      }
+      #share-banner .share-pill-share-btn > button > span + span {
+        font-size: 14px !important;
+      }
+      #share-banner .share-pill-human-count { display: none; }
       #share-banner .share-pill-title {
         min-width: 0;
         overflow: hidden;
@@ -3026,7 +3299,7 @@ class ProofEditorImpl implements ProofEditor {
       }
       #share-banner .share-pill-status-inline .status-label {
         color:#6b7280;
-        font-size:11px;
+        font-size:15px;
         font-weight:500;
         line-height:1;
       }
@@ -3043,11 +3316,13 @@ class ProofEditorImpl implements ProofEditor {
         transform:translateX(-50%);
         background:#1a1a1a;
         color:#fff;
-        font-size:11px;
+        font-size:13px;
         font-weight:500;
         padding:4px 8px;
         border-radius:6px;
-        white-space:nowrap;
+        width:max-content;
+        max-width:340px;
+        white-space:normal;
         pointer-events:none;
         opacity:0;
         transition:opacity 0.12s ease;
@@ -3063,51 +3338,192 @@ class ProofEditorImpl implements ProofEditor {
         border:4px solid transparent;
         border-bottom-color:#1a1a1a;
       }
-      #share-banner .proof-avatar-wrap:hover .proof-avatar-tooltip {
+      #share-banner .proof-avatar-wrap:hover .proof-avatar-tooltip,
+      #share-banner .proof-avatar-wrap:focus .proof-avatar-tooltip,
+      #share-banner .share-pill-agent-trigger:focus-visible .proof-avatar-tooltip {
         opacity:1;
       }
       #share-banner .share-pill-agent-btn.menu-open .proof-avatar-tooltip {
         display:none !important;
       }
-      @media (max-width: 480px) {
+      @media (max-width: 900px) {
+        #share-banner { gap: 8px !important; }
+        #share-banner .share-pill-human-avatars > .proof-avatar-wrap,
+        #share-banner .share-pill-human-avatars > span:not(.share-pill-human-count):not([role]) { display: none !important; }
+        #share-banner .share-pill-human-count { display: inline; font-size: 15px; white-space: nowrap; }
+      }
+      @media (max-width: 600px) {
         #share-banner {
           left: 12px !important;
           right: 12px !important;
           transform: none !important;
           min-width: unset !important;
           max-width: unset !important;
-          padding: 8px 10px 8px 14px !important;
-          gap: 8px !important;
+          padding: 8px 12px !important;
+          gap: 6px !important;
           top: 16px !important;
+          display: grid !important;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          border-radius: 28px !important;
         }
-        #share-banner .share-pill-sep {
-          display: none !important;
+        #share-banner > a { grid-column: 1; }
+        #share-banner .share-pill-title { grid-column: 2 / 4; }
+        #share-banner .share-pill-status-inline { grid-column: 4; justify-self: end; }
+        #share-banner .share-pill-sep,
+        #share-banner .share-pill-status-sep { display: none !important; }
+        #share-banner .share-pill-human-avatars { grid-column: 1; justify-content: center; }
+        #share-banner .share-pill-suggest-toggle { grid-column: 2; padding: 0 4px !important; gap: 3px !important; font-size: 12px !important; }
+        #share-banner .share-pill-agent-slot { grid-column: 3; justify-content: center; min-width: 0; }
+        #share-banner .share-pill-share-btn { grid-column: 4; }
+        #share-banner .share-pill-share-btn > button { padding: 0 8px !important; width: 100%; }
+        #share-banner .share-pill-suggestion-review { grid-column: 1 / -1; grid-row: 3; }
+        #share-banner .share-pill-agent-btn { max-width: 100%; min-width: 0; }
+        #share-banner .share-pill-agent-trigger { padding: 0 4px !important; max-width: 100%; }
+        #share-banner .share-pill-agent-trigger:not(.has-agents) { width: 100%; }
+        #share-banner .share-pill-agent-trigger .agent-btn-label { min-width: 0; }
+        #share-banner .share-pill-agent-trigger .agent-btn-label { font-size: 15px !important; white-space: normal; }
+        #share-banner .share-pill-status-inline .status-label { display: none !important; }
+        #share-banner .share-pill-agent-overflow { display: none !important; }
+        #share-banner .share-pill-agent-trigger .proof-avatar-wrap > span:first-child { width: auto !important; }
+        #share-banner .proof-avatar-tooltip { display: none !important; }
+      }
+      #share-banner .share-pill-overflow { display: none; }
+      /* Phones: one compact, full-width row pinned to the top edge (not floating over the text).
+         Add agent, Review style and Marks move into the overflow menu. */
+      @media (max-width: 700px) {
+        #share-banner {
+          display: flex !important;
+          flex-wrap: nowrap !important;
+          top: 0 !important;
+          left: 0 !important;
+          right: 0 !important;
+          transform: none !important;
+          width: 100% !important;
+          min-width: 0 !important;
+          max-width: none !important;
+          border-radius: 0 !important;
+          border: none !important;
+          border-bottom: 1px solid rgba(0,0,0,0.08) !important;
+          box-shadow: none !important;
+          background: #fff !important;
+          backdrop-filter: none !important;
+          -webkit-backdrop-filter: none !important;
+          padding: env(safe-area-inset-top, 0px) max(8px, env(safe-area-inset-right, 0px)) 0 max(12px, env(safe-area-inset-left, 0px)) !important;
+          height: calc(52px + env(safe-area-inset-top, 0px));
+          gap: 6px !important;
+          font-size: 15px !important;
         }
+        #share-banner > a,
+        #share-banner .share-pill-sep,
+        #share-banner .share-pill-status-sep,
+        #share-banner .share-pill-agent-slot,
+        #share-banner .review-style-control,
+        #share-banner .share-pill-suggestion-review { display: none !important; }
         #share-banner .share-pill-title {
           flex: 1 1 auto !important;
           min-width: 0 !important;
+          min-height: 44px !important;
+          line-height: 44px !important;
+          font-size: 15px !important;
+          font-weight: 600 !important;
         }
-        #share-banner .share-pill-human-avatars {
-          display: none !important;
-        }
-        #share-banner .share-pill-agent-trigger {
+        #share-banner .share-pill-status-inline { order: 0; }
+        #share-banner .share-pill-human-count { font-size: 13px !important; }
+        #share-banner .share-pill-title { min-width: 36px !important; }
+        /* An AI that is present stays visible in the bar; only the empty Add agent button moves to the menu. */
+        #share-banner .share-pill-agent-slot:has(.share-pill-agent-trigger.has-agents) { display: inline-flex !important; flex-shrink: 0; }
+        #share-banner .share-pill-suggest-toggle {
+          min-height: 44px !important;
           padding: 0 10px !important;
+          font-size: 12px !important;
+          gap: 5px !important;
         }
-        #share-banner .share-pill-agent-trigger.has-agents {
-          padding: 0 2px !important;
+        #share-banner .share-pill-share-btn > button {
+          min-height: 44px !important;
+          padding: 0 12px !important;
+          font-size: 14px !important;
+          width: auto !important;
         }
-        #share-banner .share-pill-agent-trigger .agent-btn-label {
-          font-size: 11px !important;
+        #share-banner .share-pill-share-btn > button > span + span { display: none; }
+      }
+      /* Narrow phones: Suggesting/Editing becomes a pencil pill (green dot = suggesting); its aria-label and title keep the words. */
+      @media (max-width: 700px) {
+        #share-banner .share-pill-group { display: contents; }
+        #share-banner .share-pill-overflow {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-width: 44px;
+          min-height: 44px;
+          padding: 0;
+          border: none;
+          background: transparent;
+          color: #111827;
+          font-size: 22px;
+          line-height: 1;
+          cursor: pointer;
+          flex-shrink: 0;
+          font-family: inherit;
         }
-        #share-banner .share-pill-status-inline .status-label {
-          display:none !important;
+        #editor { padding-bottom: 96px !important; }
+        .proof-share-overflow-menu {
+          position: fixed;
+          right: 8px;
+          min-width: 220px;
+          background: #fff;
+          border: 1px solid rgba(0,0,0,0.12);
+          border-radius: 12px;
+          box-shadow: 0 12px 32px rgba(0,0,0,0.18);
+          padding: 6px;
+          z-index: 10003;
+          font: 15px/1.3 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         }
-        #share-banner .share-pill-status-sep {
-          display:none !important;
+        .proof-share-overflow-menu button {
+          display: flex;
+          width: 100%;
+          min-height: 48px;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          padding: 0 12px;
+          border: none;
+          border-radius: 8px;
+          background: transparent;
+          color: #111827;
+          font: inherit;
+          text-align: left;
+          cursor: pointer;
         }
-        #share-banner .proof-avatar-tooltip {
-          display:none !important;
+        .proof-share-overflow-menu button:active { background: #f3f4f6; }
+        .proof-share-overflow-menu button span:last-child { color: #6b7280; font-size: 13px; }
+      }
+      /* Top bar (2026-09-21): tight around its buttons. A mouse gets 36 px targets on desktop; touch
+         screens (and phones, below) keep 44 px. */
+      @media (min-width: 701px) {
+        #share-banner { padding: ${TOP_BAR_LAYOUT.desktopPadY}px 6px ${TOP_BAR_LAYOUT.desktopPadY}px 16px !important; gap: 10px !important; }
+      }
+      @media (min-width: 701px) and (pointer: fine) {
+        #share-banner > a,
+        #share-banner > .share-pill-title,
+        #share-banner > button,
+        #share-banner .share-pill-agent-trigger,
+        #share-banner .share-pill-share-btn > button,
+        #share-banner .share-pill-suggest-toggle,
+        #share-banner .pm-review-toggle,
+        #share-banner .share-pill-human-avatars > .proof-avatar-wrap {
+          min-height: ${TOP_BAR_LAYOUT.desktopTargetPx}px !important;
         }
+        #share-banner .share-pill-human-avatars > .proof-avatar-wrap { height: ${TOP_BAR_LAYOUT.desktopTargetPx}px !important; }
+        #share-banner .share-pill-title { line-height: ${TOP_BAR_LAYOUT.desktopTargetPx}px; }
+      }
+      @media (max-width: 700px) {
+        #share-banner { height: calc(${TOP_BAR_LAYOUT.phoneBarPx}px + env(safe-area-inset-top, 0px)) !important; }
+        #share-banner .share-pill-overflow { min-height: 44px !important; height: 44px; }
+      }
+      .proof-share-welcome-toast .proof-toast-content { display: flex !important; flex-direction: row !important; align-items: flex-start; gap: 8px; }
+      .proof-share-welcome-toast .proof-toast-dismiss {
+        flex-shrink: 0; min-width: 32px; min-height: 32px; margin: -6px -6px -6px 0; border: none;
+        background: transparent; color: inherit; font-size: 18px; line-height: 1; cursor: pointer;
       }
     `;
     document.head.appendChild(style);
@@ -3118,7 +3534,7 @@ class ProofEditorImpl implements ProofEditor {
     if (!container) return;
     const avatars = this.getHumanCollaboratorAvatars();
     container.className = 'share-pill-human-avatars';
-    container.style.cssText = 'display:none;align-items:center;flex-shrink:0;padding-left:4px;position:relative;';
+    container.style.cssText = 'display:none;align-items:center;flex-shrink:0;min-height:44px;min-width:44px;position:relative;';
     container.replaceChildren();
 
     if (avatars.length === 0) {
@@ -3133,19 +3549,27 @@ class ProofEditorImpl implements ProofEditor {
     container.style.cursor = 'pointer';
     container.setAttribute('role', 'button');
     container.setAttribute('tabindex', '0');
+    container.setAttribute('aria-haspopup', 'menu');
     container.setAttribute('aria-label', `${avatars.length} collaborator${avatars.length === 1 ? '' : 's'}`);
+
+    const count = document.createElement('span');
+    count.className = 'share-pill-human-count';
+    count.textContent = `${avatars.length} here`;
+    container.appendChild(count);
 
     for (let i = 0; i < Math.min(avatars.length, 5); i++) {
       const avatar = avatars[i];
       const wrap = document.createElement('span');
       wrap.className = 'proof-avatar-wrap';
-      wrap.style.cssText = `display:inline-flex;align-items:center;justify-content:center;margin-left:${i > 0 ? '-6px' : '0'};z-index:${5 - i};position:relative;`;
+      wrap.tabIndex = 0;
+      wrap.setAttribute('aria-label', `${avatar.name} — ${avatar.state}`);
+      wrap.style.cssText = `display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;z-index:${5 - i};position:relative;`;
       const circle = document.createElement('span');
       circle.textContent = avatar.initial;
       circle.style.cssText = `
-        width:24px;height:24px;border-radius:50%;
+        width:32px;height:32px;border-radius:50%;
         background:${avatar.color};color:#fff;
-        font-size:11px;font-weight:600;
+        font-size:14px;font-weight:600;
         display:inline-flex;align-items:center;justify-content:center;
         border:2px solid #fff;
         box-shadow:0 0 0 0.5px rgba(0,0,0,0.08);
@@ -3154,10 +3578,10 @@ class ProofEditorImpl implements ProofEditor {
       tooltip.className = 'proof-avatar-tooltip';
       const tooltipName = document.createElement('span');
       tooltipName.style.cssText = 'display:block;font-weight:600';
-      tooltipName.textContent = avatar.name;
+      tooltipName.textContent = `${avatar.name} — ${avatar.state}`;
       const tooltipType = document.createElement('span');
       tooltipType.style.cssText = 'display:block;font-size:10px;opacity:0.7;margin-top:1px';
-      tooltipType.textContent = 'Collaborator';
+      tooltipType.textContent = 'Open people list';
       tooltip.append(tooltipName, tooltipType);
       wrap.appendChild(circle);
       wrap.appendChild(tooltip);
@@ -3167,7 +3591,7 @@ class ProofEditorImpl implements ProofEditor {
       const overflow = document.createElement('span');
       overflow.textContent = `+${avatars.length - 5}`;
       overflow.style.cssText = `
-        width:24px;height:24px;border-radius:50%;
+        width:32px;height:32px;border-radius:50%;
         background:#e5e7eb;color:#4b5563;
         font-size:10px;font-weight:600;
         display:inline-flex;align-items:center;justify-content:center;
@@ -3179,6 +3603,7 @@ class ProofEditorImpl implements ProofEditor {
     const openPresenceMenu = () => {
       this.closeShareMenu();
       this.closeAgentMenu();
+      this.closeSuggestionReviewMenu();
       if (this.presenceMenuCleanup) {
         this.closePresenceMenu();
         return;
@@ -3196,10 +3621,10 @@ class ProofEditorImpl implements ProofEditor {
 
       const header = document.createElement('div');
       header.textContent = 'Collaborators';
-      header.style.cssText = 'padding:4px 8px 8px 8px;color:rgba(255,255,255,0.70);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;';
+      header.style.cssText = 'padding:4px 8px 8px 8px;color:rgba(255,255,255,0.70);font-size:14px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;';
       menu.appendChild(header);
 
-      for (const avatar of avatars.slice(0, 10)) {
+      for (const avatar of avatars) {
         const row = document.createElement('div');
         row.setAttribute('role', 'menuitem');
         row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px;border-radius:8px;';
@@ -3207,12 +3632,13 @@ class ProofEditorImpl implements ProofEditor {
         dot.style.cssText = `width:18px;height:18px;border-radius:50%;background:${avatar.color};color:#fff;font-size:10px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;`;
         dot.textContent = avatar.initial;
         const name = document.createElement('span');
-        name.textContent = avatar.name;
+        name.textContent = `${avatar.name} — ${avatar.state}`;
         name.style.cssText = 'color:rgba(255,255,255,0.92);font-size:12px;font-weight:500;';
         row.append(dot, name);
         menu.appendChild(row);
       }
 
+      container.setAttribute('aria-expanded', 'true');
       container.appendChild(menu);
       this.clampMenuToViewport(menu);
 
@@ -3227,6 +3653,7 @@ class ProofEditorImpl implements ProofEditor {
       const cleanup = () => {
         document.removeEventListener('mousedown', onDocMouseDown, true);
         document.removeEventListener('keydown', onKeyDown, true);
+        container.setAttribute('aria-expanded', 'false');
         if (menu.isConnected) menu.remove();
         if (this.presenceMenuCleanup === cleanup) this.presenceMenuCleanup = null;
       };
@@ -3332,7 +3759,7 @@ class ProofEditorImpl implements ProofEditor {
     const normalized = typeof title === 'string' ? title.trim() : '';
     const nextTitle = normalized.length > 0 ? normalized : 'Untitled';
     this.shareDocTitle = nextTitle;
-    document.title = `${nextTitle} - Proof`;
+    document.title = pageTitle(nextTitle, ' - ');
     this.updateShareBannerTitleDisplay();
   }
 
@@ -3352,16 +3779,19 @@ class ProofEditorImpl implements ProofEditor {
     const { entries: agents, nextExpiryAtMs } = this.collectConnectedAgentEntries();
     this.scheduleShareAgentPresenceExpiryRefresh(nextExpiryAtMs);
     const nextState = agents.length > 0 ? 'connected' : 'empty';
-    const signature = agents.map((agent) => `${agent.id}:${agent.status}:${agent.at}`).join('|');
+    const signature = agents.map((agent) => `${agent.id}:${agent.name}:${agent.status}:${agent.at}:${getAgentPresenceDisplay(agent).label}`).join('|');
     if (
       this.shareBannerAgentSlotEl.dataset.agentState === nextState
       && this.shareBannerAgentSlotEl.dataset.agentSignature === signature
       && this.shareBannerAgentSlotEl.firstElementChild
     ) return;
+    const focused = this.shareBannerAgentSlotEl.contains(document.activeElement);
     this.closeAgentMenu();
     this.shareBannerAgentSlotEl.dataset.agentState = nextState;
     this.shareBannerAgentSlotEl.dataset.agentSignature = signature;
     this.shareBannerAgentSlotEl.replaceChildren(this.createAgentMenuButton(agents));
+    if (focused) this.shareBannerAgentSlotEl.querySelector<HTMLButtonElement>('button')?.focus();
+    this.scheduleBannerLayoutUpdate();
   }
 
   private updateShareBannerSyncDisplay(): void {
@@ -3379,6 +3809,9 @@ class ProofEditorImpl implements ProofEditor {
     }
 
     const statusText = this.getSyncStatusTextLabel(syncStatus.label);
+    // Phones hide the dot while "Saved" (TOOLBAR_POLICY.phoneSyncDotOnlyWhenNotSaved; CSS in chrome.css).
+    const inline = this.shareBannerSyncDotEl.parentElement;
+    if (inline) inline.dataset.sync = TOOLBAR_POLICY.phoneSyncDotOnlyWhenNotSaved && statusText === 'Saved' ? 'saved' : 'other';
     this.shareBannerSyncLabelEl.textContent = statusText;
     this.shareBannerSyncLabelEl.style.display = this.shouldShowStatusText(statusText) ? '' : 'none';
   }
@@ -3392,12 +3825,16 @@ class ProofEditorImpl implements ProofEditor {
       && this.shareBannerAgentSlotEl
       && this.shareBannerSyncDotEl
       && this.shareBannerSyncLabelEl
+      && this.shareBannerSuggestBtnEl
+      && this.shareBannerSuggestionReviewBtnEl
       && banner.contains(this.shareBannerTitleEl)
     ) {
       this.updateShareBannerTitleDisplay();
       this.updateShareBannerPresenceDisplay();
       this.updateShareBannerAgentControlDisplay();
       this.updateShareBannerSyncDisplay();
+      this.updateSuggestToggleDisplay();
+      this.updateShareSuggestionReviewDisplay();
       this.scheduleBannerLayoutUpdate();
       return;
     }
@@ -3405,17 +3842,6 @@ class ProofEditorImpl implements ProofEditor {
     this.closeShareMenu();
     this.closePresenceMenu();
     this.closeAgentMenu();
-
-    const wordmark = document.createElement('a');
-    wordmark.textContent = 'Proof';
-    wordmark.href = 'https://www.proofeditor.ai';
-    wordmark.target = '_blank';
-    wordmark.rel = 'noopener';
-    wordmark.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;min-height:44px;min-width:44px;padding:0 8px;border-radius:10px;font-weight:600;color:#333;font-size:13px;letter-spacing:-0.2px;flex-shrink:0;text-decoration:none;';
-
-    const separator = document.createElement('span');
-    separator.className = 'share-pill-sep';
-    separator.style.cssText = 'width:1px;height:16px;background:rgba(0,0,0,0.1);flex-shrink:0';
 
     const title = document.createElement('span');
     title.className = 'share-pill-title';
@@ -3447,10 +3873,1334 @@ class ProofEditorImpl implements ProofEditor {
     syncStatusInline.append(syncDot, syncLabel);
     this.updateShareBannerSyncDisplay();
 
-    const shareBtn = this.createShareMenuButton();
+    const viewerChip = document.createElement('button');
+    viewerChip.type = 'button';
+    viewerChip.className = 'share-pill-viewer';
+    viewerChip.onclick = () => {
+      void promptForName()
+        .then((name) => { this.applyResolvedViewerName(typeof name === 'string' ? name : 'Anonymous'); })
+        .catch((error) => { console.warn('[share] name prompt failed', error); });
+    };
+    this.shareViewerChip = viewerChip;
+    this.updateShareViewerChip();
 
-    banner.replaceChildren(wordmark, separator, title, syncStatusSep, syncStatusInline, avatars, agentSlot, shareBtn);
+    const shareBtn = this.createShareMenuButton();
+    const peopleBtn = document.createElement('button');
+    peopleBtn.type = 'button';
+    peopleBtn.className = 'anv-people';
+    peopleBtn.textContent = 'People';
+    peopleBtn.setAttribute('aria-haspopup', 'menu');
+    peopleBtn.setAttribute('aria-expanded', 'false');
+    peopleBtn.onclick = () => this.menuBar?.open('people', true, peopleBtn);
+
+    const suggestToggle = this.createSuggestToggleButton();
+    const suggestionReview = this.createShareSuggestionReviewButton();
+    // Title, Review, People, Share. Mike, 2026-09-23 (usability brief).
+    // ensureLineMarks creates the reading walk. Read its Review button after that call.
+    // ?? does not re-read its left side, so a call inside ?? left the old Issues pill in the toolbar.
+    const lineMarksUi = this.ensureLineMarks();
+    const reviewControl = this.readingWalk?.navigator.reviewButton ?? lineMarksUi.bannerEl;
+    const group = (name: string, ...children: HTMLElement[]) => {
+      const node = document.createElement('span');
+      node.className = `share-pill-group share-pill-${name}`;
+      node.append(...children);
+      return node;
+    };
+    const hidden = group('hidden', syncStatusSep, this.createReviewStyleControl(), suggestionReview);
+    hidden.setAttribute('aria-hidden', 'true');
+    banner.replaceChildren(
+      ...(this.readingWalk ? [this.readingWalk.documentsToggle] : []),
+      group('center', title, viewerChip, syncStatusInline),
+      group('right', reviewControl, suggestToggle, lineMarksUi.alignedEl, peopleBtn, shareBtn),
+      hidden,
+      this.createShareOverflowButton(),
+    );
+    this.placeMenuBarPresence(avatars, agentSlot);
+    this.updateSuggestToggleDisplay();
+    this.updateShareSuggestionReviewDisplay();
+    this.mountOpenView();
     this.scheduleBannerLayoutUpdate();
+  }
+
+
+
+  // --------------------------------------------------------------------------
+  // Accord layout stage 2: the menu bar (File · Edit · View · People · Help)
+  // --------------------------------------------------------------------------
+
+  private mountMenuBar(): void {
+    if (this.menuBar) {
+      if (!this.menuBar.el.isConnected) document.body.append(this.menuBar.el);
+      document.body.classList.add('amb-on');
+      return;
+    }
+    const brand = document.createElement('a');
+    brand.textContent = productName();
+    brand.href = productIdentity().homeUrl;
+    brand.target = '_blank';
+    brand.rel = 'noopener';
+    this.menuBar = new MenuBar({
+      menus: () => this.menus(),
+      writing: () => isWriting(),
+      beforeOpen: () => {
+        this.closeShareMenu();
+        this.closeAgentMenu();
+        this.closePresenceMenu();
+        this.closeSuggestionReviewMenu();
+      },
+    }, brand);
+    document.body.append(this.menuBar.el);
+    document.body.classList.add('amb-on');
+    this.menuBar.install();
+    (window as unknown as { __proofMenuBar?: MenuBar }).__proofMenuBar = this.menuBar;
+  }
+
+  /**
+   * Accord round 2 stage C: the honest header sits at the top of the page column, above the text,
+   * so it reads as part of the document and not as another piece of chrome. The toggle is mounted
+   * by the toolbar (mountShareBanner); this only has to place the header and keep it there.
+   */
+  private mountOpenView(): void {
+    const ui = this.openViewUI;
+    if (!ui) return;
+    // Inside #editor, not #editor-container: #editor carries the top padding that clears the fixed
+    // menu bar and toolbar, so a header prepended to the container would sit underneath them.
+    const host = document.getElementById('editor') ?? document.getElementById('editor-container');
+    if (host && (ui.headerEl.parentElement !== host || host.firstElementChild !== ui.headerEl)) {
+      host.prepend(ui.headerEl);
+    }
+    const pill = document.querySelector('#share-banner .plm-issues');
+    const review = this.readingWalk?.navigator.reviewButton;
+    if (pill && review && pill !== review) pill.replaceWith(review);
+
+  }
+
+  private unmountMenuBar(): void {
+    this.menuBar?.destroy();
+    this.menuBar = null;
+    this.findBar?.remove();
+    this.findBar = null;
+    document.body.classList.remove('amb-on');
+  }
+
+  /** The people here and the AI faces sit at the menu bar's right (the mockup's avatars). */
+  private placeMenuBarPresence(...nodes: HTMLElement[]): void {
+    const slot = this.menuBar?.rightSlot;
+    if (!slot) return;
+    for (const node of nodes) if (node.parentElement !== slot) slot.append(node);
+  }
+
+  /** Undo stays in the existing tool host and Edit menu, including its result notice. */
+  private placeUndo(): void {
+    if (!this.undoUI || !this.readingWalk) return;
+    this.undoUI.setCompact(false);
+    this.readingWalk.mountTool(this.undoUI.controlsEl, { first: true });
+  }
+
+  /**
+   * Edit › Undo and Redo take the path Cmd/Ctrl+Z takes (PlayMakerReview.handleHistoryInput): the
+   * one Undo when its entry is newest, else the review-decision history. The raw Yjs undo manager
+   * would remove a pending proposal's text without recording its withdrawal, which the server's
+   * marks guard then restores.
+   */
+  private undoFromMenu(redo: boolean): void {
+    if (this.undoUI?.handleKey(redo)) return;
+    try { this.restoreReviewDecision(redo); }
+    catch (error) { this.showErrorBanner(error instanceof Error ? error.message : 'Could not undo that.'); }
+    this.playmakerReview?.update();
+  }
+
+  private undoLabel(redo: boolean): { label: string; enabled: boolean } {
+    const state = (this.undoUI?.debugState() ?? {}) as { next?: { description: string } | null; nextRedo?: { description: string } | null };
+    const entry = redo ? state.nextRedo : state.next;
+    if (entry) return { label: `${redo ? 'Redo' : 'Undo'} ${entry.description}`, enabled: true };
+    // Typing lives in the text history (the Yjs undo manager the review-decision history extends).
+    let text = false;
+    this.editor?.action(ctx => {
+      const manager = yUndoPluginKey.getState(ctx.get(editorViewCtx).state)?.undoManager as { undoStack?: unknown[]; redoStack?: unknown[] } | undefined;
+      text = ((redo ? manager?.redoStack : manager?.undoStack)?.length ?? 0) > 0;
+    });
+    return { label: redo ? 'Redo' : 'Undo', enabled: text };
+  }
+
+  /** File › New: a blank document in the library, then open it. */
+  private async newDocument(markdown?: string, title?: string): Promise<void> {
+    try {
+      const response = await fetch('/library/api/documents', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ title: title || 'Untitled document', ...(markdown === undefined ? {} : { markdown }) }),
+      });
+      const body = await response.json().catch(() => ({})) as { url?: string; error?: string };
+      if (response.ok && body.url) { window.location.href = body.url; return; }
+      this.showErrorBanner(response.status === 401 || response.status === 403
+        ? `Sign in to make a new ${documentNoun()}.`
+        : (body.error || `Could not make a new ${documentNoun()}.`));
+    } catch {
+      this.showErrorBanner(`Could not make a new ${documentNoun()}.`);
+    }
+  }
+
+  /**
+   * File › Import: a .md file becomes a new document. An Accord dialect file keeps its marks, as
+   * `<title>.accord.md` or an older `<title>.proof.md`; so does CriticMarkup.
+   */
+  private importMarkdown(): void {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.md,.markdown,.txt,text/markdown,text/plain';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      if (!/\.(md|markdown|txt)$/i.test(file.name)) { this.showErrorBanner('Choose a .md, .markdown or .txt file.'); return; }
+      const markdown = await file.text();
+      const heading = markdown.match(/^#\s+(.+?)\s*$/m)?.[1]?.trim();
+      await this.newDocument(markdown, heading || file.name.replace(/(\.(accord|proof))?\.(md|markdown|txt)$/i, ''));
+    };
+    input.click();
+  }
+
+  private async openDocumentsDialog(): Promise<void> {
+    const walk = this.readingWalk;
+    if (!walk) return;
+    await walk.reloadDocuments();
+    const identity = productIdentity();
+    showOpenDialog(walk.documentsList(), `Open ${identity.documentNounArticle} ${identity.documentNoun}`, identity.documentNounPlural);
+  }
+
+  private openFindBar(): void {
+    const lineMarks = this.lineMarks;
+    const walk = this.readingWalk;
+    if (!lineMarks || !walk) return;
+    if (!this.findBar) {
+      this.findBar = new FindBar({
+        lines: () => lineMarks.lineList().map(line => line.text),
+        focusLine: index => { this.folding?.expandSectionContaining(index); return walk.focusLine(index); },
+        from: () => walk.focusIndex(),
+      });
+    }
+    this.findBar.open();
+  }
+
+  private openWhoDialog(): void {
+    const summary = this.lineMarks?.issueSummary();
+    showWhoDialog({
+      people: this.getHumanCollaboratorAvatars(),
+      ais: this.getConnectedAgentEntries().map(agent => ({ name: agent.name, state: getAgentPresenceDisplay(agent).label })),
+      status: this.lineMarks?.participantStatus(),
+      name: actor => this.lineMarks?.displayName(actor) ?? actor,
+      viewerIssues: this.lineMarks?.needsYouLines().length ?? 0,
+      teamIssues: summary?.counts.total ?? 0,
+      team: (summary?.team ?? []).map(actor => actor.replace(/^(human|ai|guest):/i, '')),
+    });
+  }
+
+  /** The menus, built when one opens so every label and state is current. */
+  private menus(): MenuSpec[] {
+    const noun = documentNoun();
+    const canEdit = this.isShareMode && this.collabCanEdit;
+    const lm = this.lineMarks;
+    const walk = this.readingWalk;
+    const folding = this.folding;
+    const pending = getReviewStyle() === 'proof' && canEdit ? this.getAnchoredPendingSuggestions().length : 0;
+    const style = getReviewStyle();
+    const find = (id: string) => MENU_BAR_POLICY.menus.find(menu => menu.id === id)!;
+    const menu = (id: MenuSpec['id'], items: () => MenuItemSpec[]): MenuSpec => ({ ...find(id), items });
+    return [
+      menu('file', () => [
+        { id: 'file-new', label: `New ${noun}`, keywords: 'create blank document', run: () => { void this.newDocument(); } },
+        { id: 'file-open', label: 'Open…', keywords: 'documents list library', detail: 'documents', run: () => { void this.openDocumentsDialog(); } },
+        { id: 'file-import', label: 'Import .md…', keywords: 'upload markdown file criticmarkup accord dialect', run: () => this.importMarkdown() },
+        { id: 'file-rename', label: 'Rename…', keywords: 'title', enabled: canEdit, separatorBefore: true, run: () => { this.shareBannerTitleEl?.click(); } },
+        { id: 'file-copy-link', label: 'Copy link', keywords: 'share url', run: () => { void this.copyLinkWithFallback(this.getCanonicalShareUrl()); } },
+        { id: 'file-download', label: `Download as ${noun} (.accord.md)`, keywords: 'export markdown save dialect', run: () => { void this.downloadProofDocument(); } },
+        { id: 'file-activity', label: 'View activity', keywords: 'history log', run: () => this.openShareActivityModal() },
+      ]),
+      menu('edit', () => {
+        const undo = this.undoLabel(false);
+        const redo = this.undoLabel(true);
+        const items: MenuItemSpec[] = [
+          { id: 'edit-undo', label: undo.label, detail: '⌘Z', keywords: 'undo', enabled: undo.enabled, run: () => this.undoFromMenu(false) },
+          { id: 'edit-redo', label: redo.label, detail: '⇧⌘Z', keywords: 'redo', enabled: redo.enabled, run: () => this.undoFromMenu(true) },
+          { id: 'edit-find', label: 'Find…', keywords: 'search text', separatorBefore: true, run: () => this.openFindBar() },
+          { id: 'edit-editing', label: isWriting() ? 'Leave text' : 'Edit text', enabled: canEdit, separatorBefore: true, keywords: 'mode direct', run: () => this.setSuggestingFromChrome(isWriting()) },
+        ];
+        if (style === 'proof' && canEdit) {
+          items.push(
+            { id: 'edit-next-suggestion', label: 'Next suggestion', enabled: pending > 0, separatorBefore: true, run: () => { const id = this.navigateToNextSuggestion(); if (id) this.openSuggestionPopover(id); } },
+            { id: 'edit-accept-all', label: `Accept all suggestions${pending ? ` (${pending})` : ''}…`, enabled: pending > 0, run: () => {
+              if (window.confirm(`Accept all ${pending} suggestion${pending === 1 ? '' : 's'}?`)) withHumanReviewWrite(() => this.markAcceptAll());
+            } },
+            { id: 'edit-reject-all', label: `Reject all suggestions${pending ? ` (${pending})` : ''}…`, enabled: pending > 0, run: () => {
+              if (window.confirm(`Reject all ${pending} suggestion${pending === 1 ? '' : 's'}?`)) withHumanReviewWrite(() => this.markRejectAll());
+            } },
+          );
+        }
+        return items;
+      }),
+      menu('view', () => {
+        const items: MenuItemSpec[] = [{ id: 'view-outline', label: 'Outline', kind: 'checkbox', checked: this.movesUI?.isOutline() ?? false, run: () => this.movesUI?.toggleOutline() }];
+        if (this.openViewUI) {
+          const returning = this.openViewUI.current() === 'accord';
+          const offer = lm?.agreedCopyOffer();
+          items.push({ id: 'view-agreed-copy', label: returning ? 'Return to document' : 'View agreed copy',
+            detail: returning ? undefined : offer?.detail, enabled: returning || offer?.enabled === true,
+            run: () => this.openViewUI?.setView(returning ? 'open' : 'accord') });
+        }
+        if (walk) {
+          items.push(
+            { id: 'view-navigator', label: `${productIdentity().documentNounPlural} list`, kind: 'checkbox', checked: walk.railShown('left'), keywords: 'left rail documents', run: () => walk.toggleRailFromMenu('left') },
+            { id: 'view-margin', label: 'Review panel', kind: 'checkbox', checked: walk.railShown('right'), keywords: 'right rail open items', run: () => walk.toggleRailFromMenu('right') },
+          );
+        }
+        if (folding && this.openViewUI?.current() !== 'accord') {
+          items.push({ id: 'view-folded-toggle', label: folding.toggleLabel(), keywords: 'whole open items fold', separatorBefore: true, run: () => folding.toggleWhole() });
+        }
+        if (walk) {
+          items.push({ id: 'view-letter-shortcuts', label: 'Letter shortcuts', kind: 'checkbox', checked: walk.letterShortcutsEnabled(), run: () => walk.toggleLetterShortcuts() });
+          items.push({ id: 'view-reading-settings', label: 'Reading settings…', keywords: 'sitting budget', separatorBefore: !lm, run: () => walk.openReadingSettings() });
+          // Mike, 2026-09-24, yfbqrau4: the retired Line tab no longer hosts a Familiar brief.
+
+        }
+        if (style === 'playmaker' && this.playmakerReview) {
+          const review = this.playmakerReview;
+          items.push({ id: 'view-marks', label: 'Marks panel', kind: 'checkbox', checked: review.panelOpen(), keywords: 'review comments suggestions', run: () => {
+            if (review.panelOpen()) { review.closePanel(); return; }
+            // Accord layout stage 3: the panel docks under the Navigator's Issues list.
+            walk?.showMarksPanel();
+            review.openPanel();
+          } });
+        }
+        if (!REVIEW_STYLE_POLICY.locked) {
+          items.push({ id: 'view-review-style', label: 'Review style', detail: style === 'playmaker' ? 'PlayMaker' : productName(), run: () => setReviewStyle(style === 'playmaker' ? 'proof' : 'playmaker') });
+        }
+        items.push({ id: 'view-keys', label: 'Keyboard shortcuts', keywords: 'keys help', separatorBefore: true, run: () => showKeysDialog() });
+        return items;
+      }),
+      menu('people', () => [
+        { id: 'people-identity', label: this.readingWalk?.identityLabel() ?? 'Your identity',
+          run: () => this.openWhoDialog() },
+        ...(this.lineMarks?.viewerIdentity().signInUrl ? [{ id: 'people-signin', label: 'Sign in',
+          run: () => { window.location.href = this.lineMarks!.viewerIdentity().signInUrl!; } }] : []),
+        { id: 'people-share', label: 'Share…', keywords: 'link access', run: () => { this.openShareDialog('link'); } },
+        { id: 'people-invite', label: 'Invite person…', keywords: 'email team member', enabled: this.teamCanManage === true, run: () => { this.openShareDialog('people'); } },
+        { id: 'people-agent', label: 'Add agent…', keywords: 'ai key runtime sponsor', run: () => { this.openShareDialog('ais'); } },
+        { id: 'people-who', label: 'Who is here', keywords: 'presence collaborators team issues', separatorBefore: true, run: () => this.openWhoDialog() },
+      ]),
+      menu('help', () => [
+        { id: 'help-search', label: 'Search the menus', detail: 'Alt+/', run: () => this.menuBar?.openSearch() },
+        { id: 'help-keys', label: 'Keyboard shortcuts', keywords: 'keys', run: () => showKeysDialog() },
+        { id: 'help-marks', label: 'What the marks mean', keywords: 'legend colours dots amber blue', run: () => showMarksLegend() },
+        { id: 'help-agent-docs', label: 'Agent docs', keywords: 'api ai', separatorBefore: true, run: () => { window.open('/agent-docs', '_blank', 'noopener'); } },
+        { id: 'help-about', label: `About ${productName()}`, run: () => { const id = productIdentity(); showAboutDialog(id.name, id.tagline, id.engineName); } },
+      ]),
+    ];
+  }
+
+  private shareOverflowMenuCleanup: (() => void) | null = null;
+
+  /** Proof Documents Step 1: per-line marks, the Issue count and Next issue. */
+  private ensureLineMarks(): LineMarksUI {
+    if (!this.lineMarks) {
+      this.lineMarks = new LineMarksUI({
+        slug: () => shareClient.getSlug(),
+        apiBase: () => shareClient.getApiBaseUrl(),
+        authHeaders: () => shareClient.getShareAuthHeaders(),
+        actor: () => getCurrentActor(),
+        beforeAct: () => this.ensureViewerNameForWrite(),
+        canComment: () => this.collabCanComment,
+        reviewTeamActors: view => Object.values(getMarkMetadataWithQuotes(view.state))
+          .filter(mark => ['insert', 'delete', 'replace', 'comment'].includes(mark.kind ?? ''))
+          .flatMap(mark => [mark.by, mark.resolvedBy, ...(mark.replies ?? []).map(reply => reply.by)])
+          .filter((actor): actor is string => typeof actor === 'string' && Boolean(actor)),
+        reviewMarks: (view) => getMarks(view.state)
+          .filter(mark => mark.kind === 'comment' || mark.kind === 'insert' || mark.kind === 'delete' || mark.kind === 'replace')
+          .map(mark => {
+            const data = (mark.data ?? {}) as { resolved?: boolean; resolvedBy?: string; status?: string; text?: string; content?: string; replies?: Array<{ by?: string; text?: string; at?: string }> };
+            const open = mark.kind === 'comment' ? data.resolved !== true : (data.status ?? 'pending') === 'pending';
+            // Accord stage D: a comment and a suggestion are both threads, so the thread's own
+            // fields (its opening text, the proposed wording, when it was made) come along too.
+            return { id: mark.id, kind: mark.kind, by: mark.by, at: mark.at, quote: mark.quote, pos: mark.range?.from ?? null, range: mark.range ?? null, open, resolvedBy: data.resolvedBy ?? null, text: data.text ?? null, content: data.content ?? null, resolved: data.resolved === true, replies: data.replies, status: mark.kind === 'comment' ? null : (data.status ?? 'pending') };
+          }),
+        isSuggesting: () => this.isSuggestionsEnabled(),
+        authorsOfRange: (from, to) => {
+          let authors: string[] = [];
+          this.editor?.action(ctx => {
+            authors = getMarks(ctx.get(editorViewCtx).state)
+              .filter(mark => mark.kind === 'authored' && mark.range && mark.range.from < to && mark.range.to > from)
+              .map(mark => mark.by)
+              .filter((by): by is string => typeof by === 'string' && by.length > 0);
+          });
+          return authors;
+        },
+        onDotActivate: (lineIndex) => this.readingWalk?.activateDot(lineIndex) ?? false,
+        openReviewItem: index => this.readingWalk?.openReviewItem(index),
+        nextReview: () => { this.readingWalk?.navigator.next(); },
+        focusLine: (lineIndex) => this.readingWalk?.focusLine(lineIndex) ?? false,
+        viewUpdated: () => { this.readingWalk?.notifyViewUpdate(); this.folding?.queueRender(); this.movesUI?.refresh(); },
+        sectionScope: (lineIndex) => this.folding?.sectionScope(lineIndex) ?? null,
+        sectionAgreement: (lineIndex) => this.folding?.sectionAgreement(lineIndex) ?? null,
+        showSectionLines: (lineIndex) => { this.folding?.showSectionLines(lineIndex); },
+        revealLine: (lineIndex) => this.folding?.reveal(lineIndex) ?? false,
+        // Step B4d: shift-click ranges start at the reading walk's focus line.
+        anchorLine: () => this.readingWalk?.focusIndex() ?? 0,
+        // Step B4c: the sitting budget was used (the rail shows it; phones get the sheet).
+        onBudgetReached: () => this.readingWalk?.budgetReached(),
+        // Step B7: chat messages that point at a line show as a speech bubble in the margin.
+        chatCounts: () => this.chat?.lineCounts() ?? new Map<number, number>(),
+        onChatBubble: (lineIndex) => { this.readingWalk?.focusLine(lineIndex); this.chat?.showLine(lineIndex); },
+        // Step B4f: Explain posts a comment thread on the whole line (its first text block).
+        commentOnLine: (line, text) => {
+          let id: string | null = null;
+          this.editor?.action(ctx => {
+            const view = markApiView(ctx.get(editorViewCtx));
+            let from = -1;
+            let to = -1;
+            const node = view.state.doc.nodeAt(line.pos);
+            if (node?.isTextblock) { from = line.pos + 1; to = line.pos + node.nodeSize - 1; }
+            else node?.descendants((child, childPos) => {
+              if (from >= 0 || !child.isTextblock || child.textContent.trim() === '') return from < 0;
+              from = line.pos + 1 + childPos + 1;
+              to = from + child.content.size;
+              return false;
+            });
+            if (from < 0 || to <= from) return;
+            const quote = normalizeQuote(view.state.doc.textBetween(from, to, '\n', '\n'));
+            const mark = markComment(view, quote, getCurrentActor(), text, { from, to });
+            id = mark?.id ?? null;
+          });
+          return id;
+        },
+      });
+      // Accord stage D: a thread's replies and its resolution act on the mark the thread is, so
+      // the Margin's Changes and the Discussion use exactly one path into the document.
+      this.lineMarks.decideOnMark = (ids, action, text, bundleId) => {
+        this.performReviewDecision(ids, action, text, bundleId);
+        this.playmakerReview?.update();
+      };
+      this.lineMarks.canTurnThreadBack = id => this.canTurnTypedThreadBack(id);
+      this.lineMarks.turnThreadBack = id => this.turnTypedThreadBack(id);
+      (window as unknown as { __proofLineMarks?: LineMarksUI }).__proofLineMarks = this.lineMarks;
+      // Proof Documents Step 1b: the three-column reading layout and the reading walk.
+      const lineMarks = this.lineMarks;
+      // Proof Documents Step B2: folding. Subscribes to line marks before the reading walk does,
+      // so the walk always reads the current hidden lines.
+      this.folding = new FoldingUI({
+        documentLoaded: () => this.initialMarksSynced && (!this.collabEnabled || this.collabIsSynced),
+        slug: () => shareClient.getSlug(),
+        lineMarks: () => lineMarks,
+      });
+      (window as unknown as { __proofFolding?: FoldingUI }).__proofFolding = this.folding;
+      this.readingWalk = new ReadingWalkUI({
+        newDocument: () => { void this.newDocument(); },
+        slug: () => shareClient.getSlug(),
+        suggestChange: (line) => {
+          if (EDIT_SESSION_POLICY.privateDrafts) return this.editGesture?.open(line) ?? false;
+          this.readingWalk?.focusDocument(line);
+          return Boolean(this.readingWalk);
+        },
+        canSuggest: () => this.shareAllowLocalEdits,
+        // Step B6: the reading walk acts as the same identity the line marks write with.
+        actor: () => lineMarks.me(),
+        lineMarks: () => lineMarks,
+        marks: () => {
+          let marks: Mark[] = [];
+          this.editor?.action(ctx => { marks = getMarks(ctx.get(editorViewCtx).state); });
+          return marks;
+        },
+        decide: (ids, action, text, bundleId) => {
+          this.performReviewDecision(ids, action, text, bundleId);
+          this.playmakerReview?.update();
+        },
+        playmaker: () => this.playmakerReview,
+        reviewStyle: () => getReviewStyle(),
+        directEditing: () => isWriting(), // S3's explicit Editing mode, not "suggestions off" (merge fix, Codex diagnosis)
+        folding: () => this.folding,
+        // Step B2 folded sections, plus line tiers' "Show only decisions" (folded context lines).
+        hiddenLines: () => {
+          const hidden = new Set<number>(this.folding?.hiddenLines() ?? []);
+          for (const index of this.lineMarks?.tierFoldedLines() ?? []) hidden.add(index);
+          return hidden;
+        },
+        focusChanged: (lineIndex) => {
+          // Explicit selection updates the chat context without scrolling it.
+          this.chat?.onFocusLine(lineIndex);
+          this.lineMarks?.refreshMoveHandle();
+        },
+        visibleLineFor: (lineIndex) => {
+          let visible = this.folding?.visibleLineFor(lineIndex) ?? lineIndex;
+          const tierFolded = this.lineMarks?.tierFoldedLines() ?? new Set<number>();
+          while (visible > 0 && tierFolded.has(visible)) visible -= 1;
+          return visible;
+        },
+      });
+      (window as unknown as { __proofReadingWalk?: ReadingWalkUI }).__proofReadingWalk = this.readingWalk;
+      // Accord round 2 stage B: the scroll camera is pure, so the check unit-tests the offset rule
+      // in the page without a DOM (scripts/scroll-camera-check.mjs).
+      (window as unknown as { __proofScrollCamera?: unknown }).__proofScrollCamera = { cameraScroll, deadZone, policy: SCROLL_CAMERA_POLICY };
+      const walkUi = this.readingWalk;
+      this.folding.subscribe(() => walkUi.onFoldChange());
+      // Accord round 2 stage C: Open and Accord, two views of one document. It drives the folding
+      // filter, so the Open view uses the SAME folding machinery the outline does — and the reading
+      // walk already steps over hidden lines, which is why J / K run the Open list for free.
+      this.openViewUI = new OpenViewUI({
+        lineMarks: () => lineMarks,
+        folding: () => this.folding,
+        changed: () => { this.mountOpenView(); walkUi.onFoldChange(); this.scheduleBannerLayoutUpdate(); },
+      });
+      (window as unknown as { __proofOpenView?: OpenViewUI }).__proofOpenView = this.openViewUI;
+      this.openViewUI.start();
+      this.mountOpenView();
+      // The one Undo: at the top of the right rail, above the outline controls.
+      this.undoUI = new UndoUI({ stack: () => lineMarks.undoStack() });
+      (window as unknown as { __proofUndo?: UndoUI }).__proofUndo = this.undoUI;
+      this.placeUndo();
+      if (!this.undoPlacementQuery) {
+        try {
+          this.undoPlacementQuery = window.matchMedia('(max-width: 700px)');
+          this.undoPlacementQuery.addEventListener('change', () => this.placeUndo());
+        } catch { /* old browsers: it stays where it was placed */ }
+      }
+      // Mike, 2026-09-23 (usability brief): draft locally, then submit one suggestion.
+      this.editGesture = new EditGestureUI({
+        view: () => { let v: EditorView | null = null; this.editor?.action(ctx => { v = ctx.get(editorViewCtx); }); return v; },
+        slug: () => shareClient.getSlug(),
+        actor: () => lineMarks.me(),
+        canPropose: () => this.shareAllowLocalEdits && !this.isReadOnly && this.reviewLockCount === 0,
+        suggestReplace: (view, quote, by, content, range) => {
+          let parser: Parameters<typeof suggestReplace>[6];
+          this.editor?.action(ctx => { parser = ctx.get(parserCtx); });
+          return suggestReplace(markApiView(view), quote, by, content, range, undefined, parser)?.id ?? null;
+        },
+        pending: (id, content) => this.getAllMarks().some(mark => mark.id === id
+          && (mark.kind === 'replace' || mark.kind === 'insert' || mark.kind === 'delete')
+          && ((mark.data as { status?: string } | undefined)?.status ?? 'pending') === 'pending'
+          && (content === undefined || (mark.data as { content?: string } | undefined)?.content === content)),
+        decide: (ids) => {
+          if (!this.shareAllowLocalEdits || this.isReadOnly || this.reviewLockCount > 0) throw new Error('Connect with editing permission to undo this proposal.');
+          // The draft has its own Undo entry. The inverse uses the existing mark route without
+          // capturing a second native/Accord history entry for the rejection itself.
+          for (const id of ids) if (!this.markReject(id)) throw new Error('This proposal could not be undone.');
+        },
+        undoStack: () => lineMarks.undoStack(),
+        proposed: (lineIndex) => this.readingWalk?.showEditProposed(lineIndex),
+        notice: (text) => this.readingWalk?.showEditNotice(text),
+      });
+      (window as unknown as { __proofEditGesture?: EditGestureUI }).__proofEditGesture = this.editGesture;
+      // Item 3: a lone "?" typed at the end of a line becomes a clarify request to the AIs.
+      this.clarifyUI = new ClarifyUI({
+        view: () => { let v: EditorView | null = null; this.editor?.action(ctx => { v = ctx.get(editorViewCtx); }); return v; },
+        explain: (lineIndex, question) => lineMarks.explainLine(lineIndex, question),
+        lineAtPos: pos => lineMarks.lineAtPos(pos),
+        directEditMeta: () => proofMarkActionMeta,
+        suggesting: () => this.isSuggestionsEnabled(),
+        toast: message => this.showErrorBanner(message),
+      });
+      (window as unknown as { __proofClarify?: ClarifyUI }).__proofClarify = this.clarifyUI;
+      // Proof Documents Step B7: chat beside the document (its own table; never the text or Yjs).
+      this.chat = new ChatUI({
+        slug: () => shareClient.getSlug(),
+        apiBase: () => shareClient.getApiBaseUrl(),
+        authHeaders: () => shareClient.getShareAuthHeaders(),
+        lineMarks: () => lineMarks,
+        focusIndex: () => walkUi.focusIndex(),
+        focusLine: (lineIndex) => walkUi.focusLine(lineIndex),
+        marks: () => {
+          let marks: Mark[] = [];
+          this.editor?.action(ctx => { marks = getMarks(ctx.get(editorViewCtx).state); });
+          return marks;
+        },
+        // Accord layout stage 3 (decision 6): the chat is the Margin's Room tab.
+        inMargin: () => true,
+        railOpen: () => walkUi.isRoomVisible(),
+        openRail: () => walkUi.openRoom(),
+        closeRail: () => walkUi.closeRoom(),
+        onUnread: (count) => {
+          this.chatUnread = count;
+          walkUi.setChatUnread(count);
+          this.updateShareOverflowBadge();
+        },
+        closeOtherSheets: () => { walkUi.closeSheets(); this.playmakerReview?.closePanel(); },
+        beforePost: () => this.ensureViewerNameForWrite(),
+      });
+      this.chat.mountIn(walkUi.chatSlot);
+      const chatUi = this.chat;
+      walkUi.onRoomShown(() => chatUi.roomShown());
+      (window as unknown as { __proofChat?: ChatUI }).__proofChat = this.chat;
+    }
+    if (!this.movesUI) this.movesUI = new MovesUI({
+      view: () => this.lineMarks?.editorView() ?? null,
+      focus: () => this.readingWalk?.focusIndex() ?? 0,
+      folded: line => this.folding?.isFolded(line) ?? false,
+      canMove: () => this.shareAllowLocalEdits && !this.isReadOnly && this.reviewLockCount === 0 && this.collabCanEdit && this.openViewUI?.current() !== 'accord',
+      navigate: line => { this.folding?.expandSectionContaining(line); this.readingWalk?.focusLine(line); },
+      notice: message => this.readingWalk?.showEditNotice(message),
+      propose: (source, place, section) => {
+        const view = this.lineMarks?.editorView(); if (!view) return;
+        const by = this.lineMarks!.me();
+        const members = createMove(view.state.doc, source, place, section, `move-${crypto.randomUUID()}`, by, getMarkMetadataWithQuotes(view.state));
+        if (!members) return;
+        const immediate = this.lineMarks!.immediateMoveActors().includes(actorKey(by));
+        const positions: Array<[HTMLElement, number, number]> = [];
+        for (let node: HTMLElement | null = view.dom; node; node = node.parentElement) positions.push([node, node.scrollTop, node.scrollLeft]);
+        const x = window.scrollX, y = window.scrollY;
+        const restore = () => { positions.forEach(([node, top, left]) => { node.scrollTop = top; node.scrollLeft = left; }); window.scrollTo(x, y); };
+        const previous = this.suppressMarksSync;
+        this.suppressMarksSync = true; this.capturingReviewDecision = true;
+        try {
+          this.getReviewDecisionHistory().decide(() => {
+            applyMoveProposal(view, members, immediate, by);
+            const metadata = getMarkMetadataWithQuotes(view.state);
+            this.lastReceivedServerMarks = { ...metadata }; this.initialMarksSynced = true;
+            collabClient.setMarksMetadata(metadata);
+          });
+          this.recordDecisionUndo(Object.keys(members), immediate ? 'accept' : 'reject', immediate ? 'moved an item' : 'proposed moving an item');
+        } finally { this.suppressMarksSync = previous; this.capturingReviewDecision = false; restore(); requestAnimationFrame(restore); }
+      },
+    });
+    this.lineMarks.start();
+    this.folding?.start();
+    this.undoUI?.start();
+    this.clarifyUI?.start();
+    if (EDIT_SESSION_POLICY.privateDrafts) this.editGesture?.start();
+    this.readingWalk?.start();
+    this.chat?.start();
+    return this.lineMarks;
+  }
+
+  /** Phones only (hidden by CSS above 700px): holds Add agent, Review style and Marks. */
+  private createShareOverflowButton(): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'share-pill-overflow';
+    btn.textContent = '⋯';
+    btn.setAttribute('aria-label', 'More options');
+    this.renderShareOverflowBadge(btn);
+    btn.setAttribute('aria-haspopup', 'menu');
+    btn.setAttribute('aria-expanded', 'false');
+    btn.onclick = () => {
+      if (this.shareOverflowMenuCleanup) { this.shareOverflowMenuCleanup(); return; }
+      this.closeShareMenu();
+      this.closeAgentMenu();
+      const menu = document.createElement('div');
+      menu.className = 'proof-share-overflow-menu';
+      menu.setAttribute('role', 'menu');
+      menu.style.top = `${Math.round(btn.closest('#share-banner')?.getBoundingClientRect().bottom ?? 52) + 6}px`;
+      const close = () => {
+        menu.remove();
+        document.removeEventListener('pointerdown', outside, true);
+        document.removeEventListener('keydown', onKey, true);
+        btn.setAttribute('aria-expanded', 'false');
+        this.shareOverflowMenuCleanup = null;
+      };
+      const outside = (event: Event) => {
+        if (menu.contains(event.target as Node) || btn.contains(event.target as Node)) return;
+        close();
+      };
+      const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') { close(); btn.focus(); } };
+      // Accord layout stage 2: on phones the menu bar folds into this menu. First the phone's own
+      // sheets (this line, the chat, the documents), then File, Edit, View, People and Help.
+      const heading = (text: string) => {
+        const h = document.createElement('div');
+        h.className = 'amb-group';
+        h.setAttribute('role', 'presentation');
+        h.textContent = text;
+        menu.append(h);
+      };
+      const run = (spec: MenuItemSpec) => { close(); spec.run(); };
+      // Polish pass (COS, 2026-09-21: "Phone toolbar matches the mockup"): the phone toolbar is
+      // the title, the Issues pill and this ⋯ (TOOLBAR_POLICY.phoneKeeps). The Suggesting | Editing
+      // switch and Share lead this menu instead (TOOLBAR_POLICY.phoneMenuTop), in that order.
+      const moved = new Set<string>();
+      for (const part of TOOLBAR_POLICY.phoneMenuTop) {
+        if (part === 'mode' && this.isShareMode && this.collabCanEdit) {
+          const on = isWriting();
+          const seg = document.createElement('div');
+          seg.className = 'apm-mode';
+          seg.setAttribute('role', 'group');
+          seg.setAttribute('aria-label', 'Editing mode');
+          seg.append(...buildMenuItems([
+            { id: 'phone-mode-edit', label: on ? 'Leave Editing' : 'Enter Editing', run: () => this.setSuggestingFromChrome(on) },
+          ], run));
+          menu.append(seg);
+          moved.add('edit-suggesting').add('edit-editing');
+        } else if (part === 'share') {
+          menu.append(...buildMenuItems([{ id: 'phone-share', label: 'Share…', keywords: 'link access invite', run: () => { this.openShareDialog('link'); } }], run));
+          moved.add('people-share');
+        }
+      }
+      const phoneItems: MenuItemSpec[] = [];
+      if (this.readingWalk) {
+        // Accord layout stage 3 (decision 11): the Margin sheet on its Line tab, or its Room tab.
+        phoneItems.push({ id: 'phone-line', label: 'Review panel', detail: 'Review', run: () => this.readingWalk?.openSheet('right') });
+      }
+      if (this.chat) {
+        phoneItems.push({ id: 'phone-chat', label: 'Room', detail: this.chatUnread > 0 ? `chat · ${this.chatUnread} @you` : 'chat', run: () => this.chat?.open(true) });
+      }
+      if (this.readingWalk) {
+        phoneItems.push({ id: 'phone-docs', label: `${productIdentity().documentNounPlural} list`, run: () => this.readingWalk?.openSheet('left') });
+      }
+      if (phoneItems.length && moved.size > 0) {
+        const sep = document.createElement('div');
+        sep.className = 'amb-sep';
+        sep.setAttribute('role', 'separator');
+        menu.append(sep);
+      }
+      if (phoneItems.length) menu.append(...buildMenuItems(phoneItems, run));
+      for (const spec of this.menus()) {
+        const items = spec.items().filter(entry => !entry.id.startsWith('view-navigator') && !entry.id.startsWith('view-margin') && entry.id !== 'help-search' && !moved.has(entry.id));
+        if (items.length === 0) continue;
+        heading(spec.label);
+        // The phone list is plain items: a checkbox or radio says "on" at its right.
+        menu.append(...buildMenuItems(items.map((entry, index) => ({
+          ...entry,
+          kind: 'item' as const,
+          detail: entry.kind === 'checkbox' || entry.kind === 'radio' ? (entry.checked ? 'on' : '') : entry.detail,
+          separatorBefore: index > 0 && entry.separatorBefore,
+        })), run));
+      }
+      document.body.append(menu);
+      btn.setAttribute('aria-expanded', 'true');
+      document.addEventListener('pointerdown', outside, true);
+      document.addEventListener('keydown', onKey, true);
+      this.shareOverflowMenuCleanup = close;
+      (menu.querySelector('button') as HTMLButtonElement | null)?.focus();
+    };
+    return btn;
+  }
+
+  /** Step B7: the unread chat @mention count on the phone's ⋯ button. */
+  private updateShareOverflowBadge(): void {
+    const btn = document.querySelector('#share-banner .share-pill-overflow') as HTMLButtonElement | null;
+    if (btn) this.renderShareOverflowBadge(btn);
+  }
+
+  private renderShareOverflowBadge(btn: HTMLButtonElement): void {
+    btn.querySelector('.pch-overflow-badge')?.remove();
+    const n = this.chatUnread;
+    btn.setAttribute('aria-label', n > 0 ? `More options (${n} unread chat ${n === 1 ? 'mention' : 'mentions'})` : 'More options');
+    if (n <= 0) return;
+    const badge = document.createElement('span');
+    badge.className = 'pch-overflow-badge';
+    badge.textContent = String(n);
+    badge.setAttribute('aria-hidden', 'true');
+    btn.append(badge);
+  }
+
+  private createReviewStyleControl(): HTMLElement {
+    if (!this.playmakerReview) {
+      this.playmakerReview = new PlayMakerReview({
+        marks: () => {
+          let marks: Mark[] = [];
+          this.editor?.action(ctx => { marks = getMarks(ctx.get(editorViewCtx).state); });
+          return marks;
+        },
+        decide: (ids, action, text) => this.performReviewDecision(ids, action, text),
+        history: redo => this.restoreReviewDecision(redo),
+        jump: id => {
+          // Editing first (2026-09-19): a Marks row moves the reading walk's focus line to the
+          // mark's line; the rail shows its comments and changes. No dialog opens.
+          let from: number | null = null;
+          this.editor?.action(ctx => {
+            const mark = getMarks(ctx.get(editorViewCtx).state).find(item => item.id === id);
+            from = typeof mark?.range?.from === 'number' ? mark.range.from : null;
+          });
+          const line = from !== null && this.lineMarks ? this.lineMarks.lineAtPos(from) : -1;
+          if (line >= 0 && this.readingWalk?.focusLine(line)) return;
+          const element = document.querySelector<HTMLElement>(`.ProseMirror [data-mark-id="${CSS.escape(id)}"]`);
+          element?.scrollIntoView({ block: 'center', behavior: 'instant' });
+        },
+        changed: () => {
+          this.closeSuggestionReviewMenu();
+          this.shareSuggestionReviewSignature = '';
+          this.updateShareSuggestionReviewDisplay();
+        },
+        // The one Undo (Mike, 2026-09-19): Cmd/Ctrl+Z reverses whichever came last, a typed edit
+        // or a Proof action. Returning false leaves the keystroke to the text history.
+        proofUndo: redo => this.undoUI?.handleKey(redo) ?? false,
+        // Item 2: undo the viewer's own earlier decision on one mark (what the "Reject did
+        // nothing, you already accepted it" notice offers).
+        undoDecision: id => this.undoDecisionForMark(id),
+      });
+    }
+    return this.playmakerReview.control;
+  }
+
+  private getReviewDecisionHistory(): ReviewDecisionHistory {
+    const doc = collabClient.getYDoc();
+    if (!doc || !this.collabCanEdit || this.getShareSuggestionResolutionTransport() !== 'collab') {
+      throw new Error('Connect to the document before deciding. Your mark is still open.');
+    }
+    const view = this.editor?.ctx.get(editorViewCtx);
+    const manager = view && yUndoPluginKey.getState(view.state)?.undoManager;
+    if (!manager) throw new Error('The editor is still loading.');
+    if (this.reviewDecisionHistory?.doc !== doc || this.reviewDecisionHistory.manager !== manager) {
+      this.reviewDecisionHistory?.destroy();
+      this.reviewDecisionHistory = new ReviewDecisionHistory(doc, manager, view);
+      this.reviewDecisionIds.clear();
+    }
+    return this.reviewDecisionHistory;
+  }
+
+  /** One native transaction for the withdrawal and its comment, and one Proof Undo for the row. */
+  private typedDiscussionDecision(action: (view: EditorView) => void, record = true): ReturnType<ReviewDecisionHistory['checkpoint']> {
+    const history = this.getReviewDecisionHistory();
+    const view = this.editor!.ctx.get(editorViewCtx);
+    const previous = this.suppressMarksSync;
+    this.suppressMarksSync = true;
+    this.capturingReviewDecision = true;
+    const scrollers: Array<{ node: HTMLElement; top: number; left: number }> = [];
+    for (let node: HTMLElement | null = view.dom; node; node = node.parentElement) {
+      scrollers.push({ node, top: node.scrollTop, left: node.scrollLeft });
+    }
+    const x = window.scrollX, y = window.scrollY;
+    try {
+      const apply = () => {
+        action(view);
+        const metadata = getMarkMetadataWithQuotes(view.state);
+        this.lastReceivedServerMarks = { ...metadata };
+        this.initialMarksSynced = true;
+        collabClient.setMarksMetadata(metadata);
+      };
+      if (record) history.decide(apply); else history.withoutRecording(apply);
+    } finally {
+      this.capturingReviewDecision = false;
+      this.suppressMarksSync = previous;
+      for (const { node, top, left } of scrollers) { node.scrollTop = top; node.scrollLeft = left; }
+      if (window.scrollX !== x || window.scrollY !== y) window.scrollTo(x, y);
+      this.scheduleShareSuggestionReviewDisplay(view);
+    }
+    return history.checkpoint();
+  }
+
+  private async convertTypedDiscussion(run: TypedDiscussionRun): Promise<void> {
+    const lm = this.lineMarks;
+    if (!lm || !this.shareAllowLocalEdits || !this.collabCanEdit) return;
+    const currentView = this.editor!.ctx.get(editorViewCtx);
+    const item = typedItemAt(currentView.state.doc, run.from);
+    if (!item || !(currentView.state.doc.textBetween(item.from + 1, run.from, '', '')
+      + currentView.state.doc.textBetween(run.to, item.end, '', '')).trim()) {
+      this.readingWalk?.showEditNotice('This item has no other text to discuss. Your question stays a proposal.');
+      return;
+    }
+    if (run.text.trim().length > TYPED_DISCUSSION_POLICY.maxThreadCharacters) {
+      this.readingWalk?.showEditNotice('This is longer than a discussion can hold. Your words stay a proposal.');
+      return;
+    }
+    const id = typedDiscussionId(run.id);
+    let started: Promise<string | null> = Promise.resolve(null);
+    let commentId: string | undefined;
+    const line = lm.lineAtPos(run.from);
+    const checkpoint = this.typedDiscussionDecision(view => {
+      const batch = prepareSuggestionBatch(view, [run.id], 'reject', this.editor!.ctx.get(parserCtx));
+      if (batch.failedIds.length) throw new Error('The proposal changed. Its words are still text.');
+      batch.apply();
+      this.reviewDecisionIds.add(run.id);
+    });
+    // Step 4 review, 2026-09-25: the discussion's comment is written outside the recorded step.
+    // Inside it, Undo let Yjs delete a comment the server still stored; the server put it back and
+    // the page re-synced for 6 to 10 seconds. Turning the discussion back resolves the comment.
+    this.typedDiscussionDecision(() => {
+      started = lm.startThread({ lines: [line], text: run.text.trim(), asks: 'answer', waitingOn: run.waitingOn },
+        { id, recordUndo: false, announce: false, onComment: id => { commentId = id; } });
+    }, false);
+    const record = { checkpoint, entryId: undefined as string | undefined };
+    this.typedDiscussionHistory.set(id, record);
+    // Publish Undo immediately, even if the row request is still in flight.
+    const entry = lm.undoStack().pushSimple('thread', `asked a discussion on line ${line + 1}`, async () => {
+      if (!await started) return { ok: false, reason: 'The discussion was not saved; its text has been restored.' };
+      return await this.turnTypedThreadBack(id) ? { ok: true } : { ok: false, reason: 'Could not turn this discussion back into text. It may have a reply now.' };
+    });
+    record.entryId = entry?.id;
+    if (!await started) {
+      // A lost HTTP response may have saved the row. Keep a resolved comment
+      // record even in that case, so it cannot reappear as an orphan discussion.
+      await this.restoreTypedDiscussionText(id, run.text, line, commentId);
+      this.getReviewDecisionHistory().forgetCheckpoint(checkpoint);
+      if (entry) lm.undoStack().forget(entry.id);
+      this.typedDiscussionHistory.delete(id);
+      throw new Error('Could not save the discussion. Its words were kept as a proposal.');
+    }
+    this.readingWalk?.showEditNotice(TYPED_DISCUSSION_POLICY.sent.replace('{line}', String(line + 1)));
+  }
+
+  private canTurnTypedThreadBack(id: string): boolean {
+    const thread = this.lineMarks?.threadById(id)?.thread;
+    return Boolean(typedDiscussionInsertId(id) && thread && thread.status === 'open' && thread.replies.length === 0
+      && (TYPED_DISCUSSION_POLICY.turnBackAfterReload || this.typedDiscussionHistory.has(id))
+      && this.lineMarks?.canCommentHere() && this.shareAllowLocalEdits && this.collabCanEdit
+      && actorKey(thread.by) === actorKey(this.lineMarks.me()));
+  }
+
+  /** Also works after reload: the row ID points at the existing withdrawal record. */
+  private async turnTypedThreadBack(id: string): Promise<boolean> {
+    if (!this.canTurnTypedThreadBack(id) || this.returningTypedThreads.has(id)) return false;
+    const lm = this.lineMarks!;
+    const thread = lm.threadById(id)!;
+    const line = thread.lineIndex;
+    if (line === null || thread.detached) { this.readingWalk?.showEditNotice('The item is gone. Keep the discussion until it has a new home.'); return false; }
+    this.returningTypedThreads.add(id);
+    let removed = false;
+    try {
+      const record = this.typedDiscussionHistory.get(id);
+      const history = this.getReviewDecisionHistory();
+      if (!await lm.takeBackTypedThread(id)) return false;
+      removed = true;
+      if (record && history.canRestoreCheckpoint(record.checkpoint)) {
+        // The comment was never in the recorded step, so close it as a decision first; then the
+        // conversion's own step (the withdrawal) is on top again, and undoing it reopens the words.
+        this.resolveTypedDiscussionComment(thread.thread.markId);
+        if (!history.canRestoreCheckpoint(record.checkpoint)) throw new Error('Could not turn the discussion back into text.');
+        this.restoreReviewDecision(false);
+        // The thread row was removed; native Redo must not recreate only its comment.
+        if (!TYPED_DISCUSSION_POLICY.redoConversion) history.manager.redoStack.length = 0;
+      } else {
+        const view = this.editor!.ctx.get(editorViewCtx);
+        const original = getMarkMetadataWithQuotes(view.state)[typedDiscussionInsertId(id)!];
+        const text = typeof original?.content === 'string' ? original.content : TYPED_DISCUSSION_POLICY.missingOriginalPrefix + thread.thread.text;
+        await this.restoreTypedDiscussionText(id, text, line, thread.thread.markId);
+        history.forgetCheckpoint(record?.checkpoint);
+      }
+      if (record?.entryId) lm.undoStack().forget(record.entryId);
+      this.typedDiscussionHistory.delete(id);
+      return true;
+    } catch (error) {
+      console.warn('[typed-discussion] turning a discussion back into text failed', error);
+      if (removed) await lm.restoreTypedThreadRow(thread.thread);
+      this.readingWalk?.showEditNotice(error instanceof Error ? error.message : 'Could not turn the discussion back into text.');
+      return false;
+    } finally { this.returningTypedThreads.delete(id); }
+  }
+
+  /** Resolve a typed discussion's comment by the one path every decision takes, then drop that
+   * history step: the take-back owns it, and a later Undo must not reopen an orphan comment. */
+  private resolveTypedDiscussionComment(commentId: string | null | undefined): void {
+    if (!commentId || !this.editor) return;
+    const view = this.editor.ctx.get(editorViewCtx);
+    if (!getMarks(view.state).some(mark => mark.id === commentId)) return;
+    const history = this.getReviewDecisionHistory();
+    const top = history.checkpoint();
+    this.performReviewDecision([commentId], 'resolve');
+    const added = history.checkpoint();
+    if (added && added !== top) history.forgetCheckpoint(added);
+  }
+
+  private async restoreTypedDiscussionText(id: string, text: string, lineIndex: number, commentId?: string | null): Promise<void> {
+    const view = this.editor!.ctx.get(editorViewCtx);
+    // The server's take-back removes the thread's comment, and its marks update can arrive before
+    // this runs (after a reload there is no local record to restore from). A missing comment then
+    // means it is already gone, not that the anchor moved: the thread's own line is the anchor.
+    const comment = commentId ? getMarks(view.state).find(mark => mark.id === commentId && mark.range) : null;
+    const currentLine = comment?.range ? this.lineMarks!.lineAtPos(comment.range.from) : lineIndex;
+    const line = this.lineMarks?.lineList()[currentLine];
+    if (!line) throw new Error('The item is gone; the discussion was kept.');
+    const item = typedItemAt(view.state.doc, line.pos + 1);
+    if (!item) throw new Error('The item cannot be edited here.');
+    // Removing the row already took the discussion back. Undo of the restored
+    // typing must not reopen an orphan comment without its thread row.
+    // Resolve the comment by the one path every decision takes (as a thread's own Undo does), then
+    // drop that history step: the take-back owns it, and Undo must not reopen an orphan comment.
+    // A resolve written outside that path (review, 2026-09-25) looped the marks sync after a reload.
+    if (comment && commentId) this.resolveTypedDiscussionComment(commentId);
+    // Put the words back the way typing puts them in: a plain local insertion, which the editor's
+    // dispatch wraps into the person's own pending insert, with typing's history (one Undo takes
+    // it back) and typing's marks sync. Step 4 review, 2026-09-25: a separately built insert inside
+    // a decision transaction made the marks sync loop after a reload (Yjs cleanup recursed until
+    // the stack ran out). The words stay text: the typed-discussion rule must not send them again.
+    const me = actorKey(getCurrentActor());
+    const before = new Set(getMarks(view.state).map(mark => mark.id));
+    view.dispatch(view.state.tr.insertText(text, item.end));
+    const restored = getMarks(view.state).find(mark => mark.kind === 'insert' && !before.has(mark.id) && actorKey(mark.by) === me);
+    if (!restored) throw new Error('Could not restore the text.');
+    this.typedDiscussions?.keepAsText(restored.id);
+    this.typedDiscussionHistory.delete(id);
+  }
+
+  private performReviewDecision(ids: string[], action: ReviewAction, text?: string, bundleId?: string): void {
+    const history = this.getReviewDecisionHistory();
+    if (!this.editor) throw new Error('The editor is still loading.');
+    this.editor.action(ctx => {
+      const view = ctx.get(editorViewCtx);
+      const parser = ctx.get(parserCtx);
+      const batch = action === 'accept' || action === 'reject' ? prepareSuggestionBatch(view, ids, action, parser) : null;
+      if (batch?.failedIds.length) {
+        const verb = action === 'accept' ? 'accepted' : 'rejected';
+        throw Object.assign(new Error(`${batch.failedIds.length} of ${ids.length} suggestions changed and can't be ${verb}. Nothing was changed.`), { failedIds: batch.failedIds });
+      }
+      const previousSuppress = this.suppressMarksSync;
+      this.suppressMarksSync = true;
+      this.capturingReviewDecision = true;
+      let failed = 0;
+      try {
+        history.decide(() => {
+          failed = 0;
+          if (batch) {
+            batch.apply(); ids.forEach(id => this.reviewDecisionIds.add(id));
+          } else for (const id of [...ids].reverse()) {
+            const ok = action === 'resolve' ? markResolve(view, id)
+              : markReply(view, id, getCurrentActor(), text || '');
+            if (!ok) { failed += 1; continue; }
+            this.reviewDecisionIds.add(id);
+          }
+          const metadata = getMarkMetadataWithQuotes(view.state);
+          this.lastReceivedServerMarks = { ...metadata };
+          this.initialMarksSynced = true;
+          collabClient.setMarksMetadata(metadata);
+        });
+        if (failed) throw new Error(`${failed} mark${failed === 1 ? ' has' : 's have'} changed. Please review the remaining marks again.`);
+      } finally {
+        this.capturingReviewDecision = false;
+        this.suppressMarksSync = previousSuppress;
+        this.scheduleShareSuggestionReviewDisplay(view);
+      }
+    });
+    this.recordDecisionUndo(ids, action, undefined, bundleId);
+  }
+
+  /**
+   * The one Undo: a suggestion decision (accept / reject / resolve) goes on the person's stack.
+   * Its inverse is the editor's own decision history, which refuses when the text moved under it,
+   * so an undo never rewrites what someone typed after the decision.
+   */
+  private recordDecisionUndo(ids: string[], action: ReviewAction, description?: string, bundleId?: string): void {
+    if (action === 'reply' || ids.length === 0) return;
+    const stack = this.lineMarks?.undoStack();
+    if (!stack) return;
+    const verb = action === 'accept' ? 'accepted' : action === 'reject' ? 'rejected' : 'resolved';
+    // A move is two records (remove + insert) but one change to a person: 'Undo accepted a move',
+    // not 'Undo accepted 2 changes' (step 6 review, 2026-09-26).
+    const view = this.lineMarks?.editorView();
+    const metadata = view ? getMarkMetadataWithQuotes(view.state) : {};
+    const moveIds = new Set(ids.map(id => metadata[id]?.move?.spec.id));
+    const oneMove = moveIds.size === 1 && !moveIds.has(undefined);
+    const what = oneMove ? 'a move' : ids.length === 1 ? (action === 'resolve' ? 'a comment' : 'a change') : `${ids.length} ${action === 'resolve' ? 'comments' : 'changes'}`;
+    const bundleDecision = bundleId && (action === 'accept' || action === 'reject')
+      ? (action === 'accept' ? 'accepted' : 'rejected') as 'accepted' | 'rejected'
+      : null;
+    const entry = stack.pushSimple(action === 'resolve' ? 'comment' : 'suggestion', description ?? `${verb} ${what}`, async () => {
+      try {
+        if (bundleId) await this.lineMarks?.whenBundleDecisionSettled(bundleId);
+        const changed = this.restoreReviewDecision(false);
+        if (!changed) return { ok: false, reason: 'Not undone: that decision is no longer the newest change to the text.' };
+        if (bundleId) {
+          const reopened = await this.lineMarks?.reopenBundleDecision(bundleId);
+          if (!reopened) return { ok: false, reason: 'The bundle could not be reopened on the server.' };
+        }
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, reason: error instanceof Error ? error.message : 'Could not undo that decision.' };
+      }
+    }, async () => {
+      try {
+        if (bundleId) await this.lineMarks?.whenBundleDecisionSettled(bundleId);
+        const changed = this.restoreReviewDecision(true);
+        if (!changed) return { ok: false, reason: 'Could not redo that decision.' };
+        if (bundleId && bundleDecision) {
+          const recorded = await this.lineMarks?.recordBundleDecision(bundleId, bundleDecision);
+          if (!recorded) return { ok: false, reason: 'The bundle decision could not be recorded again.' };
+        }
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, reason: error instanceof Error ? error.message : 'Could not redo that decision.' };
+      }
+    });
+    if (entry) for (const id of ids) this.decisionUndoEntries.set(id, entry.id);
+  }
+
+  /** markId -> the undo entry that reverses the viewer's decision on it (item 2's Undo button). */
+  private readonly decisionUndoEntries = new Map<string, string>();
+
+  /**
+   * Item 2: undo the viewer's own earlier decision on one mark. Only the newest decision can be
+   * reversed on its own: anything else would step over decisions and edits made since, which is
+   * exactly what the one Undo refuses to do.
+   */
+  private async undoDecisionForMark(id: string): Promise<{ ok: boolean; reason?: string }> {
+    const stack = this.lineMarks?.undoStack();
+    if (!stack) return { ok: false, reason: 'Undo is not available on this document.' };
+    const entryId = this.decisionUndoEntries.get(id);
+    const next = stack.next();
+    if (!entryId || !next) return { ok: false, reason: 'That decision was made in an earlier session and cannot be undone here.' };
+    if (next.id !== entryId) return { ok: false, reason: `Not undone: you have done other things since (the newest is “${next.description}”). Use Undo in the rail, step by step.` };
+    const result = await stack.undo();
+    this.decisionUndoEntries.delete(id);
+    return result.ok ? { ok: true } : { ok: false, reason: result.message };
+  }
+
+  private restoreReviewDecision(redo: boolean): boolean {
+    const history = this.getReviewDecisionHistory();
+    clearResolvedMarkTombstones([...this.reviewDecisionIds]);
+    const previousSuppress = this.suppressMarksSync;
+    this.suppressMarksSync = true;
+    this.restoringReviewDecision = true;
+    try {
+      const changed = redo ? history.redo() : history.undo();
+      const metadata = history.doc.getMap('marks').toJSON() as Record<string, StoredMark>;
+      this.lastReceivedServerMarks = { ...metadata };
+      this.editor?.action(ctx => {
+        const view = ctx.get(editorViewCtx);
+        view.dispatch(view.state.tr.setMeta(marksPluginKey, { type: 'SET_METADATA', metadata }).setMeta('addToHistory', false));
+        collabClient.setMarksMetadata(metadata);
+        this.scheduleShareSuggestionReviewDisplay(view);
+      });
+      return changed;
+    } finally {
+      this.restoringReviewDecision = false;
+      this.suppressMarksSync = previousSuppress;
+    }
+  }
+
+  private createSuggestToggleButton(): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'share-pill-suggest-toggle';
+    btn.style.cssText = `
+      display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:44px;min-width:44px;padding:0 12px;
+      background:rgba(255,255,255,0.7);border:1px solid rgba(17,24,39,0.10);border-radius:22px;color:#111827;
+      font-size:12px;font-weight:600;cursor:pointer;transition:background 0.15s,border-color 0.15s;flex-shrink:0;font-family:inherit;
+    `;
+    btn.onmouseenter = () => { btn.style.background = '#fff'; btn.style.borderColor = 'rgba(17,24,39,0.20)'; };
+    btn.onmouseleave = () => { btn.style.background = 'rgba(255,255,255,0.7)'; btn.style.borderColor = 'rgba(17,24,39,0.10)'; };
+    btn.classList.add('amb-seg');
+    btn.onclick = () => this.setSuggestingFromChrome(isWriting());
+    this.shareBannerSuggestBtnEl = btn;
+    // Writing also ends without this button (Escape, a click outside the text), so the label
+    // follows the caret rather than the last press.
+    this.suggestToggleWritingUnsub ??= onWritingChange(() => this.updateSuggestToggleDisplay());
+    return btn;
+  }
+
+  /** Retain the labelled control as another way to enter or leave the text. */
+  private setSuggestingFromChrome(review: boolean): void {
+    if (!this.collabCanEdit) return;
+    if (EDIT_SESSION_POLICY.liveProposals) {
+      this.enableSuggestions();
+      if (review) (document.activeElement as HTMLElement | null)?.blur();
+      else this.editor?.ctx.get(editorViewCtx).focus();
+    } else this.disableSuggestions();
+    setDirectEditing(!review);
+    this.updateEditableState();
+    this.updateSuggestToggleDisplay();
+  }
+
+  private updateSuggestToggleDisplay(): void {
+    const btn = this.shareBannerSuggestBtnEl;
+    if (!btn) return;
+    const phone = window.matchMedia?.('(max-width: 700px)').matches ?? window.innerWidth <= 700;
+    const visible = this.isShareMode && this.collabCanEdit && !phone;
+    btn.textContent = isWriting() ? 'Leave text' : 'Edit text';
+    btn.setAttribute('aria-pressed', String(isWriting()));
+    btn.setAttribute('aria-label', btn.textContent);
+    btn.title = 'Click text to propose changes as you type. Escape returns to Review.';
+    btn.style.display = visible ? 'inline-flex' : 'none';
+  }
+
+  private getAnchoredPendingSuggestions(viewOverride?: EditorView): Mark[] {
+    const collect = (view: EditorView): Mark[] => getPendingSuggestions(getMarks(view.state))
+      .filter((mark) => {
+        const range = mark.range;
+        return Boolean(range && Number.isFinite(range.from) && Number.isFinite(range.to) && range.to > range.from);
+      })
+      .sort((a, b) => (a.range?.from ?? 0) - (b.range?.from ?? 0));
+
+    if (viewOverride) return collect(viewOverride);
+    if (!this.editor) return [];
+
+    let pending: Mark[] = [];
+    this.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      pending = collect(view);
+    });
+    return pending;
+  }
+
+  private openSuggestionPopover(markId: string): void {
+    if (!this.editor) return;
+    this.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      openMarkPopover(view, markId);
+    });
+  }
+
+  private createShareSuggestionReviewButton(): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'share-pill-suggestion-review';
+    btn.style.cssText = `
+      display:none;align-items:center;justify-content:center;gap:6px;min-height:44px;min-width:44px;padding:0 12px;
+      background:rgba(255,255,255,0.7);border:1px solid rgba(17,24,39,0.10);border-radius:22px;color:#111827;
+      font-size:12px;font-weight:600;cursor:pointer;transition:background 0.15s,border-color 0.15s;flex-shrink:0;font-family:inherit;
+      font-variant-numeric: tabular-nums;
+    `;
+    btn.setAttribute('aria-haspopup', 'menu');
+    btn.setAttribute('aria-expanded', 'false');
+    btn.onmouseenter = () => { btn.style.background = '#fff'; btn.style.borderColor = 'rgba(17,24,39,0.20)'; };
+    btn.onmouseleave = () => { btn.style.background = 'rgba(255,255,255,0.7)'; btn.style.borderColor = 'rgba(17,24,39,0.10)'; };
+    btn.onclick = () => {
+      this.triggerHaptic('selection');
+      this.closeShareMenu();
+      this.closePresenceMenu();
+      this.closeAgentMenu();
+      if (this.suggestionReviewMenuCleanup) {
+        this.closeSuggestionReviewMenu();
+        return;
+      }
+      const pending = this.getAnchoredPendingSuggestions();
+      if (pending.length === 0) {
+        this.updateShareSuggestionReviewDisplay();
+        return;
+      }
+
+      const parent = btn.parentElement;
+      if (!parent) return;
+
+      const menu = document.createElement('div');
+      menu.setAttribute('role', 'menu');
+      menu.style.cssText = `
+        position:absolute;top:calc(100% + 8px);right:0;min-width:220px;
+        background:rgba(17,24,39,0.96);border:1px solid rgba(255,255,255,0.12);
+        border-radius:12px;padding:6px;z-index:1002;
+        box-shadow:0 16px 40px rgba(0,0,0,0.35);
+        backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+      `;
+
+      const addActionItem = (title: string, onSelect: () => boolean) => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.setAttribute('role', 'menuitem');
+        item.style.cssText = `
+          width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;
+          padding:10px 12px;min-height:44px;border-radius:10px;border:0;background:transparent;
+          color:rgba(255,255,255,0.92);font-size:12px;font-weight:600;cursor:pointer;text-align:left;
+        `;
+        item.onmouseenter = () => { item.style.background = 'rgba(255,255,255,0.08)'; };
+        item.onmouseleave = () => { item.style.background = 'transparent'; };
+        const left = document.createElement('span');
+        left.textContent = title;
+        const right = document.createElement('span');
+        right.textContent = '›';
+        right.style.cssText = 'font-weight:700;opacity:0.8';
+        item.append(left, right);
+        item.onclick = () => {
+          const ok = onSelect();
+          if (ok) cleanup();
+        };
+        menu.appendChild(item);
+      };
+
+      addActionItem('Next suggestion', () => {
+        const markId = this.navigateToNextSuggestion();
+        if (!markId) return false;
+        this.openSuggestionPopover(markId);
+        return true;
+      });
+      addActionItem('Accept all', () => {
+        const count = this.getAnchoredPendingSuggestions().length;
+        if (count <= 0) return false;
+        const confirmed = window.confirm(`Accept all ${count} suggestion${count === 1 ? '' : 's'}?`);
+        if (!confirmed) return false;
+        withHumanReviewWrite(() => this.markAcceptAll());
+        return true;
+      });
+      addActionItem('Reject all', () => {
+        const count = this.getAnchoredPendingSuggestions().length;
+        if (count <= 0) return false;
+        const confirmed = window.confirm(`Reject all ${count} suggestion${count === 1 ? '' : 's'}?`);
+        if (!confirmed) return false;
+        withHumanReviewWrite(() => this.markRejectAll());
+        return true;
+      });
+
+      const container = document.createElement('div');
+      container.style.cssText = 'position:relative;display:inline-flex;align-items:center;';
+      btn.replaceWith(container);
+      container.appendChild(btn);
+      container.appendChild(menu);
+      this.clampMenuToViewport(menu);
+      btn.setAttribute('aria-expanded', 'true');
+
+      const onDocMouseDown = (ev: MouseEvent) => {
+        if (!(ev.target instanceof Node)) return;
+        if (container.contains(ev.target)) return;
+        cleanup();
+      };
+      const onKeyDown = (ev: KeyboardEvent) => {
+        if (ev.key === 'Escape') cleanup();
+      };
+      const cleanup = () => {
+        document.removeEventListener('mousedown', onDocMouseDown, true);
+        document.removeEventListener('keydown', onKeyDown, true);
+        if (menu.isConnected) menu.remove();
+        if (container.isConnected) {
+          container.replaceWith(btn);
+        }
+        btn.setAttribute('aria-expanded', 'false');
+        if (this.suggestionReviewMenuCleanup === cleanup) this.suggestionReviewMenuCleanup = null;
+      };
+
+      this.suggestionReviewMenuCleanup = cleanup;
+      document.addEventListener('mousedown', onDocMouseDown, true);
+      document.addEventListener('keydown', onKeyDown, true);
+    };
+    this.shareBannerSuggestionReviewBtnEl = btn;
+    return btn;
+  }
+
+  private updateShareSuggestionReviewDisplay(viewOverride?: EditorView): void {
+    this.playmakerReview?.update();
+    const btn = this.shareBannerSuggestionReviewBtnEl;
+    if (!btn) return;
+    const canShow = this.isShareMode && this.collabCanEdit && getReviewStyle() === 'proof';
+    if (!canShow) {
+      if (this.shareSuggestionReviewSignature !== 'hidden') {
+        btn.style.display = 'none';
+        this.shareSuggestionReviewSignature = 'hidden';
+        this.closeSuggestionReviewMenu();
+        this.scheduleBannerLayoutUpdate();
+      }
+      return;
+    }
+
+    const pending = this.getAnchoredPendingSuggestions(viewOverride);
+    if (pending.length === 0) {
+      if (this.shareSuggestionReviewSignature !== 'hidden') {
+        btn.style.display = 'none';
+        this.shareSuggestionReviewSignature = 'hidden';
+        this.closeSuggestionReviewMenu();
+        this.scheduleBannerLayoutUpdate();
+      }
+      return;
+    }
+
+    const label = `${pending.length} suggestion${pending.length === 1 ? '' : 's'}`;
+    const signature = `${label}:${pending.map((mark) => mark.id).join(',')}`;
+    if (this.shareSuggestionReviewSignature === signature) return;
+
+    this.shareSuggestionReviewSignature = signature;
+    btn.style.display = 'inline-flex';
+    btn.replaceChildren();
+    const countLabel = document.createElement('span');
+    countLabel.textContent = label;
+    btn.appendChild(countLabel);
+    btn.title = 'Review pending suggestions';
+    btn.setAttribute('aria-label', `${label}. Open suggestion review actions.`);
+    this.scheduleBannerLayoutUpdate();
+  }
+
+  private scheduleShareSuggestionReviewDisplay(viewOverride?: EditorView): void {
+    if (viewOverride) {
+      this.pendingShareSuggestionReviewView = viewOverride;
+    }
+    this.shareSuggestionReviewUpdateScheduler.schedule(() => {
+      const scheduledView = this.pendingShareSuggestionReviewView ?? undefined;
+      this.pendingShareSuggestionReviewView = null;
+      this.updateShareSuggestionReviewDisplay(scheduledView);
+    });
+  }
+
+  private cancelShareSuggestionReviewDisplayUpdate(): void {
+    this.pendingShareSuggestionReviewView = null;
+    this.shareSuggestionReviewUpdateScheduler.cancel();
   }
 
   private uninstallShareAgentPresenceObservers(): void {
@@ -3608,24 +5358,17 @@ class ProofEditorImpl implements ProofEditor {
       });
     };
 
-    const refresh = () => {
-      const nowMs = Date.now();
-      const ttlMs = 60_000;
+    const refresh = (event?: any) => {
+      event?.changes?.keys?.forEach((change: { action: string }, id: string) => {
+        if (change.action === 'delete') this.shareAgentPresenceFallback.delete(id);
+      });
       const entries: any[] = [];
       try {
         presenceMap.forEach((value: any) => entries.push(value));
       } catch {
         // ignore
       }
-
-      const fresh = entries.filter((e) => {
-        if (!e || typeof e !== 'object') return false;
-        const at = (e as any).at;
-        if (typeof at !== 'string' || !at.trim()) return true;
-        const parsed = Date.parse(at);
-        if (!Number.isFinite(parsed)) return true;
-        return (nowMs - parsed) <= ttlMs;
-      });
+      const fresh = entries.filter((entry) => entry && getAgentPresenceDisplay(entry).visible);
 
       const active = fresh.filter((e) => e && typeof e === 'object' && typeof e.status === 'string' && e.status !== 'idle');
       const chosen = (active.length > 0 ? active : fresh).slice(0, 3);
@@ -3657,10 +5400,8 @@ class ProofEditorImpl implements ProofEditor {
       this.shareAgentActivitySignature = activitySignature;
       this.shareAgentActivityItems = items;
 
-      if (summaryChanged || activityChanged) {
-        this.updateShareBannerPresenceDisplay();
-        this.updateShareBannerAgentControlDisplay();
-      }
+      if (summaryChanged || activityChanged) this.updateShareBannerPresenceDisplay();
+      this.updateShareBannerAgentControlDisplay();
     };
 
     try {
@@ -3836,6 +5577,13 @@ class ProofEditorImpl implements ProofEditor {
     cleanup();
   }
 
+  private closeSuggestionReviewMenu(): void {
+    if (!this.suggestionReviewMenuCleanup) return;
+    const cleanup = this.suggestionReviewMenuCleanup;
+    this.suggestionReviewMenuCleanup = null;
+    cleanup();
+  }
+
   private clampMenuToViewport(menu: HTMLElement): void {
     const margin = 12;
     const rect = menu.getBoundingClientRect();
@@ -3858,6 +5606,45 @@ class ProofEditorImpl implements ProofEditor {
       return url.toString();
     } catch {
       return window.location.href;
+    }
+  }
+
+  /**
+   * The Accord dialect (2026-09-19; named 2026-09-21): "Download as Accord (.accord.md)" — the
+   * document with every mark stored beside it (GET /api/documents/<slug>/export?format=proof-dialect,
+   * the canonical machine value), saved as `<title>.accord.md`.
+   */
+  async downloadProofDocument(format: 'proof-dialect' | 'criticmarkup' | 'plain' = 'proof-dialect'): Promise<boolean> {
+    const slug = shareClient.getSlug();
+    if (!slug) return false;
+    try {
+      const response = await fetch(`${shareClient.getApiBaseUrl()}/documents/${encodeURIComponent(slug)}/export?format=${format}`, {
+        credentials: 'same-origin',
+        headers: shareClient.getShareAuthHeaders(),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const text = await response.text();
+      const disposition = response.headers.get('content-disposition') ?? '';
+      const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? `${slug}.accord.md`;
+      const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.style.display = 'none';
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      return true;
+    } catch (error) {
+      console.warn('[proof] export failed', error);
+      const toast = document.createElement('div');
+      toast.className = 'proof-external-change-toast proof-export-failed-toast';
+      toast.setAttribute('role', 'alert');
+      toast.textContent = `Could not download the ${documentNoun()}. Try again.`;
+      document.body.append(toast);
+      setTimeout(() => toast.remove(), 4000);
+      return false;
     }
   }
 
@@ -3896,32 +5683,16 @@ class ProofEditorImpl implements ProofEditor {
     }
   }
 
-  private extractShareTokenFromUrl(shareUrl: string): string | null {
-    try {
-      const url = new URL(shareUrl);
-      const token = url.searchParams.get('token');
-      if (!token || !token.trim()) return null;
-      return token.trim();
-    } catch {
-      return null;
-    }
-  }
-
-  private getAgentInviteMessage(): string {
-    const shareUrl = this.getCanonicalShareUrl();
-    const slug = shareClient.getSlug() || this.extractShareSlugFromUrl(shareUrl);
-    const token = this.extractShareTokenFromUrl(shareUrl);
-    const origin = (() => {
-      try {
-        return new URL(shareUrl).origin;
-      } catch {
-        return window.location.origin;
-      }
-    })();
+  private getAgentInviteMessage(token: string): string {
+    const shareUrl = new URL(this.getCanonicalShareUrl());
+    shareUrl.search = '';
+    shareUrl.hash = '';
+    const slug = shareClient.getSlug() || this.extractShareSlugFromUrl(shareUrl.toString());
+    const origin = shareUrl.origin;
 
     if (!slug) {
       return [
-        'Collaborate with me on this Proof doc.',
+        `Collaborate with me on this ${productName()} doc.`,
         '',
         `Doc: ${shareUrl}`,
       ].join('\n');
@@ -3934,14 +5705,14 @@ class ProofEditorImpl implements ProofEditor {
     const editUrl = `${origin}/api/agent/${encodedSlug}/edit`;
 
     return [
-      'Collaborate with me on this Proof doc.',
+      `Collaborate with me on this ${productName()} doc.`,
       '',
       `Doc: ${shareUrl}`,
       '',
       'Auth for each API request:',
-      `- x-share-token: ${token || '<token-from-doc-url>'}`,
+      `- x-share-token: ${token}`,
       '- X-Agent-Id: <your-agent-id>',
-      '- (Use the token from the Doc URL query param: ?token=...)',
+      '- Keep this key private; send it only in the request header, never in a URL.',
       '',
       'Start here:',
       '1) Read current document state with your identity header:',
@@ -3957,16 +5728,35 @@ class ProofEditorImpl implements ProofEditor {
     ].join('\n');
   }
 
-  private async copyAgentInviteWithFallback(): Promise<boolean> {
-    const message = this.getAgentInviteMessage();
-    const copied = await this.copyTextToClipboard(message);
-    if (copied) {
-      this.triggerHaptic('success');
-      return true;
+  /** Invite person: the team routes (server/document-team-routes.ts), same origin, JSON. */
+  private async teamRequest<T>(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown): Promise<T> {
+    const slug = shareClient.getSlug();
+    if (!slug) throw new Error('No document');
+    const response = await fetch(`/api/documents/${encodeURIComponent(slug)}/team${path}`, {
+      method,
+      credentials: 'same-origin',
+      headers: body === undefined ? { Accept: 'application/json' } : { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const json = await response.json().catch(() => ({})) as Record<string, unknown>;
+    if (!response.ok) throw new Error(typeof json.error === 'string' ? json.error : 'Something went wrong. Try again.');
+    return json as T;
+  }
+
+  /** Invite person: only an Owner (signed in) sees "Invite person"; guests never ask. */
+  private async checkTeamAccess(): Promise<void> {
+    if (this.teamCanManage !== null || !window.__PROOF_LIBRARY_MEMBER__) return;
+    try {
+      const team = await this.teamRequest<{ canManage?: boolean }>('GET', '');
+      this.teamCanManage = team.canManage === true;
+    } catch {
+      this.teamCanManage = false;
     }
-    const prompted = this.copyWithPromptFallback(message, 'Copy agent invite:');
-    if (prompted) this.triggerHaptic('medium');
-    return prompted;
+  }
+
+  /** Add agent is the Share dialog's AIs tab (decision 12). */
+  private openAgentKeyDialog(): boolean {
+    return this.openShareDialog('ais');
   }
 
   private showShareWelcomeToastOnce(capabilities?: { canComment: boolean; canEdit: boolean } | null): void {
@@ -3997,8 +5787,17 @@ class ProofEditorImpl implements ProofEditor {
     toast.innerHTML = `
       <div class="proof-toast-content">
         <span class="proof-toast-message">${message}</span>
+        <button type="button" class="proof-toast-dismiss" aria-label="Dismiss">×</button>
       </div>
     `;
+    // A join request's notice can appear or go while this note shows; the note moves below it.
+    const reposition = () => { if (this.shareWelcomeToast === toast) this.positionShareWelcomeToast(toast); };
+    const stopRepositioning = () => window.removeEventListener('proof:top-notices-changed', reposition);
+    window.addEventListener('proof:top-notices-changed', reposition);
+    toast.querySelector('.proof-toast-dismiss')?.addEventListener('click', () => {
+      toast.remove(); stopRepositioning();
+      if (this.shareWelcomeToast === toast) this.shareWelcomeToast = null;
+    });
 
     document.body.appendChild(toast);
     this.shareWelcomeToast = toast;
@@ -4009,6 +5808,7 @@ class ProofEditorImpl implements ProofEditor {
     });
 
     setTimeout(() => {
+      stopRepositioning();
       if (this.shareWelcomeToast !== toast) return;
       toast.remove();
       this.shareWelcomeToast = null;
@@ -4017,17 +5817,25 @@ class ProofEditorImpl implements ProofEditor {
 
   private positionShareWelcomeToast(toast: HTMLElement): void {
     const banner = document.getElementById('share-banner');
-    const isMobile = window.innerWidth <= 480;
+    const isMobile = window.innerWidth <= 700;
     const pageMargin = isMobile ? 12 : 12;
     let top = 12;
     if (banner) {
       const rect = banner.getBoundingClientRect();
       top = Math.max(12, Math.round(rect.bottom + 10));
     }
+    // A waiting AI join request sits in the same corner and carries Admit and Refuse; the note goes
+    // below it rather than over its buttons (ac-pb1; seen live 2026-09-26).
+    const joinNotice = document.getElementById('agent-join-notices');
+    if (joinNotice && !joinNotice.hidden) {
+      const rect = joinNotice.getBoundingClientRect();
+      if (rect.height > 0) top = Math.max(top, Math.round(rect.bottom + 8));
+    }
 
     if (isMobile) {
-      toast.style.top = 'auto';
-      toast.style.bottom = `${pageMargin}px`;
+      // Under the compact bar, not at the bottom where it would sit on the feedback chip and the last lines.
+      toast.style.top = `${top - 4}px`;
+      toast.style.bottom = 'auto';
       toast.style.left = `${pageMargin}px`;
       toast.style.right = `${pageMargin}px`;
       toast.style.maxWidth = 'none';
@@ -4040,6 +5848,7 @@ class ProofEditorImpl implements ProofEditor {
     }
   }
 
+  /** Accord layout stage 2: one Share button; it opens the Share dialog (decision 12). */
   private createShareMenuButton(): HTMLElement {
     const container = document.createElement('div');
     container.className = 'share-pill-share-btn';
@@ -4047,159 +5856,69 @@ class ProofEditorImpl implements ProofEditor {
 
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.setAttribute('aria-label', 'Share options');
+    btn.setAttribute('aria-label', 'Share');
+    btn.setAttribute('aria-haspopup', 'dialog');
     btn.style.cssText = `
       display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:44px;min-width:44px;padding:0 16px;background:#111;
       border:none;border-radius:22px;color:#fff;font-size:13px;font-weight:600;
       cursor:pointer;transition:background 0.15s;flex-shrink:0;font-family:inherit;
     `;
-
     const label = document.createElement('span');
     label.textContent = 'Share';
-    const caret = document.createElement('span');
-    caret.textContent = '▾';
-    caret.style.cssText = 'font-size:10px;opacity:0.7';
-    btn.append(label, caret);
-
-    btn.onmouseenter = () => {
-      btn.style.background = '#333';
-    };
-    btn.onmouseleave = () => {
-      btn.style.background = '#111';
-    };
-
-    const openMenu = () => {
-      this.closeAgentMenu();
-      this.closePresenceMenu();
-      if (this.shareMenuCleanup) {
-        this.closeShareMenu();
-        return;
-      }
-
-      const menu = document.createElement('div');
-      menu.setAttribute('role', 'menu');
-      menu.style.cssText = `
-        position:absolute;top:calc(100% + 8px);right:0;min-width:240px;
-        background:rgba(17,24,39,0.96);border:1px solid rgba(255,255,255,0.12);
-        border-radius:12px;padding:6px;z-index:1002;
-        box-shadow:0 16px 40px rgba(0,0,0,0.35);
-        backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
-      `;
-
-      const addItem = (title: string, onSelect: (itemLabel: HTMLSpanElement) => Promise<boolean> | boolean, opts?: { subtle?: boolean; disabled?: boolean }) => {
-        const item = document.createElement('button');
-        item.type = 'button';
-        item.setAttribute('role', 'menuitem');
-        item.style.cssText = `
-          width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;
-          padding:10px 12px;min-height:44px;border-radius:10px;border:0;background:transparent;
-          color:${opts?.subtle ? 'rgba(255,255,255,0.82)' : 'rgba(255,255,255,0.92)'};
-          font-size:12px;font-weight:${opts?.subtle ? '500' : '600'};cursor:pointer;text-align:left;
-        `;
-        item.onmouseenter = () => { if (!opts?.disabled) item.style.background = 'rgba(255,255,255,0.08)'; };
-        item.onmouseleave = () => { item.style.background = 'transparent'; };
-        if (opts?.disabled) {
-          item.disabled = true;
-          item.style.opacity = '0.55';
-          item.style.cursor = 'default';
-        }
-
-        const left = document.createElement('span');
-        left.textContent = title;
-        const right = document.createElement('span');
-        right.textContent = '';
-        right.style.cssText = 'font-weight:600;opacity:0.9';
-
-        item.append(left, right);
-        item.onclick = async () => {
-          if (opts?.disabled) return;
-          const ok = await onSelect(left);
-          right.textContent = ok ? 'Copied' : 'Failed';
-          if (ok) {
-            setTimeout(() => cleanup(), 700);
-          } else {
-            setTimeout(() => { right.textContent = ''; }, 1200);
-          }
-        };
-
-        menu.appendChild(item);
-      };
-
-      const addActionItem = (title: string, onSelect: () => void, opts?: { subtle?: boolean; disabled?: boolean }) => {
-        const item = document.createElement('button');
-        item.type = 'button';
-        item.setAttribute('role', 'menuitem');
-        item.style.cssText = `
-          width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;
-          padding:10px 12px;min-height:44px;border-radius:10px;border:0;background:transparent;
-          color:${opts?.subtle ? 'rgba(255,255,255,0.82)' : 'rgba(255,255,255,0.92)'};
-          font-size:12px;font-weight:${opts?.subtle ? '500' : '600'};cursor:pointer;text-align:left;
-        `;
-        item.onmouseenter = () => { if (!opts?.disabled) item.style.background = 'rgba(255,255,255,0.08)'; };
-        item.onmouseleave = () => { item.style.background = 'transparent'; };
-        if (opts?.disabled) {
-          item.disabled = true;
-          item.style.opacity = '0.55';
-          item.style.cursor = 'default';
-        }
-
-        const left = document.createElement('span');
-        left.textContent = title;
-        const right = document.createElement('span');
-        right.textContent = '›';
-        right.style.cssText = 'font-weight:700;opacity:0.8';
-        item.append(left, right);
-        item.onclick = () => {
-          if (opts?.disabled) return;
-          onSelect();
-          cleanup();
-        };
-        menu.appendChild(item);
-      };
-
-      const addDivider = () => {
-        const hr = document.createElement('div');
-        hr.style.cssText = 'height:1px;background:rgba(255,255,255,0.10);margin:6px 6px';
-        menu.appendChild(hr);
-      };
-
-      addItem('Copy link', async () => this.copyLinkWithFallback(this.getCanonicalShareUrl()));
-      addDivider();
-      addActionItem('View activity', () => this.openShareActivityModal());
-
-      container.appendChild(menu);
-      this.clampMenuToViewport(menu);
-
-      const onDocMouseDown = (ev: MouseEvent) => {
-        if (!(ev.target instanceof Node)) return;
-        if (container.contains(ev.target)) return;
-        cleanup();
-      };
-      const onKeyDown = (ev: KeyboardEvent) => {
-        if (ev.key === 'Escape') cleanup();
-      };
-
-      const cleanup = () => {
-        document.removeEventListener('mousedown', onDocMouseDown, true);
-        document.removeEventListener('keydown', onKeyDown, true);
-        if (menu.isConnected) menu.remove();
-        if (this.shareMenuCleanup === cleanup) {
-          this.shareMenuCleanup = null;
-        }
-      };
-
-      this.shareMenuCleanup = cleanup;
-      document.addEventListener('mousedown', onDocMouseDown, true);
-      document.addEventListener('keydown', onKeyDown, true);
-    };
-
+    btn.append(label);
+    btn.onmouseenter = () => { btn.style.background = '#333'; };
+    btn.onmouseleave = () => { btn.style.background = '#111'; };
     btn.onclick = () => {
       this.triggerHaptic('selection');
-      openMenu();
+      this.openShareDialog('link');
     };
-
     container.appendChild(btn);
     return container;
+  }
+
+  /** The Share dialog: Link (and the guest setting), People (Invite person), AIs (Add agent). */
+  private openShareDialog(tab: ShareTab): boolean {
+    this.closeShareMenu();
+    this.closeAgentMenu();
+    this.closePresenceMenu();
+    this.shareOverflowMenuCleanup?.();
+    const owner = this.teamCanManage === true;
+    showShareDialog({
+      title: this.shareDocTitle || 'Untitled',
+      shareUrl: this.getCanonicalShareUrl(),
+      documentNoun: documentNoun(),
+      copyLink: () => this.copyLinkWithFallback(this.getCanonicalShareUrl()),
+      download: () => { void this.downloadProofDocument(); },
+      activity: () => this.openShareActivityModal(),
+      // The Accord rules retire blind marking controls; stored records remain intact.
+      linkExtras: [],
+      invite: owner ? {
+        load: () => this.teamRequest<TeamState>('GET', ''),
+        invite: (email, name) => this.teamRequest<InviteResult>('POST', '/invites', { email, name }),
+        resend: id => this.teamRequest<InviteResult>('POST', `/invites/${encodeURIComponent(id)}/resend`, {}),
+        remove: id => this.teamRequest<TeamState>('POST', `/invites/${encodeURIComponent(id)}/remove`, {}),
+        setGuestAccess: mode => this.teamRequest<TeamState>('PUT', '/guest-access', { mode }),
+        copy: text => this.copyTextToClipboard(text),
+        // Cross invitation (2026-09-19): the Owner answers what an AI proposed.
+        confirmNomination: async id => {
+          const body = await this.teamRequest<{ team: TeamState; emailed?: boolean }>('POST', `/nominations/${encodeURIComponent(id)}/confirm`, {});
+          return { team: body.team, emailed: body.emailed };
+        },
+        declineNomination: id => this.teamRequest<TeamState>('POST', `/nominations/${encodeURIComponent(id)}/decline`, {}),
+        revokeAttestation: id => this.teamRequest<TeamState>('POST', `/attestations/${encodeURIComponent(id)}/revoke`, {}),
+        setDirectInvite: (tokenId, allow) => this.teamRequest<TeamState>('PUT', `/agents/${encodeURIComponent(tokenId)}/direct-invite`, { allow }),
+      } : null,
+      agents: {
+        // A2 will add team-only documents; today this notice depends on member sign-in.
+        isSignedInMember: Boolean(window.__PROOF_LIBRARY_MEMBER__),
+        create: (label, runtime) => shareClient.createAgentKey(label, runtime),
+        list: () => shareClient.listAgentKeys(),
+        revoke: id => shareClient.revokeAgentKey(id),
+        invite: token => this.getAgentInviteMessage(token),
+        copy: text => this.copyTextToClipboard(text),
+      },
+    }, tab);
+    return true;
   }
 
   private createAgentMenuButton(
@@ -4210,6 +5929,7 @@ class ProofEditorImpl implements ProofEditor {
       color: string;
       avatar?: string;
       at: string;
+      expiresAt?: string;
     }>,
   ): HTMLElement {
     const container = document.createElement('div');
@@ -4223,6 +5943,9 @@ class ProofEditorImpl implements ProofEditor {
         id: string;
         name: string;
         avatar?: string;
+        at: string;
+        expiresAt?: string;
+        status: string;
       },
       options: {
         size: number;
@@ -4241,7 +5964,12 @@ class ProofEditorImpl implements ProofEditor {
         className: 'share-pill-agent-face__svg',
       });
       face.dataset.agentFamily = family;
-      face.style.animation = 'proof-agent-pulse 2s ease-in-out infinite';
+      face.dataset.agentId = agent.id;
+      const display = getAgentPresenceDisplay(agent);
+      face.dataset.presenceState = display.idle ? 'idle' : 'active';
+      face.style.opacity = display.idle ? '0.45' : '1';
+      face.style.animation = display.idle ? 'none' : 'proof-agent-pulse 2s ease-in-out infinite';
+      face.title = `${agent.name} — ${display.label}`;
       face.style.filter = 'drop-shadow(0 1px 1px rgba(15,23,42,0.10))';
       face.style.borderRadius = '999px';
       face.style.boxShadow = `0 0 0 1px ${palette.accent}22`;
@@ -4258,27 +5986,30 @@ class ProofEditorImpl implements ProofEditor {
         id: string;
         name: string;
         avatar?: string;
+        at: string;
+        expiresAt?: string;
+        status: string;
       }>,
     ): { element: HTMLSpanElement; tooltipLabel: string; tooltipSubtext: string } => {
       const stack = document.createElement('span');
-      stack.style.cssText = 'display:inline-flex;align-items:center;justify-content:flex-start;position:relative;height:26px;';
+      stack.style.cssText = 'display:inline-flex;align-items:center;justify-content:flex-start;position:relative;height:32px;';
 
       if (items.length === 1) {
-        stack.style.width = '26px';
+        stack.style.width = '32px';
         stack.appendChild(buildAgentFace(items[0], {
-          size: 26,
+          size: 32,
           title: `${items[0].name} icon`,
           zIndex: 2,
         }));
         return {
           element: stack,
-          tooltipLabel: items[0].name,
-          tooltipSubtext: 'agent collaborator',
+          tooltipLabel: `${items[0].name} — ${getAgentPresenceDisplay(items[0]).label}`,
+          tooltipSubtext: 'Open agent actions',
         };
       }
 
       const visible = items.slice(0, 2);
-      const faceSize = 23;
+      const faceSize = 32;
       const overlap = -7;
       const chipGap = 5;
       const overflowCount = Math.max(0, items.length - 2);
@@ -4311,7 +6042,7 @@ class ProofEditorImpl implements ProofEditor {
 
       return {
         element: stack,
-        tooltipLabel: `${items.length} agent collaborators`,
+        tooltipLabel: items.map((agent) => `${agent.name} — ${getAgentPresenceDisplay(agent).label}`).join('\n'),
         tooltipSubtext: 'Click to manage',
       };
     };
@@ -4321,7 +6052,7 @@ class ProofEditorImpl implements ProofEditor {
     btn.className = 'share-pill-agent-trigger';
     if (hasAgents) {
       btn.classList.add('has-agents');
-      btn.setAttribute('aria-label', `${agents.length} agent collaborator${agents.length === 1 ? '' : 's'}. Open actions`);
+      btn.setAttribute('aria-label', `${agents.map((agent) => `${agent.name} — ${getAgentPresenceDisplay(agent).label}`).join('; ')}. Open agent actions`);
       btn.setAttribute('aria-haspopup', 'menu');
       btn.setAttribute('aria-expanded', 'false');
       btn.style.cssText = `
@@ -4337,12 +6068,15 @@ class ProofEditorImpl implements ProofEditor {
         id: agent.id,
         name: agent.name,
         avatar: agent.avatar,
+        at: agent.at,
+        expiresAt: agent.expiresAt,
+        status: agent.status,
       })));
       wrap.appendChild(stack.element);
       const tooltip = document.createElement('span');
       tooltip.className = 'proof-avatar-tooltip';
       const tooltipName = document.createElement('span');
-      tooltipName.style.cssText = 'display:block;font-weight:600';
+      tooltipName.style.cssText = 'display:block;font-weight:600;white-space:pre-line';
       tooltipName.textContent = stack.tooltipLabel;
       const tooltipType = document.createElement('span');
       tooltipType.style.cssText = 'display:block;font-size:10px;opacity:0.7;margin-top:1px';
@@ -4388,8 +6122,15 @@ class ProofEditorImpl implements ProofEditor {
     }
 
     const openMenu = () => {
+      if (this.getConnectedAgentEntries().length === 0) {
+        this.closeShareMenu();
+        this.closeAgentMenu();
+        this.openAgentKeyDialog();
+        return;
+      }
       this.closeShareMenu();
       this.closePresenceMenu();
+      this.closeSuggestionReviewMenu();
       if (this.agentMenuCleanup) {
         this.closeAgentMenu();
         return;
@@ -4468,8 +6209,8 @@ class ProofEditorImpl implements ProofEditor {
         body.textContent = 'Invite an agent collaborator to edit, suggest, and review this doc.';
         body.style.cssText = 'padding:0 12px 8px;color:rgba(255,255,255,0.78);font-size:12px;line-height:1.35;';
         menu.append(header, body);
-        addMenuButton('Copy agent invite link', async () => this.copyAgentInviteWithFallback(), {
-          successText: 'Copied',
+        addMenuButton('Add agent / manage keys', () => this.openAgentKeyDialog(), {
+          successText: 'Opened',
         });
         addDivider();
         addMenuButton('How agent access works', async () => {
@@ -4545,8 +6286,8 @@ class ProofEditorImpl implements ProofEditor {
           menu.appendChild(row);
         }
         addDivider();
-        addMenuButton('Copy agent invite link', async () => this.copyAgentInviteWithFallback(), {
-          successText: 'Copied',
+        addMenuButton('Add agent / manage keys', () => this.openAgentKeyDialog(), {
+          successText: 'Opened',
         });
       }
 
@@ -4633,22 +6374,33 @@ class ProofEditorImpl implements ProofEditor {
       min-width: min(480px, calc(100vw - 24px));
     `;
     this.shareOtherViewerCount = Math.max(0, viewers);
+    this.mountMenuBar();
     this.renderShareBannerContent(banner, this.shareOtherViewerCount);
     document.body.appendChild(banner);
+    this.shareBannerResizeObserver = new ResizeObserver(() => this.scheduleBannerLayoutUpdate());
+    this.shareBannerResizeObserver.observe(banner);
     this.scheduleBannerLayoutUpdate();
   }
 
   private clearShareBanner(): void {
+    this.shareOverflowMenuCleanup?.();
+    this.shareBannerResizeObserver?.disconnect();
+    this.shareBannerResizeObserver = null;
     this.clearShareAgentPresenceExpiryTimer();
     this.closeShareMenu();
     this.closePresenceMenu();
     this.closeAgentMenu();
+    this.closeSuggestionReviewMenu();
     this.shareBannerTitleEditing = false;
     this.shareBannerTitleEl = null;
     this.shareBannerAvatarsEl = null;
     this.shareBannerAgentSlotEl = null;
     this.shareBannerSyncDotEl = null;
     this.shareBannerSyncLabelEl = null;
+    this.shareBannerSuggestBtnEl = null;
+    this.shareBannerSuggestionReviewBtnEl = null;
+    this.shareSuggestionReviewSignature = '';
+    this.cancelShareSuggestionReviewDisplayUpdate();
     if (this.shareStatusHideTimer) {
       clearTimeout(this.shareStatusHideTimer);
       this.shareStatusHideTimer = null;
@@ -4662,32 +6414,42 @@ class ProofEditorImpl implements ProofEditor {
       this.shareMarksRefreshTimer = null;
     }
     this.pendingShareMarksRefresh = false;
+    this.unmountMenuBar();
     const existing = document.getElementById('share-banner');
     if (!existing) return;
     existing.remove();
     this.scheduleBannerLayoutUpdate();
   }
 
-  applyExternalMarks(marks: Record<string, StoredMark>): void {
+  applyExternalMarks(
+    marks: Record<string, StoredMark>,
+    options?: { authoritativeSnapshot?: boolean },
+  ): void {
     if (!this.editor) return;
 
     this.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx);
       // Use applyRemoteMarks to create ProseMirror anchors for new marks
       // (using the `quote` field) and merge metadata for existing marks.
-      applyRemoteMarks(view, marks, { hydrateAnchors: this.collabCanEdit });
+      applyRemoteMarks(view, marks, {
+        hydrateAnchors: this.collabCanEdit,
+        authoritativeSnapshot: options?.authoritativeSnapshot,
+      });
+      this.scheduleShareSuggestionReviewDisplay(view);
     });
   }
 
   private applyLatestCollabMarksToEditor(): void {
     if (!this.isShareMode || !this.collabEnabled || !this.editor) return;
-    if (Object.keys(this.lastReceivedServerMarks).length === 0) return;
+    if (!this.initialMarksSynced) return;
+    if (this.collabCanEdit && (!this.collabIsSynced || !this.isCollabHydratedForEditing())) return;
     if (this.isEditorDocStructurallyEmpty()) return;
 
     this.applyingCollabRemote = true;
     this.suppressMarksSync = true;
     try {
-      this.applyExternalMarks(this.lastReceivedServerMarks);
+      this.applyExternalMarks(this.lastReceivedServerMarks, { authoritativeSnapshot: true });
+      this.shareMarksAnchored = this.collabCanEdit;
     } finally {
       this.suppressMarksSync = false;
       this.applyingCollabRemote = false;
@@ -4716,6 +6478,8 @@ class ProofEditorImpl implements ProofEditor {
 
   private markInitialCollabHydrationComplete(): void {
     this.hasCompletedInitialCollabHydration = true;
+    // onMarks can arrive before the PM fragment. Hydration completion must retry anchors.
+    this.applyLatestCollabMarksToEditor();
   }
 
   private shouldPublishProjectionMarkdown(
@@ -4767,6 +6531,10 @@ class ProofEditorImpl implements ProofEditor {
   private flushShareMarks(_options?: { keepalive?: boolean; persistContent?: boolean }): void {
     if (!this.isShareMode || !this.editor || this.suppressMarksSync) return;
     if (!this.initialMarksSynced) return;
+    if (this.collabEnabled && !this.shareMarksAnchored) {
+      this.applyLatestCollabMarksToEditor();
+      if (!this.shareMarksAnchored) return;
+    }
     this.editor.action((ctx) => {
       try {
         const view = ctx.get(editorViewCtx);
@@ -4881,6 +6649,8 @@ class ProofEditorImpl implements ProofEditor {
   private updateBannerLayout(): void {
     const editor = document.getElementById('editor');
     if (!editor) return;
+    // Direct Editing: toolbar label changes must not reflow the document mid-keystroke. Mike, 2026-09-19.
+    if (isWriting()) return;
 
     const banners: HTMLElement[] = [];
     const shareBanner = document.getElementById('share-banner');
@@ -4893,23 +6663,36 @@ class ProofEditorImpl implements ProofEditor {
       return;
     }
 
-    let offset = shareBanner ? 18 : 0;
+    // Top bar (Mike, 2026-09-21: "excess whitespace above and below the buttons"): the bar sits
+    // close to the top edge, and the text starts just below it. On phones the bar is pinned to the
+    // top edge by CSS (top: 0), so the space it takes is counted from 0.
+    const phone = window.matchMedia?.('(max-width: 700px)').matches ?? window.innerWidth <= 700;
+    // Accord layout stage 2: on desktop the toolbar sits right under the 28 px menu bar.
+    const menuBarShown = Boolean(this.menuBar?.el.isConnected) && !phone;
+    let offset = shareBanner ? (phone ? 0 : (menuBarShown ? MENU_BAR_POLICY.heightPx : TOP_BAR_LAYOUT.desktopTopPx)) : 0;
     for (const banner of banners) {
       banner.style.top = `${offset}px`;
       const height = banner.offsetHeight || banner.getBoundingClientRect().height;
       offset += height;
     }
 
-    const extraSpacing = 32;
+    const extraSpacing = phone ? TOP_BAR_LAYOUT.textGapPhonePx : TOP_BAR_LAYOUT.textGapDesktopPx;
     editor.style.paddingTop = `${Math.ceil(offset + extraSpacing)}px`;
   }
 
   private updateEditableState(viewOverride?: EditorView): void {
     const isEditable = !this.isReadOnly
       && this.reviewLockCount === 0
-      && (!this.isShareMode || this.shareAllowLocalEdits);
+      && (!this.isShareMode || (this.shareAllowLocalEdits && (EDIT_SESSION_POLICY.liveProposals || isWriting())));
 
     const applyEditableState = (view: EditorView) => {
+      // setProps redraws the whole view even for the same value, and y-prosemirror's sync plugin
+      // opens a Yjs transaction on every redraw. This runs on every sync-status event, which the
+      // collab client emits per Yjs update, so re-setting an unchanged value fed a loop: step 4
+      // review, 2026-09-25, 4,390 nested transactions froze the page for up to six minutes after
+      // a discussion was turned back into text (the ac-m23 loop). Only a change reaches the view.
+      if (this.appliedEditable.get(view) === isEditable) return;
+      this.appliedEditable.set(view, isEditable);
       view.setProps({
         editable: () => isEditable,
       });
@@ -5143,80 +6926,185 @@ class ProofEditorImpl implements ProofEditor {
     return false;
   }
 
-  private stabilizeCursorAfterRemoteYjsTransaction(
-    view: EditorView,
-    sourceTransaction: any,
-    beforeSelectionFrom: number,
-    beforeSelectionEmpty: boolean,
-    dispatchBase: (transaction: any) => void,
-  ): void {
-    if (!this.isShareMode || !this.collabEnabled) return;
-    if (!beforeSelectionEmpty || !view.state.selection.empty) return;
-    if (!view.hasFocus()) return;
-
-    if (!this.isYjsChangeOriginTransaction(sourceTransaction)) return;
-
-    if ((Date.now() - this.lastLocalTypingAt) > this.remoteCursorStabilityWindowMs) return;
-
-    let mappedCursor = beforeSelectionFrom;
-    const mapping = sourceTransaction?.mapping;
-    if (mapping && typeof mapping.map === 'function') {
-      try {
-        mappedCursor = mapping.map(beforeSelectionFrom, 1);
-      } catch {
-        mappedCursor = beforeSelectionFrom;
-      }
-    }
-
-    const docSize = view.state.doc.content.size;
-    const targetPos = Math.max(0, Math.min(mappedCursor, docSize));
-    const currentPos = view.state.selection.from;
-    if (targetPos <= currentPos) return;
-
-    try {
-      // @ts-expect-error - TextSelection is available at runtime
-      const TextSelection = view.state.selection.constructor;
-      const $target = view.state.doc.resolve(targetPos);
-      const stabilizedSelection = TextSelection.near($target, 1);
-      const stabilizeTr = view.state.tr
-        .setSelection(stabilizedSelection)
-        .setMeta('addToHistory', false);
-      dispatchBase(stabilizeTr);
-    } catch {
-      // Ignore selection stabilization failures; never break the primary transaction.
-    }
-  }
-
   /**
    * Set up the suggestions interceptor to convert edits to tracked changes
    * when suggestion mode is enabled.
    */
+  private refuseHiddenInput(event: Event, inputType: string): boolean {
+    if (!this.folding?.inputTouchesHidden({ inputType, target: event.target } as InputEvent)) return false;
+    event.preventDefault();
+    this.readingWalk?.showEditNotice('That would change hidden text. Show it first.');
+    return true;
+  }
+
   private setupSuggestionsInterceptor(): void {
     if (!this.editor) return;
 
     this.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx);
 
+      // Direct props run before Milkdown's native history/collab keymaps.
+      // The document listener also covers Edit-menu events outside the editor.
+      view.setProps({
+        handleKeyDown: (_view, event) => {
+          if (this.playmakerReview?.handleHistoryInput(event)) return true;
+          if (['Backspace', 'Delete'].includes(event.key) && this.folding?.inputTouchesHidden({
+            inputType: event.key === 'Backspace' ? 'deleteContentBackward' : 'deleteContentForward', target: event.target,
+          } as InputEvent)) {
+            event.preventDefault(); this.readingWalk?.showEditNotice('That would change hidden text. Show it first.'); return true;
+          }
+          return this.folding?.arrow(event) ?? false;
+        },
+        handleDOMEvents: {
+          ...view.props.handleDOMEvents,
+          // A click puts the caret in the DOM at once, but ProseMirror reads it only when the
+          // selectionchange event arrives, a task later. An update in that window (a remote cursor,
+          // a decoration refresh) or ProseMirror's own focus check 20 ms after focus writes the old
+          // selection back, and the typing lands where the caret was before (the caret check typed
+          // into the title; 2026-09-24). Read the click's selection as soon as the click ends.
+          mouseup: (upView) => { readPointerSelectionSoon(upView); return false; },
+          click: (clickView) => { readPointerSelectionSoon(clickView); return false; },
+          paste: (_view, event) => this.refuseHiddenInput(event, 'insertFromPaste'),
+          cut: (_view, event) => this.refuseHiddenInput(event, 'deleteByCut'),
+          drop: (inputView, event) => {
+            const at = inputView.posAtCoords({ left: (event as DragEvent).clientX, top: (event as DragEvent).clientY });
+            if (at && this.folding?.positionHidden(at.pos)) {
+              event.preventDefault(); this.readingWalk?.showEditNotice('That would change hidden text. Show it first.'); return true;
+            }
+            return this.refuseHiddenInput(event, 'insertFromDrop');
+          },
+          beforeinput: (inputView, event) => {
+            if (this.playmakerReview?.handleHistoryInput(event as InputEvent)) return true;
+            if (this.folding?.inputTouchesHidden(event as InputEvent)) {
+              event.preventDefault();
+              this.readingWalk?.showEditNotice('That would change hidden text. Show it first.');
+              return true;
+            }
+            return commitLiveTextInput(inputView, event as InputEvent, this.isSuggestionsEnabled());
+          },
+        },
+      });
+
+      view.dom.addEventListener(liveSuggestionInputEvent, ((event: CustomEvent<LiveSuggestionInput>) => {
+        const detail = event.detail;
+        if (!view.editable || !this.shareAllowLocalEdits || !this.isSuggestionsEnabled()) return;
+        const mark = getMarks(view.state).find(m => m.id === detail.id);
+        const stored = getMarkMetadataWithQuotes(view.state)[detail.id];
+        if (!mark?.range || !stored || (stored.status ?? 'pending') !== 'pending' || stored.content !== detail.before) {
+          this.readingWalk?.showEditNotice('This proposal changed. Read its current words before editing.');
+          return;
+        }
+        try {
+          if (!detail.content && EDIT_SESSION_POLICY.deleteProposalRejects) {
+            this.performReviewDecision([detail.id], 'reject');
+            detail.handled = true;
+          } else if (mark.by === getCurrentActor()) {
+            this.noteLocalContentMutation();
+            this.getReviewDecisionHistory().edit(() => {
+              detail.handled = modifySuggestionContent(markApiView(view), detail.id, detail.content);
+            });
+          } else if (!EDIT_SESSION_POLICY.editOtherProposalsInPlace) {
+            // P2 transfer is off: preserve the author's proposal and create the editor's
+            // competing replacement, just as typing a replacement on the old anchor does.
+            this.noteLocalContentMutation();
+            this.getReviewDecisionHistory().edit(() => {
+              const proposal = suggestReplace(markApiView(view), mark.quote, getCurrentActor(), detail.content, mark.range);
+              detail.handled = Boolean(proposal);
+              detail.nextId = proposal?.id;
+            });
+          }
+        } catch (error) {
+          this.readingWalk?.showEditNotice(error instanceof Error ? error.message : 'Could not edit this proposal.');
+        }
+      }) as EventListener);
+
+      this.typedDiscussions?.stop();
+      this.typedDiscussions = new TypedDiscussionController(view, {
+        enabled: () => view.editable && this.shareAllowLocalEdits && this.collabCanEdit && this.isSuggestionsEnabled(),
+        candidates: () => this.chat?.allCandidates(true) ?? [],
+        convert: run => this.convertTypedDiscussion(run),
+        notice: message => this.readingWalk?.showEditNotice(message),
+      });
+
       // Store the original dispatchTransaction
-      const originalDispatch = view.dispatch.bind(view);
+      const dispatchOriginal = view.dispatch.bind(view);
+      const originalDispatch = (transaction: Transaction) => {
+        this.folding?.mapTransaction(transaction);
+        dispatchOriginal(transaction);
+      };
 
       // Override dispatchTransaction to intercept edits
       (view as any).dispatch = (tr: any) => {
+        keepUndoGroupOpen(tr);
+        // Yjs restores text and records atomically. Supply the restored records
+        // on that same PM update, before normalization can invent mark metadata.
+        if (this.restoringReviewDecision || (tr.docChanged && tr.getMeta(ySyncPluginKey)?.isChangeOrigin && !tr.getMeta(marksPluginKey))) {
+          tr.setMeta(marksPluginKey, {
+            type: 'SET_METADATA',
+            metadata: collabClient.getYDoc()?.getMap('marks').toJSON() ?? this.lastReceivedServerMarks,
+          });
+        }
         const dispatchWithRevision = (transaction: any) => {
-          originalDispatch(transaction);
+          if (userEdit) transaction.setMeta(FOLD_USER_EDIT, true);
+          // Group local text and derived records in the native history transaction.
+          // All derived mark writes from this dispatch stay in that same edit.
+          const humanMark = isOwnHumanMarkChange(transaction,
+            marksPluginKey.getState(view.state)?.metadata ?? {},
+            transaction.getMeta(marksPluginKey)?.metadata ?? {}, getCurrentActor());
+          if (transaction.getMeta('proofLocalMarkChange') && !humanMark) transaction.setMeta('addToHistory', false);
+          const clickDecisions = transaction.getMeta(clickEditDecisionsMeta) as string[] | undefined;
+          if (clickDecisions?.length && !this.capturingReviewDecision && !this.restoringReviewDecision
+            && this.collabCanEdit && this.getShareSuggestionResolutionTransport() === 'collab') {
+            this.getReviewDecisionHistory().decide(() => {
+              originalDispatch(transaction);
+              const metadata = getMarkMetadataWithQuotes(view.state);
+              this.lastReceivedServerMarks = { ...metadata };
+              this.initialMarksSynced = true;
+              collabClient.setMarksMetadata(metadata);
+            });
+            clickDecisions.forEach(id => this.reviewDecisionIds.add(id));
+            this.recordDecisionUndo(clickDecisions, 'reject');
+          } else if (humanMark && !this.capturingReviewDecision
+            && !this.restoringReviewDecision && !this.isYjsChangeOriginTransaction(transaction)
+            && this.collabCanEdit && collabClient.getYDoc()
+            && this.getShareSuggestionResolutionTransport() === 'collab') {
+            // Proof's popover uses the same mark functions as the review dialog.
+            // Capture its text and records atomically, with the same refusal guards.
+            const history = this.getReviewDecisionHistory();
+            Object.keys(getMarkMetadataWithQuotes(view.state)).forEach(id => this.reviewDecisionIds.add(id));
+            history.decide(() => {
+              originalDispatch(transaction);
+              const metadata = getMarkMetadataWithQuotes(view.state);
+              this.lastReceivedServerMarks = { ...metadata };
+              this.initialMarksSynced = true;
+              collabClient.setMarksMetadata(metadata);
+            });
+          } else if (isLocalContentChange && !this.capturingReviewDecision && !tr.getMeta('history$') && tr.getMeta('addToHistory') !== false
+            && this.collabCanEdit && collabClient.getYDoc()
+            && this.getShareSuggestionResolutionTransport() === 'collab') {
+            this.getReviewDecisionHistory().edit(() => originalDispatch(transaction));
+          } else originalDispatch(transaction);
           if (transaction?.docChanged) {
             this.revision += 1;
           }
         };
-        const beforeSelectionFrom = view.state.selection.from;
-        const beforeSelectionEmpty = view.state.selection.empty;
         const isRemoteContentChange = Boolean(tr?.docChanged) && this.isYjsChangeOriginTransaction(tr);
-        const isMarksOnlyChange = tr?.getMeta?.(marksPluginKey) !== undefined;
+        const marksMeta = tr?.getMeta?.(marksPluginKey);
+        const markActionMeta = tr?.getMeta?.(proofMarkActionMeta);
+        const isMarksOnlyChange = marksMeta !== undefined;
         const isDocumentLoad = tr?.getMeta?.('document-load') !== undefined;
         const isLocalContentChange = Boolean(tr?.docChanged)
           && !isRemoteContentChange
           && !isMarksOnlyChange
+          && markActionMeta === undefined
           && !isDocumentLoad;
+
+        const userEdit = isLocalContentChange && tr.getMeta('history$') === undefined
+          && tr.getMeta('addToHistory') !== false && !this.capturingReviewDecision && !this.restoringReviewDecision;
+        if (userEdit && this.folding?.refuses(tr)) {
+          this.readingWalk?.showEditNotice('That would change hidden text. Show it first.');
+          return;
+        }
 
         // Check if suggestions are enabled
         const pluginState = suggestionsPluginKey.getState(view.state);
@@ -5235,49 +7123,51 @@ class ProofEditorImpl implements ProofEditor {
           // Don't intercept meta transactions (like enabling/disabling suggestions)
           if (tr.getMeta(suggestionsPluginKey) !== undefined) {
             dispatchWithRevision(tr);
-            return;
-          }
-
-          // Don't intercept marks operations (accept/reject suggestions)
-          // These are internal operations that should not be converted to suggestions
-          if (tr.getMeta(marksPluginKey) !== undefined) {
+          } else if (marksMeta !== undefined || markActionMeta !== undefined) {
+            // Don't intercept marks operations (accept/reject suggestions)
+            // These are internal operations that should not be converted to suggestions
             dispatchWithRevision(tr);
-            return;
-          }
-
-          // Don't intercept document load transactions
-          if (tr.getMeta('document-load') !== undefined) {
+          } else if (tr.getMeta('document-load') !== undefined) {
+            // Don't intercept document load transactions
             dispatchWithRevision(tr);
-            return;
-          }
-
-          // Don't intercept Yjs-origin collaborative transactions.
-          if (this.isYjsChangeOriginTransaction(tr)) {
+          } else if (this.isYjsChangeOriginTransaction(tr)) {
+            // Don't intercept Yjs-origin collaborative transactions.
             originalDispatch(tr);
-            return;
-          }
-
-          // Don't intercept undo/redo transactions (from history plugin)
-          if (tr.getMeta('history$') !== undefined || tr.getMeta('addToHistory') === false) {
+          } else if (tr.getMeta('history$') !== undefined || tr.getMeta('addToHistory') === false) {
+            // Don't intercept undo/redo transactions (from history plugin)
             dispatchWithRevision(tr);
-            return;
-          }
+          } else {
+            // Wrap the transaction to convert edits to suggestions
+            const wrappedTr = wrapTransactionForSuggestions(tr, view.state, true);
+            // Follow only a replacement this keystroke created: compare the document's marks
+            // before and after (one source), and require the typist as its author. A replacement
+            // restored by someone else's Undo is in the text before its record reaches this page,
+            // and it must not take the caret.
+            const beforeIds = new Set(getMarks(view.state).map(m => m.id));
+            dispatchWithRevision(wrappedTr);
+            const me = getCurrentActor();
+            const replacement = getMarks(view.state).find(m => m.kind === 'replace' && !beforeIds.has(m.id) && m.by === me);
+            if (replacement) focusLiveSuggestion(view, replacement.id);
 
-          // Wrap the transaction to convert edits to suggestions
-          const wrappedTr = wrapTransactionForSuggestions(tr, view.state, true);
-          dispatchWithRevision(wrappedTr);
+          }
         } else {
           dispatchWithRevision(tr);
         }
 
-        this.stabilizeCursorAfterRemoteYjsTransaction(
-          view,
-          tr,
-          beforeSelectionFrom,
-          beforeSelectionEmpty,
-          originalDispatch,
-        );
+        if (shouldUpdateShareSuggestionReviewDisplay({
+          docChanged: Boolean(tr?.docChanged),
+          marksMeta,
+        })) {
+          this.scheduleShareSuggestionReviewDisplay(view);
+        }
+        this.typedDiscussions?.update(userEdit);
       };
+
+      // Caret stability (2026-09-19): a change the person did not make keeps their line in place.
+      const interceptedDispatch = (view as any).dispatch as (tr: any) => void;
+      (view as any).dispatch = (tr: any) => anchorCaretAround(view, tr, next => {
+        interceptedDispatch(next);
+      });
 
       console.log('[setupSuggestionsInterceptor] Suggestions interceptor installed');
     });
@@ -5452,7 +7342,9 @@ class ProofEditorImpl implements ProofEditor {
     if (this.suppressMarksSync) return;
     // Authored-only edits can trigger marks callbacks with no actionable marks.
     // Skipping avoids pushing stale markdown snapshots during fast typing.
-    if (actionMarks.length === 0) return;
+    // Resolving the final live suggestion is also an empty actionable-marks
+    // snapshot, and that deletion must reach the collaborative Yjs marks map.
+    if (actionMarks.length === 0 && this.liveCollabSuggestionResolutionDepth === 0) return;
 
     let markdown = this.serializeMarkdown(view);
     if (!markdown) {
@@ -6277,7 +8169,7 @@ class ProofEditorImpl implements ProofEditor {
           el = el.parentNode as Node;
         }
 
-        if (el instanceof HTMLElement) {
+        if (el instanceof HTMLElement && !isEditing()) {
           console.log('[scrollToLine] Scrolling to element:', el.tagName);
           el.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
@@ -6309,7 +8201,7 @@ class ProofEditorImpl implements ProofEditor {
           el = el.parentNode as Node;
         }
 
-        if (el instanceof HTMLElement) {
+        if (el instanceof HTMLElement && !isEditing()) {
           console.log('[scrollToOffset] Scrolling to element:', el.tagName);
           el.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
@@ -6985,7 +8877,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       mark = approve(view, quote, by);
       if (mark) {
         console.log('[markApprove] Created approval:', mark.id);
@@ -7007,7 +8899,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const range = resolveSelectorRange(view.state.doc, selector);
       if (!range) {
         throw new Error('Selector did not resolve');
@@ -7034,7 +8926,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const range = this.getSelectionRangeOrBlock(view);
       if (!range) return;
       const quote = this.quoteForRange(view, range);
@@ -7059,7 +8951,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let success = false;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       success = unapprove(view, quote, by);
       console.log('[markUnapprove] Removed approval:', success);
     });
@@ -7076,7 +8968,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       mark = flag(view, quote, by, note);
       if (mark) {
         console.log('[markFlag] Created flag:', mark.id);
@@ -7098,7 +8990,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const range = resolveSelectorRange(view.state.doc, selector);
       if (!range) {
         throw new Error('Selector did not resolve');
@@ -7125,7 +9017,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const range = this.getSelectionRangeOrBlock(view);
       if (!range) return;
       const quote = this.quoteForRange(view, range);
@@ -7150,7 +9042,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let success = false;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       success = unflag(view, quote, by);
       console.log('[markUnflag] Removed flag:', success);
     });
@@ -7167,7 +9059,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const matches = findMatchesInDoc(view.state.doc, quote, {
         regex: false,
         caseSensitive: true,
@@ -7193,7 +9085,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const range = this.getSelectionRangeOrBlock(view);
       if (!range) return;
       const quote = this.quoteForRange(view, range);
@@ -7215,7 +9107,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const range = resolveSelectorRange(view.state.doc, selector);
       const quoteSource = selector.quote || (range ? view.state.doc.textBetween(range.from, range.to, '\n', '\n') : '');
       const quote = normalizeQuote(quoteSource);
@@ -7238,7 +9130,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       mark = markReply(view, markId, by, text);
       if (mark) {
         console.log('[markReply] Created reply:', mark.id);
@@ -7258,7 +9150,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let success = false;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       if (this.isShareMode) this.suppressMarksSync = true;
       try {
         success = markResolve(view, markId);
@@ -7273,7 +9165,7 @@ class ProofEditorImpl implements ProofEditor {
           this.lastReceivedServerMarks = { ...metadata };
           this.initialMarksSynced = true;
 
-          void shareClient.resolveComment(markId, actor).then((result) => {
+          if (this.getShareSuggestionResolutionTransport() !== 'collab') void shareClient.resolveComment(markId, actor).then((result) => {
             if (!result || 'error' in result || result.success !== true) return;
             const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
               ? result.marks as Record<string, StoredMark>
@@ -7309,7 +9201,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let success = false;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       if (this.isShareMode) this.suppressMarksSync = true;
       try {
         success = markUnresolve(view, markId);
@@ -7357,7 +9249,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let success = false;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       success = deleteMark(view, markId);
     });
     return success;
@@ -7374,7 +9266,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
 
       // Validate quote exists in document
       if (!range) {
@@ -7407,7 +9299,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
 
       // Validate quote exists in document
       if (!range) {
@@ -7440,7 +9332,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const parser = ctx.get(parserCtx);
 
       // Validate quote exists in document
@@ -7482,7 +9374,7 @@ class ProofEditorImpl implements ProofEditor {
     };
 
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const parser = ctx.get(parserCtx);
       const scope = options?.scope ?? 'all';
       if (scope === 'selection' && view.state.selection.from === view.state.selection.to) {
@@ -7856,7 +9748,7 @@ class ProofEditorImpl implements ProofEditor {
   markAllAsAuthored(by: string): void {
     if (!this.editor) return;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const authoredMarkType = view.state.schema.marks.proofAuthored;
       if (!authoredMarkType) return;
       const tr = view.state.tr.addMark(
@@ -7874,7 +9766,7 @@ class ProofEditorImpl implements ProofEditor {
   markHunksAsAuthored(by: string, hunks: Array<{start_line: number, end_line: number, lines: string[]}>): void {
     if (!this.editor) return;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const authoredMarkType = view.state.schema.marks.proofAuthored;
       if (!authoredMarkType) return;
 
@@ -8360,7 +10252,7 @@ class ProofEditorImpl implements ProofEditor {
     };
 
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const scope = options?.scope ?? 'all';
       if (scope === 'selection' && view.state.selection.from === view.state.selection.to) {
         result = { success: false, count: 0, error: 'No selection' };
@@ -8464,11 +10356,111 @@ class ProofEditorImpl implements ProofEditor {
 
     let success = false;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       success = modifySuggestionContent(view, markId, content);
       console.log('[markModifySuggestion] Modified:', success);
     });
     return success;
+  }
+
+  private notifyHostAuthorshipStatsUpdated(stats: ReturnType<typeof getAuthorshipStats>): void {
+    (this as any).bridge?.authorshipStatsUpdated?.(stats);
+  }
+
+  private isSuggestionPendingOnServer(markId: string): boolean {
+    const mark = this.lastReceivedServerMarks[markId];
+    if (!mark) return false;
+    if (mark.kind !== 'insert' && mark.kind !== 'delete' && mark.kind !== 'replace') return false;
+    return mark.status !== 'accepted' && mark.status !== 'rejected';
+  }
+
+  private getShareSuggestionResolutionTransport(): ShareSuggestionResolutionTransport {
+    return getShareSuggestionResolutionTransport({
+      collabEnabled: this.collabEnabled,
+      connectionStatus: this.collabConnectionStatus,
+      isSynced: this.collabIsSynced,
+    });
+  }
+
+  private applyShareSuggestionLocally<T>(
+    transport: ShareSuggestionResolutionTransport,
+    apply: () => T,
+  ): T {
+    const previousSuppressMarksSync = this.suppressMarksSync;
+    if (transport === 'collab') {
+      this.liveCollabSuggestionResolutionDepth += 1;
+      this.suppressMarksSync = false;
+    } else {
+      this.suppressMarksSync = true;
+    }
+    try {
+      return apply();
+    } finally {
+      if (transport === 'collab') {
+        this.liveCollabSuggestionResolutionDepth = Math.max(
+          0,
+          this.liveCollabSuggestionResolutionDepth - 1,
+        );
+      }
+      this.suppressMarksSync = previousSuppressMarksSync;
+    }
+  }
+
+  private dropSuggestionIdsFromServerMarkCache(markIds: string[]): Record<string, StoredMark> {
+    const removed: Record<string, StoredMark> = {};
+    const next = { ...this.lastReceivedServerMarks };
+    for (const id of markIds) {
+      if (!id || !next[id]) continue;
+      removed[id] = next[id];
+      delete next[id];
+    }
+    this.lastReceivedServerMarks = next;
+    return removed;
+  }
+
+  private restoreServerMarkCache(marks: Record<string, StoredMark>): void {
+    if (Object.keys(marks).length === 0) return;
+    this.lastReceivedServerMarks = { ...this.lastReceivedServerMarks, ...marks };
+  }
+
+  private async reconcileShareSuggestionBatch(
+    markIds: string[],
+    finalStatus: ShareSuggestionFinalStatus,
+    actor: string,
+  ): Promise<void> {
+    const fallbackMessage = finalStatus === 'accepted'
+      ? 'Unable to accept every suggestion.'
+      : 'Unable to reject every suggestion.';
+    const reconciliation = await reconcileShareMarkMutationBatch({
+      markIds,
+      finalStatus,
+      mutate: (markId) => finalStatus === 'accepted'
+        ? shareClient.acceptSuggestion(markId, actor)
+        : shareClient.rejectSuggestion(markId, actor),
+      fetchOpenContext: () => shareClient.fetchOpenContext(),
+      fallbackMessage,
+      showErrorBanner: (message) => this.showErrorBanner(message),
+      applyServerMarks: (marks) => this.applyAuthoritativeShareMarks(marks),
+      applyServerDocument: (doc) => {
+        const marks = doc.marks as Record<string, StoredMark>;
+        const pendingIds = markIds.filter((id) => {
+          const mark = marks[id];
+          return Boolean(mark && mark.status !== 'accepted' && mark.status !== 'rejected');
+        });
+        clearResolvedMarkTombstones(pendingIds);
+        this.applyAuthoritativeShareDocument(doc);
+      },
+    });
+    if (finalStatus === 'rejected') {
+      const unresolvedIds = new Set(reconciliation.unresolvedIds);
+      for (const id of markIds) {
+        if (unresolvedIds.has(id)) {
+          this.shareRejectedSuggestionIdsBlockedFromAcceptAll.add(id);
+        } else {
+          this.shareRejectedSuggestionIdsBlockedFromAcceptAll.delete(id);
+        }
+      }
+    }
   }
 
   /**
@@ -8481,75 +10473,72 @@ class ProofEditorImpl implements ProofEditor {
     }
 
     if (this.isShareMode) {
-      let canAccept = false;
+      const transport = this.getShareSuggestionResolutionTransport();
+      let accepted = false;
       this.editor.action((ctx) => {
-        const view = ctx.get(editorViewCtx);
-        canAccept = getPendingSuggestions(getMarks(view.state)).some((mark) => mark.id === markId);
+        const view = markApiView(ctx.get(editorViewCtx));
+        const parser = ctx.get(parserCtx);
+        const removedServerMarks = this.dropSuggestionIdsFromServerMarkCache([markId]);
+        this.applyShareSuggestionLocally(transport, () => {
+          accepted = acceptMark(view, markId, parser);
+        });
+        if (!accepted) this.restoreServerMarkCache(removedServerMarks);
+        if (!accepted) return;
+        const metadata = getMarkMetadataWithQuotes(view.state);
+        this.lastReceivedServerMarks = { ...metadata };
+        this.initialMarksSynced = true;
+        const stats = getAuthorshipStats(view);
+        this.notifyHostAuthorshipStatsUpdated(stats);
+        this.scheduleShareSuggestionReviewDisplay(view);
       });
-      if (!canAccept) {
+
+      if (!accepted) {
         console.warn('[markAccept] Suggestion not pending in share mode:', markId);
         return false;
       }
 
-      const actor = getCurrentActor();
-      void shareClient.acceptSuggestion(markId, actor).then((result) => {
-        if (!result || 'error' in result || result.success !== true) return;
-        const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
-          ? result.marks as Record<string, StoredMark>
-          : null;
-        if (!serverMarks) return;
-        this.lastReceivedServerMarks = { ...serverMarks };
-        this.initialMarksSynced = true;
-        if (this.editor) {
-          this.editor.action((innerCtx) => {
-            const innerView = innerCtx.get(editorViewCtx);
-            applyRemoteMarks(innerView, serverMarks, { hydrateAnchors: this.collabCanEdit });
-            const stats = getAuthorshipStats(innerView);
-            this.bridge.authorshipStatsUpdated(stats);
-          });
-        }
-        captureEvent('suggestion_accepted', { count: 1 });
-      }).catch((error) => {
-        console.error('[markAccept] Failed to persist suggestion acceptance via share mutation:', error);
+      this.shareRejectedSuggestionIdsBlockedFromAcceptAll.delete(markId);
+      runShareSuggestionRestFallback(transport, () => {
+        const actor = getCurrentActor();
+        void shareClient.acceptSuggestion(markId, actor).then(async (result) => {
+          if (!result || 'error' in result || result.success !== true) {
+            await this.recoverAuthoritativeShareMarks(
+              result,
+              'Unable to accept suggestion.',
+              [markId],
+              'accepted',
+            );
+            return;
+          }
+          const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
+            ? result.marks as Record<string, StoredMark>
+            : null;
+          if (!serverMarks) return;
+          this.applyAuthoritativeShareMarks(serverMarks);
+        }).catch((error) => {
+          console.error('[markAccept] Failed to persist suggestion acceptance via share mutation:', error);
+          void this.recoverAuthoritativeShareMarks(
+            error,
+            'Unable to accept suggestion.',
+            [markId],
+            'accepted',
+          );
+        });
       });
+      captureEvent('suggestion_accepted', { count: 1 });
       return true;
     }
 
     let success = false;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const parser = ctx.get(parserCtx);
       success = acceptMark(view, markId, parser);
       console.log('[markAccept] Accepted:', success);
-      if (success && this.isShareMode) {
-        const metadata = getMarkMetadataWithQuotes(view.state);
-        this.lastReceivedServerMarks = { ...metadata };
-        this.initialMarksSynced = true;
-
-        const actor = getCurrentActor();
-        void shareClient.acceptSuggestion(markId, actor).then((result) => {
-          if (!result || 'error' in result || result.success !== true) return;
-          const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
-            ? result.marks as Record<string, StoredMark>
-            : null;
-          if (!serverMarks) return;
-          this.lastReceivedServerMarks = { ...serverMarks };
-          this.initialMarksSynced = true;
-          if (this.editor) {
-            this.editor.action((innerCtx) => {
-              const innerView = innerCtx.get(editorViewCtx);
-              const mergedMetadata = mergePendingServerMarks(getMarkMetadataWithQuotes(innerView.state), serverMarks);
-              setMarkMetadata(innerView, mergedMetadata);
-            });
-          }
-        }).catch((error) => {
-          console.error('[markAccept] Failed to persist suggestion acceptance via share mutation:', error);
-        });
-      }
       if (success) {
         captureEvent('suggestion_accepted', { count: 1 });
         const stats = getAuthorshipStats(view);
-        this.bridge.authorshipStatsUpdated(stats);
+        this.notifyHostAuthorshipStatsUpdated(stats);
       }
     });
 
@@ -8565,36 +10554,71 @@ class ProofEditorImpl implements ProofEditor {
       return false;
     }
 
-    let success = false;
-    this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
-      success = rejectMark(view, markId);
-      console.log('[markReject] Rejected:', success);
-      if (success && this.isShareMode) {
+    if (this.isShareMode) {
+      const transport = this.getShareSuggestionResolutionTransport();
+      let rejected = false;
+      this.editor.action((ctx) => {
+        const view = markApiView(ctx.get(editorViewCtx));
+        const removedServerMarks = this.dropSuggestionIdsFromServerMarkCache([markId]);
+        this.applyShareSuggestionLocally(transport, () => {
+          rejected = rejectMark(view, markId);
+        });
+        if (!rejected) this.restoreServerMarkCache(removedServerMarks);
+        if (!rejected) return;
         const metadata = getMarkMetadataWithQuotes(view.state);
         this.lastReceivedServerMarks = { ...metadata };
         this.initialMarksSynced = true;
+        this.scheduleShareSuggestionReviewDisplay(view);
+      });
 
+      if (!rejected) {
+        console.warn('[markReject] Suggestion not pending in share mode:', markId);
+        return false;
+      }
+
+      if (transport === 'rest') {
+        this.shareRejectedSuggestionIdsBlockedFromAcceptAll.add(markId);
+      } else {
+        this.shareRejectedSuggestionIdsBlockedFromAcceptAll.delete(markId);
+      }
+      runShareSuggestionRestFallback(transport, () => {
         const actor = getCurrentActor();
-        void shareClient.rejectSuggestion(markId, actor).then((result) => {
-          if (!result || 'error' in result || result.success !== true) return;
+        void shareClient.rejectSuggestion(markId, actor).then(async (result) => {
+          if (!result || 'error' in result || result.success !== true) {
+            await this.recoverAuthoritativeShareMarks(
+              result,
+              'Unable to reject suggestion.',
+              [markId],
+              'rejected',
+            );
+            return;
+          }
+          this.shareRejectedSuggestionIdsBlockedFromAcceptAll.delete(markId);
           const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
             ? result.marks as Record<string, StoredMark>
             : null;
           if (!serverMarks) return;
-          this.lastReceivedServerMarks = { ...serverMarks };
-          this.initialMarksSynced = true;
-          if (this.editor) {
-            this.editor.action((innerCtx) => {
-              const innerView = innerCtx.get(editorViewCtx);
-              const mergedMetadata = mergePendingServerMarks(getMarkMetadataWithQuotes(innerView.state), serverMarks);
-              setMarkMetadata(innerView, mergedMetadata);
-            });
-          }
+          this.applyAuthoritativeShareMarks(serverMarks);
         }).catch((error) => {
           console.error('[markReject] Failed to persist suggestion rejection via share mutation:', error);
+          void this.recoverAuthoritativeShareMarks(
+            error,
+            'Unable to reject suggestion.',
+            [markId],
+            'rejected',
+          );
         });
-      }
+      });
+
+      captureEvent('suggestion_rejected', { count: 1 });
+      return true;
+    }
+
+    let success = false;
+    this.editor.action((ctx) => {
+      const view = markApiView(ctx.get(editorViewCtx));
+      success = rejectMark(view, markId);
+      console.log('[markReject] Rejected:', success);
       if (success) {
         captureEvent('suggestion_rejected', { count: 1 });
       }
@@ -8612,89 +10636,84 @@ class ProofEditorImpl implements ProofEditor {
     }
 
     if (this.isShareMode) {
+      const transport = this.getShareSuggestionResolutionTransport();
+      let acceptedCount = 0;
       let acceptedIds: string[] = [];
       this.editor.action((ctx) => {
-        const view = ctx.get(editorViewCtx);
-        acceptedIds = getPendingSuggestions(getMarks(view.state)).map((mark) => mark.id);
-      });
-      if (acceptedIds.length === 0) return 0;
-
-      const actor = getCurrentActor();
-      void (async () => {
-        let latestServerMarks: Record<string, StoredMark> | null = null;
-        let acceptedCount = 0;
-        for (const suggestionId of acceptedIds) {
-          const result = await shareClient.acceptSuggestion(suggestionId, actor);
-          if (!result || 'error' in result || result.success !== true) continue;
-          const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
-            ? result.marks as Record<string, StoredMark>
-            : null;
-          if (!serverMarks) continue;
-          latestServerMarks = serverMarks;
-          acceptedCount += 1;
-        }
-        if (!latestServerMarks) return;
-        this.lastReceivedServerMarks = { ...latestServerMarks };
-        this.initialMarksSynced = true;
-        if (this.editor) {
-          this.editor.action((innerCtx) => {
-            const innerView = innerCtx.get(editorViewCtx);
-            applyRemoteMarks(innerView, latestServerMarks!, { hydrateAnchors: this.collabCanEdit });
-            const stats = getAuthorshipStats(innerView);
-            this.bridge.authorshipStatsUpdated(stats);
+        const view = markApiView(ctx.get(editorViewCtx));
+        const parser = ctx.get(parserCtx);
+        const pendingIds = getPendingSuggestions(getMarks(view.state))
+          .map((mark) => mark.id)
+          .filter((id) => (
+            this.isSuggestionPendingOnServer(id)
+            && !this.shareRejectedSuggestionIdsBlockedFromAcceptAll.has(id)
+          ));
+        if (pendingIds.length === 0) return;
+        const pendingIdSet = new Set(pendingIds);
+        const removedServerMarks = this.dropSuggestionIdsFromServerMarkCache(pendingIds);
+        const acceptedIdSet = new Set<string>();
+        try {
+          this.applyShareSuggestionLocally(transport, () => {
+            for (let pass = 0; pass < 4; pass += 1) {
+              const remaining = getPendingSuggestions(getMarks(view.state))
+                .filter((mark) => pendingIdSet.has(mark.id))
+                .map((mark) => mark.id)
+                .reverse();
+              if (remaining.length === 0) break;
+              let acceptedInPass = 0;
+              for (const id of remaining) {
+                if (acceptMark(view, id, parser)) {
+                  acceptedIdSet.add(id);
+                  acceptedInPass += 1;
+                }
+              }
+              if (acceptedInPass === 0) break;
+            }
           });
+        } finally {
+          const unresolvedServerMarks = Object.fromEntries(
+            Object.entries(removedServerMarks).filter(([id]) => !acceptedIdSet.has(id)),
+          );
+          this.restoreServerMarkCache(unresolvedServerMarks);
         }
-        if (acceptedCount > 0) {
-          captureEvent('suggestion_accepted', { count: acceptedCount });
-        }
-      })().catch((error) => {
-        console.error('[markAcceptAll] Failed to persist suggestion acceptance via share mutation:', error);
-      });
-      return acceptedIds.length;
-    }
-
-    let count = 0;
-    let acceptedIds: string[] = [];
-    this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
-      const parser = ctx.get(parserCtx);
-      acceptedIds = getPendingSuggestions(getMarks(view.state)).map((mark) => mark.id);
-      count = acceptAll(view, parser);
-      console.log('[markAcceptAll] Accepted:', count);
-      if (count > 0 && this.isShareMode && acceptedIds.length > 0) {
+        acceptedIds = [...acceptedIdSet];
+        acceptedCount = acceptedIds.length;
+        if (acceptedCount <= 0) return;
         const metadata = getMarkMetadataWithQuotes(view.state);
         this.lastReceivedServerMarks = { ...metadata };
         this.initialMarksSynced = true;
+        const stats = getAuthorshipStats(view);
+        this.notifyHostAuthorshipStatsUpdated(stats);
+        this.scheduleShareSuggestionReviewDisplay(view);
+      });
+      if (acceptedCount <= 0 || acceptedIds.length === 0) return 0;
 
+      runShareSuggestionRestFallback(transport, () => {
         const actor = getCurrentActor();
-        void (async () => {
-          let latestServerMarks: Record<string, StoredMark> | null = null;
-          for (const suggestionId of acceptedIds) {
-            const result = await shareClient.acceptSuggestion(suggestionId, actor);
-            if (!result || 'error' in result || result.success !== true) continue;
-            const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
-              ? result.marks as Record<string, StoredMark>
-              : null;
-            if (!serverMarks) continue;
-            latestServerMarks = serverMarks;
-          }
-          if (!latestServerMarks) return;
-          this.lastReceivedServerMarks = { ...latestServerMarks };
-          this.initialMarksSynced = true;
-          if (this.editor) {
-            this.editor.action((innerCtx) => {
-              const innerView = innerCtx.get(editorViewCtx);
-              applyRemoteMarks(innerView, latestServerMarks!, { hydrateAnchors: this.collabCanEdit });
-            });
-          }
-        })().catch((error) => {
+        void this.reconcileShareSuggestionBatch(acceptedIds, 'accepted', actor).catch((error) => {
           console.error('[markAcceptAll] Failed to persist suggestion acceptance via share mutation:', error);
+          void this.recoverAuthoritativeShareMarks(
+            error,
+            'Unable to accept every suggestion.',
+            acceptedIds,
+            'accepted',
+          );
         });
-      }
+      });
+      captureEvent('suggestion_accepted', { count: acceptedCount });
+      return acceptedCount;
+    }
+
+    let count = 0;
+    this.editor.action((ctx) => {
+      const view = markApiView(ctx.get(editorViewCtx));
+      const parser = ctx.get(parserCtx);
+      count = acceptAll(view, parser);
+      console.log('[markAcceptAll] Accepted:', count);
       if (count > 0) {
         captureEvent('suggestion_accepted', { count });
         const stats = getAuthorshipStats(view);
-        this.bridge.authorshipStatsUpdated(stats);
+        this.notifyHostAuthorshipStatsUpdated(stats);
       }
     });
 
@@ -8710,48 +10729,76 @@ class ProofEditorImpl implements ProofEditor {
       return 0;
     }
 
-    let count = 0;
-    let rejectedIds: string[] = [];
-    this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
-      rejectedIds = getPendingSuggestions(getMarks(view.state)).map((mark) => mark.id);
-      count = rejectAll(view);
-      console.log('[markRejectAll] Rejected:', count);
-      if (count > 0 && this.isShareMode && rejectedIds.length > 0) {
+    if (this.isShareMode) {
+      const transport = this.getShareSuggestionResolutionTransport();
+      let rejectedIds: string[] = [];
+      let rejectedCount = 0;
+      this.editor.action((ctx) => {
+        const view = markApiView(ctx.get(editorViewCtx));
+        rejectedIds = getPendingSuggestions(getMarks(view.state))
+          .map((mark) => mark.id)
+          .filter((id) => this.isSuggestionPendingOnServer(id));
+        if (rejectedIds.length === 0) return;
+        const removedServerMarks = this.dropSuggestionIdsFromServerMarkCache(rejectedIds);
+        const rejectedIdSet = new Set<string>();
+        try {
+          this.applyShareSuggestionLocally(transport, () => {
+            for (const id of [...rejectedIds].reverse()) {
+              if (rejectMark(view, id)) rejectedIdSet.add(id);
+            }
+          });
+        } finally {
+          const unresolvedServerMarks = Object.fromEntries(
+            Object.entries(removedServerMarks).filter(([id]) => !rejectedIdSet.has(id)),
+          );
+          this.restoreServerMarkCache(unresolvedServerMarks);
+        }
+        rejectedIds = rejectedIds.filter((id) => rejectedIdSet.has(id));
+        rejectedCount = rejectedIds.length;
+        if (rejectedCount <= 0) return;
         const metadata = getMarkMetadataWithQuotes(view.state);
         this.lastReceivedServerMarks = { ...metadata };
         this.initialMarksSynced = true;
+        this.scheduleShareSuggestionReviewDisplay(view);
+      });
 
-        const actor = getCurrentActor();
-        void (async () => {
-          let latestServerMarks: Record<string, StoredMark> | null = null;
-          for (const suggestionId of rejectedIds) {
-            const result = await shareClient.rejectSuggestion(suggestionId, actor);
-            if (!result || 'error' in result || result.success !== true) continue;
-            const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
-              ? result.marks as Record<string, StoredMark>
-              : null;
-            if (!serverMarks) continue;
-            latestServerMarks = serverMarks;
-          }
-          if (!latestServerMarks) return;
-          this.lastReceivedServerMarks = { ...latestServerMarks };
-          this.initialMarksSynced = true;
-          if (this.editor) {
-            this.editor.action((innerCtx) => {
-              const innerView = innerCtx.get(editorViewCtx);
-              const mergedMetadata = mergePendingServerMarks(getMarkMetadataWithQuotes(innerView.state), latestServerMarks!);
-              setMarkMetadata(innerView, mergedMetadata);
-            });
-          }
-        })().catch((error) => {
-          console.error('[markRejectAll] Failed to persist suggestion rejection via share mutation:', error);
-        });
+      if (rejectedCount <= 0 || rejectedIds.length === 0) return 0;
+
+      if (transport === 'rest') {
+        for (const id of rejectedIds) {
+          this.shareRejectedSuggestionIdsBlockedFromAcceptAll.add(id);
+        }
+      } else {
+        for (const id of rejectedIds) {
+          this.shareRejectedSuggestionIdsBlockedFromAcceptAll.delete(id);
+        }
       }
+      runShareSuggestionRestFallback(transport, () => {
+        const actor = getCurrentActor();
+        void this.reconcileShareSuggestionBatch(rejectedIds, 'rejected', actor).catch((error) => {
+          console.error('[markRejectAll] Failed to persist suggestion rejection via share mutation:', error);
+          void this.recoverAuthoritativeShareMarks(
+            error,
+            'Unable to reject every suggestion.',
+            rejectedIds,
+            'rejected',
+          );
+        });
+      });
+
+      captureEvent('suggestion_rejected', { count: rejectedCount });
+      return rejectedCount;
+    }
+
+    let count = 0;
+    this.editor.action((ctx) => {
+      const view = markApiView(ctx.get(editorViewCtx));
+      count = rejectAll(view);
+      console.log('[markRejectAll] Rejected:', count);
       if (count > 0) {
         captureEvent('suggestion_rejected', { count });
         const stats = getAuthorshipStats(view);
-        this.bridge.authorshipStatsUpdated(stats);
+        this.notifyHostAuthorshipStatsUpdated(stats);
       }
     });
     return count;
@@ -8768,7 +10815,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let success = false;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       success = deleteMark(view, markId);
       console.log('[markDelete] Deleted:', success);
     });
@@ -8785,7 +10832,7 @@ class ProofEditorImpl implements ProofEditor {
     }
 
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       setActiveMark(view, markId);
       console.log('[markSetActive] Set active mark:', markId);
     });
@@ -8862,7 +10909,7 @@ class ProofEditorImpl implements ProofEditor {
 
     let mark: Mark | null = null;
     this.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
+      const view = markApiView(ctx.get(editorViewCtx));
       const range = this.getSelectionRangeOrBlock(view);
       if (!range) return;
       mark = setAuthoredMark(view, by, range);
@@ -8935,6 +10982,8 @@ class ProofEditorImpl implements ProofEditor {
 
       // Scroll to the mark position
       const pos = mark.range.from;
+      const line = this.lineMarks?.lineAtPos(pos);
+      if (line !== undefined && line >= 0) this.folding?.reveal(line);
       const coords = view.coordsAtPos(pos);
       if (coords) {
         const editorRect = view.dom.getBoundingClientRect();
@@ -9974,6 +12023,8 @@ class ProofEditorImpl implements ProofEditor {
       const docSize = view.state.doc.content.size;
       const from = Math.max(0, Math.min(match.from, docSize));
       const to = Math.max(from, Math.min(match.to, docSize));
+      const line = this.lineMarks?.lineAtPos(from);
+      if (line !== undefined && line >= 0) this.folding?.reveal(line);
       const selection = TextSelection.create(view.state.doc, from, to);
       const tr = view.state.tr.setSelection(selection);
       view.dispatch(tr);

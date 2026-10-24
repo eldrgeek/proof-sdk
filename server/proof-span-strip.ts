@@ -309,9 +309,10 @@ export function buildProofSpanReplacementMap<T extends ProofReplacementMark>(
   const replacements: Record<string, string> = {};
   for (const [id, mark] of Object.entries(marks)) {
     if (typeof mark?.quote !== 'string' || mark.quote.trim().length === 0) continue;
+    // Insert spans already contain the exact proposed text. Their quotes are normalized
+    // anchors and may omit significant edge whitespace, so never substitute them here.
     if (
       mark.kind === 'comment'
-      || mark.kind === 'insert'
       || mark.kind === 'delete'
       || mark.kind === 'replace'
       || mark.kind === 'approved'

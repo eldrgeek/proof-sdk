@@ -1,0 +1,15 @@
+--- soma-feedback.js
++++ soma-feedback.js
+@@ -460,8 +460,10 @@
+ 
+   function applyIdentity(identity) {
+     if (!identity) return;
+-    if (identity.name && !nameTouched && !nameInput.value.trim()) nameInput.value = identity.name;
+-    if (identity.email && !emailTouched && !emailInput.value.trim()) emailInput.value = identity.email;
++    // Proof+ A1b: the signed-in identity takes precedence over remembered fields.
++    // Preserve only edits made by the person in this panel.
++    if (!nameTouched) nameInput.value = identity.name || '';
++    if (!emailTouched) emailInput.value = identity.email || '';
+   }
+ 
+   nameInput.addEventListener('input', function () { nameTouched = true; });

@@ -19,7 +19,7 @@ import { buildSharePreviewModel, resolveOgTextLayout } from '../../server/share-
 
 const SHARE_BASE = process.env.SHARE_BASE_URL ?? 'http://localhost:4000';
 const CLIENT_HEADERS = {
-  'X-Proof-Client-Version': '0.31.0',
+  'X-Proof-Client-Version': '0.34.0',
   'X-Proof-Client-Build': 'tests',
   'X-Proof-Client-Protocol': '3',
 };
@@ -567,6 +567,86 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assert(typeof payload.agent?.bridgeApi?.comments === 'string' && payload.agent.bridgeApi.comments.includes('/documents/'), 'Expected bridge comments route');
     });
 
+    await test('D2: POST /documents in api_key mode matches /share/markdown auth behavior', async () => {
+      const previousKey = process.env.PROOF_SHARE_MARKDOWN_API_KEY;
+      const previousMode = process.env.PROOF_SHARE_MARKDOWN_AUTH_MODE;
+      process.env.PROOF_SHARE_MARKDOWN_API_KEY = 'test-direct-share-key';
+      process.env.PROOF_SHARE_MARKDOWN_AUTH_MODE = 'api_key';
+      try {
+        const shareUnauthorized = await postNoClientHeaders(baseUrl, '/share/markdown', {
+          markdown: '# Auth required for share markdown',
+        });
+        const shareUnauthorizedPayload = await shareUnauthorized.json();
+
+        const unauthorized = await postNoClientHeaders(baseUrl, '/documents', {
+          markdown: '# Auth required for canonical create',
+          marks: {},
+        });
+        assert(
+          unauthorized.status === shareUnauthorized.status,
+          `Expected canonical unauthorized status ${shareUnauthorized.status}, got ${unauthorized.status}`,
+        );
+        const unauthorizedPayload = await unauthorized.json();
+        assertEqual(
+          unauthorizedPayload.code,
+          shareUnauthorizedPayload.code,
+          `Expected canonical unauthorized code ${String(shareUnauthorizedPayload.code)}, got ${String(unauthorizedPayload.code)}`,
+        );
+
+        const bearerAuthorized = await postNoClientHeaders(baseUrl, '/documents', {
+          markdown: '# Canonical create with bearer auth',
+          marks: {},
+        }, {
+          Authorization: 'Bearer test-direct-share-key',
+        });
+        assert(
+          bearerAuthorized.status >= 200 && bearerAuthorized.status < 300,
+          `Expected 2xx with Authorization bearer key, got ${bearerAuthorized.status}`,
+        );
+        const bearerPayload = await bearerAuthorized.json();
+        assert(typeof bearerPayload.slug === 'string' && bearerPayload.slug.length > 0, 'Expected created slug with bearer auth');
+
+        const apiKeyAuthorized = await postNoClientHeaders(baseUrl, '/documents', {
+          markdown: '# Canonical create with x-api-key',
+          marks: {},
+        }, {
+          'x-api-key': 'test-direct-share-key',
+        });
+        assert(
+          apiKeyAuthorized.status >= 200 && apiKeyAuthorized.status < 300,
+          `Expected 2xx with x-api-key header, got ${apiKeyAuthorized.status}`,
+        );
+        const apiKeyPayload = await apiKeyAuthorized.json();
+        assert(typeof apiKeyPayload.slug === 'string' && apiKeyPayload.slug.length > 0, 'Expected created slug with x-api-key auth');
+      } finally {
+        if (previousKey === undefined) delete process.env.PROOF_SHARE_MARKDOWN_API_KEY;
+        else process.env.PROOF_SHARE_MARKDOWN_API_KEY = previousKey;
+        if (previousMode === undefined) delete process.env.PROOF_SHARE_MARKDOWN_AUTH_MODE;
+        else process.env.PROOF_SHARE_MARKDOWN_AUTH_MODE = previousMode;
+      }
+    });
+
+    await test('D2: POST /documents stays open when auth mode is none', async () => {
+      const previousKey = process.env.PROOF_SHARE_MARKDOWN_API_KEY;
+      const previousMode = process.env.PROOF_SHARE_MARKDOWN_AUTH_MODE;
+      process.env.PROOF_SHARE_MARKDOWN_API_KEY = 'test-direct-share-key';
+      process.env.PROOF_SHARE_MARKDOWN_AUTH_MODE = 'none';
+      try {
+        const response = await postNoClientHeaders(baseUrl, '/documents', {
+          markdown: '# Auth mode none',
+          marks: {},
+        });
+        assert(response.status === 200, `Expected status 200 when auth mode is none, got ${response.status}`);
+        const payload = await response.json();
+        assert(typeof payload.slug === 'string' && payload.slug.length > 0, 'Expected slug when auth mode is none');
+      } finally {
+        if (previousKey === undefined) delete process.env.PROOF_SHARE_MARKDOWN_API_KEY;
+        else process.env.PROOF_SHARE_MARKDOWN_API_KEY = previousKey;
+        if (previousMode === undefined) delete process.env.PROOF_SHARE_MARKDOWN_AUTH_MODE;
+        else process.env.PROOF_SHARE_MARKDOWN_AUTH_MODE = previousMode;
+      }
+    });
+
     await test('D2: POST /api/documents in warn mode returns deprecation headers + metadata', async () => {
       const previousMode = process.env.PROOF_LEGACY_CREATE_MODE;
       process.env.PROOF_LEGACY_CREATE_MODE = 'warn';
@@ -591,6 +671,15 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       const previousMode = process.env.PROOF_LEGACY_CREATE_MODE;
       process.env.PROOF_LEGACY_CREATE_MODE = 'disabled';
       try {
+        const canonicalResponse = await postNoClientHeaders(baseUrl, '/documents', {
+          markdown: '# Canonical create remains available',
+          marks: {},
+        });
+        assert(canonicalResponse.status === 200, `Expected canonical /documents create status 200, got ${canonicalResponse.status}`);
+        const canonicalPayload = await canonicalResponse.json();
+        assert(typeof canonicalPayload.slug === 'string' && canonicalPayload.slug.length > 0, 'Expected canonical create slug');
+        assert((canonicalResponse.headers.get('x-proof-legacy-create') || '') === '', 'Expected no legacy-disabled header on canonical /documents');
+
         const response = await post(baseUrl, '/api/documents', {
           markdown: '# Legacy disabled mode',
           marks: {},
@@ -799,11 +888,7 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       const payload = JSON.parse(response.body || '{}') as Record<string, unknown>;
       assertEqual(payload.role, 'viewer', 'Expected cookie token to authorize viewer role');
       assert(payload.success === true, 'Expected successful payload');
-      assertEqual(
-        payload.hint,
-        'This link has no token. Ask for a tokenized link if you need a stable shareable URL.',
-        'Expected cookie-auth JSON response to avoid URL-token hint',
-      );
+      assertIncludes(String(payload.hint), `/api/agent/${fallbackSlug}/join`, 'Expected cookie-auth JSON to explain joining without exposing its credential');
     });
 
     await test('D2: /d/:slug agent-friendly HTML never embeds cookie-derived tokens', async () => {
@@ -835,7 +920,7 @@ async function runRoutePayloadValidationTests(): Promise<void> {
         !body.includes(`?token=${encodeURIComponent(cookieViewerToken)}`),
         'Expected HTML response to avoid tokenized URL when token source is cookie',
       );
-      assertIncludes(body, 'No token detected', 'Expected no-token auth guidance in HTML response');
+      assertIncludes(body, `/api/agent/${cookieHtmlSlug}/join`, 'Expected join guidance in HTML response');
     });
 
     await test('D2: /d/:slug content negotiation returns JSON with markdown + links', async () => {
@@ -875,7 +960,7 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assertIncludes(body, '<meta property="og:title"', 'Expected og:title in Slack unfurl HTML');
       assertIncludes(body, '<meta property="og:image"', 'Expected og:image in Slack unfurl HTML');
       assertIncludes(body, '<meta name="twitter:description"', 'Expected twitter:description in Slack unfurl HTML');
-      assertIncludes(body, '<title>Validation test | Proof</title>', 'Expected document-specific title in Slack unfurl HTML');
+      assertIncludes(body, '<title>Validation test | Accord</title>', 'Expected document-specific title in Slack unfurl HTML');
     });
 
     await test('D2: /d/:slug content negotiation returns raw markdown', async () => {
@@ -899,11 +984,11 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assertIncludes(body, `<meta property="og:url" content="${baseUrl}/d/${slug}">`, 'Expected clean canonical og:url');
       assertIncludes(body, `${baseUrl}/og/share/${slug}.png?v=`, 'Expected versioned og:image URL');
       assertIncludes(body, '<meta name="twitter:image"', 'Expected twitter:image meta tag');
-      assertIncludes(body, '<title>Validation test | Proof</title>', 'Expected dynamic document title in HTML head');
+      assertIncludes(body, '<title>Validation test | Accord</title>', 'Expected dynamic document title in HTML head');
       const titleTags = body.match(/<title\b[^>]*>[\s\S]*?<\/title>/gi) || [];
       assertEqual(titleTags.length, 1, `Expected single title tag, got ${titleTags.length}`);
       assert(
-        !body.includes('<title>Proof Editor</title>'),
+        !body.includes('<title>Accord</title>'),
         'Expected template title to be replaced with document-specific title'
       );
       assert(
@@ -974,7 +1059,7 @@ async function runRoutePayloadValidationTests(): Promise<void> {
         !body.includes('Paused doc'),
         'Expected paused share HTML to avoid leaking document title',
       );
-      assertIncludes(body, 'content="The shared Proof document is temporarily unavailable"', 'Expected generic unavailable metadata');
+      assertIncludes(body, 'content="The shared Accord is temporarily unavailable"', 'Expected generic unavailable metadata');
       assert(!body.includes('This should not leak while paused.'), 'Expected paused share HTML to avoid content excerpt');
     });
 
@@ -1346,13 +1431,13 @@ async function runRoutePayloadValidationTests(): Promise<void> {
       assertEqual(payload.title, 'Paused owner title update', 'Expected updated paused title');
     });
 
-    await test('D2: open-context does not reject bare links when bearer token is an OAuth-style session token', async () => {
+    await test('X1c: open-context rejects an unresolved OAuth-style bearer token', async () => {
       const response = await get(baseUrl, `/api/documents/${slug}/open-context`, {
         Authorization: 'Bearer epsess_mock_session_token',
       });
-      assert(response.status === 200, `Expected status 200, got ${response.status}`);
+      assert(response.status === 401, `Expected status 401, got ${response.status}`);
       const payload = await response.json();
-      assert(payload?.doc?.slug === slug, 'Expected open-context payload for requested slug');
+      assert(payload?.session === undefined, 'Invalid bearer must not receive a session');
     });
 
     await test('D2: tokenless open-context defaults to editor permissions', async () => {

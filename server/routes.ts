@@ -1,3 +1,8 @@
+import { setImmediateMoveActors } from './moves.js';
+import { readCollabClientVersion, requireCurrentCollabClient } from './client-capabilities.js';
+import { redactSuggestionDecisions, blindReadView, readBlindView, redactAsk, redactTtl, visibleObjection, visibleAlternative } from './blind-view.js';
+import { agentKeyRoutes } from './agent-key-routes.js';
+import { getClientIp, trustProxyHeaders } from './client-address.js';
 import { createHash, randomUUID } from 'crypto';
 import { Router, text, type Request, type Response } from 'express';
 import { generateSlug } from './slug.js';
@@ -6,6 +11,7 @@ import {
   applyAgentPresenceToLoadedCollab,
   applyCanonicalDocumentToCollab,
   buildCollabSession,
+  deriveCanonicalMarkdownForStorage,
   getCanonicalReadableDocumentSync,
   getCollabRuntime,
   invalidateCollabDocument,
@@ -27,18 +33,17 @@ import {
   createDocument,
   createDocumentAccessToken,
   deleteDocument,
-  getDocument,
   getDocumentBySlug,
   getStoredIdempotencyRecord,
   pauseDocument,
   resolveDocumentAccess,
+  listDocumentAgentKeys,
   resolveDocumentAccessRole,
   rebuildDocumentBlocks,
   resumeDocument,
   revokeDocument,
   revokeDocumentAccessTokens,
   storeIdempotencyResult,
-  updateDocument,
   updateDocumentTitle,
   updateMarks,
 } from './db.js';
@@ -46,7 +51,7 @@ import { isShareRole, type ShareRole } from './share-types.js';
 import { broadcastToRoom, closeRoom, getActiveCollabClientBreakdown, getRoomSize } from './ws.js';
 import { runLegacyMarkRangeBackfillOnce } from './marks-range-backfill.js';
 import { createRateLimiter } from './rate-limiter.js';
-import { getCookie, shareTokenCookieName } from './cookies.js';
+import { getCookie, getCookies, shareTokenCookieName } from './cookies.js';
 import { canonicalizeStoredMarks } from '../src/formats/marks.js';
 import {
   recordRewriteBarrierFailure,
@@ -63,12 +68,10 @@ import {
   validateHostedSessionToken,
 } from './hosted-auth.js';
 import {
-  AGENT_DOCS_PATH,
-  CANONICAL_CREATE_API_PATH,
   DIRECT_SHARE_AUTH_FIX,
+  LEGACY_CREATE_API_PATH,
   buildLegacyCreateDeprecationPayload,
   buildLegacyCreateDisabledPayload,
-  canonicalCreateLink,
   getLegacyCreateResponseHeaders,
   resolveLegacyCreateMode,
   type LegacyCreateMode,
@@ -76,7 +79,6 @@ import {
 import { captureDocumentCreatedTelemetry } from './telemetry.js';
 import { executeDocumentOperationAsync, type EngineExecutionResult } from './document-engine.js';
 import {
-  type DocumentOpType,
   authorizeDocumentOp,
   parseDocumentOpRequest,
   resolveDocumentOpRoute,
@@ -97,13 +99,60 @@ import {
   validateOpPrecondition,
 } from './mutation-stage.js';
 import { resolveExplicitAgentIdentity } from '../src/shared/agent-identity.js';
+import { activeAgentKeyActors, computeServerLines, documentOwnerActors, isLibraryDocumentCreator, listCanonicalLineMarks, listLineMarks, reviewMarksFromStored, writeLineMark, writeLineMarksBatch } from './line-marks.js';
+import { answerAsk, listCanonicalAsks, reaskAsk, withdrawAnswer, withdrawAsk } from './asks.js';
+import { approveDo, revokeDo, runDo } from './do.js';
+import { listDos } from './do-store.js';
+import { DO_POLICY, doTeamActors } from '../src/shared/do.js';
+import { TIER_POLICY, isLineTier } from '../src/shared/line-tiers.js';
+import { evaluateDocumentTiers, listTierRecords, tierSignals, writeTiers } from './line-tiers.js';
+import { isLineAnchor, resolveLineAnchor, type DocLine } from '../src/shared/line-marks.js';
+import { buildSinceYou, checkAlignment, currentDocumentState, latestSnapshotInfo, listSnapshotInfos, scheduleAlignmentCheck, sendSnapshotFile } from './alignment.js';
+import { bindFamiliar, familiarOf, listFamiliars, listProxyMarks, ratifyProxies, undoableRatifications, undoRatification } from './proxy-marks.js';
+import { EVIDENCE_POLICY, PROXY_POLICY } from '../src/shared/proxy-marks.js';
+import { clearFlag, clearObjection, createObjection, keepObjection, writeFlag } from './review-aids.js';
+import { listFlags, listObjections, listReviewNotes } from './review-aids-store.js';
+import { clearTtl, decideAlternative, offerAlternative, pickAlternative, recordBundleDecision, reopenBundleDecision, recordExplain, setBlindSetting, setTtl, withdrawAlternative } from './proof-extras.js';
+import { getProofSettings, listAlternatives, listBundles, listExplains, listPicks, listTtls } from './proof-extras-store.js';
+import { closeThread, reopenThread, replyOnThread, startThreadRow, threadRows, undoStartThread } from './threads.js';
+import { lineEditor } from './agent-routes.js';
+import { guestActor, isGuestActor, normalizeActorString } from '../src/shared/identity.js';
+import { buildDirectory, clientDirectory, decideActor, sessionIdentity, type ActorDecision } from './identity.js';
+import { attestedFor, documentSession, getGuestAccessMode, guestMarksCount, resolveTokenlessAccess } from './document-team.js';
+import {
+  CROSS_INVITE_POLICY,
+  agentProvenanceMap,
+  displayName as crossDisplayName,
+  documentProvenance,
+} from './cross-invitation.js';
+import { IDENTITY_POLICY, actorsIn, isEmailAddress, verifiedHumanActor, type IdentityDirectory, type ViewerIdentity } from '../src/shared/identity.js';
+import { actorKey, agentKeyActor } from '../src/shared/line-marks.js';
+import { chatAuthors, listChatMessages, mentionCandidates, postChatMessage } from './chat.js';
+import { CHAT_POLICY } from '../src/shared/chat.js';
+import { EXPLAIN_POLICY } from '../src/shared/explain.js';
+import { WHY_POLICY } from '../src/shared/review-aids.js';
+import { getPublicOrigin } from './public-origin.js';
+import { getLibrarySession, isLibraryEnabled } from './library/auth.js';
 import {
   buildProofSdkAgentDescriptor,
   buildProofSdkDocumentPaths,
   buildProofSdkLinks,
 } from './proof-sdk-routes.js';
+import {
+  EXPORT_FORMAT_ERROR,
+  IMPORT_POLICY,
+  applyImportedMarks,
+  exportProofDocument,
+  normalizeExportFormat,
+  parseImport,
+  type ImportAuthority,
+  type ImportSummary,
+} from './proof-dialect.js';
+import { stripAllProofSpanTags as stripSpansForExport } from './proof-span-strip.js';
+import { isEmailAddress as isEmailForImport, verifiedHumanActor as verifiedHumanForImport } from '../src/shared/identity.js';
 
 export const apiRoutes = Router();
+apiRoutes.use(agentKeyRoutes);
 runLegacyMarkRangeBackfillOnce();
 
 const DIRECT_SHARE_RATE_LIMIT_BUCKETS = new Map<string, { count: number; resetAt: number }>();
@@ -136,10 +185,6 @@ function isMarksPayload(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function trustProxyHeaders(): boolean {
-  const value = (process.env.PROOF_TRUST_PROXY_HEADERS || '').trim().toLowerCase();
-  return value === '1' || value === 'true' || value === 'yes';
-}
 
 function parseJson(value: string): Record<string, unknown> {
   try {
@@ -165,18 +210,6 @@ function hashRequestBody(body: unknown): string {
   }
 }
 
-function getClientIp(req: Request): string {
-  if (trustProxyHeaders()) {
-    const forwardedFor = req.header('x-forwarded-for');
-    if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
-      const first = forwardedFor.split(',')[0]?.trim();
-      if (first) return first;
-    }
-  }
-  if (req.ip && req.ip.trim()) return req.ip;
-  if (req.socket?.remoteAddress) return req.socket.remoteAddress;
-  return 'unknown';
-}
 
 function parsePositiveIntEnv(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -348,6 +381,7 @@ function maybeBuildAgentParticipation(
     avatar: identity.avatar,
     status: 'editing',
     details: 'ops',
+    tokenId: resolveDocumentAccess(String(req.params.slug), getPresentedSecret(req) ?? '')?.tokenId ?? null,
     at: new Date().toISOString(),
   };
 
@@ -445,6 +479,11 @@ function recordLegacyCreateRouteTelemetry(
     host: req.get('host') || '',
     at: new Date().toISOString(),
   }));
+}
+
+function isLegacyCreatePathRequest(req: Request): boolean {
+  if (req.baseUrl === '/api') return true;
+  return req.originalUrl === LEGACY_CREATE_API_PATH || req.originalUrl.startsWith(`${LEGACY_CREATE_API_PATH}?`);
 }
 
 async function authorizeDirectShareRequest(
@@ -695,8 +734,9 @@ function getPresentedBearerToken(req: Request): string | null {
 function getAccessRole(req: Request, slug: string): ShareRole | null {
   const secret = getPresentedSecret(req);
   if (secret) return resolveDocumentAccessRole(slug, secret);
-  // Product decision: tokenless shared docs default to editable access (slug is the secret).
-  return 'editor';
+  // Invite person (2026-09-19): without a share token, library members and people invited to
+  // this document edit; everyone else gets the document's guest setting (server/document-team.ts).
+  return resolveTokenlessAccess(req, slug).role;
 }
 
 function canOwnerMutate(req: Request, doc: { owner_secret: string | null; owner_secret_hash: string | null; owner_id: string | null }): boolean {
@@ -732,35 +772,45 @@ async function resolveOpenContextAccess(
   slug: string,
   doc: { owner_id: string | null; owner_secret: string | null; owner_secret_hash: string | null },
 ): Promise<OpenContextAccess | null> {
-  const explicitSecret = getExplicitShareSecret(req);
+  // Ticket issuance must validate every presented credential, including empty
+  // values and credentials shadowed by a higher-priority source. Page navigation
+  // deliberately retains its separate query/cookie fallback policy.
   const bearerToken = getPresentedBearerToken(req);
-  const explicitResolved = explicitSecret ? resolveDocumentAccess(slug, explicitSecret) : null;
-  const bearerResolved = !explicitResolved && bearerToken ? resolveDocumentAccess(slug, bearerToken) : null;
-  const resolved = explicitResolved ?? bearerResolved;
-  const ownerBySecret = canMutateByOwnerIdentity(doc, explicitSecret);
   const ownerByOAuth = await ownerAuthorizedViaOAuth(req, doc.owner_id);
-  const ownerAuthorized = ownerBySecret || ownerByOAuth;
-
+  const credentials = [
+    req.body?.ownerSecret,
+    req.header('x-share-token'),
+    req.header('x-bridge-token'),
+    req.query.token,
+    ...getCookies(req, shareTokenCookieName(slug)),
+    req.header('authorization') === undefined ? undefined : bearerToken ?? '',
+  ];
+  let resolved: ReturnType<typeof resolveDocumentAccess> = null;
+  for (const credential of credentials) {
+    if (credential === undefined || credential === null) continue;
+    const secret = typeof credential === 'string' ? credential.trim() : '';
+    const access = secret ? resolveDocumentAccess(slug, secret) : null;
+    if (!access && !(ownerByOAuth && secret === bearerToken)) {
+      res.status(401).json({ error: 'Invalid share token', code: 'UNAUTHORIZED' });
+      return null;
+    }
+    resolved ??= access;
+  }
+  const ownerAuthorized = ownerByOAuth || resolved?.role === 'owner_bot';
   if (ownerAuthorized) {
-    return { role: 'owner_bot', tokenId: null, ownerAuthorized: true };
+    return { role: 'owner_bot', tokenId: resolved?.tokenId ?? null, ownerAuthorized: true };
   }
   if (resolved) {
-    return {
-      role: resolved.role,
-      tokenId: resolved.tokenId,
-      ownerAuthorized: resolved.role === 'owner_bot',
-    };
-  }
-  if (explicitSecret) {
-    res.status(401).json({
-      error: 'Invalid share token',
-      code: 'UNAUTHORIZED',
-    });
-    return null;
+    return { role: resolved.role, tokenId: resolved.tokenId, ownerAuthorized: false };
   }
 
-  // Tokenless links default to read-only access.
-  return { role: 'editor', tokenId: null, ownerAuthorized: false };
+  // Invite person (2026-09-19): no credential means the tokenless access of server/document-team.ts.
+  const tokenless = resolveTokenlessAccess(req, slug);
+  if (!tokenless.role) {
+    res.status(401).json({ error: 'Sign in to open this document', code: 'SIGN_IN_REQUIRED', signInUrl: isLibraryEnabled() ? '/' : null });
+    return null;
+  }
+  return { role: tokenless.role, tokenId: tokenless.collabTokenId, ownerAuthorized: false };
 }
 
 function deriveShareCapabilities(role: ShareRole, shareState: string): {
@@ -784,19 +834,46 @@ function deriveShareCapabilities(role: ShareRole, shareState: string): {
 }
 
 // Create a shared document
-apiRoutes.post('/documents', (req: Request, res: Response) => {
+apiRoutes.post('/documents', async (req: Request, res: Response) => {
+  const legacyPathRequest = isLegacyCreatePathRequest(req);
   const legacyCreateMode = resolveLegacyCreateMode(getPublicBaseUrl(req));
-  if (legacyCreateMode === 'disabled') {
-    recordLegacyCreateRouteTelemetry(req, legacyCreateMode, 'blocked_disabled');
-    applyLegacyCreateHeaders(res, legacyCreateMode);
-    res.status(410).json(buildLegacyCreateDisabledPayload());
-    return;
+  if (legacyPathRequest) {
+    if (legacyCreateMode === 'disabled') {
+      recordLegacyCreateRouteTelemetry(req, legacyCreateMode, 'blocked_disabled');
+      applyLegacyCreateHeaders(res, legacyCreateMode);
+      res.status(410).json(buildLegacyCreateDisabledPayload());
+      return;
+    }
+    if (legacyCreateMode === 'warn') {
+      recordLegacyCreateRouteTelemetry(req, legacyCreateMode, 'allowed_warn');
+      applyLegacyCreateHeaders(res, legacyCreateMode);
+    } else {
+      recordLegacyCreateRouteTelemetry(req, legacyCreateMode, 'allowed');
+    }
   }
-  if (legacyCreateMode === 'warn') {
-    recordLegacyCreateRouteTelemetry(req, legacyCreateMode, 'allowed_warn');
-    applyLegacyCreateHeaders(res, legacyCreateMode);
-  } else {
-    recordLegacyCreateRouteTelemetry(req, legacyCreateMode, 'allowed');
+
+  let directShareAuth: DirectShareAuthorizationResult = {
+    authed: false,
+    authMode: 'none',
+    actor: 'anonymous',
+  };
+  if (!legacyPathRequest) {
+    const auth = await authorizeDirectShareRequest(req, res);
+    if (!auth) return;
+    directShareAuth = auth;
+
+    const rateLimit = checkDirectShareRateLimit(req, auth.authed);
+    if (!rateLimit.allowed) {
+      res.setHeader('retry-after', String(rateLimit.retryAfterSeconds));
+      res.status(429).json({
+        error: 'Rate limit exceeded for direct share creation',
+        code: 'RATE_LIMITED',
+        retryAfterSeconds: rateLimit.retryAfterSeconds,
+        maxPerWindow: rateLimit.max,
+        windowMs: rateLimit.windowMs,
+      });
+      return;
+    }
   }
 
   const { markdown, marks, title, ownerId } = req.body;
@@ -826,7 +903,12 @@ apiRoutes.post('/documents', (req: Request, res: Response) => {
   const slug = generateSlug();
   const ownerSecret = randomUUID();
   const normalizedMarks = canonicalizeStoredMarks(marks ?? {});
-  const doc = createDocument(slug, sanitizedMarkdown, normalizedMarks, title, ownerId, ownerSecret);
+  // Store canonical markdown in the collab fragment's serialization so the
+  // projection derived on first load matches byte-for-byte. Without this, docs
+  // containing GFM tables wedge on `readSource=yjs_fallback` / `mutationReady=false`
+  // because the fragment re-serializes tables (column padding + `:---` markers).
+  const canonicalMarkdown = await deriveCanonicalMarkdownForStorage(sanitizedMarkdown);
+  const doc = createDocument(slug, canonicalMarkdown, normalizedMarks, title, ownerId, ownerSecret);
   const defaultAccess = createDocumentAccessToken(slug, 'editor');
   const links = buildShareLink(req, doc.slug);
   const shareUrlWithToken = withShareToken(links.shareUrl, defaultAccess.secret);
@@ -845,8 +927,8 @@ apiRoutes.post('/documents', (req: Request, res: Response) => {
     title,
     shareState: doc.share_state,
     accessRole: defaultAccess.role,
-    authMode: 'none',
-    authenticated: false,
+    authMode: directShareAuth.authMode,
+    authenticated: directShareAuth.authed,
     contentChars: sanitizedMarkdown.length,
   });
 
@@ -881,7 +963,7 @@ apiRoutes.post('/documents', (req: Request, res: Response) => {
       includeMutationRoutes: true,
       includeBridgeRoutes: true,
     }),
-    ...(legacyCreateMode === 'warn'
+    ...(legacyPathRequest && legacyCreateMode === 'warn'
       ? { deprecation: buildLegacyCreateDeprecationPayload(legacyCreateMode) }
       : {}),
   });
@@ -949,7 +1031,8 @@ apiRoutes.post('/auth/start', (req: Request, res: Response) => {
 });
 
 function handleOAuthPoll(req: Request, res: Response): void {
-  const requestId = req.params.requestId;
+  const requestIdParam = req.params.requestId;
+  const requestId = Array.isArray(requestIdParam) ? requestIdParam[0] : requestIdParam;
   if (!requestId || !requestId.trim()) {
     res.status(400).json({ error: 'Missing requestId', code: 'BAD_REQUEST' });
     return;
@@ -1019,6 +1102,92 @@ apiRoutes.post(
   handleShareMarkdown,
 );
 
+export async function createProofDocument(input: {
+  markdown: string;
+  marks?: Record<string, unknown>;
+  title?: string;
+  ownerId?: string;
+  accessRole?: ShareRole;
+  source: string;
+  actor: string;
+  authMode?: string;
+  authenticated?: boolean;
+}): Promise<{
+  doc: ReturnType<typeof createDocument>;
+  access: ReturnType<typeof createDocumentAccessToken>;
+  ownerSecret: string;
+  sanitizedMarkdown: string;
+}> {
+  const sanitizedMarkdown = stripEphemeralCollabSpans(input.markdown);
+  const canonicalMarkdown = await deriveCanonicalMarkdownForStorage(sanitizedMarkdown);
+  const marks = canonicalizeStoredMarks(input.marks ?? {});
+  const slug = generateSlug();
+  const ownerSecret = randomUUID();
+  const doc = createDocument(
+    slug,
+    canonicalMarkdown,
+    marks,
+    input.title,
+    input.ownerId,
+    ownerSecret,
+  );
+  const access = createDocumentAccessToken(slug, input.accessRole ?? 'editor');
+  refreshSnapshotForSlug(slug);
+  addEvent(slug, 'document.created', {
+    title: input.title,
+    ownerId: input.ownerId,
+    shareState: doc.share_state,
+    source: input.source,
+    accessRole: access.role,
+    authMode: input.authMode ?? 'library_session',
+    authenticated: input.authenticated ?? true,
+  }, input.actor);
+  captureDocumentCreatedTelemetry({
+    slug: doc.slug,
+    source: input.source,
+    ownerId: input.ownerId,
+    title: input.title,
+    shareState: doc.share_state,
+    accessRole: access.role,
+    authMode: input.authMode ?? 'library_session',
+    authenticated: input.authenticated ?? true,
+    contentChars: sanitizedMarkdown.length,
+  });
+  return { doc, access, ownerSecret, sanitizedMarkdown };
+}
+
+/** Import format for /share/markdown: explicit, or the dialect when a "proof:" front matter block is present. */
+function resolveImportFormat(raw: unknown, markdown: string): 'proof-dialect' | 'criticmarkup' | 'auto' | null {
+  const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  // Naming tail: "accord-dialect" / "accord" are aliases (FORMAT_ALIASES in server/proof-dialect.ts).
+  if (value === 'proof-dialect' || value === 'proof' || value === 'dialect' || value === 'accord-dialect' || value === 'accord') return 'proof-dialect';
+  if (value === 'criticmarkup' || value === 'critic') return 'criticmarkup';
+  if (value === 'auto') return 'auto';
+  if (value === 'markdown' || value === 'plain') return null;
+  return /^---[ \t]*\r?\n(?:[\s\S]*?\r?\n)?proof:/.test(markdown) ? 'proof-dialect' : null;
+}
+
+/**
+ * Who an import may write marks as (IMPORT_POLICY in server/proof-dialect.ts): the direct-share API
+ * key is the operator credential (anyone in the file's handle table); a signed-in library member
+ * is only themselves; anyone else only "guest:importer".
+ */
+function importAuthorityFor(req: Request, authActor: string, by: unknown): ImportAuthority {
+  const apiKey = getDirectShareApiKey();
+  const presentedKey = getDirectSharePresentedToken(req);
+  if (authActor === 'api-key' || (apiKey && presentedKey === apiKey)) {
+    return { kind: 'operator', actor: typeof by === 'string' && /^(ai|human|guest):/.test(by) ? by : null };
+  }
+  try {
+    const session = isLibraryEnabled() ? getLibrarySession(req) : null;
+    const email = session?.member.email;
+    if (email && isEmailForImport(email)) return { kind: 'session', actor: verifiedHumanForImport(email) };
+  } catch {
+    // no library
+  }
+  return { kind: 'anonymous' };
+}
+
 export async function handleShareMarkdown(req: Request, res: Response): Promise<void> {
   const auth = await authorizeDirectShareRequest(req, res);
   if (!auth) return;
@@ -1076,36 +1245,39 @@ export async function handleShareMarkdown(req: Request, res: Response): Promise<
     return;
   }
 
-  const slug = generateSlug();
-  const ownerSecret = randomUUID();
-  const doc = createDocument(slug, sanitizedMarkdown, marks, title, ownerId, ownerSecret);
-  const access = createDocumentAccessToken(slug, requestedRole);
+  const source = req.path === '/share/markdown' ? 'share.markdown' : 'api.share.markdown';
+  // Proof dialect / CriticMarkup import (2026-09-19): with format=proof-dialect | criticmarkup |
+  // auto, or when the text carries a "proof:" front matter block, the marks become real marks.
+  const importFormat = resolveImportFormat(body?.format ?? req.query.format, sanitizedMarkdown);
+  if (importFormat && Buffer.byteLength(sanitizedMarkdown, 'utf8') > IMPORT_POLICY.maxBytes) {
+    res.status(413).json({ error: 'Import is too large', code: 'IMPORT_TOO_LARGE' });
+    return;
+  }
+  const parsedImport = importFormat ? parseImport(sanitizedMarkdown, importFormat) : null;
+  const importTitle = parsedImport && typeof parsedImport.parsed.frontMatter.proof?.title === 'string' ? parsedImport.parsed.frontMatter.proof.title as string : undefined;
+  const { doc, access, ownerSecret } = await createProofDocument({
+    markdown: parsedImport ? parsedImport.markdown : sanitizedMarkdown,
+    marks: parsedImport ? {} : marks,
+    title: title ?? importTitle,
+    ownerId,
+    accessRole: requestedRole,
+    source,
+    actor: ownerId || auth.actor,
+    authMode: auth.authMode,
+    authenticated: auth.authed,
+  });
+  let importSummary: ImportSummary | null = null;
+  if (parsedImport) {
+    importSummary = await applyImportedMarks(doc.slug, {
+      parsed: parsedImport.parsed,
+      format: parsedImport.format,
+      authority: importAuthorityFor(req, auth.actor, body?.by),
+    });
+  }
   const links = buildShareLink(req, doc.slug);
   const shareUrlWithToken = withShareToken(links.shareUrl, access.secret);
   const urlWithToken = withShareToken(links.url, access.secret);
   const proofSdkPaths = buildProofSdkDocumentPaths(doc.slug);
-  refreshSnapshotForSlug(slug);
-
-  addEvent(slug, 'document.created', {
-    title,
-    ownerId,
-    shareState: doc.share_state,
-    source: req.path === '/share/markdown' ? 'share.markdown' : 'api.share.markdown',
-    accessRole: access.role,
-    authMode: auth.authMode,
-    authenticated: auth.authed,
-  }, ownerId || auth.actor);
-  captureDocumentCreatedTelemetry({
-    slug: doc.slug,
-    source: req.path === '/share/markdown' ? 'share.markdown' : 'api.share.markdown',
-    ownerId,
-    title,
-    shareState: doc.share_state,
-    accessRole: access.role,
-    authMode: auth.authMode,
-    authenticated: auth.authed,
-    contentChars: sanitizedMarkdown.length,
-  });
 
   res.json({
     success: true,
@@ -1124,6 +1296,7 @@ export async function handleShareMarkdown(req: Request, res: Response): Promise<
     shareState: doc.share_state,
     snapshotUrl: getSnapshotPublicUrl(doc.slug),
     createdAt: doc.created_at,
+    ...(importSummary ? { import: importSummary } : {}),
     _links: {
       view: links.url,
       web: links.shareUrl,
@@ -1156,7 +1329,7 @@ export async function handleShareMarkdown(req: Request, res: Response): Promise<
 }
 
 // Get a shared document
-apiRoutes.get('/documents/:slug', (req: Request, res: Response) => {
+apiRoutes.get('/documents/:slug', async (req: Request, res: Response) => {
   const slug = getSlugParam(req);
   if (!slug) {
     res.status(400).json({ error: 'Invalid slug' });
@@ -1181,13 +1354,17 @@ apiRoutes.get('/documents/:slug', (req: Request, res: Response) => {
     res.status(403).json({ error: 'Document is not currently accessible' });
     return;
   }
+  if (!ownerOverride && !getPresentedSecret(req) && resolveTokenlessAccess(req, slug).role === null) {
+    res.status(401).json({ error: 'Sign in to open this document', code: 'SIGN_IN_REQUIRED' });
+    return;
+  }
 
   res.json({
     slug: doc.slug,
     docId: doc.doc_id,
     title: doc.title,
     markdown: doc.markdown,
-    marks: parseJson(doc.marks),
+    marks: redactSuggestionDecisions(parseJson(doc.marks), await readBlindView(slug, doc.markdown ?? '', pageBlindViewer(req, slug, resolveLineMarkAccess(req, slug, doc)))),
     // Legacy compatibility for <=0.28 clients.
     active: doc.share_state === 'ACTIVE',
     shareState: doc.share_state,
@@ -1233,8 +1410,8 @@ apiRoutes.put('/documents/:slug/title', (req: Request, res: Response) => {
 
   const body = isRecord(req.body) ? req.body : {};
   const title = body.title;
-  const actor = body.actor;
-  const clientId = body.clientId;
+  const actor = typeof body.actor === 'string' ? body.actor : undefined;
+  const clientId = typeof body.clientId === 'string' ? body.clientId : undefined;
   if (title !== null && typeof title !== 'string') {
     res.status(400).json({ error: 'title must be a string or null when provided' });
     return;
@@ -1287,7 +1464,7 @@ apiRoutes.put('/documents/:slug/title', (req: Request, res: Response) => {
 
 // Update document content + marks (from native app owner or web viewer)
 apiRoutes.put('/documents/:slug', async (req: Request, res: Response) => {
-  const { markdown, marks, title, actor, clientId, ownerSecret, ownerId } = req.body;
+  const { markdown, marks, title, actor, clientId } = req.body;
   const slug = getSlugParam(req);
   if (!slug) {
     res.status(400).json({ error: 'Invalid slug' });
@@ -1388,7 +1565,7 @@ apiRoutes.put('/documents/:slug', async (req: Request, res: Response) => {
       slug,
       nextMarkdown: sanitizedMarkdown,
       nextMarks: hasMarksUpdate
-        ? normalizedMarks
+        ? (normalizedMarks ?? {})
         : canonicalizeStoredMarks(parseJson(currentDoc.marks) as Record<string, unknown>),
       source: 'rest-put',
       baseUpdatedAt: currentDoc.updated_at,
@@ -1475,11 +1652,12 @@ apiRoutes.put('/documents/:slug', async (req: Request, res: Response) => {
     return;
   }
 
-  updatedDoc = getDocumentBySlug(slug);
-  if (!updatedDoc) {
+  const reloadedDoc = getDocumentBySlug(slug);
+  if (!reloadedDoc) {
     res.status(500).json({ error: 'Document update persisted but document could not be reloaded' });
     return;
   }
+  updatedDoc = reloadedDoc;
   const integrity = summarizeDocumentIntegrity(updatedDoc.markdown);
   if (hasMarkdownUpdate) {
     try {
@@ -1751,6 +1929,7 @@ apiRoutes.post('/documents/:slug/ops', opsRateLimiter, async (req: Request, res:
                 if (participation.cursorQuote) {
                   applyAgentCursorHintToLoadedCollab(slug, {
                     id: String(participation.presenceEntry.id),
+                    tokenId: typeof participation.presenceEntry.tokenId === 'string' ? participation.presenceEntry.tokenId : null,
                     quote: participation.cursorQuote,
                     ttlMs: 3000,
                     name: typeof participation.presenceEntry.name === 'string' ? participation.presenceEntry.name : undefined,
@@ -1782,6 +1961,806 @@ apiRoutes.post('/documents/:slug/ops', opsRateLimiter, async (req: Request, res:
 
   sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
 });
+
+// Proof Documents Step 1: line marks for the page. Reads need document read access; writes
+// need comment access. Approved needs an Owner: the owner credential, a Documents library
+// admin, or the library member who created the document (Step B6: always a verified session).
+function resolveLineMarkAccess(req: Request, slug: string, doc: NonNullable<ReturnType<typeof getDocumentBySlug>>) {
+  const role = getAccessRole(req, slug);
+  const ownerAuthorized = role === 'owner_bot' || canOwnerMutate(req, doc);
+  // Invite person: the session counts on this document only for a library member or a person
+  // invited to it; an invited person elsewhere is a guest.
+  const docSession = documentSession(req, slug);
+  const library: ReturnType<typeof getLibrarySession> = docSession?.session ?? null;
+  const canApprove = ownerAuthorized
+    || Boolean(IDENTITY_POLICY.adminsHaveOwnerRights && library?.member.isOwner && docSession?.via === 'library')
+    || Boolean(library && docSession?.via === 'library' && isLibraryDocumentCreator(slug, library.member.id));
+  const active = doc.share_state === 'ACTIVE';
+  const canRead = doc.share_state !== 'DELETED' && (ownerAuthorized || (active && role !== null));
+  const canComment = ownerAuthorized || (active && (role === 'commenter' || role === 'editor'));
+  // A guest (no session, no key, no share token) marks only where the guest setting lets marks count.
+  const isPlainGuest = !ownerAuthorized && !library && !getPresentedSecret(req);
+  const guestMustSignIn = isPlainGuest && !guestMarksCount(slug);
+  // Cross invitation (2026-09-19): an AI attested to this signed-in person. They read and comment;
+  // nothing they mark counts until a human invites them. The refusal is NOT_VERIFIED, and it is a
+  // refusal — never an unverified mark that could be mistaken for a counted one later.
+  const attestation = isPlainGuest ? attestedFor(req, slug) : null;
+  const canMark = canComment && !guestMustSignIn && !attestation;
+  return { role, canRead, canComment, canMark, canApprove, ownerAuthorized, library, guestMustSignIn, attestation };
+}
+
+/** Invite person: what a guest is told when a mark, answer, pick or approval needs sign-in. */
+function signInToMarkBody(): Record<string, unknown> {
+  return {
+    success: false,
+    code: 'SIGN_IN_TO_MARK',
+    error: 'Sign in to mark. Without signing in you can read, comment and chat; marks, answers, picks and approvals need a signed-in person.',
+    signInUrl: isLibraryEnabled() ? '/' : null,
+  };
+}
+
+/**
+ * Cross invitation: what an attested person is told. They are signed in, so "sign in" would be
+ * wrong: an AI vouched for them, and that is presence, not authority.
+ */
+function notVerifiedBody(attestedBy: string): Record<string, unknown> {
+  return {
+    success: false,
+    code: 'NOT_VERIFIED',
+    error: CROSS_INVITE_POLICY.notVerifiedMessage,
+    attestedBy,
+  };
+}
+
+/** Step B6: the label of the agent key this request presents, if it presents one. */
+function presentedAgentKeyLabel(req: Request, slug: string): string | null {
+  const secret = getExplicitShareSecret(req);
+  if (!secret) return null;
+  const access = resolveDocumentAccess(slug, secret);
+  if (!access?.tokenId) return null;
+  const key = listDocumentAgentKeys(slug).find(k => k.tokenId === access.tokenId && !k.revokedAt);
+  return key?.label ?? null;
+}
+
+/**
+ * Step B6: who a page request acts as (server/identity.ts decideActor). The "by" in the body is
+ * only a guest's typed name: a signed-in session always wins, and an agent key always acts as
+ * its own AI.
+ */
+function resolvePageActor(req: Request, slug: string, access: ReturnType<typeof resolveLineMarkAccess>, typedBy: unknown, kind: 'mark' | 'talk' = 'mark'): ActorDecision {
+  const origin = req.header('origin');
+  const decision = decideActor({
+    mode: 'page',
+    typedBy,
+    agentKeyLabel: presentedAgentKeyLabel(req, slug),
+    session: sessionIdentity(access.library?.member),
+    sessionOriginOk: !origin || origin === getPublicOrigin(req),
+    ownerCredential: access.ownerAuthorized,
+  });
+  if (kind === 'mark' && decision.ok && decision.source === 'guest' && access.attestation) {
+    return { ok: false, status: 403, body: notVerifiedBody(access.attestation.actor) };
+  }
+  if (kind === 'mark' && decision.ok && decision.source === 'guest' && access.guestMustSignIn) {
+    return { ok: false, status: 403, body: signInToMarkBody() };
+  }
+  return decision;
+}
+
+/** Mike, 2026-09-23 (usability brief): a typed name never authorizes blind disclosure. */
+function pageBlindViewer(req: Request, slug: string, access: ReturnType<typeof resolveLineMarkAccess>): string | undefined {
+  const key = presentedAgentKeyLabel(req, slug);
+  if (key) return agentKeyActor(key);
+  if (access.ownerAuthorized && access.role === 'owner_bot') return undefined;
+  const me = viewerIdentity(req, slug, access, buildDirectory(slug));
+  return me.trust === 'verified' ? me.actor : '';
+}
+
+/** Step B6: who the page viewer is, for the right rail header and for every new mark. */
+function viewerIdentity(req: Request, slug: string, access: ReturnType<typeof resolveLineMarkAccess>, dir: IdentityDirectory): ViewerIdentity {
+  const signInUrl = isLibraryEnabled() ? '/' : null;
+  const keyLabel = presentedAgentKeyLabel(req, slug);
+  if (keyLabel) {
+    const actor = agentKeyActor(keyLabel);
+    return { actor, trust: 'ai', name: keyLabel, signInUrl: null };
+  }
+  const member = access.library?.member;
+  if (member?.email && isEmailAddress(member.email)) {
+    const actor = verifiedHumanActor(member.email);
+    return { actor, trust: 'verified', name: member.name || dir.labels[actorKey(actor)] || member.email, email: member.email.toLowerCase(), signInUrl: null };
+  }
+  // Cross invitation: an attested person is signed in already, so they are not asked to sign in —
+  // the rail names the AI that vouched for them and says their marks do not count yet.
+  if (access.attestation) {
+    // Their actor is a guest actor, not human:<email>: an attestation is presence, not authority,
+    // so nothing they do may be recorded as a verified person.
+    return {
+      actor: guestActor(access.attestation.email), trust: 'guest', name: access.attestation.email, signInUrl: null,
+      attestedBy: { actor: access.attestation.actor, name: crossDisplayName(access.attestation.actor, slug), basis: access.attestation.basis, at: access.attestation.at },
+    };
+  }
+  // A guest: the page supplies the typed name (guest:<name>). Invite person: where the guest
+  // setting keeps guests' marks from counting, the page says "Sign in to mark".
+  return { actor: '', trust: 'guest', name: '', signInUrl, ...(access.guestMustSignIn ? { markNeedsSignIn: true } : {}) };
+}
+
+// Accord dialect export for the page ("Download as Accord (.accord.md)"): same output as
+// GET /api/agent/<slug>/export. While blind marking is on, the reader sees only their own positions.
+apiRoutes.get('/documents/:slug/export', async (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canRead) { res.status(403).json({ success: false, error: 'No read access' }); return; }
+  // Naming tail: format=accord-dialect is an alias of proof-dialect (FORMAT_ALIASES).
+  const format = normalizeExportFormat(req.query.format);
+  if (!format) {
+    res.status(400).json({ success: false, code: 'INVALID_FORMAT', error: EXPORT_FORMAT_ERROR });
+    return;
+  }
+  try {
+    const state = await executeDocumentOperationAsync(slug, 'GET', '/state');
+    const body = (state.body ?? {}) as Record<string, unknown>;
+    const markdown = typeof body.markdown === 'string' ? body.markdown : stripSpansForExport(doc.markdown ?? '');
+    const marks = body.marks && typeof body.marks === 'object' ? body.marks : doc.marks;
+    const viewer = pageBlindViewer(req, slug, access) ?? null;
+    const result = await exportProofDocument(slug, { markdown, marks, format, title: doc.title ?? null, viewer, authored: req.query.authored === '1' });
+    res.setHeader('Content-Type', result.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${result.filename.replace(/"/g, '')}"`);
+    res.setHeader('X-Proof-Export-Warnings', String(result.warnings.length));
+    res.status(200).send(result.text);
+  } catch (error) {
+    console.error('[routes] export failed', { slug, error: String(error) });
+    res.status(500).json({ success: false, code: 'EXPORT_FAILED', error: 'Export failed' });
+  }
+});
+
+apiRoutes.get('/documents/:slug/line-marks', async (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) {
+    res.status(404).json({ success: false, error: 'Document not found' });
+    return;
+  }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canRead) {
+    res.status(403).json({ success: false, error: 'No read access' });
+    return;
+  }
+  const dir = buildDirectory(slug);
+  const lineMarks = listCanonicalLineMarks(slug, dir);
+  const asks = listCanonicalAsks(slug, dir);
+  const owners = documentOwnerActors(slug);
+  const agentKeyActors = activeAgentKeyActors(slug);
+  const me = viewerIdentity(req, slug, access, dir);
+  // Comment and suggestion authors in the stored document: the page resolves them to people for
+  // the team (a comment typed as "Mike Wolf" counts as the member of that name).
+  const reviewAuthors = reviewMarksFromStored(doc.marks).flatMap(mark => [mark.by, ...(mark.replies ?? []).map(reply => reply.by)]);
+  // Step B4c/B4d: flags, AI review notes and open objections (the page evaluates them).
+  const flags = listFlags(slug);
+  const reviewNotes = listReviewNotes(slug);
+  let objections = listObjections(slug);
+  const directory = clientDirectory(dir, [
+    ...actorsIn(lineMarks, asks, [...owners, ...agentKeyActors, ...reviewAuthors, me.actor]),
+    ...listLineMarks(slug).map(mark => mark.by),
+    ...flags.map(flag => flag.by), ...reviewNotes.map(note => note.by), ...objections.map(objection => objection.by),
+    ...doTeamActors(listDos(slug)),
+  ]);
+  // {do} action lines: the page evaluates them against its own lines (same poll).
+  let dos: ReturnType<typeof listDos> = [];
+  try { dos = listDos(slug); } catch { dos = []; }
+  const blindView = await pageExtras(req, slug, doc, lineMarks, asks);
+  const extras = blindView.extras;
+  if (blindView.view) objections = objections.filter(o => visibleObjection(o, blindView.view!));
+  // Familiar proxy marks: the viewer's own binding, their Familiar's current proxies (never
+  // counted as theirs) and the ratifications they can still undo. Other people's proxies stay off
+  // the page (PROXY_POLICY.pageShowsOnlyOwnProxies).
+  const binding = me.trust === 'verified' ? familiarOf(slug, me.actor) : null;
+  const proxies = binding ? listProxyMarks(slug, { for: me.actor }).filter(p => actorKey(p.familiar) === actorKey(binding.familiar)) : [];
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    success: true,
+    lineMarks: blindView.lineMarks,
+    // Step B3: the page evaluates asks against its own lines (same poll, no extra request).
+    asks: blindView.asks,
+    dos,
+    doPolicy: { executionEnabled: DO_POLICY.executionEnabled, executionDisabledLabel: DO_POLICY.executionDisabledLabel },
+    owners,
+    agentKeyActors,
+    viewer: { canMark: access.canMark, canApprove: access.canApprove, canComment: access.canComment },
+    // Invite person: whether this viewer may invite people and change the guest setting.
+    team: { canManage: isLibraryEnabled() && access.canApprove, guestAccess: getGuestAccessMode(slug) },
+    // Step B6: who this viewer is (a guest's actor is filled in by the page from the typed name).
+    identity: { me, directory },
+    // Step B3c: the latest aligned snapshot (the top bar's "Aligned as of").
+    alignedSnapshot: latestSnapshotInfo(slug),
+    flags,
+    reviewNotes,
+    objections,
+    familiar: binding,
+    familiarsBound: listFamiliars(slug).length,
+    // The names people gave the AIs present ("Add agent"), for "My Familiar" and the brief.
+    agentKeyLabels: Object.fromEntries(listDocumentAgentKeys(slug).filter(key => !key.revokedAt).map(key => [agentKeyActor(key.label), key.label])),
+    // Cross invitation: who added each AI and what runs it, so a mark reads "Izzy — added by Eric".
+    agentSponsors: agentProvenanceMap(slug),
+    // Cross invitation: how everyone on this document got in (the provenance chain).
+    provenance: documentProvenance(slug),
+    proxies,
+    ratifications: binding ? undoableRatifications(slug, me.actor) : [],
+    proxyPolicy: { ratifyThreshold: PROXY_POLICY.ratifyThreshold, hold: PROXY_POLICY.hold, evidence: EVIDENCE_POLICY },
+    // Mike, 2026-09-23 (usability brief): derive tier signals from visible positions only.
+    tiers: listTierRecords(slug),
+    tierSignals: tierSignals(slug, blindView.lineMarks, blindView.view?.viewer),
+    tierPolicy: TIER_POLICY,
+    // Steps B4e + B4f: bundles, alternatives (open, plus recent history) and picks, settings,
+    // Explain threads and times-to-live. The page evaluates them against its own lines; expiry
+    // is judged at `serverNow` (lazy, no timer).
+    ...extras,
+  });
+});
+
+/**
+ * Steps B4e + B4f: the extras for the page's poll. Under blind marking, other members' marks, ask
+ * answers and picks on lines this viewer has not marked are replaced by placeholders here, so
+ * they never reach the browser.
+ */
+async function pageExtras(req: Request, slug: string, doc: NonNullable<ReturnType<typeof getDocumentBySlug>>, lineMarks: ReturnType<typeof listCanonicalLineMarks>, asks: ReturnType<typeof listCanonicalAsks>): Promise<{ extras: Record<string, unknown>; lineMarks: typeof lineMarks; asks: typeof asks; view?: ReturnType<typeof blindReadView> }> {
+  const settings = getProofSettings(slug);
+  const allAlternatives = listAlternatives(slug, { includeClosed: true });
+  const picks = listPicks(slug);
+  const extras: Record<string, unknown> = {
+    settings,
+    bundles: listBundles(slug),
+    alternatives: allAlternatives.filter(alt => alt.status === 'open'),
+    alternativeHistory: allAlternatives.filter(alt => alt.status !== 'open').slice(-100),
+    explains: listExplains(slug),
+    // Accord round 2, stage D: thread rows (what would close each thread and what it is anchored
+    // to). Comments and suggestions with no row still read as threads on the page.
+    threads: threadRows(slug),
+    ttls: listTtls(slug).map(({ expiredNotedAt: _noted, ...ttl }) => ttl),
+    serverNow: new Date().toISOString(),
+  };
+  if (!settings.blind) return { extras: { ...extras, picks }, lineMarks, asks };
+  const access = resolveLineMarkAccess(req, slug, doc);
+  const viewer = pageBlindViewer(req, slug, access);
+  const lines = await computeServerLines(doc.markdown ?? '');
+  const view = blindReadView(slug, lines, viewer, lineMarks, asks);
+  if (!view) return { extras: { ...extras, picks }, lineMarks, asks };
+  return {
+    extras: { ...extras, picks: view.picks,
+      alternativeHistory: allAlternatives.filter(alt => alt.status !== 'open' && visibleAlternative(alt, view)).slice(-100),
+      blind: { on: true, viewer, revealedLines: [...view.revealed].sort((a, b) => a - b), hiddenPositions: view.hidden } },
+    lineMarks: view.lineMarks,
+    asks: asks.map(ask => redactAsk(ask, view)),
+    view,
+  };
+}
+
+// Proof Documents Steps B4c + B4d: flags and objections from the page. Writes need comment
+// access; the actor is decided as for line marks (a signed-in session wins over a typed name).
+const PAGE_TALK_ROUTES = ['/explain', '/why-asked', '/threads'];
+function pageAidRoute(path: string, run: (ctx: { req: Request; slug: string; by: string; access: ReturnType<typeof resolveLineMarkAccess>; body: Record<string, unknown> }) => Promise<{ status: number; body: Record<string, unknown> }> | { status: number; body: Record<string, unknown> }): void {
+  apiRoutes.post(path, opsRateLimiter, async (req: Request, res: Response) => {
+    const slug = getSlugParam(req);
+    const doc = slug ? getDocumentBySlug(slug) : undefined;
+    if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+    const access = resolveLineMarkAccess(req, slug, doc);
+    if (!access.canComment) { res.status(403).json({ success: false, error: 'This needs comment access' }); return; }
+    const body = isRecord(req.body) ? req.body : {};
+    // Invite person: asking for an explanation is conversation (guests may); everything else here
+    // is a mark that counts, which a guest makes only where the guest setting allows it.
+    const kind = PAGE_TALK_ROUTES.some(suffix => path.endsWith(suffix)) ? 'talk' : 'mark';
+    const actor = resolvePageActor(req, slug, access, body.by, kind);
+    if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
+    const result = await run({ req, slug, by: actor.actor, access, body });
+    if (result.status === 200) scheduleAlignmentCheck(slug);
+    res.status(result.status).json({ ...result.body, actor: actor.actor, trust: actor.trust });
+  });
+}
+
+// Line tiers. Body: { by, tier: "decision" | "context", anchors: [anchor, ...] (or anchor), reason? }.
+// Anyone with comment access may tag or flip (TIER_POLICY.whoMayTag); every flip is recorded.
+pageAidRoute('/documents/:slug/tiers', async ({ slug, by, body }) => {
+  if (!isLineTier(body.tier)) return { status: 400, body: { success: false, code: 'INVALID_TIER', error: '"tier" must be "decision" or "context"' } };
+  const anchors = Array.isArray(body.anchors) ? body.anchors : [body.anchor];
+  if (anchors.length === 0 || anchors.length > TIER_POLICY.maxLinesPerRequest) return { status: 400, body: { success: false, code: 'INVALID_LINES', error: 'Give 1 to ' + TIER_POLICY.maxLinesPerRequest + ' anchors' } };
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  const lines = await computeServerLines(state.markdown);
+  const resolved: DocLine[] = [];
+  for (let i = 0; i < anchors.length; i += 1) {
+    if (!isLineAnchor(anchors[i])) return { status: 400, body: { success: false, code: 'INVALID_ANCHOR', error: `anchors[${i}] is not a line anchor`, index: i } };
+    const hit = resolveLineAnchor(lines, anchors[i]);
+    if (!hit || !hit.current) return { status: 409, body: { success: false, code: 'LINE_CHANGED', error: 'That line changed; try again', index: i } };
+    resolved.push(lines[hit.lineIndex]);
+  }
+  const before = evaluateDocumentTiers(slug, lines, listCanonicalLineMarks(slug));
+  return writeTiers(slug, { by, tier: body.tier, reason: body.reason, lines: resolved, before, markdown: state.markdown, rawMarks: state.marks, source: 'page' });
+});
+
+// Body: { by, anchor, note? }: flag a line uncertain (or update your note on your flag there).
+pageAidRoute('/documents/:slug/flags', ({ slug, by, body }) => writeFlag(slug, { by, anchor: body.anchor, note: body.note, source: 'page' }));
+// The flagger (or an Owner) clears a flag.
+pageAidRoute('/documents/:slug/flags/:flagId/clear', ({ req, slug, by, access }) =>
+  clearFlag(slug, { id: String(req.params.flagId ?? ''), by, isOwner: access.canApprove, source: 'page' }));
+// Body: { by, lines: [anchor, ...], reason, condition?, suggestions?: [markId, ...] }.
+pageAidRoute('/documents/:slug/objections', async ({ slug, by, access, body }) => {
+  const state = await currentDocumentState(slug);
+  return createObjection(slug, {
+    by, anchors: body.lines, reason: body.reason, condition: body.condition,
+    suggestions: Array.isArray(body.suggestions) ? body.suggestions.filter((id): id is string => typeof id === 'string' && id.length <= 100) : [],
+    lines: state ? await computeServerLines(state.markdown) : undefined,
+    source: 'page', canMark: access.canMark,
+  });
+});
+// The objector clears it; an Owner overrides it with { reason } (recorded).
+pageAidRoute('/documents/:slug/objections/:objectionId/clear', ({ req, slug, by, access, body }) =>
+  clearObjection(slug, { id: String(req.params.objectionId ?? ''), by, isOwner: access.canApprove, reason: body.reason, source: 'page' }));
+// The objector saw the repair and still objects: { by, ack: { hashes, suggestions } }.
+pageAidRoute('/documents/:slug/objections/:objectionId/keep', async ({ req, slug, by, body }) => {
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  return keepObjection(slug, { id: String(req.params.objectionId ?? ''), by, ack: body.ack, markdown: state.markdown, rawMarks: state.marks, source: 'page' });
+});
+// ============================================================================
+// Familiar proxy marks: page routes (a signed-in person, for themselves only)
+// ============================================================================
+
+/** A route only a person signed in to this site may use, for themselves (never a guest or a key). */
+function pagePersonRoute(path: string, run: (ctx: { req: Request; slug: string; human: string; body: Record<string, unknown> }) => Promise<{ status: number; body: Record<string, unknown> }> | { status: number; body: Record<string, unknown> }): void {
+  apiRoutes.post(path, opsRateLimiter, async (req: Request, res: Response) => {
+    const slug = getSlugParam(req);
+    const doc = slug ? getDocumentBySlug(slug) : undefined;
+    if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+    const access = resolveLineMarkAccess(req, slug, doc);
+    if (!access.canComment) { res.status(403).json({ success: false, error: 'This needs comment access' }); return; }
+    const body = isRecord(req.body) ? req.body : {};
+    const actor = resolvePageActor(req, slug, access, body.by);
+    if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
+    if (PROXY_POLICY.bindRequiresVerifiedSession && (actor.source !== 'session' || actor.trust !== 'verified')) {
+      res.status(403).json({ success: false, code: 'SIGNED_IN_PERSON_REQUIRED', error: 'Only a person signed in to this site can choose a Familiar or ratify its marks' });
+      return;
+    }
+    const result = await run({ req, slug, human: actor.actor, body });
+    if (result.status === 200) scheduleAlignmentCheck(slug);
+    res.status(result.status).json({ ...result.body, actor: actor.actor, trust: actor.trust });
+  });
+}
+
+// { familiar: "ai:<key-name>" | null }: choose (or clear) my Familiar in this document.
+pagePersonRoute('/documents/:slug/familiar', ({ slug, human, body }) =>
+  bindFamiliar(slug, { human, familiar: body.familiar ?? null, by: human, source: 'page' }));
+// { proxyIds: [...] }: Ratify all (the proxy-agreed lines the brief showed me).
+pagePersonRoute('/documents/:slug/proxy/ratify', async ({ slug, human, body }) => {
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  return ratifyProxies(slug, { human, proxyIds: body.proxyIds, markdown: state.markdown, rawMarks: state.marks });
+});
+// Undo a ratification of mine: every line gets back what it held before.
+pagePersonRoute('/documents/:slug/proxy/ratifications/:ratificationId/undo', ({ req, slug, human }) =>
+  undoRatification(slug, { human, id: String(req.params.ratificationId ?? '') }));
+
+// ============================================================================
+// Proof Documents Steps B4e + B4f: page routes
+// ============================================================================
+
+// Step B4e: the page applied (or rejected) a whole bundle in its editor (one step): record it.
+pageAidRoute('/documents/:slug/bundles/:bundleId/decision', async ({ req, slug, by, body }) => {
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  return recordBundleDecision(slug, { id: String(req.params.bundleId ?? ''), by, decision: body.decision, markdown: state.markdown, rawMarks: state.marks });
+});
+pageAidRoute('/documents/:slug/bundles/:bundleId/reopen', async ({ req, slug, by }) => {
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  return reopenBundleDecision(slug, { id: String(req.params.bundleId ?? ''), by, markdown: state.markdown, rawMarks: state.marks });
+});
+// Step B4f: offer another wording { anchor, text }, pick { anchor, choice }, an Owner decides.
+pageAidRoute('/documents/:slug/alternatives', async ({ req, slug, by, body }) => {
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  return offerAlternative(slug, { by, anchor: body.anchor, text: body.text, markdown: state.markdown, rawMarks: state.marks, source: 'page', applyEdit: lineEditor(req, slug) });
+});
+pageAidRoute('/documents/:slug/alternatives/pick', async ({ req, slug, by, body }) => {
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  return pickAlternative(slug, { by, anchor: body.anchor, choice: body.choice, markdown: state.markdown, rawMarks: state.marks, source: 'page', applyEdit: lineEditor(req, slug) });
+});
+pageAidRoute('/documents/:slug/alternatives/decide', async ({ req, slug, by, access, body }) => {
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  return decideAlternative(slug, { by, isOwner: access.canApprove, anchor: body.anchor, choice: body.choice, markdown: state.markdown, rawMarks: state.marks, applyEdit: lineEditor(req, slug) });
+});
+pageAidRoute('/documents/:slug/alternatives/:altId/withdraw', ({ req, slug, by, access }) =>
+  withdrawAlternative(slug, { id: String(req.params.altId ?? ''), by, isOwner: access.canApprove }));
+// Step B4f: an Owner turns blind marking on or off: { blind: true | false }.
+pageAidRoute('/documents/:slug/settings', ({ slug, by, access, body }) =>
+  setBlindSetting(slug, { blind: body.blind, by, isOwner: access.canApprove, source: 'page' }));
+// Step B4f: the page posted an Explain thread on a line: { anchor, question, commentMarkId }.
+pageAidRoute('/documents/:slug/explain', async ({ slug, by, body }) => {
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  const result = await recordExplain(slug, { by, anchor: body.anchor, question: body.question, commentMarkId: body.commentMarkId, markdown: state.markdown, source: 'page' });
+  // Step B7: the Explain question also appears in the chat, linked to its comment thread.
+  if (result.status === 200 && CHAT_POLICY.mirrorExplain) {
+    const explain = result.body.explain as { question?: string; commentMarkId?: string | null; anchor?: unknown } | undefined;
+    try {
+      const chat = postChatMessage(slug, {
+        by, kind: 'explain', text: `${EXPLAIN_POLICY.commentPrefix} ${explain?.question ?? EXPLAIN_POLICY.defaultQuestion}`,
+        anchors: explain?.anchor ? [explain.anchor] : [], mentions: activeAgentKeyActors(slug),
+        commentMarkId: explain?.commentMarkId ?? null, source: 'page',
+      });
+      if (chat.status === 200) result.body.chatMessageId = chat.body.cursor;
+    } catch (error) { console.warn('[chat] explain mirror failed', String(error)); }
+  }
+  return result;
+});
+// Accord round 2, stage D: threads. A thread is the comment or suggestion that is already in the
+// document PLUS what would close it; these routes store and close only that extra part.
+// POST { markId?, asks, anchor: [LineAnchor], selection?, waitingOn?, chatMessageId? }
+pageAidRoute('/documents/:slug/threads', async ({ slug, by, body }) => {
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  return startThreadRow(slug, { by, body, markdown: state.markdown, isGuest: isGuestActor(by), source: 'page' });
+});
+// POST { status: 'resolved' | 'accepted' | 'rejected' | 'withdrawn' }
+pageAidRoute('/documents/:slug/threads/:threadId/close', async ({ req, slug, by, body, access }) => {
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  return closeThread(slug, { id: String(req.params.threadId ?? ''), by, status: body.status, isOwner: access.canApprove, markdown: state.markdown, source: 'page' });
+});
+pageAidRoute('/documents/:slug/threads/:threadId/reopen', ({ req, slug, by }) =>
+  reopenThread(slug, { id: String(req.params.threadId ?? ''), by, source: 'page' }));
+// Accord round 2 stage C: POST { text } — a reply stored on the thread's own row, so deleting the
+// anchored text cannot take an unresolved disagreement's discussion with it.
+pageAidRoute('/documents/:slug/threads/:threadId/reply', ({ req, slug, by, body }) =>
+  replyOnThread(slug, { id: String(req.params.threadId ?? ''), by, text: String(body?.text ?? ''), source: 'page' }));
+// The Undo of starting a thread (only whoever started it).
+pageAidRoute('/documents/:slug/threads/:threadId/undo', async ({ req, slug, by }) => {
+  const state = await currentDocumentState(slug);
+  return undoStartThread(slug, { id: String(req.params.threadId ?? ''), by, marks: state?.marks });
+});
+// Step B4f: a line's time-to-live: { anchor, ttl: "7d" }; the setter or an Owner clears it.
+pageAidRoute('/documents/:slug/ttl', async ({ req, slug, by, access, body }) => {
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  const result = await setTtl(slug, { by, anchor: body.anchor, ttl: body.ttl, markdown: state.markdown, source: 'page' });
+  const view = await readBlindView(slug, state.markdown, pageBlindViewer(req, slug, access));
+  if (view && isRecord(result.body.ttl)) result.body.ttl = redactTtl(result.body.ttl, view);
+  return result;
+});
+pageAidRoute('/documents/:slug/ttl/:ttlId/clear', ({ req, slug, by, access }) =>
+  clearTtl(slug, { id: String(req.params.ttlId ?? ''), by, isOwner: access.canApprove, source: 'page' }));
+
+// Step B4c: the reader tapped "Ask why" on a change (the page also posts the reply itself):
+// recorded as review.why_asked so the author's Familiar sees the question. Body: { by, markId, author }.
+pageAidRoute('/documents/:slug/why-asked', ({ slug, by, body }) => {
+  const markId = typeof body.markId === 'string' ? body.markId.slice(0, 100) : '';
+  if (!markId) return { status: 400, body: { success: false, error: 'Missing markId' } };
+  const author = typeof body.author === 'string' ? body.author.slice(0, 120) : null;
+  try { addDocumentEvent(slug, 'review.why_asked', { markId, author }, by); } catch { /* optional */ }
+  // Step B7: "Ask why" also appears in the chat, linked to the change's thread and its line.
+  let chatMessageId: unknown = null;
+  if (CHAT_POLICY.mirrorAskWhy) {
+    try {
+      const authorActor = author ? normalizeActorString(author) : '';
+      const name = authorActor ? (mentionCandidates(slug).find(c => actorKey(c.actor) === actorKey(authorActor))?.names[0] ?? authorActor.replace(/^(human|ai|guest):/i, '')) : '';
+      const chat = postChatMessage(slug, {
+        by, kind: 'why', text: `${name ? `@${name} ` : ''}${WHY_POLICY.askWhyText}`,
+        anchors: body.anchor ? [body.anchor] : [], mentions: authorActor ? [authorActor] : [],
+        commentMarkId: markId, source: 'page',
+      });
+      if (chat.status === 200) chatMessageId = chat.body.cursor;
+    } catch (error) { console.warn('[chat] why mirror failed', String(error)); }
+  }
+  return { status: 200, body: { success: true, chatMessageId } };
+});
+
+// ============================================================================
+// Proof Documents Step B7: chat beside the document (never in its text or Yjs state)
+// ============================================================================
+
+// GET ?after=<id>&limit=<n>: messages after the cursor (oldest first), or the newest page.
+apiRoutes.get('/documents/:slug/chat', (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canRead) { res.status(403).json({ success: false, error: 'No read access' }); return; }
+  const afterRaw = typeof req.query.after === 'string' ? Number(req.query.after) : NaN;
+  const limitRaw = typeof req.query.limit === 'string' ? Number(req.query.limit) : NaN;
+  const after = Number.isFinite(afterRaw) && afterRaw >= 0 ? afterRaw : null;
+  const messages = listChatMessages(slug, { after, limit: Number.isFinite(limitRaw) ? limitRaw : undefined });
+  const candidates = mentionCandidates(slug);
+  const dir = buildDirectory(slug);
+  const directory = clientDirectory(dir, [...chatAuthors(slug), ...messages.flatMap(m => m.mentions), ...candidates.map(c => c.actor)]);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    success: true,
+    messages,
+    cursor: messages.length ? messages[messages.length - 1].id : (after ?? 0),
+    candidates,
+    labels: directory.labels,
+    policy: { maxText: CHAT_POLICY.maxText, maxLines: CHAT_POLICY.maxLines, pollMs: CHAT_POLICY.pollMs },
+    canPost: access.canComment,
+  });
+});
+
+// POST { by, text, lines: [anchor], mentions?: [actor], replyTo? }. Comment access; the actor is
+// decided as for line marks (a signed-in session wins over a typed guest name).
+apiRoutes.post('/documents/:slug/chat', opsRateLimiter, (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canComment) { res.status(403).json({ success: false, error: 'This needs comment access' }); return; }
+  const body = isRecord(req.body) ? req.body : {};
+  const actor = resolvePageActor(req, slug, access, body.by, 'talk');
+  if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
+  const result = postChatMessage(slug, {
+    by: actor.actor, text: body.text, anchors: body.lines, mentions: body.mentions, replyTo: body.replyTo, source: 'page',
+  });
+  res.status(result.status).json({ ...result.body, actor: actor.actor, trust: actor.trust });
+});
+
+// Step B3c: "Since you" for the viewer (a signed-in person, an agent key's AI, or the guest who
+// types ?by=<name>): what changed since they last marked a line on purpose, and the ringer list.
+apiRoutes.get('/documents/:slug/since-you', async (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canRead) { res.status(403).json({ success: false, error: 'No read access' }); return; }
+  const actor = resolvePageActor(req, slug, access, typeof req.query.by === 'string' ? req.query.by : undefined, 'talk');
+  if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
+  const viewer = getProofSettings(slug).blind ? pageBlindViewer(req, slug, access) : undefined;
+  const report = await buildSinceYou(slug, viewer ?? actor.actor);
+  res.setHeader('Cache-Control', 'no-store');
+  if (!report) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  res.json({ success: true, ...report });
+});
+
+// Step B3c: the page saw the Issue count reach 0: the server checks for itself and freezes a
+// snapshot when the document really is aligned (a page can only ask, never declare).
+apiRoutes.post('/documents/:slug/alignment-check', opsRateLimiter, async (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canRead) { res.status(403).json({ success: false, error: 'No read access' }); return; }
+  const result = await checkAlignment(slug);
+  if (!result) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  if (getProofSettings(slug).blind && pageBlindViewer(req, slug, access) !== undefined) {
+    res.json({ success: true, blind: true }); return;
+  }
+  res.json({ success: true, ...result });
+});
+
+apiRoutes.get('/documents/:slug/snapshots', (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canRead) { res.status(403).json({ success: false, error: 'No read access' }); return; }
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, snapshots: listSnapshotInfos(slug) });
+});
+
+// GET /documents/:slug/snapshots/<id>.md is the markdown ledger; /<id> is the JSON.
+apiRoutes.get('/documents/:slug/snapshots/:file', (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canRead) { res.status(403).json({ success: false, error: 'No read access' }); return; }
+  sendSnapshotFile(res, slug, String(req.params.file ?? ''), pageBlindViewer(req, slug, access) === undefined);
+});
+
+apiRoutes.post('/documents/:slug/line-marks', opsRateLimiter, (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) {
+    res.status(404).json({ success: false, error: 'Document not found' });
+    return;
+  }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canComment) {
+    res.status(403).json({ success: false, error: 'Marking lines needs comment access' });
+    return;
+  }
+  const body = isRecord(req.body) ? req.body : {};
+  const actor = resolvePageActor(req, slug, access, body.by);
+  if (!actor.ok) {
+    res.status(actor.status).json(actor.body);
+    return;
+  }
+  // Step B2: { by, status, reason?, lines: [{ anchor, status?, reason?, replaceIds?, replaceAnchors? }] }
+  // marks many lines in one request and one transaction (a folded section, or its undo).
+  if (Array.isArray(body.lines)) {
+    const batch = writeLineMarksBatch(slug, {
+      by: actor.actor,
+      status: body.status,
+      reason: body.reason,
+      // Step B3b: a folded section's batch is "section"; a skim batch from the walk says "dwell".
+      via: body.via !== undefined ? body.via : (isRecord(body.section) ? 'section' : 'click'),
+      lines: body.lines,
+      canApprove: access.canApprove,
+      source: 'page',
+      context: isRecord(body.section) ? { section: { heading: String(body.section.heading ?? '').slice(0, 200), lines: body.lines.length } } : undefined,
+    });
+    if (batch.status === 200) scheduleAlignmentCheck(slug);
+    res.status(batch.status).json({ ...batch.body, actor: actor.actor, trust: actor.trust });
+    return;
+  }
+  scheduleAlignmentCheck(slug);
+  const result = writeLineMark(slug, {
+    by: actor.actor,
+    status: body.status,
+    reason: body.reason,
+    // Step B3b: how the page earned the mark (dwell, click, key); default "click".
+    via: body.via !== undefined ? body.via : 'click',
+    anchor: body.anchor,
+    replaceIds: body.replaceIds,
+    replaceAnchors: body.replaceAnchors,
+    canApprove: access.canApprove,
+    source: 'page',
+  });
+  res.status(result.status).json({ ...result.body, actor: actor.actor, trust: actor.trust });
+});
+
+// Proof Documents Step B3: asks for the page. Reads need read access; answering needs comment access.
+apiRoutes.get('/documents/:slug/asks', async (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) {
+    res.status(404).json({ success: false, error: 'Document not found' });
+    return;
+  }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canRead) {
+    res.status(403).json({ success: false, error: 'No read access' });
+    return;
+  }
+  res.setHeader('Cache-Control', 'no-store');
+  const view = await readBlindView(slug, doc.markdown ?? '', pageBlindViewer(req, slug, access));
+  res.json({ success: true, asks: listCanonicalAsks(slug).map(ask => view ? redactAsk(ask, view) : ask) });
+});
+
+// Body: { by, choice: yes|not_yet|no, words?, anchor } where anchor is the question line as the
+// page sees it now (the same anchor shape as a line mark). Step B6: "by" is only a guest's typed
+// name; a signed-in viewer answers as their verified identity.
+apiRoutes.post('/documents/:slug/asks/:askId/answer', opsRateLimiter, (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) {
+    res.status(404).json({ success: false, error: 'Document not found' });
+    return;
+  }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canComment) {
+    res.status(403).json({ success: false, error: 'Answering needs comment access' });
+    return;
+  }
+  const body = isRecord(req.body) ? req.body : {};
+  const actor = resolvePageActor(req, slug, access, body.by);
+  if (!actor.ok) {
+    res.status(actor.status).json(actor.body);
+    return;
+  }
+  const result = answerAsk(slug, {
+    id: String(req.params.askId ?? ''),
+    by: actor.actor,
+    choice: body.choice,
+    words: body.words,
+    line: body.anchor ? { anchor: body.anchor as never } : null,
+    source: 'page',
+    canMark: access.canMark,
+  });
+  if (result.status === 200) scheduleAlignmentCheck(slug);
+  res.status(result.status).json({ ...result.body, actor: actor.actor, trust: actor.trust });
+});
+
+// Undo of an answer (Mike, 2026-09-19): a person takes back their own newest answer. It refuses
+// with 409 when someone else answered after them, or the ask was re-asked (nothing is clobbered).
+apiRoutes.delete('/documents/:slug/asks/:askId/answer', opsRateLimiter, (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canComment) { res.status(403).json({ success: false, error: 'Undoing an answer needs comment access' }); return; }
+  const body = isRecord(req.body) ? req.body : {};
+  const actor = resolvePageActor(req, slug, access, body.by);
+  if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
+  const result = withdrawAnswer(slug, { id: String(req.params.askId ?? ''), by: actor.actor });
+  if (result.status === 200) scheduleAlignmentCheck(slug);
+  res.status(result.status).json({ ...result.body, actor: actor.actor, trust: actor.trust });
+});
+
+// Step B6: re-ask and withdraw from the page. The asker (by verified identity) or an Owner
+// (the document's creator, a Documents admin, or the owner credential).
+apiRoutes.post('/documents/:slug/asks/:askId/reask', opsRateLimiter, (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canComment) { res.status(403).json({ success: false, error: 'Re-asking needs comment access' }); return; }
+  const body = isRecord(req.body) ? req.body : {};
+  const actor = resolvePageActor(req, slug, access, body.by);
+  if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
+  const result = reaskAsk(slug, { id: String(req.params.askId ?? ''), by: actor.actor, isOwner: access.canApprove, recommend: body.recommend, ifYes: body.ifYes, to: body.to });
+  res.status(result.status).json(result.body);
+});
+
+apiRoutes.delete('/documents/:slug/asks/:askId', opsRateLimiter, (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canComment) { res.status(403).json({ success: false, error: 'Withdrawing needs comment access' }); return; }
+  const body = isRecord(req.body) ? req.body : {};
+  const actor = resolvePageActor(req, slug, access, body.by);
+  if (!actor.ok) { res.status(actor.status).json(actor.body); return; }
+  const result = withdrawAsk(slug, { id: String(req.params.askId ?? ''), by: actor.actor, isOwner: access.canApprove });
+  res.status(result.status).json(result.body);
+});
+
+// ============================================================================
+// {do} action lines from the page (safe slice). Approve and revoke only; Run always refuses.
+// ============================================================================
+
+/**
+ * A `{do}` approval or revocation must come from a person signed in to this site, from this site.
+ * Refused: no session, an agent key or share token acting (decideActor source is not 'session'),
+ * a missing or foreign Origin header (CSRF), a cross-site fetch, a body that is not JSON.
+ */
+function doSessionActor(req: Request, slug: string, access: ReturnType<typeof resolveLineMarkAccess>):
+  { ok: true; actor: string; source: string } | { ok: false; status: number; body: Record<string, unknown> } {
+  const origin = req.header('origin');
+  const publicOrigin = getPublicOrigin(req);
+  if (DO_POLICY.approveRequiresOriginHeader && (!origin || origin !== publicOrigin)) {
+    return { ok: false, status: 403, body: { success: false, code: 'SAME_ORIGIN_REQUIRED', error: 'This request must come from this site' } };
+  }
+  const fetchSite = req.header('sec-fetch-site');
+  if (fetchSite && fetchSite !== 'same-origin') {
+    return { ok: false, status: 403, body: { success: false, code: 'SAME_ORIGIN_REQUIRED', error: 'This request must come from this site' } };
+  }
+  if (!req.is('application/json')) {
+    return { ok: false, status: 415, body: { success: false, code: 'JSON_REQUIRED', error: 'Send a JSON body' } };
+  }
+  const body = isRecord(req.body) ? req.body : {};
+  const decision = resolvePageActor(req, slug, access, body.by);
+  if (!decision.ok) return decision;
+  if (decision.source !== 'session') {
+    return { ok: false, status: 403, body: { success: false, code: 'SIGNED_IN_PERSON_REQUIRED', error: 'Only a person signed in to this site can approve a {do} (not a guest, an agent key, a share link or a script credential)', actor: decision.actor } };
+  }
+  return { ok: true, actor: decision.actor, source: decision.source };
+}
+
+async function doRoute(req: Request, res: Response, action: 'approve' | 'revoke' | 'run'): Promise<void> {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canRead) { res.status(403).json({ success: false, error: 'No read access' }); return; }
+  const who = doSessionActor(req, slug, access);
+  if (!who.ok) { res.status(who.status).json(who.body); return; }
+  const state = await currentDocumentState(slug);
+  const lines = await computeServerLines(state?.markdown ?? doc.markdown ?? '');
+  const body = isRecord(req.body) ? req.body : {};
+  const id = String(req.params.doId ?? '');
+  const result = action === 'approve'
+    ? approveDo(slug, lines, { id, actor: who.actor, source: who.source, isOwner: access.canApprove, digest: body.digest })
+    : action === 'revoke'
+      ? revokeDo(slug, lines, { id, actor: who.actor, isOwner: access.canApprove })
+      : await runDo(slug, lines, { id, actor: who.actor, source: who.source });
+  if (result.status === 200) scheduleAlignmentCheck(slug);
+  res.status(result.status).json({ ...result.body, actor: who.actor });
+}
+
+// Body: { digest } — the digest of the {do} as the page showed it (it must still be current).
+apiRoutes.post('/documents/:slug/dos/:doId/approve', opsRateLimiter, (req: Request, res: Response) => { doRoute(req, res, 'approve').catch(error => { console.error('[do] route failed', error); if (!res.headersSent) res.status(500).json({ success: false, error: 'Internal error' }); }); });
+apiRoutes.post('/documents/:slug/dos/:doId/revoke', opsRateLimiter, (req: Request, res: Response) => { doRoute(req, res, 'revoke').catch(error => { console.error('[do] route failed', error); if (!res.headersSent) res.status(500).json({ success: false, error: 'Internal error' }); }); });
+// Always refuses in this build (409 EXECUTION_NOT_ENABLED).
+apiRoutes.post('/documents/:slug/dos/:doId/run', opsRateLimiter, (req: Request, res: Response) => { doRoute(req, res, 'run').catch(error => { console.error('[do] route failed', error); if (!res.headersSent) res.status(500).json({ success: false, error: 'Internal error' }); }); });
 
 // DELETE is an alias for destructive delete.
 apiRoutes.delete('/documents/:slug', (req: Request, res: Response) => {
@@ -1915,8 +2894,9 @@ apiRoutes.get('/documents/:slug/info', (req: Request, res: Response) => {
     return;
   }
 
+  const hidden = !getPresentedSecret(req) && resolveTokenlessAccess(req, slug).role === null;
   res.json({
-    title: doc.share_state === 'ACTIVE' ? doc.title : null,
+    title: doc.share_state === 'ACTIVE' && !hidden ? doc.title : null,
     shareState: doc.share_state,
   });
 });
@@ -1962,7 +2942,7 @@ apiRoutes.get('/documents/:slug/open-context', async (req: Request, res: Respons
         docId: doc.doc_id,
         title: doc.title,
         markdown: doc.markdown,
-        marks: parseJson(doc.marks),
+        marks: redactSuggestionDecisions(parseJson(doc.marks), await readBlindView(slug, doc.markdown ?? '', pageBlindViewer(req, slug, resolveLineMarkAccess(req, slug, doc)))),
         shareState: doc.share_state,
         active: doc.share_state === 'ACTIVE',
         createdAt: doc.created_at,
@@ -1979,7 +2959,9 @@ apiRoutes.get('/documents/:slug/open-context', async (req: Request, res: Respons
     return;
   }
 
+  if (!requireCurrentCollabClient(req, res)) return;
   const session = buildCollabSession(slug, role, {
+    client: readCollabClientVersion(req),
     tokenId: access.tokenId,
     wsUrlBase: resolveRequestScopedCollabWsBase(req),
   });
@@ -1996,7 +2978,7 @@ apiRoutes.get('/documents/:slug/open-context', async (req: Request, res: Respons
       docId: doc.doc_id,
       title: doc.title,
       markdown: doc.markdown,
-      marks: parseJson(doc.marks),
+      marks: redactSuggestionDecisions(parseJson(doc.marks), await readBlindView(slug, doc.markdown ?? '', pageBlindViewer(req, slug, resolveLineMarkAccess(req, slug, doc)))),
       shareState: doc.share_state,
       // Legacy compatibility for <=0.28 clients.
       active: doc.share_state === 'ACTIVE',
@@ -2050,7 +3032,9 @@ apiRoutes.post('/documents/:slug/collab-refresh', async (req: Request, res: Resp
   }
 
   const role = access.role;
+  if (!requireCurrentCollabClient(req, res)) return;
   const session = buildCollabSession(slug, role, {
+    client: readCollabClientVersion(req),
     tokenId: access.tokenId,
     wsUrlBase: resolveRequestScopedCollabWsBase(req),
   });
@@ -2065,7 +3049,7 @@ apiRoutes.post('/documents/:slug/collab-refresh', async (req: Request, res: Resp
   });
 });
 
-apiRoutes.get('/documents/:slug/collab-session', (req: Request, res: Response) => {
+apiRoutes.get('/documents/:slug/collab-session', async (req: Request, res: Response) => {
   const slug = getSlugParam(req);
   if (!slug) {
     res.status(400).json({ error: 'Invalid slug' });
@@ -2080,12 +3064,11 @@ apiRoutes.get('/documents/:slug/collab-session', (req: Request, res: Response) =
     res.status(410).json({ error: 'Document deleted' });
     return;
   }
-  if (doc.share_state === 'PAUSED' || doc.share_state === 'REVOKED') {
-    const role = getAccessRole(req, slug);
-    if (role !== 'owner_bot' && !canOwnerMutate(req, doc)) {
-      res.status(403).json({ error: 'Document is not currently accessible' });
-      return;
-    }
+  const access = await resolveOpenContextAccess(req, res, slug, doc);
+  if (!access) return;
+  if ((doc.share_state === 'PAUSED' || doc.share_state === 'REVOKED') && !access.ownerAuthorized) {
+    res.status(403).json({ error: 'Document is not currently accessible' });
+    return;
   }
 
   const collabRuntime = getCollabRuntime();
@@ -2097,33 +3080,19 @@ apiRoutes.get('/documents/:slug/collab-session', (req: Request, res: Response) =
     return;
   }
 
-  const ownerAuthorized = canOwnerMutate(req, doc);
-  const presentedSecret = getPresentedSecret(req);
-  const access = presentedSecret ? resolveDocumentAccess(slug, presentedSecret) : null;
-  const requestedRole = access?.role ?? getAccessRole(req, slug);
-  let role: ShareRole = requestedRole ?? 'editor';
+  const role = access.role;
 
-  if (ownerAuthorized) {
-    role = 'owner_bot';
-  }
-  if (doc.share_state === 'REVOKED' && role !== 'owner_bot') {
-    res.status(403).json({ error: 'Document access has been revoked' });
-    return;
-  }
-  if (doc.share_state === 'PAUSED' && role !== 'owner_bot') {
-    res.status(403).json({ error: 'Document is not currently accessible' });
-    return;
-  }
-
-  const canRead = doc.share_state !== 'DELETED';
+  const canRead = true;
   const canEdit = role === 'owner_bot'
     ? (doc.share_state === 'ACTIVE' || doc.share_state === 'PAUSED')
     : (role === 'editor' && doc.share_state === 'ACTIVE');
   const canComment = doc.share_state === 'ACTIVE'
     && (role === 'commenter' || role === 'editor' || role === 'owner_bot');
 
+  if (!requireCurrentCollabClient(req, res)) return;
   const session = buildCollabSession(slug, role, {
-    tokenId: access?.tokenId ?? null,
+    client: readCollabClientVersion(req),
+    tokenId: access.tokenId,
     wsUrlBase: resolveRequestScopedCollabWsBase(req),
   });
   if (!session) {
@@ -2141,3 +3110,6 @@ apiRoutes.get('/documents/:slug/collab-session', (req: Request, res: Response) =
     },
   });
 });
+
+pageAidRoute('/documents/:slug/move-settings', ({ slug, by, access, body }) =>
+  setImmediateMoveActors(slug, body.immediateMoveActors, by, access.canApprove));

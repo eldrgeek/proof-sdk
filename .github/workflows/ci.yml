@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - deploy/vps
+  push:
+    branches:
+      - deploy/vps
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        # package-lock.json is gitignored; installs float and can be slow on cold runners.
+        timeout-minutes: 25
+        run: npm install
+
+      - name: Build
+        run: npm run build
+
+      - name: Unit tests
+        run: npm test
+
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        timeout-minutes: 25
+        run: npm install
+
+      - name: Build
+        run: npm run build
+
+      - name: Install Playwright Chromium
+        timeout-minutes: 25
+        run: npx playwright install --with-deps chromium
+
+      - name: Local write resync check
+        run: node scripts/local-write-resync-check.mjs
+
+      - name: Click edit check
+        run: node scripts/click-edit-check.mjs
+
+      - name: Dialect import and export check
+        # Guards ac-8sj: fails 6 of 18 when the importer cannot find anchors whose escapes changed.
+        run: node scripts/dialect-check.mjs
+
+      - name: Upload preview screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-screenshots
+          path: .preview/

@@ -1152,5 +1152,6 @@ export async function applyAgentEditV2(
   });
   refreshSnapshotForSlug(slug);
   const committedSnapshot = await buildSnapshot(slug);
-  return finalizeAgentEditV2Response(slug, by, nextMarkdown, marks, mutation.document.revision);
+  // mutation.marks: the committed marks, with positions mapped through this edit.
+  return finalizeAgentEditV2Response(slug, by, nextMarkdown, mutation.marks, mutation.document.revision);
 }

@@ -51,11 +51,13 @@ import {
   type StoredMark,
 } from '../formats/marks.js';
 import {
+  createDecorations,
   resolveMarks,
   marksPluginKey,
   accept as acceptMark,
   reject as rejectMark,
   acceptAll as acceptAllMarks,
+  rejectAll as rejectAllMarks,
   setEventCallback,
   rangeCrossesTableCellBoundary,
   applyRemoteMarks,
@@ -219,6 +221,25 @@ function wrapWithProvenance(markdown: string): string {
   }
 
   return `${content}\n<!-- PROOF:END -->\n\n<!-- PROVENANCE\n${json}\n-->\n`;
+}
+
+function createMarksStatePlugin(initialMetadata: Record<string, StoredMark> = {}): Plugin {
+  return new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: initialMetadata, activeMarkId: null }),
+      apply: (tr, value) => {
+        const meta = tr.getMeta(marksPluginKey);
+        if (meta?.type === 'SET_METADATA') {
+          return { ...value, metadata: meta.metadata };
+        }
+        if (meta?.type === 'SET_ACTIVE') {
+          return { ...value, activeMarkId: meta.markId ?? null };
+        }
+        return value;
+      },
+    },
+  });
 }
 
 // ============================================================================
@@ -456,6 +477,421 @@ test('rangeCrossesTableCellBoundary allows single-cell ranges', () => {
   );
 });
 
+test('accept keeps inserted text and clears insert suggestion metadata', () => {
+  const markId = 's-accept-insert';
+  const insertMark = marksSchema.marks.proofSuggestion.create({ id: markId, kind: 'insert', by: 'ai:test' });
+  const doc = marksSchema.node('doc', null, [
+    marksSchema.node('paragraph', null, [
+      marksSchema.text('A['),
+      marksSchema.text('plus', [insertMark]),
+      marksSchema.text(']B'),
+    ]),
+  ]);
+  const marksStatePlugin = createMarksStatePlugin();
+  let state = EditorState.create({
+    schema: marksSchema,
+    doc,
+    plugins: [marksStatePlugin],
+  });
+  const view = {
+    get state() {
+      return state;
+    },
+    dispatch(tr: any) {
+      state = state.apply(tr);
+    },
+  } as any;
+
+  const accepted = acceptMark(view, markId);
+  assert(accepted, 'Expected accept to succeed for insert suggestion');
+  assertEqual(state.doc.textBetween(0, state.doc.content.size, '\n', '\n'), 'A[plus]B');
+  assert(!getMarks(state).some((mark) => mark.id === markId), 'Accepted insert should no longer be pending');
+  assert(!getMarkMetadata(state)[markId], 'Accepted insert metadata should be removed');
+});
+
+test('quote-anchored insert accept appends proposed content and keeps the anchor', () => {
+  const markId = 's-accept-quote-anchored-insert';
+  const insertMark = marksSchema.marks.proofSuggestion.create({ id: markId, kind: 'insert', by: 'ai:test' });
+  const doc = marksSchema.node('doc', null, [
+    marksSchema.node('paragraph', null, [
+      marksSchema.text('Keep '),
+      marksSchema.text('anchor', [insertMark]),
+      marksSchema.text(' here'),
+    ]),
+  ]);
+  const marksStatePlugin = createMarksStatePlugin({
+    [markId]: {
+      kind: 'insert',
+      by: 'ai:test',
+      createdAt: new Date('2026-09-14T00:00:00.000Z').toISOString(),
+      quote: 'anchor',
+      content: ' proposed',
+      status: 'pending',
+    },
+  });
+  let state = EditorState.create({ schema: marksSchema, doc, plugins: [marksStatePlugin] });
+  const view = {
+    get state() {
+      return state;
+    },
+    dispatch(tr: any) {
+      state = state.apply(tr);
+    },
+  } as any;
+
+  const accepted = acceptMark(view, markId);
+  assert(accepted, 'Expected quote-anchored insert accept to succeed');
+  assertEqual(state.doc.textContent, 'Keep anchor proposed here');
+  assert(!getMarks(state).some((mark) => mark.id === markId), 'Accepted insert mark should be removed');
+});
+
+test('quote-anchored insert reject keeps anchor text and only removes the mark', () => {
+  const markId = 's-reject-quote-anchored-insert';
+  const insertMark = marksSchema.marks.proofSuggestion.create({ id: markId, kind: 'insert', by: 'ai:test' });
+  const doc = marksSchema.node('doc', null, [
+    marksSchema.node('paragraph', null, [
+      marksSchema.text('Keep '),
+      marksSchema.text('anchor', [insertMark]),
+      marksSchema.text(' here'),
+    ]),
+  ]);
+  const marksStatePlugin = createMarksStatePlugin({
+    [markId]: {
+      kind: 'insert',
+      by: 'ai:test',
+      createdAt: new Date('2026-09-14T00:00:00.000Z').toISOString(),
+      quote: 'anchor',
+      content: ' proposed',
+      status: 'pending',
+    },
+  });
+  let state = EditorState.create({ schema: marksSchema, doc, plugins: [marksStatePlugin] });
+  const view = {
+    get state() {
+      return state;
+    },
+    dispatch(tr: any) {
+      state = state.apply(tr);
+    },
+  } as any;
+
+  assert(rejectMark(view, markId), 'Expected quote-anchored insert reject to succeed');
+  assertEqual(state.doc.textContent, 'Keep anchor here');
+  assert(!getMarks(state).some((mark) => mark.id === markId), 'Rejected insert mark should be removed');
+});
+
+test('quote-anchored insert draws proposed content in an insert widget', () => {
+  const markId = 's-widget-quote-anchored-insert';
+  const insertMark = marksSchema.marks.proofSuggestion.create({ id: markId, kind: 'insert', by: 'ai:test' });
+  const doc = marksSchema.node('doc', null, [
+    marksSchema.node('paragraph', null, [
+      marksSchema.text('Keep '),
+      marksSchema.text('anchor', [insertMark]),
+      marksSchema.text(' here'),
+    ]),
+  ]);
+  const state = EditorState.create({
+    schema: marksSchema,
+    doc,
+    plugins: [createMarksStatePlugin({
+      [markId]: {
+        kind: 'insert',
+        by: 'ai:test',
+        createdAt: new Date('2026-09-14T00:00:00.000Z').toISOString(),
+        quote: 'anchor',
+        content: ' proposed',
+        status: 'pending',
+      },
+    })],
+  });
+
+  const decorations = createDecorations(state, getMarks(state), null, null).find();
+  const widget = decorations.find(
+    decoration => (decoration.type as any).spec?.key === `insert-insert-${markId}`,
+  );
+  assert(widget !== undefined, 'Expected a proposed-content widget after the insert anchor');
+  assertEqual(widget?.from, widget?.to, 'Expected proposed content to use a widget decoration');
+});
+
+test('server-materialized block insert does not also draw its raw content in a widget', () => {
+  // The agent API (suggest-insert with content "\n\n<paragraph>") materializes the
+  // new paragraph in the document and stores insertStructure 'block'. The stored
+  // content keeps its leading "\n\n" and markdown escapes, so it never equals the
+  // rendered text; the page must not draw it a second time as a raw widget.
+  const markId = 's-materialized-block-insert';
+  const insertMark = marksSchema.marks.proofSuggestion.create({ id: markId, kind: 'insert', by: 'ai:claude' });
+  const doc = marksSchema.node('doc', null, [
+    marksSchema.node('paragraph', null, [marksSchema.text('Anchor paragraph.')]),
+    marksSchema.node('paragraph', null, [marksSchema.text('New [bracketed] paragraph.', [insertMark])]),
+  ]);
+  const state = EditorState.create({
+    schema: marksSchema,
+    doc,
+    plugins: [createMarksStatePlugin({
+      [markId]: {
+        kind: 'insert',
+        by: 'ai:claude',
+        createdAt: new Date('2026-09-18T00:00:00.000Z').toISOString(),
+        quote: 'New [bracketed] paragraph.',
+        content: '\n\nNew \\[bracketed\\] paragraph.',
+        status: 'pending',
+        insertStructure: 'block',
+      },
+    })],
+  });
+
+  const decorations = createDecorations(state, getMarks(state), null, null).find();
+  const widget = decorations.find(
+    decoration => (decoration.type as any).spec?.key === `insert-insert-${markId}`,
+  );
+  assert(widget === undefined, 'Materialized insert must not render a duplicate raw-content widget');
+  const inline = decorations.find(
+    decoration => decoration.from !== decoration.to && (decoration.type as any).attrs?.['data-mark-id'] === markId,
+  );
+  assert(inline !== undefined, 'Materialized insert should still be highlighted inline');
+});
+
+test('reject removes inserted text for insert suggestions', () => {
+  const markId = 's-reject-insert';
+  const insertMark = marksSchema.marks.proofSuggestion.create({ id: markId, kind: 'insert', by: 'ai:test' });
+  const doc = marksSchema.node('doc', null, [
+    marksSchema.node('paragraph', null, [
+      marksSchema.text('A['),
+      marksSchema.text('plus', [insertMark]),
+      marksSchema.text(']B'),
+    ]),
+  ]);
+  const marksStatePlugin = createMarksStatePlugin();
+  let state = EditorState.create({
+    schema: marksSchema,
+    doc,
+    plugins: [marksStatePlugin],
+  });
+  const view = {
+    get state() {
+      return state;
+    },
+    dispatch(tr: any) {
+      state = state.apply(tr);
+    },
+  } as any;
+
+  const rejected = rejectMark(view, markId);
+  assert(rejected, 'Expected reject to succeed for insert suggestion');
+  assertEqual(state.doc.textBetween(0, state.doc.content.size, '\n', '\n'), 'A[]B');
+  assert(!getMarks(state).some((mark) => mark.id === markId), 'Rejected insert should no longer be pending');
+});
+
+test('accept removes deleted text for delete suggestions', () => {
+  const markId = 's-accept-delete';
+  const deleteMark = marksSchema.marks.proofSuggestion.create({ id: markId, kind: 'delete', by: 'ai:test' });
+  const doc = marksSchema.node('doc', null, [
+    marksSchema.node('paragraph', null, [
+      marksSchema.text('A['),
+      marksSchema.text('drop', [deleteMark]),
+      marksSchema.text(']B'),
+    ]),
+  ]);
+  const marksStatePlugin = createMarksStatePlugin();
+  let state = EditorState.create({
+    schema: marksSchema,
+    doc,
+    plugins: [marksStatePlugin],
+  });
+  const view = {
+    get state() {
+      return state;
+    },
+    dispatch(tr: any) {
+      state = state.apply(tr);
+    },
+  } as any;
+
+  const accepted = acceptMark(view, markId);
+  assert(accepted, 'Expected accept to succeed for delete suggestion');
+  assertEqual(state.doc.textBetween(0, state.doc.content.size, '\n', '\n'), 'A[]B');
+  assert(!getMarks(state).some((mark) => mark.id === markId), 'Accepted delete should no longer be pending');
+});
+
+test('accept delete removes one normalized-away adjacent space', () => {
+  const runCase = (before: string, deleted: string, after: string, expected: string) => {
+    const markId = `s-delete-space-${before.length}-${after.length}`;
+    const deleteMark = marksSchema.marks.proofSuggestion.create({ id: markId, kind: 'delete', by: 'ai:test' });
+    const doc = marksSchema.node('doc', null, [
+      marksSchema.node('paragraph', null, [
+        ...(before ? [marksSchema.text(before)] : []),
+        marksSchema.text(deleted, [deleteMark]),
+        ...(after ? [marksSchema.text(after)] : []),
+      ]),
+    ]);
+    let state = EditorState.create({
+      schema: marksSchema,
+      doc,
+      plugins: [createMarksStatePlugin()],
+    });
+    const view = {
+      get state() {
+        return state;
+      },
+      dispatch(tr: any) {
+        state = state.apply(tr);
+      },
+    } as any;
+    assert(acceptMark(view, markId), `Expected delete accept for ${JSON.stringify(before + deleted + after)}`);
+    assertEqual(state.doc.textContent, expected);
+  };
+
+  runCase('', 'Drop', ' next', 'next');
+  runCase('Keep ', 'drop', ' next', 'Keep next');
+  runCase('Keep ', 'drop', '', 'Keep');
+});
+
+test('reject keeps deleted text for delete suggestions while removing mark', () => {
+  const markId = 's-reject-delete';
+  const deleteMark = marksSchema.marks.proofSuggestion.create({ id: markId, kind: 'delete', by: 'ai:test' });
+  const doc = marksSchema.node('doc', null, [
+    marksSchema.node('paragraph', null, [
+      marksSchema.text('A['),
+      marksSchema.text('drop', [deleteMark]),
+      marksSchema.text(']B'),
+    ]),
+  ]);
+  const marksStatePlugin = createMarksStatePlugin();
+  let state = EditorState.create({
+    schema: marksSchema,
+    doc,
+    plugins: [marksStatePlugin],
+  });
+  const view = {
+    get state() {
+      return state;
+    },
+    dispatch(tr: any) {
+      state = state.apply(tr);
+    },
+  } as any;
+
+  const rejected = rejectMark(view, markId);
+  assert(rejected, 'Expected reject to succeed for delete suggestion');
+  assertEqual(state.doc.textBetween(0, state.doc.content.size, '\n', '\n'), 'A[drop]B');
+  assert(!getMarks(state).some((mark) => mark.id === markId), 'Rejected delete should no longer be pending');
+});
+
+test('acceptAll applies insert and delete suggestion semantics together', () => {
+  const insertId = 's-accept-all-insert';
+  const deleteId = 's-accept-all-delete';
+  const insertMark = marksSchema.marks.proofSuggestion.create({ id: insertId, kind: 'insert', by: 'ai:test' });
+  const deleteMark = marksSchema.marks.proofSuggestion.create({ id: deleteId, kind: 'delete', by: 'ai:test' });
+  const doc = marksSchema.node('doc', null, [
+    marksSchema.node('paragraph', null, [
+      marksSchema.text('A['),
+      marksSchema.text('plus', [insertMark]),
+      marksSchema.text('|'),
+      marksSchema.text('drop', [deleteMark]),
+      marksSchema.text(']B'),
+    ]),
+  ]);
+  const marksStatePlugin = createMarksStatePlugin();
+  let state = EditorState.create({
+    schema: marksSchema,
+    doc,
+    plugins: [marksStatePlugin],
+  });
+  const view = {
+    get state() {
+      return state;
+    },
+    dispatch(tr: any) {
+      state = state.apply(tr);
+    },
+  } as any;
+
+  const acceptedCount = acceptAllMarks(view);
+  assertEqual(acceptedCount, 2, 'Expected acceptAll to accept both pending suggestions');
+  assertEqual(state.doc.textBetween(0, state.doc.content.size, '\n', '\n'), 'A[plus|]B');
+});
+
+test('rejectAll applies insert and delete suggestion semantics together', () => {
+  const insertId = 's-reject-all-insert';
+  const deleteId = 's-reject-all-delete';
+  const insertMark = marksSchema.marks.proofSuggestion.create({ id: insertId, kind: 'insert', by: 'ai:test' });
+  const deleteMark = marksSchema.marks.proofSuggestion.create({ id: deleteId, kind: 'delete', by: 'ai:test' });
+  const doc = marksSchema.node('doc', null, [
+    marksSchema.node('paragraph', null, [
+      marksSchema.text('A['),
+      marksSchema.text('plus', [insertMark]),
+      marksSchema.text('|'),
+      marksSchema.text('drop', [deleteMark]),
+      marksSchema.text(']B'),
+    ]),
+  ]);
+  const marksStatePlugin = createMarksStatePlugin();
+  let state = EditorState.create({
+    schema: marksSchema,
+    doc,
+    plugins: [marksStatePlugin],
+  });
+  const view = {
+    get state() {
+      return state;
+    },
+    dispatch(tr: any) {
+      state = state.apply(tr);
+    },
+  } as any;
+
+  const rejectedCount = rejectAllMarks(view);
+  assertEqual(rejectedCount, 2, 'Expected rejectAll to reject both pending suggestions');
+  assertEqual(state.doc.textBetween(0, state.doc.content.size, '\n', '\n'), 'A[|drop]B');
+});
+
+test('pending suggestion counting excludes orphan metadata without anchors', () => {
+  const anchoredId = 's-anchored-count';
+  const orphanId = 's-orphan-count';
+  const anchoredMark = marksSchema.marks.proofSuggestion.create({
+    id: anchoredId,
+    kind: 'replace',
+    by: 'ai:test',
+  });
+  const doc = marksSchema.node('doc', null, [
+    marksSchema.node('paragraph', null, [
+      marksSchema.text('alpha '),
+      marksSchema.text('beta', [anchoredMark]),
+      marksSchema.text(' gamma'),
+    ]),
+  ]);
+  const marksStatePlugin = createMarksStatePlugin();
+  let state = EditorState.create({
+    schema: marksSchema,
+    doc,
+    plugins: [marksStatePlugin],
+  });
+  state = state.apply(state.tr.setMeta(marksPluginKey, {
+    type: 'SET_METADATA',
+    metadata: {
+      [anchoredId]: {
+        kind: 'replace' as const,
+        by: 'ai:test',
+        content: 'BETA',
+        status: 'pending' as const,
+        quote: 'beta',
+        createdAt: new Date('2026-03-11T00:00:00.000Z').toISOString(),
+      },
+      [orphanId]: {
+        kind: 'insert' as const,
+        by: 'ai:test',
+        content: 'orphan',
+        status: 'pending' as const,
+        createdAt: new Date('2026-03-11T00:00:00.000Z').toISOString(),
+      },
+    },
+  }));
+
+  const pending = getPendingSuggestions(getMarks(state));
+  assertEqual(pending.length, 1, 'Expected orphan metadata entries without anchors to be excluded from pending counts');
+  assertEqual(pending[0]?.id, anchoredId, 'Expected only the anchored suggestion to be counted');
+});
+
 test('applyRemoteMarks does not resurrect locally rejected mark ids', () => {
   const markId = 'm-remote-resurrect';
   const suggestionMark = marksSchema.marks.proofSuggestion.create({
@@ -528,21 +964,86 @@ test('applyRemoteMarks does not resurrect locally rejected mark ids', () => {
   assert(!(markId in (pluginState?.metadata ?? {})), 'Rejected mark metadata should remain removed after remote sync');
 });
 
-test('reject tombstones stale server suggestions before dispatch-time marks merges', () => {
-  const markId = 'm-reject-dispatch-race';
+test('authoritative remote deletion removes a pending suggestion without changing its text', () => {
+  const markId = 'm-authoritative-remote-delete';
   const suggestionMark = marksSchema.marks.proofSuggestion.create({
     id: markId,
-    kind: 'replace',
+    kind: 'insert',
+    by: 'human:test',
+  });
+  const initialDoc = marksSchema.node('doc', null, [
+    marksSchema.node('paragraph', null, [
+      marksSchema.text('Hello'),
+      marksSchema.text(' world', [suggestionMark]),
+    ]),
+  ]);
+  const remoteMetadata = {
+    [markId]: {
+      kind: 'insert' as const,
+      by: 'human:test',
+      createdAt: new Date('2026-09-14T00:00:00.000Z').toISOString(),
+      content: ' world',
+      status: 'pending' as const,
+      quote: 'world',
+    },
+  };
+  const marksStatePlugin = new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: remoteMetadata, activeMarkId: null }),
+      apply: (tr, value) => {
+        const meta = tr.getMeta(marksPluginKey);
+        return meta?.type === 'SET_METADATA'
+          ? { ...value, metadata: meta.metadata }
+          : value;
+      },
+    },
+  });
+  let state = EditorState.create({
+    schema: marksSchema,
+    doc: initialDoc,
+    plugins: [marksStatePlugin],
+  });
+  const view = {
+    get state() {
+      return state;
+    },
+    dispatch(tr: any) {
+      state = state.apply(tr);
+    },
+  } as any;
+
+  applyRemoteMarks(view, {}, { authoritativeSnapshot: true });
+
+  assertEqual(state.doc.textContent, 'Hello world', 'Remote marks deletion must leave Yjs-synced text unchanged');
+  assert(!getMarks(state).some((mark) => mark.id === markId), 'Remote deletion should remove the local suggestion anchor');
+  assert(!(markId in getMarkMetadata(state)), 'Remote deletion should remove local suggestion metadata');
+
+  const nextMarksChangePayload = mergePendingServerMarks(getMarkMetadataWithQuotes(state), remoteMetadata);
+  assert(
+    !(markId in nextMarksChangePayload),
+    'A later marks-change merge must not re-add the remotely deleted suggestion',
+  );
+});
+
+function runInsertResolutionWithSynchronousStaleRemoteApply(action: 'accept' | 'reject'): {
+  state: EditorState;
+  markId: string;
+} {
+  const markId = `m-${action}-insert-dispatch-race`;
+  const suggestionMark = marksSchema.marks.proofSuggestion.create({
+    id: markId,
+    kind: 'insert',
     by: 'ai:test',
-    content: 'planet',
+    content: ' world',
     status: 'pending',
     createdAt: new Date('2026-03-11T00:00:00.000Z').toISOString(),
   });
 
   const initialDoc = marksSchema.node('doc', null, [
     marksSchema.node('paragraph', null, [
-      marksSchema.text('Hello '),
-      marksSchema.text('world', [suggestionMark]),
+      marksSchema.text('Hello'),
+      marksSchema.text(' world', [suggestionMark]),
     ]),
   ]);
 
@@ -571,10 +1072,10 @@ test('reject tombstones stale server suggestions before dispatch-time marks merg
 
   const remoteMetadata = {
     [markId]: {
-      kind: 'replace' as const,
+      kind: 'insert' as const,
       by: 'ai:test',
       createdAt: new Date('2026-03-11T00:00:00.000Z').toISOString(),
-      content: 'planet',
+      content: ' world',
       status: 'pending' as const,
       quote: 'world',
     },
@@ -582,26 +1083,51 @@ test('reject tombstones stale server suggestions before dispatch-time marks merg
 
   state = state.apply(state.tr.setMeta(marksPluginKey, { type: 'SET_METADATA', metadata: remoteMetadata }));
 
+  let staleRemoteApplied = false;
   const view = {
     get state() {
       return state;
     },
     dispatch(tr: any) {
       state = state.apply(tr);
-      const merged = mergePendingServerMarks(getMarkMetadataWithQuotes(state), remoteMetadata);
-      state = state.apply(state.tr.setMeta(marksPluginKey, { type: 'SET_METADATA', metadata: merged }));
+      if (!staleRemoteApplied) {
+        staleRemoteApplied = true;
+        applyRemoteMarks(view as any, remoteMetadata);
+      }
     },
   } as any;
 
-  const rejected = rejectMark(view, markId);
-  assert(rejected, 'Reject should succeed');
+  const resolved = action === 'accept'
+    ? acceptMark(view, markId)
+    : rejectMark(view, markId);
+  assert(resolved, `${action} should succeed`);
+  return { state, markId };
+}
 
-  const marksAfter = getMarks(state);
-  assert(!marksAfter.some((mark) => mark.id === markId), 'Reject should stay removed even if stale server marks merge during dispatch');
+test('accept tombstones stale insert metadata before synchronous remote re-anchoring', () => {
+  const { state, markId } = runInsertResolutionWithSynchronousStaleRemoteApply('accept');
+  assertEqual(state.doc.textContent, 'Hello world', 'Accept should preserve inserted text');
+  assert(
+    !getMarks(state).some((mark) => mark.id === markId),
+    'Accept should stay removed when stale pending metadata is applied synchronously during dispatch',
+  );
 
   const pluginState = marksPluginKey.getState(state) as { metadata: Record<string, unknown> } | undefined;
   assert(pluginState !== undefined, 'Plugin state should exist');
-  assert(!(markId in (pluginState?.metadata ?? {})), 'Dispatch-time marks merge should not resurrect rejected metadata');
+  assert(!(markId in (pluginState?.metadata ?? {})), 'Stale remote apply should not restore accepted metadata');
+});
+
+test('reject tombstones stale insert metadata before synchronous remote re-anchoring', () => {
+  const { state, markId } = runInsertResolutionWithSynchronousStaleRemoteApply('reject');
+  assertEqual(state.doc.textContent, 'Hello', 'Reject should remove inserted text');
+  assert(
+    !getMarks(state).some((mark) => mark.id === markId),
+    'Reject should stay removed when stale pending metadata is applied synchronously during dispatch',
+  );
+
+  const pluginState = marksPluginKey.getState(state) as { metadata: Record<string, unknown> } | undefined;
+  assert(pluginState !== undefined, 'Plugin state should exist');
+  assert(!(markId in (pluginState?.metadata ?? {})), 'Stale remote apply should not restore rejected metadata');
 });
 
 test('applyRemoteMarks ignores mismatched relative anchors and falls back to quote', () => {
@@ -2328,6 +2854,52 @@ test('comment anchors without metadata are not surfaced or flushed as empty comm
   assertEqual((flushedHydrated.c1 as any)?.text, 'Hi there');
 });
 
+test('persisted suggestion anchors stay pending and show actor attribution without metadata', () => {
+  const suggestionMark = marksSchema.marks.proofSuggestion.create({
+    id: 's-persisted-insert',
+    kind: 'insert',
+    by: 'human:Claude',
+  });
+  const doc = marksSchema.node('doc', null, [
+    marksSchema.node('paragraph', null, [
+      marksSchema.text('Hello '),
+      marksSchema.text('world', [suggestionMark]),
+    ]),
+  ]);
+  const marksStatePlugin = new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: {}, activeMarkId: null, composeAnchorRange: null }),
+      apply: (_tr, value) => value,
+    },
+  });
+  const state = EditorState.create({
+    schema: marksSchema,
+    doc,
+    plugins: [marksStatePlugin],
+  });
+
+  const marks = getMarks(state);
+  const pendingInsert = marks.find(mark => mark.id === 's-persisted-insert');
+  assert(pendingInsert !== undefined, 'Persisted proofSuggestion anchor should produce a mark');
+  assertEqual(
+    (pendingInsert?.data as InsertData | undefined)?.status,
+    'pending',
+    'Suggestion anchor without metadata should default to pending',
+  );
+
+  const decorations = createDecorations(state, marks, null, null).find();
+  const insertDecoration = decorations.find(
+    decoration => (decoration.type as any).attrs?.['data-mark-id'] === 's-persisted-insert',
+  );
+  assert(insertDecoration !== undefined, 'Pending persisted insert should produce a decoration');
+  assertEqual(
+    (insertDecoration?.type as any).attrs?.title,
+    'Suggested by Claude',
+    'Pending suggestion decoration should display its actor without the prefix',
+  );
+});
+
 test('comment anchors with empty text metadata are treated as invalid (not surfaced or flushed)', () => {
   const commentMark = marksSchema.marks.proofComment.create({ id: 'c2', by: 'human:dan' });
   const doc = marksSchema.node('doc', null, [
@@ -2444,7 +3016,7 @@ test('applyRemoteMarks preserves unresolved remote comments in metadata snapshot
   assertEqual(Boolean(afterResolve['c-unresolved']?.resolved), true, 'Resolved flag should persist on unresolved remote comments');
 });
 
-test('applyRemoteMarks prunes detached non-comment metadata but keeps detached comments', () => {
+test('applyRemoteMarks keeps detached pending suggestions and comments for later anchor retries', () => {
   const doc = marksSchema.node('doc', null, [
     marksSchema.node('paragraph', null, [marksSchema.text('Hello world from collab')]),
   ]);
@@ -2509,11 +3081,15 @@ test('applyRemoteMarks prunes detached non-comment metadata but keeps detached c
   assert(!getMarks(state).some((mark) => mark.id === 'c-unresolved'), 'Detached comment should not surface as an anchor');
 
   const flushed = getMarkMetadataWithQuotes(state);
-  assert(!('s-detached' in flushed), 'Detached non-comment metadata should be pruned from snapshots');
+  assertEqual(
+    flushed['s-detached']?.content,
+    'orphaned suggestion',
+    'Detached pending suggestion metadata should remain in snapshots instead of deleting the shared mark',
+  );
   assertEqual(flushed['c-unresolved']?.text, 'Please resolve this orphaned comment', 'Detached comments should remain in snapshots for later retries');
 });
 
-test('metadata snapshots drop detached suggestions after anchor deletion', () => {
+test('metadata snapshots retain detached suggestions until an authoritative snapshot removes them', () => {
   const markId = 's-after-delete';
   const detachedDoc = marksSchema.node('doc', null, [
     marksSchema.node('paragraph', null, [marksSchema.text('Anchor text deleted from the document')]),
@@ -2556,10 +3132,14 @@ test('metadata snapshots drop detached suggestions after anchor deletion', () =>
   state = state.apply(state.tr.setMeta(marksPluginKey, { type: 'SET_METADATA', metadata }));
 
   const flushed = getMarkMetadataWithQuotes(state);
-  assert(!flushed[markId], 'Detached suggestion metadata should not flush after its anchor text is deleted');
+  assertEqual(
+    flushed[markId]?.content,
+    'replacement text',
+    'Detached pending suggestion metadata should flush unchanged after its anchor text is deleted',
+  );
 
   const merged = mergePendingServerMarks(flushed, metadata);
-  assertEqual(merged[markId]?.content, 'replacement text', 'Server merge may still carry the detached entry before applyRemoteMarks');
+  assertEqual(merged[markId]?.content, 'replacement text', 'Server merge should retain the detached pending entry');
 
   const view = {
     get state() {
@@ -2572,7 +3152,18 @@ test('metadata snapshots drop detached suggestions after anchor deletion', () =>
 
   applyRemoteMarks(view, merged);
   const afterRemoteApply = getMarkMetadataWithQuotes(state);
-  assert(!afterRemoteApply[markId], 'Detached suggestion metadata should stay pruned after remote apply and normalization');
+  assertEqual(
+    afterRemoteApply[markId]?.content,
+    'replacement text',
+    'Detached suggestion metadata should survive remote apply and normalization',
+  );
+
+  applyRemoteMarks(view, {}, { authoritativeSnapshot: true });
+  const afterAuthoritativeRemoval = getMarkMetadataWithQuotes(state);
+  assert(
+    !afterAuthoritativeRemoval[markId],
+    'An authoritative marks snapshot that omits the suggestion must still remove it permanently',
+  );
 });
 
 test('compose anchor range is transient UI state and is not persisted into metadata', () => {

@@ -1,3 +1,4 @@
+import { documentAccessEvents } from './document-access-events.js';
 import { createHash, randomUUID, timingSafeEqual } from 'crypto';
 import Database from 'better-sqlite3';
 import path from 'path';
@@ -215,7 +216,7 @@ function assertDatabaseEnvironmentCompatibility(context: 'startup' | 'write', op
   );
 }
 
-function assertWritesAllowed(operation: string): void {
+export function assertWritesAllowed(operation: string): void {
   assertDatabaseEnvironmentCompatibility('write', operation);
 }
 
@@ -1119,6 +1120,13 @@ function initDatabase(): void {
       FOREIGN KEY (document_slug) REFERENCES documents(slug)
     )
   `);
+  const accessColumns = new Set((d.prepare('PRAGMA table_info(document_access)').all() as Array<{ name: string }>).map(column => column.name));
+  // Cross invitation (2026-09-19): every agent key is bound to the verified human who created it
+  // (its sponsor) and carries the runtime that human declared. Keys made before this step are read
+  // as sponsored by the document's owner (server/cross-invitation.ts backfillAgentKeySponsors).
+  for (const column of ['label', 'requested_by', 'requested_from', 'last_used_at', 'sponsor_actor', 'sponsor_member_id', 'runtime', 'allow_direct_invite']) {
+    if (!accessColumns.has(column)) d.exec(`ALTER TABLE document_access ADD COLUMN ${column} TEXT`);
+  }
   d.exec('CREATE INDEX IF NOT EXISTS idx_document_access_slug ON document_access(document_slug)');
   d.exec('CREATE INDEX IF NOT EXISTS idx_document_access_secret ON document_access(secret_hash)');
 
@@ -1282,6 +1290,470 @@ function initDatabase(): void {
     ON document_blocks(document_id, retired_revision, ordinal)
   `);
 
+  // Proof Documents Step 1: per-TM, per-line status marks. Kept beside the document
+  // (never in its text or its Yjs state) so collab, repair and projection paths never touch them.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_line_marks (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      actor_key TEXT NOT NULL,
+      status TEXT NOT NULL,
+      reason TEXT,
+      line_hash TEXT NOT NULL,
+      line_occurrence INTEGER NOT NULL,
+      line_ordinal INTEGER NOT NULL,
+      line_kind TEXT NOT NULL,
+      line_excerpt TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_line_marks_slug ON document_line_marks(document_slug, updated_at)`);
+  // Step B3b: how a mark was earned (via), and the line's whole text when marked (carry-forward).
+  {
+    const cols = new Set((d.prepare('PRAGMA table_info(document_line_marks)').all() as Array<{ name: string }>).map(c => c.name));
+    if (!cols.has('via')) d.exec('ALTER TABLE document_line_marks ADD COLUMN via TEXT');
+    if (!cols.has('line_text')) d.exec('ALTER TABLE document_line_marks ADD COLUMN line_text TEXT');
+    // Step B4c: an AI's one-line rationale for its mark.
+    if (!cols.has('why')) d.exec('ALTER TABLE document_line_marks ADD COLUMN why TEXT');
+    // Proxy marks step: what the marker checked, and (for a ratified proxy) where it came from.
+    if (!cols.has('evidence')) d.exec('ALTER TABLE document_line_marks ADD COLUMN evidence TEXT');
+    if (!cols.has('proxy_json')) d.exec('ALTER TABLE document_line_marks ADD COLUMN proxy_json TEXT');
+  }
+
+  // Proof Documents, Familiar proxy marks (Mike, 2026-09-19): each person's Familiar AI per
+  // document, the Familiar's proxy marks (never counted as the person's), and ratifications
+  // (with what each ratified line held before, for Undo). Beside the document, never in its text.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_familiars (
+      document_slug TEXT NOT NULL,
+      human_key TEXT NOT NULL,
+      human_actor TEXT NOT NULL,
+      familiar_actor TEXT NOT NULL,
+      bound_at TEXT NOT NULL,
+      bound_by TEXT NOT NULL,
+      PRIMARY KEY (document_slug, human_key)
+    )
+  `);
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_proxy_marks (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      familiar_actor TEXT NOT NULL,
+      familiar_key TEXT NOT NULL,
+      for_actor TEXT NOT NULL,
+      for_key TEXT NOT NULL,
+      status TEXT NOT NULL,
+      confidence REAL NOT NULL,
+      evidence TEXT NOT NULL,
+      line_hash TEXT NOT NULL,
+      line_occurrence INTEGER NOT NULL,
+      line_ordinal INTEGER NOT NULL,
+      line_kind TEXT NOT NULL,
+      line_excerpt TEXT NOT NULL DEFAULT '',
+      line_text TEXT,
+      at TEXT NOT NULL
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_proxy_marks_slug ON document_proxy_marks(document_slug, for_key, at)`);
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_proxy_ratifications (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      human_actor TEXT NOT NULL,
+      human_key TEXT NOT NULL,
+      familiar_actor TEXT NOT NULL,
+      at TEXT NOT NULL,
+      entries_json TEXT NOT NULL DEFAULT '[]',
+      undone_at TEXT
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_proxy_ratifications_slug ON document_proxy_ratifications(document_slug, human_key, at)`);
+
+  // Proof Documents, line tiers (Mike, 2026-09-19): decision / context tags per line. Append-only
+  // (every flip is kept with who and when); the newest tag still on a line is its tier. Beside the
+  // document like line marks, never in its text.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_line_tiers (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      tier TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      reason TEXT,
+      by_author INTEGER NOT NULL DEFAULT 0,
+      line_hash TEXT NOT NULL,
+      line_occurrence INTEGER NOT NULL,
+      line_ordinal INTEGER NOT NULL,
+      line_kind TEXT NOT NULL,
+      line_excerpt TEXT NOT NULL DEFAULT '',
+      line_text TEXT,
+      at TEXT NOT NULL
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_line_tiers_slug ON document_line_tiers(document_slug, at)`);
+
+  // Proof Documents, dialect import (2026-09-19): a mark an import could not make live (its author
+  // is someone the importer may not write as, or its type never imports live, such as {do}) is kept
+  // as a history note on its line. History notes never count for alignment and never become marks.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_dialect_history (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      mark_text TEXT NOT NULL,
+      claimed_by TEXT,
+      reason TEXT NOT NULL,
+      imported_by TEXT NOT NULL,
+      line_hash TEXT,
+      line_occurrence INTEGER,
+      line_ordinal INTEGER,
+      line_kind TEXT,
+      line_excerpt TEXT NOT NULL DEFAULT '',
+      line_text TEXT,
+      seq INTEGER NOT NULL DEFAULT 0,
+      at TEXT NOT NULL
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_dialect_history_slug ON document_dialect_history(document_slug, seq)`);
+
+  // Proof Documents Step B4c: review notes (an AI's why / reject hints / explicit priority on a
+  // suggestion or a line) and uncertain flags. Beside the document like line marks.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_review_notes (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      actor_key TEXT NOT NULL,
+      target_kind TEXT NOT NULL,
+      mark_id TEXT,
+      line_hash TEXT,
+      line_occurrence INTEGER,
+      line_ordinal INTEGER,
+      line_kind TEXT,
+      line_excerpt TEXT,
+      line_text TEXT,
+      why TEXT,
+      reject_hints_json TEXT NOT NULL DEFAULT '[]',
+      priority INTEGER,
+      priority_reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_review_notes_slug ON document_review_notes(document_slug, updated_at)`);
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_line_flags (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      actor_key TEXT NOT NULL,
+      note TEXT,
+      line_hash TEXT NOT NULL,
+      line_occurrence INTEGER NOT NULL,
+      line_ordinal INTEGER NOT NULL,
+      line_kind TEXT NOT NULL,
+      line_excerpt TEXT NOT NULL DEFAULT '',
+      line_text TEXT,
+      created_at TEXT NOT NULL,
+      cleared_at TEXT,
+      cleared_by TEXT
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_line_flags_slug ON document_line_flags(document_slug, created_at)`);
+
+  // Proof Documents Step B4d: objections ("I'd agree if…"), independent of the text anchors.
+  // lines_json keeps each covered line's original and current anchor; ack_json what the objector
+  // has seen. Never deleted: a cleared or overridden objection keeps its record.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_objections (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      actor_key TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      condition TEXT,
+      lines_json TEXT NOT NULL,
+      ack_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      created_at TEXT NOT NULL,
+      closed_at TEXT,
+      closed_by TEXT,
+      override_reason TEXT,
+      kept_at TEXT,
+      repair_notified_json TEXT
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_objections_slug ON document_objections(document_slug, created_at)`);
+
+  d.exec(`CREATE TABLE IF NOT EXISTS document_move_settings (
+    document_slug TEXT PRIMARY KEY, actors_json TEXT NOT NULL DEFAULT '[]'
+  )`);
+  // Proof Documents Steps B4e + B4f (server/proof-extras-store.ts): review bundles, competing
+  // alternatives and picks, per-document settings (blind marking), Explain threads and line
+  // times-to-live. All beside the document, never in its text or Yjs state.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_bundles (
+      id TEXT NOT NULL,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      title TEXT NOT NULL,
+      why TEXT,
+      members_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'open',
+      created_at TEXT NOT NULL,
+      closed_at TEXT,
+      closed_by TEXT,
+      PRIMARY KEY (document_slug, id)
+    )
+  `);
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_alternatives (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      text TEXT NOT NULL,
+      line_hash TEXT NOT NULL,
+      line_occurrence INTEGER NOT NULL,
+      line_ordinal INTEGER NOT NULL,
+      line_kind TEXT NOT NULL,
+      line_excerpt TEXT NOT NULL DEFAULT '',
+      line_text TEXT,
+      created_at TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      closed_at TEXT,
+      closed_by TEXT,
+      resolution_json TEXT
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_alternatives_slug ON document_alternatives(document_slug, created_at)`);
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_alt_picks (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      actor_key TEXT NOT NULL,
+      choice TEXT NOT NULL,
+      line_hash TEXT NOT NULL,
+      at TEXT NOT NULL
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_alt_picks_slug ON document_alt_picks(document_slug, at)`);
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_proof_settings (
+      document_slug TEXT PRIMARY KEY,
+      blind INTEGER NOT NULL DEFAULT 0,
+      blind_set_by TEXT,
+      blind_set_at TEXT
+    )
+  `);
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_explains (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      comment_mark_id TEXT,
+      question TEXT NOT NULL,
+      line_hash TEXT NOT NULL,
+      line_occurrence INTEGER NOT NULL,
+      line_ordinal INTEGER NOT NULL,
+      line_kind TEXT NOT NULL,
+      line_excerpt TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_explains_slug ON document_explains(document_slug, created_at)`);
+  // Accord round 2, stage D: threads. A thread is a comment or a suggestion PLUS what would close
+  // it and what it is anchored to. This table holds only that extra part, keyed by the mark, so a
+  // comment or suggestion already on a document reads as a thread with no row and nothing has to
+  // be migrated (src/shared/threads.ts threadsFrom).
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_threads (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      mark_id TEXT,
+      by_actor TEXT NOT NULL,
+      asks TEXT NOT NULL,
+      text TEXT NOT NULL DEFAULT '',
+      anchor_json TEXT NOT NULL DEFAULT '[]',
+      selection TEXT,
+      waiting_on_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'open',
+      chat_message_id INTEGER,
+      created_at TEXT NOT NULL,
+      closed_at TEXT,
+      closed_by TEXT,
+      -- Accord round 2 stage C (a loose end from stage D): replies live HERE as well as on the
+      -- mark. Deleting the text a thread sits on takes the mark with it, and the reply history
+      -- went too. Deleting text must never silently delete an unresolved disagreement OR the
+      -- discussion of it, so the thread's own row carries its replies.
+      replies_json TEXT NOT NULL DEFAULT '[]'
+    )
+  `);
+  {
+    const threadColumns = new Set((d.prepare('PRAGMA table_info(document_threads)').all() as Array<{ name: string }>).map(c => c.name));
+    if (!threadColumns.has('replies_json')) {
+      d.exec(`ALTER TABLE document_threads ADD COLUMN replies_json TEXT NOT NULL DEFAULT '[]'`);
+    }
+  }
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_threads_slug ON document_threads(document_slug, created_at)`);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_threads_mark ON document_threads(document_slug, mark_id)`);
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_line_ttls (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      ttl_ms INTEGER NOT NULL,
+      label TEXT NOT NULL,
+      line_hash TEXT NOT NULL,
+      line_occurrence INTEGER NOT NULL,
+      line_ordinal INTEGER NOT NULL,
+      line_kind TEXT NOT NULL,
+      line_excerpt TEXT NOT NULL DEFAULT '',
+      line_text TEXT,
+      set_at TEXT NOT NULL,
+      period_start TEXT NOT NULL,
+      period_hash TEXT NOT NULL,
+      checks_json TEXT NOT NULL DEFAULT '[]',
+      expired_noted_at TEXT,
+      cleared_at TEXT,
+      cleared_by TEXT
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_line_ttls_slug ON document_line_ttls(document_slug, set_at)`);
+
+  // Proof Documents Step B3c: aligned snapshots. Frozen when a document's Issue count reaches 0:
+  // its markdown, every line mark, the asks with answers and the team. Rows are never changed.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_aligned_snapshots (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      markdown TEXT NOT NULL,
+      payload TEXT NOT NULL
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_aligned_snapshots_slug ON document_aligned_snapshots(document_slug, created_at)`);
+
+  // Proof Documents Step B3: {ask} decision lines. Beside the document like line marks.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_asks (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      to_json TEXT NOT NULL DEFAULT '[]',
+      recommend TEXT NOT NULL,
+      if_yes TEXT,
+      line_hash TEXT NOT NULL,
+      line_occurrence INTEGER NOT NULL,
+      line_ordinal INTEGER NOT NULL,
+      line_kind TEXT NOT NULL,
+      line_excerpt TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      asked_at TEXT NOT NULL,
+      withdrawn_at TEXT
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_asks_slug ON document_asks(document_slug, created_at)`);
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_ask_answers (
+      id TEXT PRIMARY KEY,
+      ask_id TEXT NOT NULL,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      choice TEXT NOT NULL,
+      words TEXT NOT NULL DEFAULT '',
+      line_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_ask_answers_ask ON document_ask_answers(ask_id, created_at)`);
+
+  // Proof Documents {do} action lines (safe slice, 2026-09-18). Beside the document like asks.
+  // document_do_approvals rows are never deleted (revocation sets revoked_at). document_do_runs
+  // exists for the attended enablement: in this slice nothing writes it (execution is disabled).
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_dos (
+      id TEXT PRIMARY KEY,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      to_json TEXT NOT NULL DEFAULT '[]',
+      presser TEXT NOT NULL DEFAULT 'approver',
+      retry_budget INTEGER NOT NULL DEFAULT 0,
+      action_json TEXT NOT NULL,
+      line_hash TEXT NOT NULL,
+      line_occurrence INTEGER NOT NULL,
+      line_ordinal INTEGER NOT NULL,
+      line_kind TEXT NOT NULL,
+      line_excerpt TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      withdrawn_at TEXT
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_dos_slug ON document_dos(document_slug, created_at)`);
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_do_approvals (
+      id TEXT PRIMARY KEY,
+      do_id TEXT NOT NULL,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      digest TEXT NOT NULL,
+      source TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      revoked_at TEXT,
+      revoked_by TEXT
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_do_approvals_do ON document_do_approvals(do_id, created_at)`);
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_do_runs (
+      id TEXT PRIMARY KEY,
+      do_id TEXT NOT NULL,
+      document_slug TEXT NOT NULL,
+      approval_id TEXT NOT NULL,
+      attempt INTEGER NOT NULL,
+      digest TEXT NOT NULL,
+      presser TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      receipts_json TEXT NOT NULL DEFAULT '[]',
+      UNIQUE (do_id, attempt)
+    )
+  `);
+
+  // Proof Documents Step B7: chat beside the document (never in its text or Yjs state). The
+  // INTEGER id is the page's and the agent API's cursor (GET /chat?after=<id>).
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_chat_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      document_slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'message',
+      text TEXT NOT NULL,
+      lines_json TEXT NOT NULL DEFAULT '[]',
+      mentions_json TEXT NOT NULL DEFAULT '[]',
+      reply_to INTEGER,
+      suggestion_json TEXT,
+      comment_mark_id TEXT,
+      created_at TEXT NOT NULL
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_chat_slug ON document_chat_messages(document_slug, id)`);
+
+  // Proof Documents Step B6: explicit identity merges (a typed-name actor -> a verified person).
+  // Made only by the COS on request (server/library/cli.ts merge-identity); rows are never
+  // rewritten, the merge applies when marks and answers are read. scope = a slug or '*'.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS identity_merges (
+      scope TEXT NOT NULL,
+      from_key TEXT NOT NULL,
+      into_actor TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      created_by TEXT,
+      note TEXT,
+      PRIMARY KEY (scope, from_key)
+    )
+  `);
+
   d.exec(`
     CREATE TABLE IF NOT EXISTS document_y_updates (
       seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1380,6 +1852,160 @@ function initDatabase(): void {
     )
   `);
   d.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_library_documents_slug ON library_documents(document_slug)');
+
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS library_members (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT UNIQUE,
+      is_owner INTEGER NOT NULL DEFAULT 0,
+      invited_by TEXT,
+      created_at TEXT NOT NULL,
+      removed_at TEXT
+    )
+  `);
+  d.exec('CREATE INDEX IF NOT EXISTS idx_library_members_active ON library_members(removed_at, created_at)');
+
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS library_signin_links (
+      token_hash TEXT PRIMARY KEY,
+      member_id TEXT NOT NULL,
+      purpose TEXT NOT NULL,
+      created_by TEXT,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      used_at TEXT,
+      FOREIGN KEY (member_id) REFERENCES library_members(id)
+    )
+  `);
+  d.exec('CREATE INDEX IF NOT EXISTS idx_library_signin_links_member ON library_signin_links(member_id, used_at, expires_at)');
+
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS library_sessions (
+      session_hash TEXT PRIMARY KEY,
+      member_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      revoked_at TEXT,
+      user_agent TEXT,
+      FOREIGN KEY (member_id) REFERENCES library_members(id)
+    )
+  `);
+  d.exec('CREATE INDEX IF NOT EXISTS idx_library_sessions_member ON library_sessions(member_id, revoked_at, expires_at)');
+  const librarySessionColumns = d.prepare('PRAGMA table_info(library_sessions)').all() as Array<{ name: string }>;
+  if (!librarySessionColumns.some((column) => column.name === 'soma_verified_at')) {
+    d.exec('ALTER TABLE library_sessions ADD COLUMN soma_verified_at TEXT');
+    d.exec('ALTER TABLE library_sessions ADD COLUMN soma_admin INTEGER NOT NULL DEFAULT 0');
+  }
+
+
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS library_document_meta (
+      slug TEXT PRIMARY KEY,
+      created_by_member_id TEXT,
+      archived_at TEXT,
+      archived_by TEXT,
+      FOREIGN KEY (slug) REFERENCES documents(slug),
+      FOREIGN KEY (created_by_member_id) REFERENCES library_members(id)
+    )
+  `);
+  d.exec('CREATE INDEX IF NOT EXISTS idx_library_document_meta_archived ON library_document_meta(archived_at)');
+
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS library_visits (
+      member_id TEXT NOT NULL,
+      slug TEXT NOT NULL,
+      last_opened_at TEXT,
+      last_left_at TEXT,
+      PRIMARY KEY (member_id, slug),
+      FOREIGN KEY (member_id) REFERENCES library_members(id),
+      FOREIGN KEY (slug) REFERENCES documents(slug)
+    )
+  `);
+  d.exec('CREATE INDEX IF NOT EXISTS idx_library_visits_slug ON library_visits(slug)');
+
+  // Invite person (2026-09-19): a member is either a library member ('library', sees every
+  // document) or an invited person ('invited', sees only the documents they were invited to).
+  const libraryMemberColumns = d.prepare('PRAGMA table_info(library_members)').all() as Array<{ name: string }>;
+  if (!libraryMemberColumns.some((column) => column.name === 'scope')) {
+    d.exec(`ALTER TABLE library_members ADD COLUMN scope TEXT NOT NULL DEFAULT 'library'`);
+  }
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_invites (
+      id TEXT PRIMARY KEY,
+      slug TEXT NOT NULL,
+      member_id TEXT NOT NULL,
+      email TEXT NOT NULL,
+      name TEXT,
+      invited_by_member_id TEXT,
+      invited_by_actor TEXT,
+      created_at TEXT NOT NULL,
+      removed_at TEXT,
+      removed_by TEXT,
+      joined_at TEXT,
+      last_seen_at TEXT,
+      last_sent_at TEXT,
+      send_count INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+  d.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_document_invites_active ON document_invites(slug, email) WHERE removed_at IS NULL');
+  d.exec('CREATE INDEX IF NOT EXISTS idx_document_invites_member ON document_invites(member_id, removed_at)');
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_guest_access (
+      slug TEXT PRIMARY KEY,
+      mode TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT
+    )
+  `);
+  // Cross invitation (2026-09-19): an AI nominates a person (nothing is emailed; an Owner
+  // confirms or declines) and attests to a person's identity (read and comment only, marks
+  // never count). Both always come from the AI's own API call with its key, are rate-limited,
+  // are visible in the people dialog, and carry the AI's own words for the human who reads them.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_nominations (
+      id TEXT PRIMARY KEY,
+      slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      email TEXT NOT NULL,
+      name TEXT,
+      why TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      decided_at TEXT,
+      decided_by TEXT,
+      decline_reason TEXT,
+      invite_id TEXT
+    )
+  `);
+  d.exec('CREATE INDEX IF NOT EXISTS idx_document_nominations_slug ON document_nominations(slug, status)');
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_attestations (
+      id TEXT PRIMARY KEY,
+      slug TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      email TEXT NOT NULL,
+      member_id TEXT,
+      basis TEXT NOT NULL,
+      confidence TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      revoked_at TEXT,
+      revoked_by TEXT
+    )
+  `);
+  d.exec('CREATE INDEX IF NOT EXISTS idx_document_attestations_slug ON document_attestations(slug, revoked_at)');
+  d.exec('CREATE INDEX IF NOT EXISTS idx_document_attestations_email ON document_attestations(email, revoked_at)');
+
+  d.exec(`CREATE TABLE IF NOT EXISTS client_errors (
+    signature TEXT PRIMARY KEY,
+    count INTEGER NOT NULL,
+    first_seen INTEGER NOT NULL,
+    last_seen INTEGER NOT NULL,
+    sample TEXT NOT NULL,
+    forwarded INTEGER NOT NULL DEFAULT 0
+  )`);
+
 }
 
 export function createDocument(
@@ -1531,7 +2157,7 @@ function ensureActiveCollabConnectionsTable(): void {
   activeCollabConnectionsTableInitialized = true;
 }
 
-function getActiveCollabConnectionTtlMs(): number {
+export function getActiveCollabConnectionTtlMs(): number {
   return parsePositiveInt(process.env.ACTIVE_COLLAB_CONNECTION_TTL_MS, DEFAULT_ACTIVE_COLLAB_CONNECTION_TTL_MS);
 }
 
@@ -2317,16 +2943,90 @@ export function createDocumentAccessToken(
   slug: string,
   role: ShareRole,
   providedSecret?: string,
+  agent?: {
+    label: string; requestedBy: string; requestedFrom: string;
+    /** Cross invitation: the verified human who added this AI, and what they said is running it. */
+    sponsorActor?: string | null; sponsorMemberId?: string | null; runtime?: string | null;
+  },
 ): { tokenId: string; role: ShareRole; secret: string; createdAt: string } {
   assertWritesAllowed('createDocumentAccessToken');
   const now = new Date().toISOString();
   const secret = providedSecret ?? randomUUID();
   const tokenId = randomUUID();
   getDb().prepare(`
-    INSERT INTO document_access (token_id, document_slug, role, secret_hash, created_at, revoked_at)
-    VALUES (?, ?, ?, ?, ?, NULL)
-  `).run(tokenId, slug, role, hashSecret(secret), now);
+    INSERT INTO document_access (token_id, document_slug, role, secret_hash, created_at, revoked_at, label, requested_by, requested_from, sponsor_actor, sponsor_member_id, runtime)
+    VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+  `).run(tokenId, slug, role, hashSecret(secret), now, agent?.label ?? null, agent?.requestedBy ?? null, agent?.requestedFrom ?? null,
+    agent?.sponsorActor ?? null, agent?.sponsorMemberId ?? null, agent?.runtime ?? null);
   return { tokenId, role, secret, createdAt: now };
+}
+
+export interface DocumentAgentKey {
+  tokenId: string; label: string; createdAt: string; lastUsedAt: string | null; revokedAt: string | null;
+  /** Cross invitation (2026-09-19): who added this AI, what runs it, and its standing permissions. */
+  sponsorActor: string | null; sponsorMemberId: string | null; runtime: string | null;
+  allowDirectInvite: boolean;
+}
+
+export function listDocumentAgentKeys(slug: string): DocumentAgentKey[] {
+  const rows = getDb().prepare(`
+    SELECT token_id AS tokenId, label, created_at AS createdAt,
+      last_used_at AS lastUsedAt, revoked_at AS revokedAt,
+      sponsor_actor AS sponsorActor, sponsor_member_id AS sponsorMemberId, runtime,
+      allow_direct_invite AS allowDirectInvite
+    FROM document_access WHERE document_slug = ? AND label IS NOT NULL
+    ORDER BY created_at DESC, token_id
+  `).all(slug) as Array<Omit<DocumentAgentKey, 'allowDirectInvite'> & { allowDirectInvite: string | null }>;
+  return rows.map(row => ({ ...row, allowDirectInvite: row.allowDirectInvite === '1' }));
+}
+
+/** Cross invitation: an Owner grants (or withdraws) one AI's standing permission to invite. */
+export function setAgentKeyDirectInvite(slug: string, tokenId: string, allow: boolean): boolean {
+  assertWritesAllowed('setAgentKeyDirectInvite');
+  return getDb().prepare(`
+    UPDATE document_access SET allow_direct_invite = ?
+    WHERE document_slug = ? AND token_id = ? AND label IS NOT NULL AND revoked_at IS NULL
+  `).run(allow ? '1' : null, slug, tokenId).changes > 0;
+}
+
+/** Cross invitation: records the sponsor of a key that predates sponsors (a one-time backfill). */
+export function setAgentKeySponsor(tokenId: string, sponsorActor: string, sponsorMemberId: string | null): void {
+  assertWritesAllowed('setAgentKeySponsor');
+  getDb().prepare(`
+    UPDATE document_access SET sponsor_actor = ?, sponsor_member_id = COALESCE(sponsor_member_id, ?)
+    WHERE token_id = ? AND label IS NOT NULL AND sponsor_actor IS NULL
+  `).run(sponsorActor, sponsorMemberId, tokenId);
+}
+
+export function revokeDocumentAgentKey(slug: string, tokenId: string): boolean {
+  assertWritesAllowed('revokeDocumentAgentKey');
+  const revoked = getDb().prepare(`
+    UPDATE document_access SET revoked_at = COALESCE(revoked_at, ?)
+    WHERE document_slug = ? AND token_id = ? AND label IS NOT NULL
+  `).run(new Date().toISOString(), slug, tokenId).changes > 0;
+  if (revoked) documentAccessEvents.emit('revoked', slug, tokenId);
+  return revoked;
+}
+
+/**
+ * Invite person (2026-09-19): collab sessions opened without a share token carry a pseudo token
+ * id ("invite:<id>" for an invited person, "guest:<mode>" for a guest) so that removing a person
+ * or tightening the guest setting ends them at once, like revoking an agent key. The module that
+ * issues them (server/document-team.ts) registers how to check them.
+ */
+const collabTokenChecks = new Map<string, (slug: string, rest: string) => boolean>();
+
+export function registerCollabTokenCheck(prefix: string, check: (slug: string, rest: string) => boolean): void {
+  collabTokenChecks.set(prefix, check);
+}
+
+export function isDocumentAccessTokenActive(slug: string, tokenId: string): boolean {
+  for (const [prefix, check] of collabTokenChecks) {
+    if (tokenId.startsWith(prefix)) return check(slug, tokenId.slice(prefix.length));
+  }
+  return Boolean(getDb().prepare(`
+    SELECT 1 FROM document_access WHERE document_slug = ? AND token_id = ? AND revoked_at IS NULL
+  `).get(slug, tokenId));
 }
 
 export function revokeDocumentAccessTokens(
@@ -2362,6 +3062,16 @@ export function revokeDocumentAccessTokens(
   return changes;
 }
 
+/**
+ * Cross invitation: server/cross-invitation.ts registers how to tell whether an agent key is
+ * suspended (its sponsor lost access). Kept as a hook so that db.ts imports nothing from it.
+ */
+let agentKeySuspensionCheck: ((slug: string, tokenId: string) => boolean) | null = null;
+
+export function registerAgentKeySuspensionCheck(check: (slug: string, tokenId: string) => boolean): void {
+  agentKeySuspensionCheck = check;
+}
+
 export type DocumentAccessResolution = {
   role: ShareRole;
   tokenId: string | null;
@@ -2380,12 +3090,20 @@ export function resolveDocumentAccess(slug: string, presentedSecret: string): Do
     return { role: 'owner_bot', tokenId: null, source: 'owner_secret_legacy' };
   }
   const row = getDb().prepare(`
-    SELECT token_id, role
+    SELECT token_id, role, label
     FROM document_access
     WHERE document_slug = ? AND secret_hash = ? AND revoked_at IS NULL
     LIMIT 1
-  `).get(slug, hashed) as { token_id?: string; role?: ShareRole } | undefined;
+  `).get(slug, hashed) as { token_id?: string; role?: ShareRole; label?: string | null } | undefined;
   if (!row?.role) return null;
+  if (row.label != null) {
+    // Cross invitation (2026-09-19): an AI whose sponsor lost access to the document is suspended
+    // with them. The key is not revoked (a re-invited sponsor brings their AI back), but it opens
+    // nothing while the suspension stands.
+    if (row.token_id && agentKeySuspensionCheck?.(slug, row.token_id)) return null;
+    getDb().prepare('UPDATE document_access SET last_used_at = ? WHERE token_id = ?')
+      .run(new Date().toISOString(), row.token_id);
+  }
   return {
     role: row.role,
     tokenId: row.token_id ?? null,
@@ -2926,31 +3644,29 @@ export function removeResurrectedMarksFromPayload(
 
   const placeholders = markIds.map(() => '?').join(', ');
   const rows = getDb().prepare(`
-    SELECT mark_id
+    SELECT mark_id, status
     FROM ${MARK_TOMBSTONES_TABLE}
     WHERE document_slug = ?
       AND mark_id IN (${placeholders})
-  `).all(slug, ...markIds) as Array<{ mark_id: string }>;
+      AND expires_at > ?
+  `).all(slug, ...markIds, new Date().toISOString()) as Array<{
+    mark_id: string;
+    status: MarkTombstoneRow['status'];
+  }>;
   if (rows.length === 0) return { marks, removed: [] };
 
-  const tombstoned = new Set(rows.map((row) => row.mark_id));
   const next: Record<string, unknown> = { ...marks };
   const removed: string[] = [];
-  for (const markId of tombstoned) {
-    const raw = next[markId];
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-      delete next[markId];
-      removed.push(markId);
-      continue;
-    }
-    const value = raw as Record<string, unknown>;
-    const status = typeof value.status === 'string' ? value.status : '';
-    const resolved = value.resolved === true;
-    const isTerminal = resolved || status === 'accepted' || status === 'rejected';
-    if (!isTerminal) {
-      delete next[markId];
-      removed.push(markId);
-    }
+  for (const row of rows) {
+    const value = next[row.mark_id];
+    const isResolvedComment = row.status === 'resolved'
+      && value
+      && typeof value === 'object'
+      && !Array.isArray(value)
+      && (value as Record<string, unknown>).resolved === true;
+    if (isResolvedComment) continue;
+    delete next[row.mark_id];
+    removed.push(row.mark_id);
   }
   return { marks: next, removed };
 }
@@ -3904,4 +4620,233 @@ export function updateDocumentOwnerId(slug: string, ownerId: string): boolean {
     WHERE slug = ? AND (owner_id IS NULL OR owner_id = '')
   `).run(ownerId, now, slug);
   return result.changes > 0;
+}
+
+
+// ============================================================================
+// Proof Documents Step 1: line marks
+// ============================================================================
+
+export interface DocumentLineMarkRow {
+  id: string;
+  document_slug: string;
+  by_actor: string;
+  actor_key: string;
+  status: string;
+  reason: string | null;
+  line_hash: string;
+  line_occurrence: number;
+  line_ordinal: number;
+  line_kind: string;
+  line_excerpt: string;
+  created_at: string;
+  updated_at: string;
+  /** Step B3b (null on older rows). */
+  via?: string | null;
+  line_text?: string | null;
+  /** Step B4c: an AI's rationale (null on older rows). */
+  why?: string | null;
+  /** Proxy marks step: what the marker checked; a ratified proxy's origin (JSON). */
+  evidence?: string | null;
+  proxy_json?: string | null;
+}
+
+export function listDocumentLineMarks(slug: string): DocumentLineMarkRow[] {
+  return getDb().prepare(`
+    SELECT * FROM document_line_marks WHERE document_slug = ? ORDER BY updated_at ASC, id ASC
+  `).all(slug) as DocumentLineMarkRow[];
+}
+
+/**
+ * Replace the given actor's marks (ids in replaceIds, plus any on the same anchor) with one new
+ * mark, or only delete them when next is null. Returns the ids removed.
+ */
+export function replaceDocumentLineMark(input: {
+  slug: string;
+  actorKey: string;
+  replaceIds: string[];
+  /** Further anchors whose marks by this actor are replaced (a line's text before an edit). */
+  replaceAnchors?: Array<{ hash: string; occurrence: number }>;
+  anchor: { hash: string; occurrence: number };
+  next: Omit<DocumentLineMarkRow, 'document_slug' | 'actor_key' | 'created_at' | 'updated_at'> & { at: string; created_at?: string } | null;
+}): string[] {
+  assertWritesAllowed('replaceDocumentLineMark');
+  const d = getDb();
+  const tx = d.transaction(() => {
+    const removed: string[] = [];
+    const byAnchor = d.prepare(`
+      SELECT id FROM document_line_marks
+      WHERE document_slug = ? AND actor_key = ? AND line_hash = ? AND line_occurrence = ?
+    `);
+    const ids = new Set(input.replaceIds);
+    for (const anchor of [input.anchor, ...(input.replaceAnchors ?? [])]) {
+      for (const row of byAnchor.all(input.slug, input.actorKey, anchor.hash, anchor.occurrence) as Array<{ id: string }>) ids.add(row.id);
+    }
+    const del = d.prepare(`DELETE FROM document_line_marks WHERE document_slug = ? AND actor_key = ? AND id = ?`);
+    for (const id of ids) {
+      if (del.run(input.slug, input.actorKey, id).changes > 0) removed.push(id);
+    }
+    if (input.next) {
+      const n = input.next;
+      d.prepare(`
+        INSERT INTO document_line_marks (
+          id, document_slug, by_actor, actor_key, status, reason, line_hash, line_occurrence,
+          line_ordinal, line_kind, line_excerpt, created_at, updated_at, via, line_text, why, evidence, proxy_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(n.id, input.slug, n.by_actor, input.actorKey, n.status, n.reason, n.line_hash, n.line_occurrence,
+        n.line_ordinal, n.line_kind, n.line_excerpt, n.created_at ?? n.at, n.at, n.via ?? null, n.line_text ?? null, n.why ?? null,
+        n.evidence ?? null, n.proxy_json ?? null);
+    }
+    return removed;
+  });
+  return tx();
+}
+
+
+// ============================================================================
+// Proof Documents Step B3c: aligned snapshots
+// ============================================================================
+
+export interface DocumentAlignedSnapshotRow {
+  id: string;
+  document_slug: string;
+  created_at: string;
+  fingerprint: string;
+  markdown: string;
+  payload: string;
+}
+
+export function latestAlignedSnapshot(slug: string): DocumentAlignedSnapshotRow | undefined {
+  return getDb().prepare(`
+    SELECT * FROM document_aligned_snapshots WHERE document_slug = ? ORDER BY created_at DESC, id DESC LIMIT 1
+  `).get(slug) as DocumentAlignedSnapshotRow | undefined;
+}
+
+export function listAlignedSnapshots(slug: string, limit = 50): DocumentAlignedSnapshotRow[] {
+  return getDb().prepare(`
+    SELECT * FROM document_aligned_snapshots WHERE document_slug = ? ORDER BY created_at DESC, id DESC LIMIT ?
+  `).all(slug, Math.max(1, Math.min(limit, 500))) as DocumentAlignedSnapshotRow[];
+}
+
+export function getAlignedSnapshot(slug: string, id: string): DocumentAlignedSnapshotRow | undefined {
+  return getDb().prepare(`SELECT * FROM document_aligned_snapshots WHERE document_slug = ? AND id = ?`)
+    .get(slug, id) as DocumentAlignedSnapshotRow | undefined;
+}
+
+/** Inserts a snapshot and keeps only the newest `keep` for the document. */
+export function insertAlignedSnapshot(row: DocumentAlignedSnapshotRow, keep: number): void {
+  assertWritesAllowed('insertAlignedSnapshot');
+  const d = getDb();
+  d.transaction(() => {
+    d.prepare(`
+      INSERT INTO document_aligned_snapshots (id, document_slug, created_at, fingerprint, markdown, payload)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(row.id, row.document_slug, row.created_at, row.fingerprint, row.markdown, row.payload);
+    d.prepare(`
+      DELETE FROM document_aligned_snapshots WHERE document_slug = ? AND id NOT IN (
+        SELECT id FROM document_aligned_snapshots WHERE document_slug = ? ORDER BY created_at DESC, id DESC LIMIT ?
+      )
+    `).run(row.document_slug, row.document_slug, Math.max(1, keep));
+  })();
+}
+
+// ============================================================================
+// Proof Documents Step B3: asks
+// ============================================================================
+
+export interface DocumentAskRow {
+  id: string;
+  document_slug: string;
+  by_actor: string;
+  to_json: string;
+  recommend: string;
+  if_yes: string | null;
+  line_hash: string;
+  line_occurrence: number;
+  line_ordinal: number;
+  line_kind: string;
+  line_excerpt: string;
+  created_at: string;
+  asked_at: string;
+  withdrawn_at: string | null;
+}
+
+export interface DocumentAskAnswerRow {
+  id: string;
+  ask_id: string;
+  document_slug: string;
+  by_actor: string;
+  choice: string;
+  words: string;
+  line_hash: string;
+  created_at: string;
+}
+
+export function listDocumentAsks(slug: string, options: { includeWithdrawn?: boolean } = {}): DocumentAskRow[] {
+  return getDb().prepare(`
+    SELECT * FROM document_asks WHERE document_slug = ? ${options.includeWithdrawn ? '' : 'AND withdrawn_at IS NULL'}
+    ORDER BY created_at ASC, id ASC
+  `).all(slug) as DocumentAskRow[];
+}
+
+export function getDocumentAsk(slug: string, id: string): DocumentAskRow | undefined {
+  return getDb().prepare(`SELECT * FROM document_asks WHERE document_slug = ? AND id = ?`).get(slug, id) as DocumentAskRow | undefined;
+}
+
+export function listDocumentAskAnswers(slug: string): DocumentAskAnswerRow[] {
+  return getDb().prepare(`
+    SELECT * FROM document_ask_answers WHERE document_slug = ? ORDER BY created_at ASC, id ASC
+  `).all(slug) as DocumentAskAnswerRow[];
+}
+
+export function insertDocumentAsk(row: DocumentAskRow): void {
+  assertWritesAllowed('insertDocumentAsk');
+  getDb().prepare(`
+    INSERT INTO document_asks (
+      id, document_slug, by_actor, to_json, recommend, if_yes, line_hash, line_occurrence, line_ordinal,
+      line_kind, line_excerpt, created_at, asked_at, withdrawn_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(row.id, row.document_slug, row.by_actor, row.to_json, row.recommend, row.if_yes, row.line_hash, row.line_occurrence,
+    row.line_ordinal, row.line_kind, row.line_excerpt, row.created_at, row.asked_at, row.withdrawn_at);
+}
+
+export function insertDocumentAskAnswer(row: DocumentAskAnswerRow): void {
+  assertWritesAllowed('insertDocumentAskAnswer');
+  getDb().prepare(`
+    INSERT INTO document_ask_answers (id, ask_id, document_slug, by_actor, choice, words, line_hash, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(row.id, row.ask_id, row.document_slug, row.by_actor, row.choice, row.words, row.line_hash, row.created_at);
+}
+
+/**
+ * Undo of an answer (Mike, 2026-09-19: "Undo is needed for every user change"). Removes one
+ * answer, by id, only when it belongs to `by_actor` — the route checks that it is the newest one.
+ */
+export function deleteDocumentAskAnswer(slug: string, id: string, byActor: string): number {
+  assertWritesAllowed('deleteDocumentAskAnswer');
+  return getDb().prepare(`
+    DELETE FROM document_ask_answers WHERE document_slug = ? AND id = ? AND by_actor = ?
+  `).run(slug, id, byActor).changes;
+}
+
+/** The ask follows its line: store the line's current anchor (after an edit or a move). */
+export function updateDocumentAskAnchor(slug: string, id: string, anchor: { hash: string; occurrence: number; ordinal: number; kind: string; excerpt: string }): void {
+  assertWritesAllowed('updateDocumentAskAnchor');
+  getDb().prepare(`
+    UPDATE document_asks SET line_hash = ?, line_occurrence = ?, line_ordinal = ?, line_kind = ?, line_excerpt = ?
+    WHERE document_slug = ? AND id = ?
+  `).run(anchor.hash, anchor.occurrence, anchor.ordinal, anchor.kind, anchor.excerpt, slug, id);
+}
+
+export function updateDocumentAskFields(slug: string, id: string, fields: { asked_at?: string; withdrawn_at?: string | null; recommend?: string; if_yes?: string | null; to_json?: string }): void {
+  assertWritesAllowed('updateDocumentAskFields');
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  for (const [key, value] of Object.entries(fields)) {
+    if (value === undefined) continue;
+    sets.push(`${key} = ?`);
+    values.push(value);
+  }
+  if (sets.length === 0) return;
+  getDb().prepare(`UPDATE document_asks SET ${sets.join(', ')} WHERE document_slug = ? AND id = ?`).run(...values, slug, id);
 }

@@ -1,3 +1,4 @@
+import { CURRENT_COLLAB_CLIENT } from '../shared/collab-version';
 import { randomUUID } from 'node:crypto';
 import { unlinkSync } from 'node:fs';
 import os from 'node:os';
@@ -21,7 +22,7 @@ async function run(): Promise<void> {
   try {
     db.createDocument(slug, '# Session lease\n\nBody.', {}, 'Session lease');
 
-    const session = collab.buildCollabSession(slug, 'editor', {
+    const session = collab.buildCollabSession(slug, 'editor', { client: CURRENT_COLLAB_CLIENT,
       tokenId: 'access-token-1',
       wsUrlBase: 'ws://127.0.0.1:4011/ws',
     });

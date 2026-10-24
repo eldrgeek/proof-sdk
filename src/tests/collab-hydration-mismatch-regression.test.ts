@@ -9,27 +9,27 @@ function run(): void {
   const source = readFileSync(path.resolve(process.cwd(), 'src/editor/index.ts'), 'utf8');
 
   assert(
-    source.includes('yXmlFragmentToProseMirrorRootNode'),
-    'Expected collab hydration guard to compare editor content against the live Yjs fragment',
+    source.includes('const ystate = (ySyncPluginKey.getState(view.state) as any) ?? null;')
+      && source.includes('bindingReady = ystate?.type === fragment')
+      && source.includes('binding?.prosemirrorView === view')
+      && source.includes('mapping instanceof Map'),
+    'Expected collab hydration to wait for the active y-prosemirror binding and mapping',
   );
   assert(
-    source.includes('private normalizeCollabHydrationText(text: string): string {')
-      && source.includes('private getEditorHydrationText(): string | null {')
-      && source.includes('private getYjsFragmentHydrationText(fragment: unknown): string | null {'),
-    'Expected explicit collab hydration text helpers for editor + fragment comparison',
+    !source.includes('binding._forceRerender()')
+      && !source.includes("typeof binding._forceRerender === 'function'"),
+    'Expected hydration checks never to force a whole-document re-render',
   );
   assert(
-    source.includes('const fragmentText = this.getYjsFragmentHydrationText(fragment);')
-      && source.includes('const editorText = this.getEditorHydrationText();')
-      && source.includes('return editorText === fragmentText;'),
-    'Expected collab hydration to require matching editor + fragment text before enabling editing',
+    !source.includes('return editorText === fragmentText;'),
+    'Expected transient editor/Yjs text differences not to control the live edit gate',
   );
   assert(
-    !source.includes("if (this.isYjsFragmentStructurallyEmpty(fragment)) return true;\n    return !this.isEditorDocStructurallyEmpty();"),
-    'Did not expect the legacy non-empty editor doc shortcut to remain in collab hydration',
+    source.includes('if (this.hasCompletedInitialCollabHydration || isCollabHydratedForEditing)'),
+    'Expected hydration polling to stop once the binding is ready without repairing content',
   );
 
-  console.log('✓ collab hydration mismatch guard checks');
+  console.log('✓ collab hydration waits for binding readiness without forcing re-renders');
 }
 
 try {

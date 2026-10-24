@@ -50,7 +50,7 @@ function mergeRanges(ranges: PendingRange[]): PendingRange[] {
   return merged;
 }
 
-export const authoredTrackerPlugin = $prose(() => {
+export function createAuthoredTrackerPlugin(): Plugin {
   let pendingHumanRanges: PendingRange[] = [];
 
   return new Plugin({
@@ -100,7 +100,9 @@ export const authoredTrackerPlugin = $prose(() => {
       }
 
       const docChanged = transactions.some(tr => tr.docChanged);
-      const skipAuthored = transactions.some(tr => tr.getMeta('ai-authored') || tr.getMeta('document-load'));
+      const skipAuthored = transactions.some(
+        tr => tr.getMeta('ai-authored') || tr.getMeta('document-load') || tr.getMeta('suggestions-wrapped')
+      );
 
       if (!docChanged || skipAuthored) {
         pendingHumanRanges = [];
@@ -126,6 +128,8 @@ export const authoredTrackerPlugin = $prose(() => {
       return tr.setMeta(marksPluginKey, { type: 'INTERNAL' });
     },
   });
-});
+}
+
+export const authoredTrackerPlugin = $prose(() => createAuthoredTrackerPlugin());
 
 export default authoredTrackerPlugin;

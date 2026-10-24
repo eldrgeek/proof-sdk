@@ -1,3 +1,4 @@
+import { CURRENT_COLLAB_CLIENT } from '../shared/collab-version';
 import { unlinkSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -72,7 +73,7 @@ async function run(): Promise<void> {
     );
     assert(instance.documents?.has?.(slug) === false, 'Expected canonical state read to evict stale in-memory doc after epoch bump');
 
-    const session = collab.buildCollabSession(slug, 'editor');
+    const session = collab.buildCollabSession(slug, 'editor', { client: CURRENT_COLLAB_CLIENT });
     assert(Boolean(session?.token), 'Expected collab session after access epoch bump');
     assert(closeConnectionsSawRegisteredDoc !== false, 'Expected epoch eviction to close stale sockets before dropping the Hocuspocus room');
     assert(instance.documents?.has?.(slug) === false, 'Expected collab session creation to keep stale in-memory doc evicted after epoch bump');

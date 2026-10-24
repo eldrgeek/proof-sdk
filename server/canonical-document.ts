@@ -1,7 +1,12 @@
 import { createHash, randomUUID } from 'crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import * as Y from 'yjs';
-import { prosemirrorToYXmlFragment, yXmlFragmentToProseMirrorRootNode } from 'y-prosemirror';
+import {
+  initProseMirrorDoc,
+  prosemirrorToYXmlFragment,
+  updateYFragment,
+  yXmlFragmentToProseMirrorRootNode,
+} from 'y-prosemirror';
 import type { Node as ProseMirrorNode, Schema } from '@milkdown/prose/model';
 import {
   addDocumentEvent,
@@ -53,6 +58,7 @@ import {
 import { getHeadlessMilkdownParser, parseMarkdownWithHtmlFallback, serializeMarkdown } from './milkdown-headless.js';
 import {
   buildProofSpanReplacementMap,
+  stripAllProofSpanTags,
   stripProofSpanTags,
   stripAllProofSpanTagsWithReplacements,
 } from './proof-span-strip.js';
@@ -67,12 +73,14 @@ import {
   summarizeDocumentIntegrity,
 } from './document-integrity.js';
 import { recordProjectionRepair } from './metrics.js';
+import { MARK_POSITION_REMAP_POLICY, remapStoredMarkPositions } from './mark-position-remap.js';
 import { isHostedRewriteEnvironment } from './rewrite-policy.js';
 import { refreshSnapshotForSlug } from './snapshot.js';
 import { pauseDocumentAndPropagate } from './share-state.js';
 import { getActiveCollabClientBreakdown, getActiveCollabClientCount } from './ws.js';
 import { extractMarks } from '../src/formats/marks.js';
 import { restoreStandaloneBlankParagraphLines } from '../src/editor/explicit-blank-paragraphs.js';
+import { stripMarkdownVisibleText } from '../src/shared/anchor-target-text.js';
 
 type PersistedCanonicalState = {
   ydoc: Y.Doc;
@@ -91,7 +99,24 @@ type CanonicalMutationArgs = {
   baseUpdatedAt?: string | null;
   strictLiveDoc?: boolean;
   guardPathologicalGrowth?: boolean;
+  resolvedSuggestionId?: string;
+  /** Defaults to CANONICAL_FRAGMENT_POLICY.incrementalByDefault. */
+  incrementalFragmentUpdate?: boolean;
 };
+
+/**
+ * Caret stability (Mike, 2026-09-19: his typing "moved the view away" and landed as scattered
+ * fragments while agents wrote marks). A canonical mutation used to delete and re-insert the whole
+ * live Yjs fragment, even when only marks changed. That invalidates every connected client's
+ * relative positions: y-prosemirror could not restore the caret and left it at the end of the
+ * document, and keystrokes in flight landed in deleted paragraphs (lost) or at the new caret.
+ * The incremental write (y-prosemirror updateYFragment) keeps every unchanged Yjs node and only
+ * diffs what changed, so carets and in-flight typing elsewhere survive. A caller can still pass
+ * incrementalFragmentUpdate: false to force a full replace.
+ */
+export const CANONICAL_FRAGMENT_POLICY = {
+  incrementalByDefault: true,
+} as const;
 
 type CanonicalMutationFailure = {
   ok: false;
@@ -104,6 +129,12 @@ type CanonicalMutationFailure = {
 type CanonicalMutationSuccess = {
   ok: true;
   document: DocumentRow;
+  /**
+   * The marks as committed. They can differ from args.nextMarks: stored positions are remapped
+   * through the text change (MARK_POSITION_REMAP_POLICY). Post-commit syncs and verifications must
+   * use these, or they write the stale positions back into the live document.
+   */
+  marks: Record<string, unknown>;
   yStateVersion: number;
   activeCollabClients: number;
 };
@@ -132,6 +163,26 @@ const HOSTED_LIVE_DOC_GRACE_MS = parsePositiveInt(process.env.HOSTED_LIVE_DOC_GR
 const HOSTED_LIVE_DOC_GRACE_POLL_MS = parsePositiveInt(process.env.HOSTED_LIVE_DOC_GRACE_POLL_MS, 100);
 const DEFAULT_CANONICAL_COMPACTION_MAX_BYTES = 500_000;
 const onDemandProjectionRecoveryInFlight = new Map<string, Promise<CanonicalReadableDocument | DocumentRow | undefined>>();
+const literalProofMarkupPatterns = [
+  /\bdata-proof\s*=/gi,
+  /\bdata-id\s*=/gi,
+  /\bdata-by\s*=/gi,
+  /\bdata-kind\s*=/gi,
+] as const;
+
+function countLiteralProofMarkupSignals(markdown: string): number[] {
+  const plainText = stripMarkdownVisibleText(stripAllProofSpanTags(markdown));
+  return literalProofMarkupPatterns.map((pattern) => plainText.match(pattern)?.length ?? 0);
+}
+
+export function hasNewLiteralProofSpanMarkup(
+  baselineMarkdown: string,
+  candidateMarkdown: string,
+): boolean {
+  const baselineCounts = countLiteralProofMarkupSignals(baselineMarkdown);
+  const candidateCounts = countLiteralProofMarkupSignals(candidateMarkdown);
+  return candidateCounts.some((count, index) => count > (baselineCounts[index] ?? 0));
+}
 
 type RunawayCanonicalWriteGuardResult = {
   blocked: true;
@@ -147,11 +198,28 @@ type RunawayCanonicalWriteGuardResult = {
 let beforeCanonicalApplyHookForTests:
   | null
   | ((args: { slug: string; source: string; hasBaseToken: boolean; liveRequired: boolean }) => Promise<void> | void) = null;
+let beforeCanonicalCommitHookForTests:
+  | null
+  | ((args: { slug: string; source: string; hasBaseToken: boolean; liveRequired: boolean }) => Promise<void> | void) = null;
 
 export function __setBeforeCanonicalApplyHookForTests(
   hook: typeof beforeCanonicalApplyHookForTests,
 ): void {
   beforeCanonicalApplyHookForTests = hook;
+}
+
+export function __setBeforeCanonicalCommitHookForTests(
+  hook: typeof beforeCanonicalCommitHookForTests,
+): void {
+  beforeCanonicalCommitHookForTests = hook;
+}
+
+function sameStateVector(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.byteLength !== b.byteLength) return false;
+  for (let index = 0; index < a.byteLength; index += 1) {
+    if (a[index] !== b[index]) return false;
+  }
+  return true;
 }
 
 function evaluateRunawayCanonicalWriteGuard(
@@ -349,8 +417,7 @@ function normalizeStoredMarkdownSnapshot(markdown: string): string {
 }
 
 function shouldPreserveRichMarkdownSnapshot(markdown: string): boolean {
-  return /<br\s*\/?>/i.test(markdown)
-    || /data-proof\s*=/.test(markdown);
+  return /<br\s*\/?>/i.test(markdown);
 }
 
 function normalizeFragmentPlainText(input: string): string {
@@ -478,6 +545,19 @@ function replaceYXmlFragment(fragment: Y.XmlFragment, pmDoc: unknown): void {
     fragment.delete(0, fragment.length);
   }
   prosemirrorToYXmlFragment(pmDoc as any, fragment as any);
+}
+
+function updateYXmlFragment(fragment: Y.XmlFragment, pmDoc: unknown): void {
+  // Seed update metadata from the current fragment so the incremental diff can
+  // match existing Y.Xml nodes to their ProseMirror counterparts.
+  const nextDoc = pmDoc as ProseMirrorNode;
+  const { meta } = initProseMirrorDoc(fragment as any, nextDoc.type.schema as any);
+  updateYFragment(
+    fragment.doc as Y.Doc,
+    fragment as any,
+    nextDoc as any,
+    meta as any,
+  );
 }
 
 function seedFragmentFromLegacyMarkdownFallback(ydoc: Y.Doc, markdown: string): void {
@@ -670,6 +750,22 @@ function getFragmentTextHashFromDoc(ydoc: Y.Doc, schema: Schema): string | null 
   }
 }
 
+function fragmentContainsSuggestion(
+  root: ProseMirrorNode,
+  suggestionId: string,
+): boolean {
+  let found = false;
+  root.descendants((node) => {
+    if (found || !node.isText) return !found;
+    found = node.marks.some((mark) => (
+      mark.type.name === 'proofSuggestion'
+      && mark.attrs.id === suggestionId
+    ));
+    return !found;
+  });
+  return found;
+}
+
 function canonicalTransactionOrigin(source: string): string {
   const normalized = typeof source === 'string' && source.trim() ? source.trim() : 'unknown';
   return `canonical-${normalized}`;
@@ -747,6 +843,67 @@ export async function deriveProjectionFromCanonicalDoc(
     markdown: preferEquivalentRichMarkdown(derivedMarkdown, authoritativeMarkdown),
     marks: encodeMarksMap(ydoc.getMap('marks')),
   };
+}
+
+async function deriveMarkdownFromCanonicalFragment(
+  ydoc: Y.Doc,
+  schema: Schema,
+): Promise<string | null> {
+  try {
+    const root = yXmlFragmentToProseMirrorRootNode(
+      ydoc.getXmlFragment('prosemirror') as any,
+      schema as any,
+    ) as ProseMirrorNode;
+    return stripEphemeralCollabSpans(await serializeMarkdown(root));
+  } catch {
+    return null;
+  }
+}
+
+type StoredMarkRecord = ReturnType<typeof synchronizeAuthoredMarks>[string];
+
+function canonicalFragmentRoot(ydoc: Y.Doc, schema: Schema): ProseMirrorNode | null {
+  try {
+    const fragment = ydoc.getXmlFragment('prosemirror');
+    if (fragment.length === 0) return null;
+    return yXmlFragmentToProseMirrorRootNode(fragment as any, schema as any) as ProseMirrorNode;
+  } catch {
+    return null;
+  }
+}
+
+function remapMarksThroughCanonicalChange(args: {
+  slug: string;
+  source: string;
+  parser: { schema: unknown };
+  beforeDoc: Y.Doc;
+  afterDoc: Y.Doc;
+  authoritativeMarkdown: string;
+  previousMarks: Record<string, unknown>;
+  nextMarks: Record<string, StoredMarkRecord>;
+}): Record<string, StoredMarkRecord> {
+  if (!MARK_POSITION_REMAP_POLICY.enabled) return args.nextMarks;
+  try {
+    const schema = args.parser.schema as Schema;
+    const oldDoc = canonicalFragmentRoot(args.beforeDoc, schema)
+      ?? (parseMarkdownWithHtmlFallback(args.parser as any, args.authoritativeMarkdown).doc as ProseMirrorNode | null);
+    const newDoc = canonicalFragmentRoot(args.afterDoc, schema);
+    if (!oldDoc || !newDoc) return args.nextMarks;
+    const result = remapStoredMarkPositions({
+      previousMarks: args.previousMarks,
+      nextMarks: args.nextMarks,
+      oldDoc,
+      newDoc,
+    });
+    return result.marks as Record<string, StoredMarkRecord>;
+  } catch (error) {
+    console.warn('[canonical] mark position remap failed; marks keep their stored positions', {
+      slug: args.slug,
+      source: args.source,
+      error: String(error),
+    });
+    return args.nextMarks;
+  }
 }
 
 export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Promise<CanonicalMutationResult> {
@@ -933,6 +1090,7 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
   const ydoc = handle.ydoc;
   const currentMutationBase = initialBaseResolution.base;
   const revalidateLiveBaseBeforeApply = liveRequired;
+  let validatedLiveStateVector: Uint8Array | null = null;
   if (beforeCanonicalApplyHookForTests) {
     await beforeCanonicalApplyHookForTests({
       slug: args.slug,
@@ -942,6 +1100,7 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
     });
   }
   if (revalidateLiveBaseBeforeApply) {
+    const stateVectorBeforeRevalidation = Y.encodeStateVector(ydoc);
     const currentBaseResolution = await resolveAuthoritativeMutationBase(args.slug, {
       liveRequired,
     });
@@ -967,7 +1126,11 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
     }
     const currentBaseToken = currentBaseResolution.base.token;
     const expectedBaseToken = baseToken ?? currentMutationBase.token;
-    if (currentBaseToken !== expectedBaseToken) {
+    const stateVectorAfterRevalidation = Y.encodeStateVector(ydoc);
+    if (
+      currentBaseToken !== expectedBaseToken
+      || !sameStateVector(stateVectorBeforeRevalidation, stateVectorAfterRevalidation)
+    ) {
       await handle.cleanup?.();
       return {
         ok: false,
@@ -977,11 +1140,13 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
         retryWithState: `/api/agent/${args.slug}/state`,
       };
     }
+    validatedLiveStateVector = stateVectorAfterRevalidation;
   }
   const nextMarksBase = hasExplicitNextMarks ? nextMarks : authoritativeMarks;
   const authoredMarks = extractAuthoredMarksFromDoc(parsedNext.doc as ProseMirrorNode, parser.schema as Schema);
-  const effectiveNextMarks = synchronizeAuthoredMarks(nextMarksBase, authoredMarks);
-  const authoritativeNextMarkdown = shouldPreserveRichMarkdownSnapshot(sanitizedMarkdown)
+  let effectiveNextMarks = synchronizeAuthoredMarks(nextMarksBase, authoredMarks);
+  const preserveRichMarkdownSnapshot = shouldPreserveRichMarkdownSnapshot(sanitizedMarkdown);
+  let authoritativeNextMarkdown = preserveRichMarkdownSnapshot
     ? normalizeStoredMarkdownSnapshot(sanitizedMarkdown)
     : serializedNextMarkdown;
 
@@ -1021,6 +1186,78 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
         structuralBaselineMarkdown = authoritativeMarkdown;
       }
     }
+
+    let preserveLocallyFinalizedFragment = false;
+    const resolvedSuggestionId = typeof args.resolvedSuggestionId === 'string'
+      ? args.resolvedSuggestionId.trim()
+      : '';
+    if (resolvedSuggestionId) {
+      try {
+        const currentRoot = yXmlFragmentToProseMirrorRootNode(
+          ydoc.getXmlFragment('prosemirror') as any,
+          parser.schema as any,
+        ) as ProseMirrorNode;
+        preserveLocallyFinalizedFragment = (
+          !fragmentContainsSuggestion(currentRoot, resolvedSuggestionId)
+          && normalizeFragmentPlainText(currentRoot.textContent)
+            === normalizeFragmentPlainText(parsedNext.doc.textContent)
+        );
+      } catch {
+        preserveLocallyFinalizedFragment = false;
+      }
+    }
+
+    // Build the durable candidate from the loaded document, not from an isolated
+    // parse round trip. A live fragment can already contain local-first edits,
+    // and applying the server mutation onto that Yjs history can serialize
+    // differently (notably markdown escapes around accepted authored text).
+    // The row, markdown mirror, and persisted update must all use this candidate
+    // fragment's own serialization.
+    const persistedCandidateDoc = cloneYDocWithHistory(ydoc);
+    persistedCandidateDoc.transact(() => {
+      if (!preserveLocallyFinalizedFragment) {
+        const fragment = persistedCandidateDoc.getXmlFragment('prosemirror');
+        if (args.incrementalFragmentUpdate ?? CANONICAL_FRAGMENT_POLICY.incrementalByDefault) {
+          updateYXmlFragment(fragment, parsedNext.doc);
+        } else {
+          replaceYXmlFragment(fragment, parsedNext.doc);
+        }
+      }
+      applyMarksMapDiff(persistedCandidateDoc.getMap('marks'), effectiveNextMarks);
+    }, canonicalTransactionOrigin(args.source));
+    // Stored mark positions follow the text: map every mark the caller did not re-anchor through
+    // this change (server/mark-position-remap.ts). Must run before the marks are written below.
+    effectiveNextMarks = remapMarksThroughCanonicalChange({
+      slug: args.slug,
+      source: args.source,
+      parser,
+      beforeDoc: ydoc,
+      afterDoc: persistedCandidateDoc,
+      authoritativeMarkdown,
+      previousMarks: authoritativeMarks,
+      nextMarks: effectiveNextMarks,
+    });
+    if (!preserveRichMarkdownSnapshot) {
+      authoritativeNextMarkdown = (
+        await deriveMarkdownFromCanonicalFragment(persistedCandidateDoc, parser.schema)
+      ) ?? serializedNextMarkdown;
+    }
+    if (hasNewLiteralProofSpanMarkup(structuralBaselineMarkdown, authoritativeNextMarkdown)) {
+      console.error('[canonical] blocked proof span markup from entering visible text', {
+        slug: args.slug,
+        source: args.source,
+      });
+      return {
+        ok: false,
+        status: 422,
+        code: 'PROOF_MARKUP_TEXT_BLOCKED',
+        error: 'Mutation blocked because Proof span markup would become visible document text',
+      };
+    }
+    persistedCandidateDoc.transact(() => {
+      applyYTextDiff(persistedCandidateDoc.getText('markdown'), authoritativeNextMarkdown);
+      applyMarksMapDiff(persistedCandidateDoc.getMap('marks'), effectiveNextMarks);
+    }, canonicalTransactionOrigin(args.source));
 
     if (args.guardPathologicalGrowth !== false) {
       const guardBaselineMarkdown = stripAllProofSpanTagsWithReplacements(
@@ -1103,13 +1340,6 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
       }
     }
 
-    const persistedCandidateDoc = cloneYDocWithHistory(persistedState.ydoc);
-    persistedCandidateDoc.transact(() => {
-      replaceYXmlFragment(persistedCandidateDoc.getXmlFragment('prosemirror'), parsedNext.doc);
-      applyYTextDiff(persistedCandidateDoc.getText('markdown'), authoritativeNextMarkdown);
-      applyMarksMapDiff(persistedCandidateDoc.getMap('marks'), effectiveNextMarks);
-    }, canonicalTransactionOrigin(args.source));
-
     const deltaUpdate = Y.encodeStateAsUpdate(
       persistedCandidateDoc,
       Y.encodeStateVector(persistedState.ydoc),
@@ -1172,8 +1402,37 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
     let nextRevision = doc.revision + 1;
     let nextYStateVersion = Math.max(doc.y_state_version, persistedState.yStateVersion);
 
+    if (beforeCanonicalCommitHookForTests) {
+      await beforeCanonicalCommitHookForTests({
+        slug: args.slug,
+        source: args.source,
+        hasBaseToken: Boolean(baseToken),
+        liveRequired,
+      });
+    }
+    if (
+      validatedLiveStateVector
+      && !sameStateVector(Y.encodeStateVector(ydoc), validatedLiveStateVector)
+    ) {
+      return {
+        ok: false,
+        status: 409,
+        code: 'STALE_BASE',
+        error: baseToken ? 'Document changed since baseToken' : 'Document changed during mutation',
+        retryWithState: `/api/agent/${args.slug}/state`,
+      };
+    }
+    // Keep this check adjacent to the transaction: every candidate derivation above
+    // can await, but no client update may land between this check and the live write.
     ydoc.transact(() => {
-      replaceYXmlFragment(ydoc.getXmlFragment('prosemirror'), parsedNext.doc);
+      if (!preserveLocallyFinalizedFragment) {
+        const fragment = ydoc.getXmlFragment('prosemirror');
+        if (args.incrementalFragmentUpdate ?? CANONICAL_FRAGMENT_POLICY.incrementalByDefault) {
+          updateYXmlFragment(fragment, parsedNext.doc);
+        } else {
+          replaceYXmlFragment(fragment, parsedNext.doc);
+        }
+      }
       applyYTextDiff(ydoc.getText('markdown'), authoritativeNextMarkdown);
       applyMarksMapDiff(ydoc.getMap('marks'), effectiveNextMarks);
     }, canonicalTransactionOrigin(args.source));
@@ -1247,6 +1506,7 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
     return {
       ok: true,
       document: updated,
+      marks: effectiveNextMarks,
       yStateVersion: updated.y_state_version,
       activeCollabClients,
     };

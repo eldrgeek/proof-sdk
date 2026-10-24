@@ -28,10 +28,20 @@ function run(): void {
       && markRejectShareBlock.includes('const metadata = getMarkMetadataWithQuotes(view.state);')
       && markRejectShareBlock.includes('this.lastReceivedServerMarks = { ...metadata };')
       && markRejectShareBlock.includes("console.warn('[markReject] Suggestion not pending in share mode:'")
+      && markRejectShareBlock.includes('const transport = this.getShareSuggestionResolutionTransport();')
+      && markRejectShareBlock.includes('this.applyShareSuggestionLocally(transport, () => {')
+      && markRejectShareBlock.includes('runShareSuggestionRestFallback(transport, () => {')
       && markRejectShareBlock.includes('const actor = getCurrentActor();')
       && markRejectShareBlock.includes('void shareClient.rejectSuggestion(markId, actor).then(async (result) => {')
-      && markRejectShareBlock.includes('this.applyAuthoritativeShareMarks(serverMarks);'),
-    'Expected markReject share mode to optimistically tombstone the local suggestion, snapshot local marks, and then refresh from the authoritative reject mutation response',
+      && markRejectShareBlock.includes('this.applyAuthoritativeShareMarks(serverMarks);')
+      && markRejectShareBlock.includes('this.recoverAuthoritativeShareMarks('),
+    'Expected markReject share mode to optimistically tombstone the local suggestion, persist it, and recover from failed mutations',
+  );
+  assert(
+    markRejectShareBlock.includes('this.dropSuggestionIdsFromServerMarkCache([markId])')
+      && markRejectShareBlock.indexOf('this.dropSuggestionIdsFromServerMarkCache([markId])')
+        < markRejectShareBlock.indexOf('rejected = rejectMark(view, markId);'),
+    'Expected markReject to drop stale cached server metadata before the local dispatch',
   );
   assert(
     !markRejectShareBlock.includes('shareClient.pushUpdate(')
@@ -67,14 +77,24 @@ function run(): void {
   const markRejectAllShareBlock = markRejectAllBlock.slice(markRejectAllShareStart, markRejectAllShareEnd);
   assert(markRejectAllBlock.includes('if (this.isShareMode) {'), 'Expected markRejectAll share mode branch');
   assert(
-    markRejectAllShareBlock.includes('rejectedIds = getPendingSuggestions(getMarks(view.state)).map((mark) => mark.id);')
-      && markRejectAllShareBlock.includes('rejectedCount = rejectAll(view);')
+    markRejectAllShareBlock.includes('rejectedIds = getPendingSuggestions(getMarks(view.state))')
+      && markRejectAllShareBlock.includes('.map((mark) => mark.id)')
+      && markRejectAllShareBlock.includes('.filter((id) => this.isSuggestionPendingOnServer(id));')
+      && markRejectAllShareBlock.includes('if (rejectMark(view, id)) rejectedIdSet.add(id);')
       && markRejectAllShareBlock.includes('const metadata = getMarkMetadataWithQuotes(view.state);')
       && markRejectAllShareBlock.includes('this.lastReceivedServerMarks = { ...metadata };')
+      && markRejectAllShareBlock.includes('const transport = this.getShareSuggestionResolutionTransport();')
+      && markRejectAllShareBlock.includes('this.applyShareSuggestionLocally(transport, () => {')
+      && markRejectAllShareBlock.includes('runShareSuggestionRestFallback(transport, () => {')
       && markRejectAllShareBlock.includes('const actor = getCurrentActor();')
-      && markRejectAllShareBlock.includes('const result = await shareClient.rejectSuggestion(suggestionId, actor);')
-      && markRejectAllShareBlock.includes('this.applyAuthoritativeShareMarks(latestServerMarks);'),
-    'Expected markRejectAll share mode to optimistically reject local suggestions, snapshot local marks, and then apply authoritative server marks',
+      && markRejectAllShareBlock.includes("this.reconcileShareSuggestionBatch(rejectedIds, 'rejected', actor)"),
+    'Expected markRejectAll share mode to reject mutually pending suggestions and reconcile every id with the server',
+  );
+  assert(
+    markRejectAllShareBlock.includes('this.dropSuggestionIdsFromServerMarkCache(rejectedIds)')
+      && markRejectAllShareBlock.indexOf('this.dropSuggestionIdsFromServerMarkCache(rejectedIds)')
+        < markRejectAllShareBlock.indexOf('if (rejectMark(view, id)) rejectedIdSet.add(id);'),
+    'Expected markRejectAll to drop cached server metadata before local dispatches',
   );
   assert(
     !markRejectAllShareBlock.includes('shareClient.pushUpdate(')

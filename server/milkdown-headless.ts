@@ -16,6 +16,7 @@ import { parseMarkdownPreservingExplicitBlankParagraphs } from '../src/editor/ex
 import { frontmatterSchema } from '../src/editor/schema/frontmatter.js';
 import { proofMarkPlugins } from '../src/editor/schema/proof-marks.js';
 import { remarkProofMarks, proofMarkHandler } from '../src/formats/remark-proof-marks.js';
+import { stripAllProofSpanTags } from './proof-span-strip.js';
 
 export type HeadlessMilkdownParser = {
   schema: Schema;
@@ -113,7 +114,9 @@ export function parseMarkdownWithHtmlFallback(
 
 function createSerializer(schema: Schema): (doc: ProseMirrorNode) => string {
   const processor = unified()
-    .use(remarkGfm)
+    // GFM aligns table columns from serialized cell strings. Proof marks serialize
+    // as long HTML spans, so measure their visible text instead of their markup.
+    .use(remarkGfm as any, { stringLength: (value: string) => stripAllProofSpanTags(value).length })
     .use(remarkFrontmatter, ['yaml'])
     .use(remarkStringify, {
       handlers: {

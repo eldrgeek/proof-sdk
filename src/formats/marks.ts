@@ -210,6 +210,7 @@ export interface MarksDocument {
 }
 
 export interface StoredMark {
+  move?: import("../shared/moves").MoveMember;
   kind?: MarkKind;
   by?: string;
   createdAt?: string;
@@ -225,6 +226,10 @@ export interface StoredMark {
   resolved?: boolean;
   content?: string;
   status?: SuggestionStatus;
+  resolvedBy?: string;
+  resolvedAt?: string;
+  /** How an already-applied insert is represented in the document model. */
+  insertStructure?: 'inline' | 'block' | 'table_row';
   note?: string;
   runId?: string;
   focusAreaId?: string;
@@ -346,13 +351,23 @@ export interface EditSession {
 // ============================================================================
 
 let markIdCounter = 0;
+const markIdRuntimeNonce = (() => {
+  try {
+    if (typeof globalThis.crypto?.randomUUID === 'function') {
+      return globalThis.crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+    }
+  } catch {
+    // Fall through to a non-cryptographic uniqueness suffix.
+  }
+  return Math.random().toString(36).slice(2, 14);
+})();
 
 export function generateMarkId(): string {
-  return `m${Date.now()}_${++markIdCounter}`;
+  return `m${Date.now()}_${markIdRuntimeNonce}_${++markIdCounter}`;
 }
 
 export function generateThreadId(): string {
-  return `t${Date.now()}_${++markIdCounter}`;
+  return `t${Date.now()}_${markIdRuntimeNonce}_${++markIdCounter}`;
 }
 
 // ============================================================================
