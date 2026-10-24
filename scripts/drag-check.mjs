@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, devices } from 'playwright';
+import { keepBottomChat } from './keep-bottom-chat.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const arg = key => { const i = process.argv.indexOf(key); return i > 0 ? process.argv[i + 1] : null; };
@@ -300,6 +301,7 @@ async function immediate(browser, style) {
   finally { await context.close(); await server.stop(); }
 }
 const browser = await chromium.launch({ headless: true });
+keepBottomChat(browser);
 try {
   for (const style of styles) {
     const server = await start(style);

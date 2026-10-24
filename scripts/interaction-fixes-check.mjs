@@ -18,6 +18,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, devices } from 'playwright';
+import { keepBottomChat } from './keep-bottom-chat.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const args = process.argv.slice(2);
@@ -394,6 +395,8 @@ async function runDesktopComment(page) {
 }
 
 const browser = await chromium.launch();
+
+keepBottomChat(browser);
 const server = await startServer();
 let failed = false;
 try {

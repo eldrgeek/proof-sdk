@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { keepBottomChat } from './keep-bottom-chat.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const arg = (name) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : null; };
@@ -153,6 +154,7 @@ async function chooseCopy(page, clean) {
 async function main() {
   const { base, stop } = await startServer();
   const browser = await chromium.launch();
+  keepBottomChat(browser);
   try {
     const created = await createDoc(base);
     const mike = await openDoc(browser, base, created.slug, 'Mike');

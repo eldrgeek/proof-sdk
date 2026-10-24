@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, devices } from 'playwright';
+import { keepBottomChat } from './keep-bottom-chat.mjs';
 import { showWholeAccord } from './review-ui.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -163,6 +164,8 @@ async function runDecision(browser, style) {
 }
 
 const browser = await chromium.launch({ headless: true });
+
+keepBottomChat(browser);
 try {
   for (const width of [1440, 390]) for (const style of ['playmaker', 'proof']) await run(browser, style, width);
   for (const style of ['playmaker', 'proof']) await runDecision(browser, style);

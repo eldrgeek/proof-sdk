@@ -26,6 +26,27 @@ export const BOTTOM_CHAT_POLICY = {
   explicitOpenExpands: true, badge: 'mentions',
 } as const;
 
+/**
+ * Mike, 2026-10-21 (Accord 9b72a5rp, "not usable because the agreements fill the space and I cannot
+ * see the chat"): on a desktop wide enough, the chat takes the main space at full height and the text
+ * (the agreements) becomes a column at its side, the way SOMA Studio lays them out. Narrower windows
+ * and phones keep the chat at the centre's foot. View › "Chat as the main space" turns it off.
+ */
+export const CHAT_MAIN_POLICY = {
+  defaultOn: true, storageKey: 'proof:chat-main',
+  /** The centre (between the two rails) must be this wide before the text and the chat share it. */
+  minCentrePx: 660,
+  /** The text column's share of the centre, and its bounds. The chat takes the rest. */
+  textShare: 0.42, textMinPx: 300, textMaxPx: 560,
+} as const;
+
+/** The text column's width in chat-main layout, or null when the centre is too narrow for it. */
+export function chatMainTextWidth(centrePx: number): number | null {
+  if (!(centrePx >= CHAT_MAIN_POLICY.minCentrePx)) return null;
+  const want = Math.round(centrePx * CHAT_MAIN_POLICY.textShare);
+  return Math.max(CHAT_MAIN_POLICY.textMinPx, Math.min(CHAT_MAIN_POLICY.textMaxPx, want));
+}
+
 /** Mike, 2026-09-24, yfbqrau4: stored marks survive; mark circles and line-mark shortcuts retire. */
 export const GUTTER_POLICY = { showLineMarks: false, showOpenDots: true, dotOpensReview: true } as const;
 
