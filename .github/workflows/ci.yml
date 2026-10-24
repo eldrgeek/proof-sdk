@@ -25,11 +25,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
 
       - name: Install dependencies
-        # package-lock.json is gitignored; installs float and can be slow on cold runners.
         timeout-minutes: 25
-        run: npm install
+        run: npm ci
 
       - name: Build
         run: npm run build
@@ -49,10 +49,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
 
       - name: Install dependencies
         timeout-minutes: 25
-        run: npm install
+        run: npm ci
 
       - name: Build
         run: npm run build
