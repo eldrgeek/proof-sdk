@@ -172,10 +172,13 @@ async function run(browser, server, style, width) {
       moveThreads: [...document.querySelectorAll('.amg-thread-diff[data-diff="move"]')].map(n => n.textContent),
       deletions: [...document.querySelectorAll('.amg-thread-diff')].filter(n => /Proposes deleting: “Alpha paragraph\.”/.test(n.textContent ?? '')).length,
       marker: document.querySelector('.plm-review-marker')?.textContent ?? '',
+      changesCount: document.querySelector('.prw-changes-head .prw-step')?.textContent ?? '',
       card: document.querySelector(`[data-bundle-id]`)?.textContent ?? '' }));
     assert.match(onLine.moveThreads[0], /^Moves “Alpha paragraph\.” to after “Gamma paragraph\.”/);
     assert.equal(onLine.deletions, 0, 'a move record reads as a deletion');
     assert.match(onLine.marker, /1\s*proposal/, `the gutter counts the move's records (${onLine.marker})`);
+    // ac-ane: 'Changes on this line' counts the move once (one card, one decision), not its two records.
+    assert.equal(onLine.changesCount, '1', `'Changes on this line' counts a move's records (${onLine.changesCount})`);
     assert.equal(/changes pending/.test(onLine.card), false, "the move card says 'changes pending'");
     assert.ok(Math.abs(await a.page.evaluate(() => scrollY) - beforeScroll) < 3, 'proposal jumped the page');
     await decide(b.page, id, 'Accept', 'Alpha paragraph.');

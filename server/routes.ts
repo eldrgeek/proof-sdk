@@ -2237,7 +2237,9 @@ async function pageExtras(req: Request, slug: string, doc: NonNullable<ReturnTyp
 
 // Proof Documents Steps B4c + B4d: flags and objections from the page. Writes need comment
 // access; the actor is decided as for line marks (a signed-in session wins over a typed name).
-const PAGE_TALK_ROUTES = ['/explain', '/why-asked', '/threads'];
+// ac-fwa (2026-10-18): a reply on a thread is conversation too. A guest may start a thread, so a
+// guest may answer one; only decisions (close, accept, reject) count as marks.
+const PAGE_TALK_ROUTES = ['/explain', '/why-asked', '/threads', '/reply'];
 function pageAidRoute(path: string, run: (ctx: { req: Request; slug: string; by: string; access: ReturnType<typeof resolveLineMarkAccess>; body: Record<string, unknown> }) => Promise<{ status: number; body: Record<string, unknown> }> | { status: number; body: Record<string, unknown> }): void {
   apiRoutes.post(path, opsRateLimiter, async (req: Request, res: Response) => {
     const slug = getSlugParam(req);

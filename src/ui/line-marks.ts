@@ -3273,12 +3273,23 @@ export class LineMarksUI {
     const view = this.threadById(id);
     if (!view) return false;
     const threadId = view.thread.id;
+    // ac-fwa: closing a thread that is a mark rewrites the shared document, which needs edit rights.
+    // Ask first, and say in plain words why not, before the thread's row is closed on the server:
+    // otherwise the row closes, the mark stays open, and the page showed a raw promise rejection.
+    const closesMark = Boolean(view.thread.markId) && status !== 'withdrawn';
+    const refusal = closesMark ? this.decisionRefusal() : null;
+    if (refusal) { this.toast(refusal); return false; }
     const result = await this.postAid(`/threads/${encodeURIComponent(threadId)}/close`, { status });
     const storedRow = result.ok;
     // A thread with no stored row is a plain comment or suggestion: it closes the way it always
     // did, on its mark. With a row, the mark is closed too, so both halves agree.
-    if (view.thread.markId && status !== 'withdrawn') {
-      this.decideOnMark?.([view.thread.markId], status === 'accepted' ? 'accept' : status === 'rejected' ? 'reject' : 'resolve');
+    if (closesMark) {
+      try {
+        this.decideOnMark?.([view.thread.markId!], status === 'accepted' ? 'accept' : status === 'rejected' ? 'reject' : 'resolve');
+      } catch (error) {
+        this.toast(error instanceof Error ? error.message : 'Could not close that thread.');
+        return storedRow;
+      }
     }
     if (storedRow) this.extrasWrites += 1;
     const line = view.lineIndex === null ? '' : ` on line ${view.lineIndex + 1}`;
@@ -3312,16 +3323,57 @@ export class LineMarksUI {
     const view = this.threadById(id);
     const body = text.trim();
     if (!view || !body) return false;
-    if (view.thread.markId) this.decideOnMark?.([view.thread.markId], 'reply', body);
-    if (view.thread.source === 'thread') {
+    // ac-fwa (2026-10-18): a guest on an Accord whose guests may comment got a raw 'Promise
+    // rejection' here, because the mark half of a reply goes through the decision history, which
+    // needs edit rights. A reply decides nothing. So a viewer without edit rights writes the reply
+    // to the thread's own row only (the server takes it as conversation), and the page shows it at
+    // once. A thread with no row keeps replies only on its mark, so there the reply form is not
+    // offered to such a viewer (canReplyOn), and a reply that still fails is said in plain words.
+    const onRow = view.thread.source === 'thread';
+    const markAllowed = this.markRepliesAllowed();
+    let onMark = false;
+    if (view.thread.markId && markAllowed) {
+      try {
+        this.decideOnMark?.([view.thread.markId], 'reply', body);
+        onMark = true;
+      } catch (error) {
+        if (!onRow) {
+          this.toast(error instanceof Error ? error.message : 'Could not post that reply.');
+          return false;
+        }
+      }
+    }
+    if (!onRow && !onMark) {
+      this.toast(this.decisionRefusal() ?? 'Could not post that reply.');
+      return false;
+    }
+    if (onRow) {
+      if (!onMark) {
+        const shown = { by: this.me(), text: body, at: new Date().toISOString() };
+        this.serverThreads = this.serverThreads.map(row => row.id === view.thread.id ? { ...row, replies: [...(row.replies ?? []), shown] } : row);
+        this.recompute();
+      }
       void this.postAid(`/threads/${encodeURIComponent(view.thread.id)}/reply`, { text: body })
         .then(result => { if (result.ok) this.extrasWrites += 1; });
     }
-    return Boolean(view.thread.markId) || view.thread.source === 'thread';
+    return true;
   }
+
+  /** ac-fwa: whether this viewer is offered a reply on this thread (see replyOnThread). */
+  canReplyOn(view: ThreadView): boolean {
+    return view.thread.source === 'thread' || this.markRepliesAllowed();
+  }
+
+  /** ac-fwa: whether a reply may be written onto a thread's mark (edit rights). Set by the editor. */
+  markRepliesAllowed: () => boolean = () => true;
 
   /** How the page acts on a review mark (set by the editor; the Margin's Changes use the same one). */
   decideOnMark: ((ids: string[], action: 'accept' | 'reject' | 'resolve' | 'reply', text?: string, bundleId?: string) => void) | null = null;
+  /**
+   * ac-fwa: why this viewer cannot decide on a mark (accept, reject, resolve) right now, in words a
+   * person can act on, or null when they can. Set by the editor; the default allows.
+   */
+  decisionRefusal: () => string | null = () => null;
 
   /** Step B4f: an Owner turns blind marking on or off. */
   async setBlind(on: boolean): Promise<boolean> {

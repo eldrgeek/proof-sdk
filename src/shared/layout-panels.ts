@@ -24,6 +24,13 @@ export const BOTTOM_CHAT_POLICY = {
   position: 'centre-bottom', composerAlwaysVisible: true, collapsedMessages: 1,
   initiallyExpanded: false, expandedHeightShare: 0.6, compactHeightPx: 230,
   explicitOpenExpands: true, badge: 'mentions',
+  /**
+   * ac-lav (2026-10-20): the chat opens at its newest message (on load, and whenever the strip
+   * expands or folds), and the folded strip grows so the newest message shows whole, up to this
+   * many pixels of message and never past this share of the window. Before, a short window gave
+   * the message list 5 px under the next-step card, so no message showed at all.
+   */
+  opensAtNewest: true, compactListMaxPx: 140, compactMaxShare: 0.45,
 } as const;
 
 /**

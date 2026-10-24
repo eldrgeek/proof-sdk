@@ -21,6 +21,8 @@
 /* Same height rule as the bar's other controls (scripts/mike-0921-check.mjs item 7). */
 .share-pill-viewer { display: inline-flex; align-items: center; min-height: 28px; }
 @media (max-width: 700px) { .share-pill-viewer { min-height: 44px; } }
+/* ac-p9e: hidden while the reading walk's guest control is in the bar (one guest indicator). */
+.share-pill-viewer[hidden] { display: none; }
 .amb-top {
   height: 24px; padding: 0 8px; border: 0; border-radius: 5px; background: transparent; color: #1c1f24;
   font: inherit; cursor: pointer;

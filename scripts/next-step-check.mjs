@@ -127,7 +127,9 @@ async function run(browser, style) {
 
     await check(`${tag}: no name modal on arrival; top bar offers Guest · set your name`, async () => {
       assert.equal(await page.locator('[data-proof-name-prompt="overlay"]').count(), 0);
-      assert.match(await page.locator('.share-pill-viewer').innerText(), /Guest · set your name/);
+      // ac-p9e: one guest control (the reading walk's), not the old chip beside it.
+      assert.match(await page.locator('#share-banner .prw-me .prw-me-setname').innerText(), /Guest · set your name/);
+      assert.equal(await page.locator('#share-banner .share-pill-viewer').isVisible(), false, 'two guest indicators in the top bar');
       await page.screenshot({ path: path.join(shots, `${tag}-arrival.png`) });
     });
 
@@ -155,6 +157,62 @@ async function run(browser, style) {
     });
 
     await context.close();
+
+    // ac-lav (2026-10-20): in a room with a long conversation under this same next-step card, the
+    // chat opened at the oldest message, a short window showed no message at all (the list got
+    // 5 px under the card), and "New below" seemed to do nothing. The newest message must show on
+    // arrival without scrolling, when the chat is opened, and after one click on "New below".
+    for (let i = 1; i <= 40; i += 1) {
+      const posted = await api(base, created, 'POST', '/chat', { by: 'ai:check', text: `Message ${i}: a line of chat long enough to take some room in the strip.` });
+      assert.equal(posted.status, 200, JSON.stringify(posted.body));
+    }
+    let newest = 40;
+    for (const [width, height] of [[1440, 900], [800, 600]]) {
+      const ctx = await browser.newContext({ viewport: { width, height } });
+      await ctx.route('**/*', route => new URL(route.request().url()).origin === base ? route.continue() : route.abort());
+      const p = await ctx.newPage();
+      activePage = p;
+      const ctag = `next-step-${style}-chat-${width}x${height}`;
+      const newestShows = (n) => p.evaluate(text => {
+        const list = document.querySelector('.prw-chat-bottom .pch-list');
+        const item = [...(list?.querySelectorAll(':scope > li') ?? [])].find(li => li.textContent.includes(text));
+        if (!list || !item) return { ok: false, why: 'not rendered' };
+        const l = list.getBoundingClientRect(), r = item.getBoundingClientRect();
+        // The message's words, not only a sliver of its frame: its bottom 40 px are inside the list.
+        return { ok: r.height > 0 && r.bottom <= l.bottom + 1 && r.bottom - Math.max(r.top, l.top) >= Math.min(40, r.height), list: Math.round(l.height), item: [Math.round(r.top), Math.round(r.bottom)], box: [Math.round(l.top), Math.round(l.bottom)] };
+      }, `Message ${n}:`);
+      try {
+        await check(`${ctag}: the chat opens at the newest message, without scrolling`, async () => {
+          await p.goto(`${base}/d/${created.slug}`);
+          await p.waitForFunction(n => window.__proofChat?.debugState().loaded === true && window.__proofChat.debugState().messages.length >= n, newest, { timeout: 20_000 });
+          await p.waitForTimeout(600);
+          const folded = await newestShows(newest);
+          assert.ok(folded.ok, `folded strip: the newest message is not in view (${JSON.stringify(folded)})`);
+          await p.screenshot({ path: path.join(shots, `${ctag}-arrival.png`) });
+          await p.locator('.prw-chat-bottom .pch-toggle').click();
+          await p.waitForTimeout(400);
+          const open = await newestShows(newest);
+          assert.ok(open.ok, `opened chat: the newest message is not in view (${JSON.stringify(open)})`);
+          await p.screenshot({ path: path.join(shots, `${ctag}-opened.png`) });
+        });
+        await check(`${ctag}: "New below" reaches the newest message in one click`, async () => {
+          await p.locator('.prw-chat-bottom .pch-list').evaluate(n => { n.scrollTop = 0; n.dispatchEvent(new Event('scroll')); });
+          await p.waitForTimeout(200);
+          newest += 1;
+          const posted = await api(base, created, 'POST', '/chat', { by: 'ai:check', text: `Message ${newest}: arrives while the reader is at the top.` });
+          assert.equal(posted.status, 200);
+          await p.evaluate(() => window.__proofChat.notifyRemoteChange());
+          await p.waitForFunction(n => window.__proofChat.debugState().messages.length >= n, newest, { timeout: 12_000 });
+          const pill = p.locator('.prw-chat-bottom .prw-follow-pill[data-follow="chat"]');
+          await pill.waitFor({ state: 'visible', timeout: 4000 });
+          assert.equal(await p.locator('.prw-chat-bottom .pch-list').evaluate(n => n.scrollTop), 0, 'the incoming message moved the list');
+          await pill.click();
+          await p.waitForTimeout(250);
+          const after = await newestShows(newest);
+          assert.ok(after.ok, `after one click on New below the newest is not in view (${JSON.stringify(after)})`);
+        });
+      } finally { await ctx.close(); }
+    }
   } finally {
     await stop();
   }

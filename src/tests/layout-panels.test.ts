@@ -131,7 +131,7 @@ test('layout v2 policies: independent panels, permanent composer, proposals only
     clickKeepsListFocus: true, enterFocusesDocument: true });
   assert.deepEqual(BOTTOM_CHAT_POLICY, { position: 'centre-bottom', composerAlwaysVisible: true,
     collapsedMessages: 1, initiallyExpanded: false, expandedHeightShare: 0.6, compactHeightPx: 230,
-    explicitOpenExpands: true, badge: 'mentions' });
+    explicitOpenExpands: true, badge: 'mentions', opensAtNewest: true, compactListMaxPx: 140, compactMaxShare: 0.45 });
   assert.deepEqual(GUTTER_POLICY, { showLineMarks: false, showOpenDots: true, dotOpensReview: true });
   assert.equal(REVIEW_KEYS_POLICY.proposalsOnly, true);
   assert.equal(REVIEW_KEYS_POLICY.bundlesAsUnit, true);

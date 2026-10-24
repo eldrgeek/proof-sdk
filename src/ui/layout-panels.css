@@ -196,6 +196,7 @@ body.prw-on.prw-right-collapsed { --prw-right: var(--prw-collapsed); }
 .amg-thread-why { margin: 0; font-size: 12px; opacity: .8; }
 .amg-thread-why[data-open='true'] { opacity: 1; font-weight: 600; }
 .amg-thread-reply-form { display: flex; gap: 6px; }
+.amg-thread-reply-closed { margin: 0; font-size: 12px; opacity: .75; }
 .amg-thread-reply-input { flex: 1 1 auto; min-width: 0; font-size: 12px; padding: 4px 6px; border: 1px solid var(--proof-rule, #d1d5db); border-radius: 6px; }
 .amg-thread-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .amg-thread-actions button { font-size: 12px; padding: 3px 8px; border: 1px solid var(--proof-rule, #d1d5db); border-radius: 6px; background: transparent; cursor: pointer; }
@@ -314,3 +315,8 @@ body.prw-on .pst-bar { bottom: var(--prw-chat-compact); }
   /* The status bar (Line N of M · open · Reading) belongs to the text: it sits under its column. */
   body.prw-on.prw-chat-main .pst-bar { left: var(--prw-left); right: auto; width: var(--prw-doc); bottom: 0; }
 }
+/* ac-lav (2026-10-20): in the folded strip the next-step card is one row (its "Go to it" beside the
+   words, not under them), so the newest message keeps room below it on a short window. */
+body.prw-on .prw-chat-bottom[data-expanded='false'] .pch-next-step { display: flex; align-items: baseline; gap: 8px; padding: 6px 10px; }
+body.prw-on .prw-chat-bottom[data-expanded='false'] .pch-next-step-body { margin: 0; flex: 1 1 auto; min-width: 0; }
+body.prw-on .prw-chat-bottom[data-expanded='false'] .pch-next-step-go { flex: none; white-space: nowrap; }

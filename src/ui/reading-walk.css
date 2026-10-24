@@ -341,3 +341,35 @@ body.prw-on { overflow-anchor: none; }
 .prw-guest-signin { color: #1d4ed8; text-decoration: underline; }
 
 .prw-guest-notice { position: fixed; top: calc(var(--prw-chrome, 60px) + 4px); left: 50%; transform: translateX(-50%); z-index: 9000; max-width: calc(100vw - 24px); width: max-content; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; color: #334155; box-shadow: 0 2px 8px #0001; font: 12px/1.4 system-ui; }
+
+/* ac-p9e (2026-09-30): one guest control in the top bar: 'Guest · set your name · Sign in'. The
+   name is a button that sets it, so it gets the bar's control height (28 px; 44 px on a phone,
+   scripts/mike-0921-check.mjs item 7) and is never clipped at desktop widths. */
+#share-banner .prw-me[data-trust='guest'] {
+  display: inline-flex; align-items: center; width: auto; min-height: 28px;
+  padding: 0 8px; border: 1px solid #e3e6ea; border-radius: 999px; background: #f9fafb;
+  font-size: 12px; line-height: 1.2;
+}
+@media (min-width: 701px) {
+  #share-banner .prw-me[data-trust='guest'] { flex: 0 0 auto; max-width: none; overflow: visible; }
+}
+#share-banner .prw-me-setname {
+  display: inline-flex; align-items: center; min-height: 28px; padding: 0; border: 0; background: transparent;
+  color: #374151; font: inherit; font-weight: 600; cursor: pointer; white-space: nowrap;
+}
+#share-banner .prw-me-setname:hover, #share-banner .prw-me-setname:focus-visible { text-decoration: underline; outline: none; }
+#share-banner .prw-me[data-trust='guest'] .prw-me-guest { font-size: 11px; }
+#share-banner .prw-me[data-trust='guest'] .prw-me-sep { margin: 0 2px; color: #6b7280; }
+#share-banner .prw-me[data-trust='guest'] .prw-me-signin { display: inline-flex; align-items: center; min-height: 28px; white-space: nowrap; }
+@media (max-width: 700px) {
+  /* A phone bar has no room for a pill: the control keeps the old line's look (no border, shortened
+     with an ellipsis) and only gets the 44 px touch height, so the bar does not grow. */
+  #share-banner .prw-me[data-trust='guest'] {
+    display: flex; flex: 0 1 auto; min-width: 0; overflow: hidden; padding: 0; border: 0; background: transparent;
+    min-height: 44px; box-sizing: border-box;
+  }
+  #share-banner .prw-me-setname { min-height: 44px; min-width: 3em; max-width: 10em; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
+  #share-banner .prw-me[data-trust='guest'] .prw-me-guest { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The name and Sign in keep their room; the guest tag gives way first. */
+  #share-banner .prw-me[data-trust='guest'] .prw-me-signin { min-height: 44px; flex: none; }
+}
