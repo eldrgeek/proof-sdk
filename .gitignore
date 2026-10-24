@@ -77,3 +77,6 @@ test-results/
 
 CODEX-IMPLEMENT.md
 MOBILE-ACTION-BAR-PLAN.md
+
+# caret-stability-loop.sh default logs (ac-ad6)
+.caret-stability-loop/
