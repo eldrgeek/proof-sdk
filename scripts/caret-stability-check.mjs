@@ -205,6 +205,10 @@ async function instrument(page) {
         const before = v.state.selection;
         const beforeDoc = v.state.doc;
         const scrollBefore = window.scrollY;
+        // Classify the transaction when dispatch begins. Under load, applying an ordinary
+        // beforeinput transaction can take longer than the 50 ms input window; classifying it
+        // after original(tr) then falsely calls the person's own typed character foreign.
+        const user = performance.now() <= userUntil;
         const remote = Object.keys(tr.meta || {}).some(k => k.startsWith('y-sync') && tr.meta[k]?.isChangeOrigin);
         // Only y-prosemirror's whole-document replace counts (a nested marks refresh tagged as
         // remote is not an echo of the keystroke).
@@ -218,7 +222,6 @@ async function instrument(page) {
         try { original(tr); } finally { if (local) localDepth.n -= 1; }
         const after = v.state.selection;
         if (before.eq(after) && !tr.scrolledIntoView) return;
-        const user = performance.now() <= userUntil;
         const from = where(beforeDoc, before.head);
         const to = where(v.state.doc, after.head);
         const foreign = remote ? (tr.scrolledIntoView || from !== to) : (!user && (tr.selectionSet || tr.scrolledIntoView));
