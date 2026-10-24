@@ -64,7 +64,9 @@
     "test:review-alignment": "tsx src/tests/review-alignment.test.ts",
     "test:moves": "tsx src/tests/moves.test.ts",
     "test:reject-insert": "tsx src/tests/reject-block-insert-keeps-anchor.test.ts",
-    "check:drag": "node scripts/drag-check.mjs"
+    "check:drag": "node scripts/drag-check.mjs",
+    "check:all": "node scripts/check-all.mjs",
+    "check:all-selftest": "bash scripts/check-all-selftest.sh"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.879.0",
