@@ -893,6 +893,50 @@ export class ShareClient {
     });
   }
 
+  /** Multi-party Accords (server/dispositions.ts): whether this document uses dispositions. */
+  async fetchDispositions(options?: { token?: string }): Promise<{ multiParty: boolean; proposals: Array<Record<string, unknown>>; whereWeDiffer: string[]; fullAccord: boolean } | null> {
+    if (!this.slug) return null;
+    try {
+      const response = await fetch(`${this.getApiBase()}/documents/${encodeURIComponent(this.slug)}/dispositions`, {
+        credentials: 'same-origin',
+        headers: { ...this.getShareAuthHeaders(options?.token) },
+      });
+      if (!response.ok) return null;
+      const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+      if (!body || body.success !== true) return null;
+      return {
+        multiParty: body.multiParty === true,
+        proposals: Array.isArray(body.proposals) ? body.proposals as Array<Record<string, unknown>> : [],
+        whereWeDiffer: Array.isArray(body.whereWeDiffer) ? body.whereWeDiffer.filter((v): v is string => typeof v === 'string') : [],
+        fullAccord: body.fullAccord === true,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Multi-party Accords: record this person's promote or cut. `action` says whether everyone now
+   * agrees ("accept" / "reject": apply it as any decision) or the proposal stays open ("hold").
+   */
+  async recordDisposition(markId: string, disposition: 'promote' | 'cut', by: string): Promise<{ action: 'accept' | 'reject' | 'hold'; proposal: Record<string, unknown> } | { error: string }> {
+    if (!this.slug) return { error: 'No document' };
+    try {
+      const response = await fetch(`${this.getApiBase()}/documents/${encodeURIComponent(this.slug)}/dispositions`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { ...this.getShareAuthHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ markId, disposition, by }),
+      });
+      const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+      if (!response.ok || body.success !== true) return { error: typeof body.error === 'string' ? body.error : `HTTP ${response.status}` };
+      const action = body.action === 'accept' || body.action === 'reject' ? body.action : 'hold';
+      return { action, proposal: (body.proposal && typeof body.proposal === 'object') ? body.proposal as Record<string, unknown> : {} };
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : 'Network error' };
+    }
+  }
+
   async acceptSuggestion(
     markId: string,
     by: string,

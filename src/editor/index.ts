@@ -1522,6 +1522,63 @@ class ProofEditorImpl implements ProofEditor {
     }
   }
 
+  /**
+   * Multi-party Accords (src/shared/dispositions.ts): on a document that opted in, the page never
+   * applies an accept or reject itself. It sends each one to the server as a promote or a cut, and
+   * the server applies the change only when every participant has promoted it (or cut it).
+   */
+  private shareMultiParty = false;
+
+  private async refreshShareMultiParty(): Promise<void> {
+    const report = await shareClient.fetchDispositions();
+    if (report) this.shareMultiParty = report.multiParty;
+  }
+
+  /** Set while the page applies a decision that every participant has now agreed to. */
+  private dispositionsAgreed = false;
+
+  /**
+   * True when the decision went to the server as dispositions instead of being applied here. Once
+   * the server says everyone agrees, `apply` runs the page's ordinary decision for those ids.
+   */
+  private holdForDispositions(ids: string[], action: 'accept' | 'reject', apply: (agreed: string[]) => void): boolean {
+    if (this.dispositionsAgreed || !this.isShareMode || !this.shareMultiParty || ids.length === 0) return false;
+    const actor = getCurrentActor();
+    const disposition = action === 'accept' ? 'promote' : 'cut';
+    void (async () => {
+      const agreed: string[] = [];
+      let waiting = 0;
+      let failed = 0;
+      for (const id of ids) {
+        const result = await shareClient.recordDisposition(id, disposition, actor);
+        if ('error' in result) { failed += 1; continue; }
+        if (result.action === action) agreed.push(id);
+        else waiting += 1;
+      }
+      if (agreed.length) {
+        this.dispositionsAgreed = true;
+        try { apply(agreed); } finally { this.dispositionsAgreed = false; }
+      }
+      const verb = action === 'accept' ? 'promoted' : 'cut';
+      if (failed) this.showErrorBanner(`${failed} of ${ids.length} could not be ${verb}.`);
+      else if (waiting) this.showDispositionNotice(`You ${verb} ${waiting === 1 ? 'this change' : `${waiting} changes`}. ${waiting === 1 ? 'It stays' : 'They stay'} open until everyone agrees.`);
+      else this.showDispositionNotice(`Everyone agrees: ${agreed.length === 1 ? 'the change is' : 'the changes are'} ${action === 'accept' ? 'in the Accord' : 'cut'}.`);
+      void this.refreshShareMultiParty();
+    })();
+    return true;
+  }
+
+  private showDispositionNotice(message: string): void {
+    document.getElementById('proof-disposition-notice')?.remove();
+    const notice = document.createElement('div');
+    notice.id = 'proof-disposition-notice';
+    notice.setAttribute('role', 'status');
+    notice.textContent = message;
+    notice.style.cssText = 'position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:#1f2937;color:#fff;padding:8px 14px;border-radius:8px;font-size:14px;z-index:1000;max-width:calc(100vw - 32px);';
+    document.body.appendChild(notice);
+    setTimeout(() => notice.remove(), 5000);
+  }
+
   private async initFromShare(options?: ShareRuntimeActivationOptions): Promise<void> {
     const attemptSeq = ++this.shareInitAttemptSeq;
     this.resetPendingCollabTemplateState(true);
@@ -1534,6 +1591,7 @@ class ProofEditorImpl implements ProofEditor {
       if (this.isShareRequestError(contextResponse)) {
         throw new Error(contextResponse.error.message);
       }
+      void this.refreshShareMultiParty();
       const context = contextResponse && 'doc' in contextResponse
         ? contextResponse
         : null;
@@ -4847,6 +4905,8 @@ class ProofEditorImpl implements ProofEditor {
   }
 
   private performReviewDecision(ids: string[], action: ReviewAction, text?: string, bundleId?: string): void {
+    if ((action === 'accept' || action === 'reject')
+      && this.holdForDispositions(ids, action, agreed => this.performReviewDecision(agreed, action, text, bundleId))) return;
     const history = this.getReviewDecisionHistory();
     if (!this.editor) throw new Error('The editor is still loading.');
     this.editor.action(ctx => {
@@ -10521,6 +10581,7 @@ class ProofEditorImpl implements ProofEditor {
       console.warn('[markAccept] Editor not initialized');
       return false;
     }
+    if (this.holdForDispositions([markId], 'accept', () => { this.markAccept(markId); })) return true;
 
     if (this.isShareMode) {
       const transport = this.getShareSuggestionResolutionTransport();
@@ -10603,6 +10664,7 @@ class ProofEditorImpl implements ProofEditor {
       console.warn('[markReject] Editor not initialized');
       return false;
     }
+    if (this.holdForDispositions([markId], 'reject', () => { this.markReject(markId); })) return true;
 
     if (this.isShareMode) {
       const transport = this.getShareSuggestionResolutionTransport();
@@ -10683,6 +10745,13 @@ class ProofEditorImpl implements ProofEditor {
     if (!this.editor) {
       console.warn('[markAcceptAll] Editor not initialized');
       return 0;
+    }
+    if (this.isShareMode && this.shareMultiParty && !this.dispositionsAgreed) {
+      let ids: string[] = [];
+      this.editor.action((ctx) => {
+        ids = getPendingSuggestions(getMarks(ctx.get(editorViewCtx).state)).map((mark) => mark.id);
+      });
+      return this.holdForDispositions(ids, 'accept', agreed => { for (const id of agreed) this.markAccept(id); }) ? ids.length : 0;
     }
 
     if (this.isShareMode) {
@@ -10777,6 +10846,13 @@ class ProofEditorImpl implements ProofEditor {
     if (!this.editor) {
       console.warn('[markRejectAll] Editor not initialized');
       return 0;
+    }
+    if (this.isShareMode && this.shareMultiParty && !this.dispositionsAgreed) {
+      let ids: string[] = [];
+      this.editor.action((ctx) => {
+        ids = getPendingSuggestions(getMarks(ctx.get(editorViewCtx).state)).map((mark) => mark.id);
+      });
+      return this.holdForDispositions(ids, 'reject', agreed => { for (const id of agreed) this.markReject(id); }) ? ids.length : 0;
     }
 
     if (this.isShareMode) {

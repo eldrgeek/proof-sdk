@@ -114,6 +114,8 @@ import { clearFlag, clearObjection, createObjection, keepObjection, writeFlag } 
 import { listFlags, listObjections, listReviewNotes } from './review-aids-store.js';
 import { clearTtl, decideAlternative, offerAlternative, pickAlternative, recordBundleDecision, reopenBundleDecision, recordExplain, setBlindSetting, setTtl, withdrawAlternative } from './proof-extras.js';
 import { getProofSettings, listAlternatives, listBundles, listExplains, listPicks, listTtls } from './proof-extras-store.js';
+import { applyDisposition, dispositionsReport, serializeProposalView } from './dispositions.js';
+import { parseDisposition } from '../src/shared/dispositions.js';
 import { closeThread, reopenThread, replyOnThread, startThreadRow, threadRows, undoStartThread } from './threads.js';
 import { lineEditor } from './agent-routes.js';
 import { guestActor, isGuestActor, normalizeActorString } from '../src/shared/identity.js';
@@ -2374,6 +2376,31 @@ pageAidRoute('/documents/:slug/alternatives/decide', async ({ req, slug, by, acc
 });
 pageAidRoute('/documents/:slug/alternatives/:altId/withdraw', ({ req, slug, by, access }) =>
   withdrawAlternative(slug, { id: String(req.params.altId ?? ''), by, isOwner: access.canApprove }));
+// Multi-party Accords (server/dispositions.ts): the page reads whether this Accord uses
+// dispositions, and records each person's promote or cut: { markId, disposition }. The answer's
+// `action` tells the page whether everyone now agrees ("accept" or "reject": the page applies it
+// as it applies any decision) or the proposal stays open ("hold": the page changes nothing).
+apiRoutes.get('/documents/:slug/dispositions', async (req: Request, res: Response) => {
+  const slug = getSlugParam(req);
+  const doc = slug ? getDocumentBySlug(slug) : undefined;
+  if (!slug || !doc) { res.status(404).json({ success: false, error: 'Document not found' }); return; }
+  const access = resolveLineMarkAccess(req, slug, doc);
+  if (!access.canRead) { res.status(403).json({ success: false, error: 'No read access' }); return; }
+  const state = await currentDocumentState(slug);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, ...dispositionsReport(slug, state?.marks ?? doc.marks) });
+});
+pageAidRoute('/documents/:slug/dispositions', async ({ slug, by, body }) => {
+  const disposition = parseDisposition(body.disposition);
+  if (!disposition) return { status: 400, body: { success: false, code: 'INVALID_DISPOSITION', error: '"disposition" must be "promote", "cut" or "draft"' } };
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  const outcome = applyDisposition(slug, { markId: body.markId, by, disposition, rawMarks: state.marks, source: 'page' });
+  if (outcome.kind === 'off') return { status: 409, body: { success: false, code: 'NOT_MULTI_PARTY', error: 'This Accord does not use dispositions.' } };
+  if (outcome.kind === 'not-pending') return { status: 409, body: { success: false, code: 'NOT_PENDING', error: 'That change is no longer open.' } };
+  if (outcome.kind === 'refused') return { status: outcome.status, body: outcome.body };
+  return { status: 200, body: { success: true, action: outcome.action, proposal: serializeProposalView(outcome.view) } };
+});
 // Step B4f: an Owner turns blind marking on or off: { blind: true | false }.
 pageAidRoute('/documents/:slug/settings', ({ slug, by, access, body }) =>
   setBlindSetting(slug, { blind: body.blind, by, isOwner: access.canApprove, source: 'page' }));
