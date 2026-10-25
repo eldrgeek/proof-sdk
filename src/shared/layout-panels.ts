@@ -24,7 +24,35 @@ export const BOTTOM_CHAT_POLICY = {
   position: 'centre-bottom', composerAlwaysVisible: true, collapsedMessages: 1,
   initiallyExpanded: false, expandedHeightShare: 0.6, compactHeightPx: 230,
   explicitOpenExpands: true, badge: 'mentions',
+  /**
+   * ac-lav (2026-10-20): the chat opens at its newest message (on load, and whenever the strip
+   * expands or folds), and the folded strip grows so the newest message shows whole, up to this
+   * many pixels of message and never past this share of the window. Before, a short window gave
+   * the message list 5 px under the next-step card, so no message showed at all.
+   */
+  opensAtNewest: true, compactListMaxPx: 140, compactMaxShare: 0.45,
 } as const;
+
+/**
+ * Mike, 2026-10-21 (Accord 9b72a5rp, "not usable because the agreements fill the space and I cannot
+ * see the chat"): on a desktop wide enough, the chat takes the main space at full height and the text
+ * (the agreements) becomes a column at its side, the way SOMA Studio lays them out. Narrower windows
+ * and phones keep the chat at the centre's foot. View › "Chat as the main space" turns it off.
+ */
+export const CHAT_MAIN_POLICY = {
+  defaultOn: true, storageKey: 'proof:chat-main',
+  /** The centre (between the two rails) must be this wide before the text and the chat share it. */
+  minCentrePx: 660,
+  /** The text column's share of the centre, and its bounds. The chat takes the rest. */
+  textShare: 0.42, textMinPx: 300, textMaxPx: 560,
+} as const;
+
+/** The text column's width in chat-main layout, or null when the centre is too narrow for it. */
+export function chatMainTextWidth(centrePx: number): number | null {
+  if (!(centrePx >= CHAT_MAIN_POLICY.minCentrePx)) return null;
+  const want = Math.round(centrePx * CHAT_MAIN_POLICY.textShare);
+  return Math.max(CHAT_MAIN_POLICY.textMinPx, Math.min(CHAT_MAIN_POLICY.textMaxPx, want));
+}
 
 /** Mike, 2026-09-24, yfbqrau4: stored marks survive; mark circles and line-mark shortcuts retire. */
 export const GUTTER_POLICY = { showLineMarks: false, showOpenDots: true, dotOpensReview: true } as const;

@@ -25,6 +25,7 @@ import { TextSelection } from '@milkdown/kit/prose/state';
 import { getCurrentActor } from '../editor/actor';
 import { openCommentComposer } from '../editor/plugins/mark-popover';
 import { productIdentity } from '../shared/product-identity';
+import { hasStoredViewerName } from './name-prompt';
 import type { Mark, CommentData, ReplaceData } from '../formats/marks';
 import { getActorName, getMarkColor } from '../formats/marks';
 import { actorKey, isAiActor, type DocLine } from '../shared/line-marks';
@@ -49,7 +50,7 @@ import { ScrollFollower, containRailWheel } from './rail-follow';
 import { setReadingAnchor } from '../editor/caret-anchor';
 import { SCROLL_CAMERA_POLICY, anchoredScroll, bandFractionFor, cameraScroll, deadZone, type CameraView } from '../shared/scroll-camera';
 import { HIGHLIGHT_POLICY, MARKED_UP_TO_POLICY, formatAgo, issuesLeftText } from '../shared/layout-status';
-import { ACCORDS_LIST_POLICY, BOTTOM_CHAT_POLICY, OPEN_ITEMS_POLICY, MARGIN_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY, parseRailState, reviewListKey, type MarginTab, type RailState } from '../shared/layout-panels';
+import { ACCORDS_LIST_POLICY, BOTTOM_CHAT_POLICY, CHAT_MAIN_POLICY, chatMainTextWidth, OPEN_ITEMS_POLICY, MARGIN_POLICY, NAVIGATOR_POLICY, PHONE_STRIP_POLICY, parseRailState, reviewListKey, type MarginTab, type RailState } from '../shared/layout-panels';
 import { NavigatorUI } from './navigator';
 import { personalCompletionText } from '../shared/participant-status';
 import { reviewStorageKey } from '../shared/review-list';
@@ -85,6 +86,8 @@ export const TOUCH_FOCUS_POLICY = {
 
 export interface ReadingWalkHost {
   slug(): string | null;
+  /** ac-p9e: opens the name prompt (the guest control in the top bar). */
+  setName?(): void;
   newDocument(): void;
   suggestChange(line: number): boolean;
   canSuggest(): boolean;
@@ -177,6 +180,8 @@ export class ReadingWalkUI {
   private readonly docsBody = el('div', 'prw-rail-body prw-documents-body');
   private docsSig = '';
   private chatExpanded = BOTTOM_CHAT_POLICY.initiallyExpanded as boolean;
+  /** Mike, 2026-10-21: the chat is the main space and the text a side column (CHAT_MAIN_POLICY). */
+  private chatMain = false;
   private rightHeadEl: HTMLElement | null = null;
   /** Step B7: unread @mentions of the viewer in the chat (a badge on the rail toggle). */
   private chatUnread = 0;
@@ -365,7 +370,8 @@ export class ReadingWalkUI {
     if (!this.started) return;
     this.started = false;
     setReadingAnchor(null);
-    document.body.classList.remove('prw-on', 'prw-left-collapsed', 'prw-right-collapsed');
+    document.body.classList.remove('prw-on', 'prw-left-collapsed', 'prw-right-collapsed', 'prw-chat-main');
+    this.chatMain = false;
     window.removeEventListener('scroll', this.onScroll);
     window.removeEventListener('resize', this.onResize);
     document.removeEventListener('keydown', this.onKeyDown);
@@ -593,7 +599,8 @@ export class ReadingWalkUI {
       viewportHeight: height,
       bottomInset: height - Math.max(chrome + 1, Math.min(
         window.visualViewport ? window.visualViewport.offsetTop + window.visualViewport.height : height,
-        this.chatSlot.isConnected ? this.chatSlot.getBoundingClientRect().top : height,
+        // In chat-main layout the chat stands beside the text, so it covers none of it.
+        this.chatSlot.isConnected && !this.chatMain ? this.chatSlot.getBoundingClientRect().top : height,
         isPhone() && this.right.classList.contains('prw-sheet-open') ? this.right.getBoundingClientRect().top : height)),
       topInset: Math.min(Math.max(0, chrome), Math.max(0, height - 1)),
       scrollY: window.scrollY,
@@ -853,6 +860,7 @@ export class ReadingWalkUI {
       close: (id, status) => lm().closeThread(id, status as ThreadStatus),
       reopen: (id) => lm().reopenThread(id),
       reply: (id, text) => lm().replyOnThread(id, text),
+      canReply: view => lm().canReplyOn(view),
       canTurnBack: id => lm().canTurnThreadBack(id),
       turnBack: id => lm().turnThreadBack(id),
       refresh: () => this.renderNow(),
@@ -1464,7 +1472,8 @@ export class ReadingWalkUI {
     const toolbar = document.querySelector('#share-banner .share-pill-center');
     if (toolbar && this.meEl.parentElement !== toolbar) toolbar.append(this.meEl);
     const me = this.host.lineMarks().viewerIdentity();
-    const sig = JSON.stringify([me.actor, me.trust, me.name, me.email ?? '', me.signInUrl ?? '', me.markNeedsSignIn === true, me.attestedBy?.actor ?? '']);
+    const named = hasStoredViewerName();
+    const sig = JSON.stringify([me.actor, me.trust, me.name, me.email ?? '', me.signInUrl ?? '', me.markNeedsSignIn === true, me.attestedBy?.actor ?? '', named]);
     if (this.meEl.dataset.sig === sig) return;
     this.meEl.dataset.sig = sig;
     this.meEl.dataset.trust = me.trust;
@@ -1494,7 +1503,16 @@ export class ReadingWalkUI {
       this.meEl.title = `Marks and answers are recorded as ${me.actor}`;
       return;
     }
-    this.meEl.append(el('span', 'prw-me-name', me.name || 'Anonymous'), el('span', 'prw-me-guest', 'guest, unverified'));
+    // ac-p9e (2026-09-30): ONE guest control in the top bar. The editor's own 'Guest · set your
+    // name' chip sat beside this line, so a signed-out reader saw two guest indicators. Here the
+    // name is the button that sets it ('Guest · set your name' until one is typed), followed by
+    // Sign in; the editor hides its chip while this control is in the bar.
+    const setName = el('button', 'prw-me-name prw-me-setname', named ? (me.name || 'Anonymous') : 'Guest · set your name');
+    setName.type = 'button';
+    setName.title = named ? 'Change how your name appears' : 'Choose how your name appears';
+    setName.onclick = () => this.host.setName?.();
+    this.meEl.append(setName);
+    if (named) this.meEl.append(el('span', 'prw-me-guest', 'guest, unverified'));
     // Invite person (2026-09-19): under the default guest setting a guest reads, comments and
     // chats; marks, answers, picks and approvals need signing in.
     this.meEl.title = me.markNeedsSignIn
@@ -1507,7 +1525,7 @@ export class ReadingWalkUI {
         // Come back here after signing in (read by public/vendor/soma-auth/proof-session.js).
         try { localStorage.setItem('proof:return-to', JSON.stringify({ path: location.pathname + location.search + location.hash, at: Date.now() })); } catch { /* optional */ }
       };
-      this.meEl.append(el('span', 'prw-me-sep', ' — '), link);
+      this.meEl.append(el('span', 'prw-me-sep', ' · '), link);
     }
   }
 
@@ -1591,8 +1609,13 @@ export class ReadingWalkUI {
     this.changesHost.hidden = onLine.length === 0;
     if (onLine.length === 0) return;
     const head = el('div', 'prw-changes-head');
-    head.append(el('strong', undefined, 'Changes on this line'), el('span', 'prw-step', String(onLine.length)));
+    // ac-ane: the count is the number of decisions shown, not records. A move is two records (the
+    // removal and the insertion) but one card and one decision, as a bundle is; counting records made
+    // one pending move read "2".
+    const count = el('span', 'prw-step', '0');
+    head.append(el('strong', undefined, 'Changes on this line'), count);
     this.changesHost.append(head);
+    let cards = 0;
     // Step B4e: a bundle on this line shows as one card (title, why, every passage, one decision).
     const shownBundles = new Set<string>();
     for (const item of onLine) {
@@ -1600,6 +1623,7 @@ export class ReadingWalkUI {
       if (!bundle || shownBundles.has(bundle.bundle.id)) continue;
       shownBundles.add(bundle.bundle.id);
       this.changesHost.append(this.bundleCard(bundle, all));
+      cards += 1;
     }
     for (const item of onLine) {
       const mark = all.get(item.id);
@@ -1611,7 +1635,9 @@ export class ReadingWalkUI {
         current: false,
         passed: false,
       }));
+      cards += 1;
     }
+    count.textContent = String(cards);
     this.changesHost.append(el('p', 'prw-hint', 'Accept or Reject decides a proposal. Scrolling only records reading.'));
   }
 
@@ -1870,13 +1896,52 @@ export class ReadingWalkUI {
 
   private roomShownListener: (() => void) | null = null;
   onRoomShown(listener: () => void): void { this.roomShownListener = listener; }
-  isRoomVisible(): boolean { return this.chatExpanded; }
+  isRoomVisible(): boolean { return this.chatMain || this.chatExpanded; }
   openRoom(): void { if (isPhone()) this.closeSheets(); this.setRoomExpanded(true); }
   closeRoom(): void { this.setRoomExpanded(false); }
   private setRoomExpanded(expanded: boolean): void {
     this.chatExpanded = expanded;
-    this.chatSlot.dataset.expanded = String(expanded);
+    this.chatSlot.dataset.expanded = String(this.chatMain || expanded);
     this.roomShownListener?.();
+  }
+
+  /** View › "Chat as the main space": the reader's choice, kept for every Accord in this browser. */
+  chatMainPreferred(): boolean {
+    try {
+      const saved = localStorage.getItem(CHAT_MAIN_POLICY.storageKey);
+      return saved === null ? CHAT_MAIN_POLICY.defaultOn : saved === '1';
+    } catch { return CHAT_MAIN_POLICY.defaultOn; }
+  }
+  /** Whether the window is wide enough for the text and the chat to share the centre. */
+  chatMainFits(): boolean { return chatMainTextWidth(this.centreWidth()) !== null && !isPhone(); }
+  isChatMain(): boolean { return this.chatMain; }
+  toggleChatMain(): void {
+    try { localStorage.setItem(CHAT_MAIN_POLICY.storageKey, this.chatMainPreferred() ? '0' : '1'); } catch { /* optional */ }
+    this.applyChatMain();
+  }
+  private centreWidth(): number {
+    const rail = (side: 'left' | 'right') => {
+      const name = side === 'left' ? '--prw-left' : '--prw-right';
+      const px = Number.parseFloat(getComputedStyle(document.body).getPropertyValue(name));
+      return Number.isFinite(px) ? px : 0;
+    };
+    return window.innerWidth - rail('left') - rail('right');
+  }
+  /**
+   * Mike, 2026-10-21: the chat fills the centre at full height and the text is a column at its left.
+   * Recomputed on every resize and rail toggle; the text column's width is --prw-doc.
+   */
+  private applyChatMain(): void {
+    const width = !isPhone() && this.chatMainPreferred() ? chatMainTextWidth(this.centreWidth()) : null;
+    const on = width !== null;
+    if (width !== null) document.body.style.setProperty('--prw-doc', `${width}px`);
+    else document.body.style.removeProperty('--prw-doc');
+    if (on === this.chatMain) return;
+    this.chatMain = on;
+    document.body.classList.toggle('prw-chat-main', on);
+    this.chatSlot.dataset.expanded = String(on || this.chatExpanded);
+    this.roomShownListener?.();
+    requestAnimationFrame(() => { this.measure(); this.queueRender(); });
   }
 
   /** Compatibility for explicit callers: Room expands the conversation; Line opens Review. */
@@ -1884,7 +1949,7 @@ export class ReadingWalkUI {
     if (tab === 'room') this.openRoom();
     else this.openReviewItem(this.cursorLine());
   }
-  marginTabShown(): MarginTab { return this.chatExpanded ? 'room' : 'line'; }
+  marginTabShown(): MarginTab { return this.isRoomVisible() ? 'room' : 'line'; }
   private renderMarginTabs(): void { /* The Line and Room tabs no longer render. */ }
 
   /** After the line's changes: the Familiar's note (folded) and everyone's marks on the line. */
@@ -2044,6 +2109,7 @@ export class ReadingWalkUI {
     document.body.classList.toggle('prw-right-collapsed', rightCollapsed);
     this.navigator.setPanelOpen((!rightCollapsed && !isPhone()) || this.right.classList.contains('prw-sheet-open'));
     this.updateToggleLabels();
+    this.applyChatMain();
   }
 
   private setCollapsed(side: 'left' | 'right', collapsed: boolean): void {
@@ -2051,6 +2117,7 @@ export class ReadingWalkUI {
     if (side === 'right') this.navigator.setPanelOpen(!collapsed);
     document.body.classList.toggle(`prw-${side}-collapsed`, collapsed);
     this.updateToggleLabels();
+    this.applyChatMain();
     requestAnimationFrame(() => { this.measure(); this.queueRender(); });
   }
 

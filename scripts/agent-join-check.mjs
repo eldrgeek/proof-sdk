@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { keepBottomChat } from './keep-bottom-chat.mjs';
 import { showReview, showWholeAccord } from './review-ui.mjs';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const shots = path.join(root, '.preview');
@@ -60,6 +61,7 @@ async function json(base, route, body, extraHeaders = {}) {
   return response.json();
 }
 const browser = await chromium.launch({ headless: true });
+keepBottomChat(browser);
 try {
   for (const style of styles) {
     const local = await start(style);
