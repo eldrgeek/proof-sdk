@@ -243,15 +243,30 @@ export function overrule(view: ProposalView, roster: RosterEntry[], by: string, 
     return { code: 'OWNER_ONLY', error: 'Only an Owner can overrule, and the disagreement is recorded when they do.' };
   }
   if (view.status !== 'open') return { code: 'NOT_OPEN', error: 'This proposal is already settled.' };
+  return { markId: view.markId, by, outcome, dissent: DISPOSITION_POLICY.overruleRecordsDissent ? dissentFrom(view, roster, by, outcome) : [], at };
+}
+
+/** Voters whose pile differs from an outcome. The person deciding is deciding, not dissenting. */
+export function dissentFrom(view: ProposalView, roster: RosterEntry[], by: string, outcome: 'common' | 'commonly-cut'): Array<{ actor: string; pile: Pile }> {
   const wanted: Pile = outcome === 'common' ? 'accord' : 'cutting-room';
   const dissent: Array<{ actor: string; pile: Pile }> = [];
   for (const member of voters(roster)) {
-    // The Owner overruling is deciding, not dissenting.
     if (actorKey(member) === actorKey(by)) continue;
     const pile = view.piles.get(actorKey(member)) ?? 'draft';
     if (pile !== wanted) dissent.push({ actor: member, pile });
   }
-  return { markId: view.markId, by, outcome, dissent: DISPOSITION_POLICY.overruleRecordsDissent ? dissent : [], at };
+  return dissent;
+}
+
+/**
+ * A change settled outside the dispositions route (an old page, or a page that skipped it) when its
+ * proposal was still open. The server cannot take the text back safely, so it records who settled
+ * it and who disagreed, exactly as an overrule is recorded, and names it. Null when the settlement
+ * matched what everyone decided.
+ */
+export function unsanctionedSettlement(view: ProposalView, roster: RosterEntry[], by: string, outcome: 'common' | 'commonly-cut', at: string): Overrule | null {
+  if (view.status === outcome) return null;
+  return { markId: view.markId, by, outcome, dissent: dissentFrom(view, roster, by, outcome), at };
 }
 
 /** A view after the Owner's overrule: settled as the Owner decided, with who disagreed. */

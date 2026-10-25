@@ -11,6 +11,7 @@
  * pending, and the route answers 200 with the proposal's piles.
  */
 import { addDocumentEvent, assertWritesAllowed, getDb } from './db.js';
+import { onClientSettlement } from './collab-marks-guard.js';
 import { documentOwnerActors } from './line-marks.js';
 import { currentTeam } from './proof-extras.js';
 import { actorKey } from '../src/shared/line-marks.js';
@@ -23,6 +24,7 @@ import {
   isFullAccord,
   overrule as decideOverrule,
   roleOf,
+  unsanctionedSettlement,
   whereWeDiffer,
   withOverrule,
   type Disposition,
@@ -192,6 +194,8 @@ export function dispositionsReport(slug: string, rawMarks: unknown): Record<stri
     // Arguments on open proposals; the rest are retired and stay in the log for replay.
     arguments: activeArguments(args, openIds),
     retiredArguments: retiredCount(args, openIds),
+    // Changes a page settled without everyone's agreement (it skipped the dispositions route).
+    settledWithoutConsensus: listUnsanctioned(slug),
     whereWeDiffer: whereWeDiffer(views).map(view => view.markId),
     fullAccord: isFullAccord(views),
     policy: DISPOSITION_POLICY,
@@ -259,6 +263,47 @@ export function applyOverrule(slug: string, input: {
   addDocumentEvent(slug, 'disposition.overruled', { markId: decided.markId, outcome: decided.outcome, dissent: decided.dissent }, decided.by);
   return { kind: 'recorded', overrule: decided, action: decided.outcome === 'common' ? 'accept' : 'reject' };
 }
+
+export function listUnsanctioned(slug: string): Overrule[] {
+  try {
+    const rows = getDb().prepare(`SELECT mark_id, by_actor, outcome, dissent_json, at FROM document_mark_unsanctioned WHERE document_slug = ? ORDER BY at ASC, id ASC`)
+      .all(slug) as Array<{ mark_id: string; by_actor: string; outcome: Overrule['outcome']; dissent_json: string; at: string }>;
+    return rows.map(row => {
+      let dissent: Overrule['dissent'] = [];
+      try { const parsed = JSON.parse(row.dissent_json) as unknown; if (Array.isArray(parsed)) dissent = parsed as Overrule['dissent']; } catch { /* none */ }
+      return { markId: row.mark_id, by: row.by_actor, outcome: row.outcome, dissent, at: row.at };
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The collab guard (server/collab-marks-guard.ts) calls this when a connected page moves a
+ * suggestion from pending to accepted or rejected. On a multi-party Accord the honest page only does
+ * that after the dispositions route said everyone agrees (or the Owner overruled). Anything else is
+ * a page that skipped the route; it is recorded, with who disagreed, and is never silent.
+ */
+export function noteClientSettlement(slug: string, input: { markId: string; mark: Record<string, unknown>; rawMarks: unknown }): Overrule | null {
+  if (!getMultiPartySettings(slug).enabled) return null;
+  const status = input.mark.status;
+  if (status !== 'accepted' && status !== 'rejected') return null;
+  const outcome = status === 'accepted' ? 'common' : 'commonly-cut';
+  const proposer = typeof input.mark.by === 'string' && input.mark.by.trim() ? input.mark.by.trim() : 'owner';
+  const by = typeof input.mark.resolvedBy === 'string' && input.mark.resolvedBy.trim() ? input.mark.resolvedBy.trim() : 'unknown';
+  const roster = rosterFor(slug, input.rawMarks);
+  const view = withOverrule(evaluateProposal({ markId: input.markId, by: proposer }, roster, listDispositions(slug)), overruleFor(slug, input.markId));
+  const found = unsanctionedSettlement(view, roster, by, outcome, new Date().toISOString());
+  if (!found) return null;
+  assertWritesAllowed('noteClientSettlement');
+  getDb().prepare(`
+    INSERT INTO document_mark_unsanctioned (document_slug, mark_id, by_actor, outcome, dissent_json, at) VALUES (?, ?, ?, ?, ?, ?)
+  `).run(slug, found.markId, found.by, found.outcome, JSON.stringify(found.dissent), found.at);
+  addDocumentEvent(slug, 'disposition.unsanctioned', { markId: found.markId, outcome: found.outcome, dissent: found.dissent }, found.by);
+  return found;
+}
+
+onClientSettlement(noteClientSettlement);
 
 export type ArgumentOutcome =
   | { kind: 'off' }

@@ -19,6 +19,7 @@ import {
   finalizeAction,
   isFullAccord,
   overrule,
+  unsanctionedSettlement,
   parseDisposition,
   personalPiles,
   pileOf,
@@ -240,6 +241,21 @@ test('stance on a change names who has it in their accord and who cut it', () =>
   assert.equal(stanceText(report, ['b'], name), null);
   assert.equal(stanceText(report, ['zzz'], name), null);
   assert.equal(stanceText(report, ['a', 'b'], name), null, 'a row with several changes shows no merged stance');
+});
+
+test('a change settled without everyone is named, with who disagreed; a unanimous one is not', () => {
+  const open = evaluateProposal({ markId: 'm6', by: 'ai:claude' }, many, [rec('m6', 'ai:gemini', 'cut')]);
+  const found = unsanctionedSettlement(open, many, 'eric@example.com', 'common', at());
+  assert.ok(found);
+  assert.equal(found.by, 'eric@example.com');
+  assert.deepEqual(found.dissent, [
+    { actor: 'mike@example.com', pile: 'draft' },
+    { actor: 'ai:gemini', pile: 'cutting-room' },
+  ], 'the person who settled it is not listed as dissenting, and observers are not voters');
+  const agreed = evaluateProposal({ markId: 'm7', by: 'ai:claude' }, two, [rec('m7', 'mike@example.com', 'promote')]);
+  assert.equal(agreed.status, 'common');
+  assert.equal(unsanctionedSettlement(agreed, two, 'mike@example.com', 'common', at()), null);
+  assert.ok(unsanctionedSettlement(agreed, two, 'mike@example.com', 'commonly-cut', at()), 'cutting a change everyone promoted is not what they decided');
 });
 
 console.log(`\n${passed} dispositions tests passed`);

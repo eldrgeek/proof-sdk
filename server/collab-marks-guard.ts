@@ -5,6 +5,11 @@ import { Connection } from '@hocuspocus/server';
 import { isPendingSuggestion, isSuggestion, SUGGESTION_STATUS_POLICY } from '../src/shared/suggestion-status.js';
 import { addDocumentEvent } from './db.js';
 
+type SettlementHook = (slug: string, input: { markId: string; mark: Record<string, unknown>; rawMarks: unknown }) => unknown;
+let settlementHook: SettlementHook | null = null;
+/** server/dispositions.ts registers here, so this guard does not import the routes' module graph. */
+export function onClientSettlement(hook: SettlementHook): void { settlementHook = hook; }
+
 const guarded = new WeakSet<Y.Doc>();
 const restores = new WeakMap<Connection, number[]>();
 const reloadRequested = new WeakSet<Connection>();
@@ -75,6 +80,11 @@ export function observeClientMarks(slug: string, doc: Y.Doc): void {
         status: pending ? 'pending' : after.status,
         resolvedBy: after.resolvedBy, resolvedAt: after.resolvedAt,
       }, after.resolvedBy ?? 'unknown');
+      // Multi-party Accords: a page that settles a change everyone has not agreed to is recorded.
+      if (wasPending && !pending) {
+        try { settlementHook?.(slug, { markId, mark: after as unknown as Record<string, unknown>, rawMarks: marks.toJSON() }); }
+        catch (error) { console.warn('[collab] could not check a settlement against dispositions', { slug, markId, error: String(error) }); }
+      }
     }
   });
 }

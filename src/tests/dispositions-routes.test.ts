@@ -13,6 +13,7 @@ process.env.DATABASE_PATH = path.join(temp, 'test.db');
 const db = await import('../../server/db');
 const { apiRoutes } = await import('../../server/routes');
 const { agentRoutes } = await import('../../server/agent-routes');
+const { noteClientSettlement } = await import('../../server/dispositions');
 
 let passed = 0;
 async function test(name: string, fn: () => void | Promise<void>): Promise<void> {
@@ -185,6 +186,31 @@ try {
     const events = await call(`/api/agent/${slug}/events/pending?after=0`, 'GET', undefined, claude);
     const argued = (events.body.events as any[]).filter(e => e.type === 'disposition.argued' && e.data.markId === id);
     assert.equal(argued.length, 2, 'each argument is in the log once, so replay keeps it');
+  });
+
+  await test('a page that settles a change outside the dispositions route is recorded, with who disagreed', async () => {
+    await call(`/api/agent/${slug}/dispositions/settings`, 'POST', { observers: [], by: MIKE }, OWNER);
+    const id = await suggest('Launch moves', 'Launch slips');
+    await decide('reject', id, gemini);
+    const state = await call(`/api/agent/${slug}/state`, 'GET', undefined, claude);
+    const marks = { ...(state.body.marks as Record<string, any>) };
+    marks[id] = { ...marks[id], status: 'accepted', resolvedBy: MIKE, resolvedAt: new Date().toISOString() };
+    // What the collab guard passes when a connected page flips the status itself.
+    const found = noteClientSettlement(slug, { markId: id, mark: marks[id], rawMarks: marks });
+    assert.ok(found, 'the bypass was not recorded');
+    assert.equal(found!.by, MIKE);
+    assert.ok(found!.dissent.some((d: any) => d.actor === 'ai:gemini' && d.pile === 'cutting-room'), JSON.stringify(found!.dissent));
+    const report = await call(`/api/agent/${slug}/dispositions`, 'GET', undefined, claude);
+    assert.ok((report.body.settledWithoutConsensus as any[]).some(s => s.markId === id && s.by === MIKE));
+    const events = await call(`/api/agent/${slug}/events/pending?after=0`, 'GET', undefined, claude);
+    assert.ok((events.body.events as any[]).some(e => e.type === 'disposition.unsanctioned' && e.data.markId === id));
+    // A settlement everyone agreed to is not recorded.
+    const agreed = await suggest('every paying customer', 'every customer');
+    const before = (await call(`/api/agent/${slug}/state`, 'GET', undefined, claude)).body.marks as Record<string, any>;
+    await decide('accept', agreed, gemini);
+    await decide('accept', agreed, OWNER, MIKE);
+    const done = { ...before[agreed], status: 'accepted', resolvedBy: MIKE };
+    assert.equal(noteClientSettlement(slug, { markId: agreed, mark: done, rawMarks: { ...before, [agreed]: done } }), null);
   });
 
   await test('every disposition is an event, so the path to accord can be replayed', async () => {

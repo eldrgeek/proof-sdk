@@ -1522,6 +1522,18 @@ function initDatabase(): void {
     )
   `);
   d.exec(`CREATE INDEX IF NOT EXISTS idx_document_mark_overrules_slug ON document_mark_overrules(document_slug, mark_id)`);
+  // Accord multi-party: a change settled outside the dispositions route while it was still open.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_mark_unsanctioned (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      document_slug TEXT NOT NULL,
+      mark_id TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      dissent_json TEXT NOT NULL DEFAULT '[]',
+      at TEXT NOT NULL
+    )
+  `);
   // Accord multi-party: arguments for or against a proposal, append-only (src/shared/arguments.ts).
   d.exec(`
     CREATE TABLE IF NOT EXISTS document_mark_arguments (
