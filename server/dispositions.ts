@@ -150,6 +150,33 @@ export function dispositionsReport(slug: string, rawMarks: unknown): Record<stri
   };
 }
 
+export type DispositionOutcome =
+  | { kind: 'off' }
+  | { kind: 'not-pending' }
+  | { kind: 'refused'; status: number; body: Record<string, unknown> }
+  | { kind: 'recorded'; record: DispositionRecord; view: ProposalView; action: 'accept' | 'reject' | 'hold' };
+
+/** Records one person's disposition on a pending suggestion and evaluates the proposal. */
+export function applyDisposition(slug: string, input: {
+  markId: unknown;
+  by: string;
+  disposition: Disposition;
+  rawMarks: unknown;
+  source: 'page' | 'agent';
+}): DispositionOutcome {
+  if (!getMultiPartySettings(slug).enabled) return { kind: 'off' };
+  const markId = typeof input.markId === 'string' ? input.markId : '';
+  const proposal = markId ? pendingSuggestions(input.rawMarks).find(p => p.markId === markId) : undefined;
+  if (!proposal) return { kind: 'not-pending' };
+  const roster = rosterFor(slug, input.rawMarks, [input.by]);
+  const refusal = dispositionRefusal(roster, input.by);
+  if (refusal) return { kind: 'refused', status: 403, body: { success: false, ...refusal } };
+  const record: DispositionRecord = { markId, by: input.by, disposition: input.disposition, at: new Date().toISOString() };
+  recordDisposition(slug, record, input.source);
+  const view = evaluateProposal(proposal, roster, listDispositions(slug));
+  return { kind: 'recorded', record, view, action: finalizeAction(view) };
+}
+
 export type GateResult =
   | { handled: false }
   | { handled: true; status: number; body: Record<string, unknown> };
@@ -166,19 +193,10 @@ export function dispositionGate(slug: string, input: {
   rawMarks: unknown;
   source: 'page' | 'agent';
 }): GateResult {
-  if (!getMultiPartySettings(slug).enabled) return { handled: false };
-  const markId = typeof input.markId === 'string' ? input.markId : '';
-  if (!markId) return { handled: false };
-  const proposal = pendingSuggestions(input.rawMarks).find(p => p.markId === markId);
-  // Not a pending suggestion: the engine answers (not found, already resolved, a move).
-  if (!proposal) return { handled: false };
-  const roster = rosterFor(slug, input.rawMarks, [input.by]);
-  const refusal = dispositionRefusal(roster, input.by);
-  if (refusal) return { handled: true, status: 403, body: { success: false, ...refusal } };
-  const record: DispositionRecord = { markId, by: input.by, disposition: input.disposition, at: new Date().toISOString() };
-  recordDisposition(slug, record, input.source);
-  const view = evaluateProposal(proposal, roster, listDispositions(slug));
-  const action = finalizeAction(view);
+  const outcome = applyDisposition(slug, input);
+  if (outcome.kind === 'off' || outcome.kind === 'not-pending') return { handled: false };
+  if (outcome.kind === 'refused') return { handled: true, status: outcome.status, body: outcome.body };
+  const { record, view, action } = outcome;
   if ((action === 'accept' && input.disposition === 'promote') || (action === 'reject' && input.disposition === 'cut')) {
     return { handled: false };
   }
@@ -188,7 +206,7 @@ export function dispositionGate(slug: string, input: {
     body: {
       success: true,
       multiParty: true,
-      disposition: { markId, by: input.by, disposition: input.disposition, at: record.at },
+      disposition: { markId: record.markId, by: record.by, disposition: record.disposition, at: record.at },
       proposal: serializeProposalView(view),
       marks: input.rawMarks,
     },
