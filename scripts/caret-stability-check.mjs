@@ -13,6 +13,7 @@ import { showWholeAccord } from './review-ui.mjs';
 // Authorship: Claude Opus 5 (worker proof-caret), 2026-09-19, in the style of editing-first-check.mjs.
 // Usage: node scripts/caret-stability-check.mjs [--style playmaker|proof] [--mode editing|suggesting]
 //        [--device desktop|phone] [--shots dir] [--trace]
+//        [--mutation delayed-selection|nested-selection] [--dispatch-load milliseconds]
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
@@ -26,6 +27,14 @@ import { keepBottomChat } from './keep-bottom-chat.mjs';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const arg = (name) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : null; };
 const trace = process.argv.includes('--trace');
+const mutation = arg('--mutation');
+const dispatchLoadMs = Number(arg('--dispatch-load') || 0);
+if (mutation && !['delayed-selection', 'nested-selection'].includes(mutation)) {
+  throw new Error(`unknown --mutation ${mutation}`);
+}
+if (!Number.isFinite(dispatchLoadMs) || dispatchLoadMs < 0) {
+  throw new Error(`--dispatch-load must be a non-negative number (got ${arg('--dispatch-load')})`);
+}
 const shots = arg('--shots') || path.join(root, '.preview');
 mkdirSync(shots, { recursive: true });
 const styles = arg('--style') ? [arg('--style')] : ['playmaker', 'proof'];
@@ -169,11 +178,11 @@ async function openDoc(browser, base, slug, name, contextOptions) {
  * scrolls. It is "foreign" (not caused by the person) when
  *  - it is a Yjs-origin (remote) transaction that scrolls, or moves the caret to another block or
  *    another offset within its block (a remote change elsewhere must leave the caret where it was);
- *  - or it is any other transaction that sets the selection or scrolls outside the ~50 ms after a
- *    key, input, pointer or selectionchange event (ProseMirror's own input handling).
+ *  - or it is any other transaction that sets the selection or scrolls without consuming the
+ *    one transaction token created by its originating browser input event.
  */
 async function instrument(page) {
-  await page.evaluate((trace) => {
+  await page.evaluate(({ trace, mutation, dispatchLoadMs }) => {
     Error.stackTraceLimit = trace ? 60 : 12;
     const view = window.__editorView;
     const w = window;
@@ -184,9 +193,31 @@ async function instrument(page) {
     // whole-document remote replace.
     w.__caretEchoes = 0;
     const localDepth = { n: 0 };
-    let userUntil = 0;
-    for (const type of ['keydown', 'keypress', 'beforeinput', 'input', 'compositionend', 'mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend', 'click', 'selectionchange']) {
-      document.addEventListener(type, () => { userUntil = performance.now() + 50; }, true);
+    let dispatchDepth = 0;
+    let userToken = null;
+    let nextToken = 0;
+    let keydowns = 0;
+    let nestedMutationDone = false;
+    const moveSelectionOneCharacter = () => {
+      const v = window.__editorView;
+      const head = v.state.selection.head;
+      const anchor = Math.max(1, head - 1);
+      v.dispatch(v.state.tr.setSelection(v.state.selection.constructor.create(v.state.doc, anchor, head)));
+    };
+    // Use the events that initiate an editor action. Follow-up notifications such as `input` and
+    // `selectionchange` must not mint another token after that action has already consumed one.
+    for (const type of ['keydown', 'beforeinput', 'compositionend', 'paste', 'drop', 'click', 'touchend']) {
+      document.addEventListener(type, () => {
+        // A token is causal, not a grace period: it can be consumed once, by a top-level dispatch
+        // initiated by this browser event. ProseMirror may flush DOM selection asynchronously,
+        // so the token has a short lifetime, but no second transaction can borrow the remainder.
+        const token = { id: ++nextToken, expires: performance.now() + 50 };
+        userToken = token;
+        setTimeout(() => { if (userToken === token) userToken = null; }, 50);
+        if (type === 'keydown' && mutation === 'delayed-selection' && ++keydowns === 3) {
+          setTimeout(moveSelectionOneCharacter, 120);
+        }
+      }, true);
     }
     const describe = tr => Object.keys(tr.meta || {}).map(k => {
       const v = tr.meta[k];
@@ -206,10 +237,18 @@ async function instrument(page) {
         const before = v.state.selection;
         const beforeDoc = v.state.doc;
         const scrollBefore = window.scrollY;
-        // Classify the transaction when dispatch begins. Under load, applying an ordinary
-        // beforeinput transaction can take longer than the 50 ms input window; classifying it
-        // after original(tr) then falsely calls the person's own typed character foreign.
-        const user = performance.now() <= userUntil;
+        // Consume the event's one-shot token at dispatch entry. Sampling before original(tr)
+        // keeps an ordinary input correctly classified even when applying it takes >50 ms.
+        // Re-entrant dispatches are never the browser event's transaction and must stand on meta.
+        const explicitUser = tr.getMeta?.('pointer') === true;
+        const user = explicitUser || (dispatchDepth === 0 && userToken !== null
+          && performance.now() <= userToken.expires);
+        if (trace) (w.__caretDispatchLog ||= []).push({
+          t: Math.round(performance.now()), depth: dispatchDepth, token: userToken?.id ?? null,
+          user, docChanged: tr.docChanged, selectionSet: tr.selectionSet,
+          scrolled: tr.scrolledIntoView, meta: describe(tr),
+        });
+        if (user && dispatchDepth === 0) userToken = null;
         const remote = Object.keys(tr.meta || {}).some(k => k.startsWith('y-sync') && tr.meta[k]?.isChangeOrigin);
         // Only y-prosemirror's whole-document replace counts (a nested marks refresh tagged as
         // remote is not an echo of the keystroke).
@@ -220,7 +259,21 @@ async function instrument(page) {
         }
         const local = !remote && tr.docChanged;
         if (local) localDepth.n += 1;
-        try { original(tr); } finally { if (local) localDepth.n -= 1; }
+        dispatchDepth += 1;
+        try {
+          if (dispatchLoadMs > 0 && user && tr.docChanged) {
+            const until = performance.now() + dispatchLoadMs;
+            while (performance.now() < until) { /* intentional mutation-control load */ }
+          }
+          original(tr);
+          if (mutation === 'nested-selection' && !nestedMutationDone && user && tr.docChanged) {
+            nestedMutationDone = true;
+            moveSelectionOneCharacter();
+          }
+        } finally {
+          dispatchDepth -= 1;
+          if (local) localDepth.n -= 1;
+        }
         const after = v.state.selection;
         if (before.eq(after) && !tr.scrolledIntoView) return;
         const from = where(beforeDoc, before.head);
@@ -254,7 +307,7 @@ async function instrument(page) {
         w.__yLog.push({ t: Math.round(performance.now()), origin: String(transaction.origin?.constructor?.name ?? transaction.origin), touched });
       });
     }
-  }, trace);
+  }, { trace, mutation, dispatchLoadMs });
 }
 
 /** Viewport point just before `needle` inside top-level block `index`. */
@@ -377,7 +430,8 @@ async function run(browser, base, style, mode, device) {
   const echoStacks = await page.evaluate(() => window.__caretEchoStacks || []);
   const foreign = log.filter(e => e.foreign);
   const dump = () => foreign.slice(0, 8).map(e => `${e.t} ${JSON.stringify(e.from)}->${JSON.stringify(e.to)} set=${e.selectionSet} doc=${e.docChanged} scroll=${e.scrolled} meta=[${e.meta.join(' ')}] ${e.stack}`).join('\n    ');
-  if (trace) writeFileSync(path.join(shots, `${tag}-log.json`), JSON.stringify({ clickSel, samples, log, yLog: await page.evaluate(() => window.__yLog) }, null, 1));
+  if (trace) writeFileSync(path.join(shots, `${tag}-log.json`), JSON.stringify({ clickSel, samples, log,
+    dispatchLog: await page.evaluate(() => window.__caretDispatchLog), yLog: await page.evaluate(() => window.__yLog) }, null, 1));
   if (trace) console.log(`  ${tag}: ${log.length} selection transactions, ${foreign.length} foreign, view swaps ${swaps}\n    ${dump()}`);
 
   await check(`${tag}: the click puts the caret before "${CLICK_BEFORE}"`, async () => {
