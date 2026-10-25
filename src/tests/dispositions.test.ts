@@ -11,6 +11,8 @@ import {
   dispositionRefusal,
   dispositionStatusText,
   summarizeForViewer,
+  viewerPiles,
+  PILE_FILTER_POLICY,
   evaluateProposal,
   evaluateProposals,
   finalizeAction,
@@ -200,6 +202,27 @@ test('someone who has not decided yet has every open proposal they did not make 
   };
   assert.equal(summarizeForViewer(report, 'Mike').draft, 2);
   assert.equal(summarizeForViewer(report, 'eric').draft, 1);
+});
+
+test('the pile switch: one person\'s draft, accord, cutting room and where we differ, by mark id', () => {
+  const report = {
+    multiParty: true,
+    roster: [{ actor: 'mike@example.com', role: 'owner' as const }, { actor: 'ai:claude', role: 'participant' as const }, { actor: 'lea@example.com', role: 'observer' as const }],
+    proposals: [
+      { markId: 'a', proposer: 'ai:claude', status: 'open', openFor: ['mike@example.com'], promotedBy: ['ai:claude'] },
+      { markId: 'b', proposer: 'ai:claude', status: 'open', openFor: [], promotedBy: ['ai:claude', 'Mike@example.com'] },
+      { markId: 'c', proposer: 'ai:claude', status: 'open', openFor: [], promotedBy: ['ai:claude'], cutBy: ['mike@example.com'] },
+      { markId: 'd', proposer: 'ai:claude', status: 'common', openFor: [], promotedBy: ['ai:claude', 'mike@example.com'] },
+    ],
+    whereWeDiffer: ['c'],
+    fullAccord: false,
+  };
+  assert.deepEqual(viewerPiles(report, 'mike@example.com'), { draft: ['a'], accord: ['b'], 'cutting-room': ['c'], differ: ['c'] });
+  assert.deepEqual(viewerPiles(report, 'ai:claude'), { draft: [], accord: ['a', 'b', 'c'], 'cutting-room': [], differ: ['c'] });
+  assert.deepEqual(viewerPiles(report, 'lea@example.com'), { draft: [], accord: [], 'cutting-room': [], differ: ['c'] });
+  assert.deepEqual(viewerPiles(report, 'newcomer'), { draft: ['a', 'b', 'c'], accord: [], 'cutting-room': [], differ: ['c'] });
+  assert.deepEqual(PILE_FILTER_POLICY.filters.map(f => f.label), ['Draft', 'My accord', 'Cutting room', 'Where we differ']);
+  assert.equal(PILE_FILTER_POLICY.defaultFilter, null);
 });
 
 console.log(`\n${passed} dispositions tests passed`);

@@ -8,6 +8,7 @@ import { REVIEW_LIST_POLICY, reviewCountLabel, reconcileReview, emptyReviewSessi
   clearCompleted, nextReviewRow, anchoredReviewScroll, type ReviewScope } from '../shared/review-list';
 import type { LineMarksUI } from './line-marks';
 import { convertedDiscussionFor, convertedRowLabel } from '../shared/typed-discussion';
+import { PILE_FILTER_POLICY, type PileFilter } from '../shared/dispositions';
 
 export interface NavigatorHost {
   lineMarks(): LineMarksUI;
@@ -20,6 +21,8 @@ export interface NavigatorHost {
   toggle?(): void;
   decide(line: number, action: 'accept' | 'reject'): void;
   focusDocument(line: number): void;
+  /** Multi-party Accords: this reader's piles as mark ids, or null when the Accord is not multi-party. */
+  piles?(): Record<PileFilter, string[]> | null;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -38,9 +41,18 @@ export class NavigatorUI {
   readonly detailEl = el('section', 'anv-detail');
   private readonly issuesList = el('ul', 'anv-issues');
   private sessions = { 'needs-you': emptyReviewSession(), 'all-open': emptyReviewSession() };
-  private get session() { return this.sessions[this.scope]; }
+  private get session() { return this.sessions[this.pile ? 'all-open' : this.scope]; }
+  /** The rows the list shows: every row, or only the open changes in the pile the reader chose. */
+  private visibleRows() {
+    const ids = this.pile ? this.host.piles?.()?.[this.pile] : null;
+    if (!ids) return this.session.rows;
+    const wanted = new Set(ids);
+    return this.session.rows.filter(row => !row.done && (row.markIds ?? []).some(id => wanted.has(id)));
+  }
   private scope: ReviewScope = REVIEW_LIST_POLICY.defaultScope;
   private readonly scopeTools = el('div', 'anv-review-tools');
+  private readonly pileTools = el('div', 'anv-pile-tools');
+  private pile: PileFilter | null = PILE_FILTER_POLICY.defaultFilter;
   private readonly clearSettledBtn = el('button', 'anv-clear-settled', 'Clear completed');
   private readonly nextBtn = el('button', 'anv-next', 'Next');
   private readonly issuesEmpty = el('p', 'prw-empty anv-empty');
@@ -93,8 +105,9 @@ export class NavigatorUI {
       button.type = 'button';
       button.dataset.accordReviewScope = spec.id;
       button.onclick = () => {
-        if (this.scope === spec.id) return;
+        if (this.scope === spec.id && !this.pile) return;
         this.scope = spec.id;
+        this.pile = null;
         this.render();
       };
       this.scopeTools.append(button);
@@ -105,8 +118,21 @@ export class NavigatorUI {
     this.nextBtn.type = 'button';
     this.nextBtn.onclick = () => this.next();
     this.scopeTools.append(this.nextBtn, this.clearSettledBtn);
+    this.pileTools.setAttribute('role', 'group');
+    this.pileTools.setAttribute('aria-label', 'Your piles');
+    this.pileTools.dataset.accordPiles = '';
+    this.pileTools.hidden = true;
+    for (const spec of PILE_FILTER_POLICY.filters) {
+      const button = el('button', 'anv-pile');
+      button.type = 'button';
+      button.dataset.accordPile = spec.id;
+      button.dataset.label = spec.label;
+      // A second press on the chosen pile shows everything again.
+      button.onclick = () => { this.pile = this.pile === spec.id ? null : spec.id; this.render(); };
+      this.pileTools.append(button);
+    }
     this.detailEl.setAttribute('aria-label', 'Selected passage discussion and proposals');
-    this.panes.issues.append(this.scopeTools, this.keyHint, this.detailEl, this.issuesEmpty, this.issuesList);
+    this.panes.issues.append(this.pileTools, this.scopeTools, this.keyHint, this.detailEl, this.issuesEmpty, this.issuesList);
     this.applyTab();
   }
 
@@ -198,7 +224,7 @@ export class NavigatorUI {
     if (focused) this.selectedKey = focused.dataset.key ?? null;
     const selected = this.session.rows.find(row => row.key === this.selectedKey);
     if (action === 'next' || action === 'previous') {
-      const rows = this.session.rows;
+      const rows = this.visibleRows();
       const at = rows.findIndex(row => row.key === this.selectedKey);
       const candidates = action === 'next' ? rows.slice(at + 1) : (at < 0 ? rows : rows.slice(0, at)).slice().reverse();
       const next = candidates.find(row => !row.done && row.line >= 0);
@@ -238,7 +264,17 @@ export class NavigatorUI {
     this.badge.textContent = label;
     this.buttons.get('issues')?.setAttribute('aria-label', `Review (${label})`);
     for (const button of this.scopeTools.querySelectorAll<HTMLElement>('[data-accord-review-scope]')) {
-      button.setAttribute('aria-pressed', String(button.dataset.accordReviewScope === this.scope));
+      button.setAttribute('aria-pressed', String(!this.pile && button.dataset.accordReviewScope === this.scope));
+    }
+    const piles = this.host.piles?.() ?? null;
+    if (!piles) this.pile = null;
+    this.pileTools.hidden = !piles;
+    for (const button of this.pileTools.querySelectorAll<HTMLElement>('[data-accord-pile]')) {
+      const id = button.dataset.accordPile as PileFilter;
+      const n = piles?.[id].length ?? 0;
+      const text = `${button.dataset.label} ${n}`;
+      if (button.textContent !== text) button.textContent = text;
+      button.setAttribute('aria-pressed', String(this.pile === id));
     }
     if (lm.isLoaded()) for (const scope of ['needs-you', 'all-open'] as const) {
       const session = reconcileReview(this.sessions[scope], views[scope], lm.lineList());
@@ -246,8 +282,9 @@ export class NavigatorUI {
     }
     this.nextBtn.disabled = open.count === 0 && !this.session.rows.some(row => row.done);
     this.clearSettledBtn.disabled = !this.session.rows.some(row => row.done);
-    this.issuesEmpty.textContent = 'Nothing is open.';
-    this.issuesEmpty.hidden = this.session.rows.length > 0 || !lm.isLoaded();
+    const pileLabel = PILE_FILTER_POLICY.filters.find(f => f.id === this.pile)?.label;
+    this.issuesEmpty.textContent = pileLabel ? `Nothing in ${pileLabel === 'Where we differ' ? 'where we differ' : `your ${pileLabel.replace(/^My /, '').toLowerCase()}`}.` : 'Nothing is open.';
+    this.issuesEmpty.hidden = this.visibleRows().length > 0 || !lm.isLoaded();
     this.renderIssues();
   }
 
@@ -275,7 +312,7 @@ export class NavigatorUI {
     this.issuesList.style.paddingBottom = `${pane.clientHeight}px`;
     const existing = new Map([...this.issuesList.children].map(node => [(node as HTMLElement).dataset.key, node as HTMLElement]));
     const used = new Set<Element>();
-    this.session.rows.forEach((row, index) => {
+    this.visibleRows().forEach((row, index) => {
       const li = existing.get(row.key) ?? el('li');
       li.dataset.key = row.key;
       existing.delete(row.key);
@@ -322,6 +359,7 @@ export class NavigatorUI {
       tab: this.tab,
       issues: [...this.issuesList.querySelectorAll<HTMLElement>('.anv-issue')].map(b => ({ line: Number(b.dataset.line), kind: b.dataset.kind, settled: b.dataset.settled === 'true', label: b.querySelector('.anv-issue-kind')?.textContent ?? '' })),
       scope: this.scope,
+      pile: this.pile,
       settled: this.session.rows.filter(row => row.done).map(row => row.line),
     };
   }

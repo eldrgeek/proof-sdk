@@ -162,6 +162,24 @@ async function run(browser, base, style) {
       await page.screenshot({ path: `.preview/dispositions-count-line-${style}.png` });
     });
 
+    await check(`${tag}: the pile switch shows this person's piles, and each pile lists only its changes`, async () => {
+      const piles = page.locator('[data-accord-piles]');
+      await piles.waitFor({ state: 'visible', timeout: 10_000 });
+      const label = id => page.locator(`[data-accord-pile="${id}"]`).textContent();
+      assert.equal(await label('draft'), 'Draft 0');
+      assert.equal(await label('cutting-room'), 'Cutting room 1');
+      assert.equal(await label('differ'), 'Where we differ 1');
+      await page.locator('[data-accord-pile="draft"]').click();
+      await poll(async () => (await page.locator('.anv-empty').textContent()) === 'Nothing in your draft.' && await page.locator('.anv-empty').isVisible(), 'Draft should be empty');
+      await page.locator('[data-accord-pile="cutting-room"]').click();
+      await poll(async () => (await page.locator('[data-accord-review-list] .anv-issue[data-settled="false"]').count()) === 1, 'Cutting room should list the one cut change');
+      assert.match(await page.locator('[data-accord-review-list] .anv-issue[data-settled="false"]').first().innerText(), /September 23/);
+      assert.equal(await page.locator('[data-accord-pile="cutting-room"]').getAttribute('aria-pressed'), 'true');
+      await page.screenshot({ path: `.preview/dispositions-piles-${style}.png` });
+      await page.locator('[data-accord-pile="cutting-room"]').click();
+      assert.equal(await page.locator('[data-accord-pile="cutting-room"]').getAttribute('aria-pressed'), 'false');
+    });
+
     await check(`${tag}: when the page's promote is the last one, the page applies the change as it always has`, async () => {
       const made = await agent('/marks/suggest-replace', { quote: 'the same', content: 'flat', by: 'ai:claude', why: 'Clearer' });
       const id = made.markId ?? made.suggestion?.markId;

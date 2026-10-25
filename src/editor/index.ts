@@ -238,7 +238,7 @@ import { normalizeQuote, extractMarks, embedMarks, getThread, migrateProvenanceT
 import { proofMarkHandler } from '../formats/remark-proof-marks';
 import { remarkProofMarksPlugin } from './schema/remark-proof-marks-plugin';
 import { getCurrentActor, setCurrentActor as setCurrentActorValue, normalizeActor } from './actor';
-import { dispositionStatusText, summarizeForViewer, type DispositionsReportView } from '../shared/dispositions';
+import { dispositionStatusText, summarizeForViewer, viewerPiles, type DispositionsReportView, type PileFilter } from '../shared/dispositions';
 
 /** How often a multi-party Accord's count line re-reads the server (others decide too). */
 const DISPOSITIONS_REFRESH_MS = 10_000;
@@ -1548,6 +1548,12 @@ class ProofEditorImpl implements ProofEditor {
       this.shareDispositionsTimer = null;
     }
     this.openViewUI?.sync();
+    this.readingWalk?.navigator.render();
+  }
+
+  private dispositionPiles(): Record<PileFilter, string[]> | null {
+    if (!this.shareDispositions) return null;
+    return viewerPiles(this.shareDispositions, this.shareDispositions.viewer ?? getCurrentActor());
   }
 
   private dispositionsText(): string | null {
@@ -4383,6 +4389,7 @@ class ProofEditorImpl implements ProofEditor {
         setName: () => this.promptViewerName(),
         newDocument: () => { void this.newDocument(); },
         slug: () => shareClient.getSlug(),
+        piles: () => this.dispositionPiles(),
         suggestChange: (line) => {
           if (EDIT_SESSION_POLICY.privateDrafts) return this.editGesture?.open(line) ?? false;
           this.readingWalk?.focusDocument(line);
