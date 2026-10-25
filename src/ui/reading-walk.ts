@@ -119,6 +119,9 @@ export interface ReadingWalkHost {
   stance?(markIds: readonly string[]): string | null;
   canOverrule?(): boolean;
   overrule?(markIds: string[], outcome: 'common' | 'commonly-cut'): void;
+  argumentsOn?(markIds: readonly string[]): { count: string | null; lines: string[] };
+  argue?(markId: string, stance: 'for' | 'against', text: string): Promise<string | null>;
+  changeLabel?(markId: string): string;
 }
 
 const PHONE_QUERY = '(max-width: 700px)';
@@ -309,6 +312,9 @@ export class ReadingWalkUI {
       stance: (ids) => this.host.stance?.(ids) ?? null,
       canOverrule: () => this.host.canOverrule?.() ?? false,
       overrule: (ids, outcome) => this.host.overrule?.(ids, outcome),
+      argumentsOn: (ids) => this.host.argumentsOn?.(ids) ?? { count: null, lines: [] },
+      changeLabel: (id) => this.host.changeLabel?.(id) ?? id,
+      ...(this.host.argue ? { argue: (id: string, stance: 'for' | 'against', text: string) => this.host.argue!(id, stance, text) } : {}),
     }, saved.reviewTab ?? saved.leftTab);
     this.buildRails();
   }

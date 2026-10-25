@@ -114,7 +114,8 @@ import { clearFlag, clearObjection, createObjection, keepObjection, writeFlag } 
 import { listFlags, listObjections, listReviewNotes } from './review-aids-store.js';
 import { clearTtl, decideAlternative, offerAlternative, pickAlternative, recordBundleDecision, reopenBundleDecision, recordExplain, setBlindSetting, setTtl, withdrawAlternative } from './proof-extras.js';
 import { getProofSettings, listAlternatives, listBundles, listExplains, listPicks, listTtls } from './proof-extras-store.js';
-import { applyDisposition, applyOverrule, dispositionsReport, serializeProposalView } from './dispositions.js';
+import { addArgument, applyDisposition, applyOverrule, dispositionsReport, serializeProposalView } from './dispositions.js';
+import { parseArgumentText, parseStance } from '../src/shared/arguments.js';
 import { parseDisposition } from '../src/shared/dispositions.js';
 import { closeThread, reopenThread, replyOnThread, startThreadRow, threadRows, undoStartThread } from './threads.js';
 import { lineEditor } from './agent-routes.js';
@@ -2404,6 +2405,20 @@ pageAidRoute('/documents/:slug/dispositions/overrule', async ({ slug, by, access
   if (result.kind === 'not-pending') return { status: 409, body: { success: false, code: 'NOT_PENDING', error: 'That change is not open.' } };
   if (result.kind === 'refused') return { status: result.status, body: result.body };
   return { status: 200, body: { success: true, action: result.action, overrule: result.overrule } };
+});
+// An argument for or against an open proposal: { markId, stance: "for" | "against", text }.
+pageAidRoute('/documents/:slug/dispositions/argue', async ({ slug, by, body }) => {
+  const stance = parseStance(body.stance);
+  if (!stance) return { status: 400, body: { success: false, code: 'INVALID_STANCE', error: '"stance" must be "for" or "against"' } };
+  const text = parseArgumentText(body.text);
+  if (!text) return { status: 400, body: { success: false, code: 'INVALID_TEXT', error: '"text" must be 1 to 2000 characters' } };
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  const result = addArgument(slug, { markId: body.markId, by, stance, text, rawMarks: state.marks, source: 'page' });
+  if (result.kind === 'off') return { status: 409, body: { success: false, code: 'NOT_MULTI_PARTY', error: 'This Accord does not use dispositions.' } };
+  if (result.kind === 'not-open') return { status: 409, body: { success: false, code: 'NOT_OPEN', error: 'That change is settled; its arguments are retired.' } };
+  if (result.kind === 'refused') return { status: result.status, body: result.body };
+  return { status: 200, body: { success: true, argument: result.argument, duplicate: result.duplicate } };
 });
 pageAidRoute('/documents/:slug/dispositions', async ({ slug, by, body }) => {
   const disposition = parseDisposition(body.disposition);

@@ -226,6 +226,33 @@ async function run(browser, base, style) {
   await agent('/marks/reject', { markId: rulingId, by: 'ai:gemini' });
   const owner = await openDoc(browser, base, slug, `?token=${encodeURIComponent(ownerSecret)}`);
   try {
+    await check(`${tag}: a reader argues for or against the selected change, and everyone's arguments show on it`, async () => {
+      await owner.page.waitForFunction(() => (window.proof?.getAllMarks?.() ?? []).some(m => m.data?.status === 'pending'), null, { timeout: 10_000 });
+      await agent('/dispositions/argue', { markId: rulingId, stance: 'for', text: 'The venue moved last week.', by: 'ai:claude' });
+      await owner.page.evaluate(() => window.proof?.refreshShareMultiParty?.());
+      await owner.page.locator('[data-accord-review-scope="all-open"]').click();
+      await owner.page.locator('[data-accord-review-list] .anv-issue[data-settled="false"]', { hasText: 'Boston' }).first().click();
+      const tools = owner.page.locator('[data-accord-argue-tools]');
+      await tools.waitFor({ state: 'visible', timeout: 10_000 });
+      // This line carries two changes; the box starts on the one in dispute, and names both.
+      assert.equal(await owner.page.locator('[data-accord-argue-target]').count(), 2);
+      assert.equal(await owner.page.locator(`[data-accord-argue-target="${rulingId}"]`).getAttribute('aria-pressed'), 'true');
+      assert.match(await owner.page.locator(`[data-accord-argue-target="${rulingId}"]`).textContent(), /in Boston" → "in Denver/);
+      await poll(async () => (await owner.page.locator('[data-accord-argument]').allTextContents()).some(t => /^For, .+: The venue moved last week\.$/.test(t)), 'the AI\'s argument is not listed');
+      await owner.page.locator('[data-accord-argue="against"]').click();
+      const box = owner.page.locator('[data-accord-argue-text]');
+      await box.fill('Boston is already booked.');
+      await box.press(process.platform === 'darwin' ? 'Meta+Enter' : 'Control+Enter');
+      await poll(async () => {
+        const report = await call(base, `/api/agent/${slug}/dispositions`, undefined, ownerSecret);
+        return report.arguments.some(a => a.markId === rulingId && a.stance === 'against' && a.text === 'Boston is already booked.');
+      }, 'the page argument never reached the server');
+      await poll(async () => (await owner.page.locator('[data-accord-argument]').count()) === 2, 'the page does not list both arguments');
+      const count = owner.page.locator('[data-accord-review-list] .anv-issue[data-settled="false"]', { hasText: 'Boston' }).first().locator('[data-accord-arguments]');
+      await poll(async () => (await count.textContent().catch(() => '')) === 'Arguments: 1 for · 1 against', `no argument count on the row: ${await count.textContent().catch(() => '')}`);
+      assert.match(await editorText(owner.page), /in Boston/, 'arguing changed the text');
+      await owner.page.screenshot({ path: `.preview/dispositions-arguments-${style}.png` });
+    });
     await check(`${tag}: the Owner overrules a disagreement from the page, and the dissent is recorded`, async () => {
       await owner.page.waitForFunction(() => (window.proof?.getAllMarks?.() ?? []).some(m => m.data?.status === 'pending'), null, { timeout: 10_000 });
       await owner.page.locator('[data-accord-review-scope="all-open"]').click();
@@ -241,6 +268,10 @@ async function run(browser, base, style) {
       assert.equal(events.events.filter(e => e.type === 'disposition.overruled').length, 1, 'the overrule settled more than the one disagreement');
       assert.ok(ruled, 'no disposition.overruled event');
       assert.ok(ruled.data.dissent.some(d => d.actor === 'ai:gemini' && d.pile === 'cutting-room'), JSON.stringify(ruled.data.dissent));
+      const after = await call(base, `/api/agent/${slug}/dispositions`, undefined, ownerSecret);
+      assert.equal(after.arguments.filter(a => a.markId === rulingId).length, 0, 'arguments on a settled change did not retire');
+      assert.ok(after.retiredArguments >= 2, String(after.retiredArguments));
+      assert.equal(events.events.filter(e => e.type === 'disposition.argued' && e.data.markId === rulingId).length, 2, 'retired arguments are not in the log');
     });
     await check(`${tag}: a reader who is not the Owner never sees the overrule`, async () => {
       const guest = await openDoc(browser, base, slug);

@@ -1522,6 +1522,20 @@ function initDatabase(): void {
     )
   `);
   d.exec(`CREATE INDEX IF NOT EXISTS idx_document_mark_overrules_slug ON document_mark_overrules(document_slug, mark_id)`);
+  // Accord multi-party: arguments for or against a proposal, append-only (src/shared/arguments.ts).
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_mark_arguments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      document_slug TEXT NOT NULL,
+      mark_id TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      stance TEXT NOT NULL,
+      text TEXT NOT NULL,
+      source TEXT NOT NULL,
+      at TEXT NOT NULL
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_mark_arguments_slug ON document_mark_arguments(document_slug, mark_id)`);
   d.exec(`
     CREATE TABLE IF NOT EXISTS document_multiparty_settings (
       document_slug TEXT PRIMARY KEY,

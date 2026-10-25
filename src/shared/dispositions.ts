@@ -33,6 +33,7 @@
  * the path to accord can be replayed.
  */
 import { actorKey, isAiActor } from './line-marks.js';
+import type { Argument } from './arguments.js';
 
 export const DISPOSITION_POLICY = {
   /** Off by default: a document opts in, and every live Accord keeps today's behaviour until then. */
@@ -268,6 +269,8 @@ export interface DispositionsReportView {
   proposals: Array<{ markId: string; proposer?: string; status?: string; openFor?: string[]; promotedBy?: string[]; cutBy?: string[] }>;
   whereWeDiffer: string[];
   fullAccord: boolean;
+  /** Arguments on open proposals (src/shared/arguments.ts). */
+  arguments?: Argument[];
 }
 
 export interface DispositionSummary {

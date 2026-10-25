@@ -894,7 +894,7 @@ export class ShareClient {
   }
 
   /** Multi-party Accords (server/dispositions.ts): whether this document uses dispositions. */
-  async fetchDispositions(options?: { token?: string; by?: string }): Promise<{ multiParty: boolean; proposals: Array<Record<string, unknown>>; whereWeDiffer: string[]; fullAccord: boolean; roster?: Array<Record<string, unknown>>; viewer?: string | null; viewerIsOwner?: boolean } | null> {
+  async fetchDispositions(options?: { token?: string; by?: string }): Promise<{ multiParty: boolean; proposals: Array<Record<string, unknown>>; whereWeDiffer: string[]; fullAccord: boolean; roster?: Array<Record<string, unknown>>; viewer?: string | null; viewerIsOwner?: boolean; arguments?: Array<Record<string, unknown>> } | null> {
     if (!this.slug) return null;
     try {
       const query = options?.by ? `?by=${encodeURIComponent(options.by)}` : '';
@@ -913,6 +913,7 @@ export class ShareClient {
         roster: Array.isArray(body.roster) ? body.roster as Array<Record<string, unknown>> : undefined,
         viewer: typeof body.viewer === 'string' ? body.viewer : null,
         viewerIsOwner: body.viewerIsOwner === true,
+        arguments: Array.isArray(body.arguments) ? body.arguments as Array<Record<string, unknown>> : [],
       };
     } catch {
       return null;
@@ -954,6 +955,23 @@ export class ShareClient {
       const body = await response.json().catch(() => ({})) as Record<string, unknown>;
       if (!response.ok || body.success !== true) return { error: typeof body.error === 'string' ? body.error : `HTTP ${response.status}` };
       return { action: body.action === 'reject' ? 'reject' : 'accept' };
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : 'Network error' };
+    }
+  }
+
+  async argueDisposition(markId: string, stance: 'for' | 'against', text: string, by: string): Promise<{ ok: true } | { error: string }> {
+    if (!this.slug) return { error: 'No document' };
+    try {
+      const response = await fetch(`${this.getApiBase()}/documents/${encodeURIComponent(this.slug)}/dispositions/argue`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { ...this.getShareAuthHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ markId, stance, text, by }),
+      });
+      const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+      if (!response.ok || body.success !== true) return { error: typeof body.error === 'string' ? body.error : `HTTP ${response.status}` };
+      return { ok: true };
     } catch (error) {
       return { error: error instanceof Error ? error.message : 'Network error' };
     }

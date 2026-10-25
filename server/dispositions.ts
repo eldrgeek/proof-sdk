@@ -22,6 +22,7 @@ import {
   finalizeAction,
   isFullAccord,
   overrule as decideOverrule,
+  roleOf,
   whereWeDiffer,
   withOverrule,
   type Disposition,
@@ -31,6 +32,14 @@ import {
   type ProposalView,
   type RosterEntry,
 } from '../src/shared/dispositions.js';
+import {
+  ARGUMENT_POLICY,
+  activeArguments,
+  findDuplicateArgument,
+  retiredCount,
+  type Argument,
+  type ArgumentStance,
+} from '../src/shared/arguments.js';
 
 export interface MultiPartySettings {
   enabled: boolean;
@@ -94,6 +103,16 @@ export function listOverrules(slug: string): Overrule[] {
       try { const parsed = JSON.parse(row.dissent_json) as unknown; if (Array.isArray(parsed)) dissent = parsed as Overrule['dissent']; } catch { /* none */ }
       return { markId: row.mark_id, by: row.by_actor, outcome: row.outcome, dissent, at: row.at };
     });
+  } catch {
+    return [];
+  }
+}
+
+export function listArguments(slug: string): Argument[] {
+  try {
+    const rows = getDb().prepare(`SELECT id, mark_id, by_actor, stance, text, at FROM document_mark_arguments WHERE document_slug = ? ORDER BY at ASC, id ASC`)
+      .all(slug) as Array<{ id: number; mark_id: string; by_actor: string; stance: ArgumentStance; text: string; at: string }>;
+    return rows.map(row => ({ id: row.id, markId: row.mark_id, by: row.by_actor, stance: row.stance, text: row.text, at: row.at }));
   } catch {
     return [];
   }
@@ -163,11 +182,16 @@ export function dispositionsReport(slug: string, rawMarks: unknown): Record<stri
   const overrules = listOverrules(slug);
   const views = evaluateProposals(pendingSuggestions(rawMarks), roster, listDispositions(slug))
     .map(view => withOverrule(view, overrules.filter(ov => ov.markId === view.markId).pop()));
+  const openIds = views.filter(view => view.status === 'open').map(view => view.markId);
+  const args = listArguments(slug);
   return {
     multiParty: settings.enabled,
     observers: settings.observers,
     roster,
     proposals: views.map(serializeProposalView),
+    // Arguments on open proposals; the rest are retired and stay in the log for replay.
+    arguments: activeArguments(args, openIds),
+    retiredArguments: retiredCount(args, openIds),
     whereWeDiffer: whereWeDiffer(views).map(view => view.markId),
     fullAccord: isFullAccord(views),
     policy: DISPOSITION_POLICY,
@@ -234,6 +258,44 @@ export function applyOverrule(slug: string, input: {
   `).run(slug, decided.markId, decided.by, decided.outcome, JSON.stringify(decided.dissent), input.source, decided.at);
   addDocumentEvent(slug, 'disposition.overruled', { markId: decided.markId, outcome: decided.outcome, dissent: decided.dissent }, decided.by);
   return { kind: 'recorded', overrule: decided, action: decided.outcome === 'common' ? 'accept' : 'reject' };
+}
+
+export type ArgumentOutcome =
+  | { kind: 'off' }
+  | { kind: 'not-open' }
+  | { kind: 'refused'; status: number; body: Record<string, unknown> }
+  | { kind: 'recorded'; argument: Argument; duplicate: boolean };
+
+/**
+ * Advocacy for or against an open proposal (Mike, 2026-10-24: an observer "can comment (argue)").
+ * Anyone who can comment may argue. The argument retires when the proposal is settled.
+ */
+export function addArgument(slug: string, input: {
+  markId: unknown;
+  by: string;
+  stance: ArgumentStance;
+  text: string;
+  rawMarks: unknown;
+  source: 'page' | 'agent';
+}): ArgumentOutcome {
+  if (!getMultiPartySettings(slug).enabled) return { kind: 'off' };
+  const markId = typeof input.markId === 'string' ? input.markId : '';
+  const proposal = markId ? pendingSuggestions(input.rawMarks).find(p => p.markId === markId) : undefined;
+  if (!proposal || overruleFor(slug, markId)) return { kind: 'not-open' };
+  if (!ARGUMENT_POLICY.observersMayArgue && roleOf(rosterFor(slug, input.rawMarks), input.by) === 'observer') {
+    return { kind: 'refused', status: 403, body: { success: false, code: 'OBSERVER_CANNOT_ARGUE', error: 'Observers on this Accord do not argue.' } };
+  }
+  const next = { markId, by: input.by, stance: input.stance, text: input.text };
+  const same = findDuplicateArgument(listArguments(slug), next);
+  if (same) return { kind: 'recorded', argument: same, duplicate: true };
+  assertWritesAllowed('addArgument');
+  const at = new Date().toISOString();
+  const info = getDb().prepare(`
+    INSERT INTO document_mark_arguments (document_slug, mark_id, by_actor, stance, text, source, at) VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(slug, markId, input.by, input.stance, input.text, input.source, at);
+  const argument: Argument = { id: Number(info.lastInsertRowid), ...next, at };
+  addDocumentEvent(slug, 'disposition.argued', { markId, stance: input.stance, text: input.text }, input.by);
+  return { kind: 'recorded', argument, duplicate: false };
 }
 
 export type GateResult =
