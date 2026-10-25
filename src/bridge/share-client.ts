@@ -922,7 +922,7 @@ export class ShareClient {
    * Multi-party Accords: record this person's promote or cut. `action` says whether everyone now
    * agrees ("accept" / "reject": apply it as any decision) or the proposal stays open ("hold").
    */
-  async recordDisposition(markId: string, disposition: 'promote' | 'cut', by: string): Promise<{ action: 'accept' | 'reject' | 'hold'; proposal: Record<string, unknown> } | { error: string }> {
+  async recordDisposition(markId: string, disposition: 'promote' | 'cut' | 'draft', by: string): Promise<{ action: 'accept' | 'reject' | 'hold'; proposal: Record<string, unknown> } | { error: string }> {
     if (!this.slug) return { error: 'No document' };
     try {
       const response = await fetch(`${this.getApiBase()}/documents/${encodeURIComponent(this.slug)}/dispositions`, {

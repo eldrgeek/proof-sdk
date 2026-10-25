@@ -1598,6 +1598,22 @@ class ProofEditorImpl implements ProofEditor {
     return true;
   }
 
+  /** U: changing your mind. The changes leave your accord or cutting room and wait in your draft again. */
+  private returnToDraft(ids: string[]): void {
+    if (!this.isShareMode || !this.shareMultiParty || ids.length === 0) return;
+    const actor = getCurrentActor();
+    void (async () => {
+      let failed = 0;
+      for (const id of ids) {
+        const result = await shareClient.recordDisposition(id, 'draft', actor);
+        if ('error' in result) failed += 1;
+      }
+      if (failed) this.showErrorBanner(`${failed} of ${ids.length} could not go back to your draft.`);
+      else this.showDispositionNotice(`Back in your draft: ${ids.length === 1 ? 'this change waits' : `${ids.length} changes wait`} for your decision again.`);
+      await this.refreshShareMultiParty();
+    })();
+  }
+
   private showDispositionNotice(message: string): void {
     document.getElementById('proof-disposition-notice')?.remove();
     const notice = document.createElement('div');
@@ -4393,6 +4409,7 @@ class ProofEditorImpl implements ProofEditor {
         newDocument: () => { void this.newDocument(); },
         slug: () => shareClient.getSlug(),
         piles: () => this.dispositionPiles(),
+        toDraft: (ids) => this.returnToDraft(ids),
         suggestChange: (line) => {
           if (EDIT_SESSION_POLICY.privateDrafts) return this.editGesture?.open(line) ?? false;
           this.readingWalk?.focusDocument(line);

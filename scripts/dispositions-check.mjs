@@ -182,6 +182,24 @@ async function run(browser, base, style) {
       assert.equal(await page.locator('[data-accord-pile="cutting-room"]').getAttribute('aria-pressed'), 'false');
     });
 
+    await check(`${tag}: U on the cut change sends it back to this person's draft`, async () => {
+      const review = (await pendingIds(page)).find(m => m.by === 'ai:gemini');
+      assert.ok(review, 'no pending proposal from ai:gemini');
+      // The reader's own path: All open, pick the cut change's row, press U.
+      await page.locator('[data-accord-review-scope="all-open"]').click();
+      const row = page.locator('[data-accord-review-list] .anv-issue[data-settled="false"]', { hasText: 'September 23' }).first();
+      await row.click();
+      await page.keyboard.press('u');
+      await poll(async () => {
+        const report = await call(base, `/api/agent/${slug}/dispositions`, undefined, ownerSecret);
+        const view = report.proposals.find(p => p.proposer === 'ai:gemini');
+        return view && view.cutBy.length === 0 && !report.whereWeDiffer.includes(view.markId);
+      }, 'U did not send the cut change back to the draft');
+      await poll(async () => /^1 in your draft$/.test(await page.locator('[data-accord-dispositions]').textContent().catch(() => '')), 'the count line never showed the change back in the draft', 15_000);
+      await page.locator('#proof-disposition-notice').waitFor({ state: 'visible', timeout: 5000 });
+      assert.match(await page.locator('#proof-disposition-notice').innerText(), /Back in your draft/);
+    });
+
     await check(`${tag}: when the page's promote is the last one, the page applies the change as it always has`, async () => {
       const made = await agent('/marks/suggest-replace', { quote: 'the same', content: 'flat', by: 'ai:claude', why: 'Clearer' });
       const id = made.markId ?? made.suggestion?.markId;
