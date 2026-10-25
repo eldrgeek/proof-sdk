@@ -206,7 +206,10 @@ async function instrument(page) {
     };
     // Use the events that initiate an editor action. Follow-up notifications such as `input` and
     // `selectionchange` must not mint another token after that action has already consumed one.
-    for (const type of ['keydown', 'beforeinput', 'compositionend', 'paste', 'drop', 'click', 'touchend']) {
+    // mousedown and mouseup are included because ProseMirror tags a pointer selection 'pointer'
+    // only if its DOM flush lands within 50 ms of the origin; a slower flush on a loaded runner
+    // carries no meta and needs the event's token. compositionupdate covers mid-composition flushes.
+    for (const type of ['keydown', 'beforeinput', 'compositionupdate', 'compositionend', 'paste', 'drop', 'mousedown', 'mouseup', 'click', 'touchend']) {
       document.addEventListener(type, () => {
         // A token is causal, not a grace period: it can be consumed once, by a top-level dispatch
         // initiated by this browser event. ProseMirror may flush DOM selection asynchronously,
@@ -240,16 +243,19 @@ async function instrument(page) {
         // Consume the event's one-shot token at dispatch entry. Sampling before original(tr)
         // keeps an ordinary input correctly classified even when applying it takes >50 ms.
         // Re-entrant dispatches are never the browser event's transaction and must stand on meta.
+        // A remote (Yjs) transaction is judged on its own rule below, so it must not consume the
+        // person's token: one landing between beforeinput and ProseMirror's DOM flush would
+        // otherwise leave the person's own dispatch looking foreign (Skip, 2026-10-25).
+        const remote = Object.keys(tr.meta || {}).some(k => k.startsWith('y-sync') && tr.meta[k]?.isChangeOrigin);
         const explicitUser = tr.getMeta?.('pointer') === true;
-        const user = explicitUser || (dispatchDepth === 0 && userToken !== null
-          && performance.now() <= userToken.expires);
+        const user = !remote && (explicitUser || (dispatchDepth === 0 && userToken !== null
+          && performance.now() <= userToken.expires));
         if (trace) (w.__caretDispatchLog ||= []).push({
           t: Math.round(performance.now()), depth: dispatchDepth, token: userToken?.id ?? null,
           user, docChanged: tr.docChanged, selectionSet: tr.selectionSet,
           scrolled: tr.scrolledIntoView, meta: describe(tr),
         });
         if (user && dispatchDepth === 0) userToken = null;
-        const remote = Object.keys(tr.meta || {}).some(k => k.startsWith('y-sync') && tr.meta[k]?.isChangeOrigin);
         // Only y-prosemirror's whole-document replace counts (a nested marks refresh tagged as
         // remote is not an echo of the keystroke).
         const wholeDoc = tr.steps.some(step => step.from === 0 && step.to === beforeDoc.content.size);
