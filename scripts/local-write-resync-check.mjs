@@ -291,6 +291,7 @@ async function run(browser, base, style, device) {
     } finally { await writer2.stop(); }
     const after = await documentState(page);
     const proposals = await page.evaluate(() => window.proof.getAllMarks().filter(m => m.kind === 'insert' && (m.data?.status ?? 'pending') === 'pending'));
+    if (!proposals.some(m => m.data?.content?.includes(TYPED))) console.log('DBG proposals', JSON.stringify(proposals.map(m => ({ id: m.id.slice(0, 8), by: m.by, content: m.data?.content, status: m.data?.status, range: m.range }))), 'line', JSON.stringify(after.pm[TARGET_LINE]));
     return { original, after, proposals };
   })();
   await check(`${tag}: typing on the contended line proposes the words without writing the line twice`, async () => {

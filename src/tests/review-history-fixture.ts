@@ -8,6 +8,9 @@ import { marksSyncPlugin } from '../editor/plugins/marks-sync';
 const production = false;
 const historyModule = production ? null : await import('../editor/review-decision-history');
 const History = historyModule?.ReviewDecisionHistory;
+const keepUndoGroupOpen = historyModule?.keepUndoGroupOpen;
+/** A test may switch the editor-dispatch behaviour off to show what it prevents. */
+export const fixtureOptions = { keepUndoGroupOpen: true };
 (globalThis as any).document = { createElement: () => ({}), head: { appendChild() {} } };
 const ctx = { wait: async () => {}, update() {} } as any;
 await marksPlugin(ctx)();
@@ -38,6 +41,8 @@ export async function pair(nativeOnly = false, connected = true) {
     const plugins = [ySyncPlugin(doc.getXmlFragment('prosemirror')), yUndoPlugin(), marksPlugin.plugin(), ms.plugin()];
     const updates: any[] = [];
     const view: any = { hasFocus: () => false, state: EditorState.create({ schema, doc: initial, plugins }), dispatch(tr: any) {
+      // As the editor's dispatch does (src/editor/index.ts): a no-text update keeps the undo step open.
+      if (keepUndoGroupOpen && fixtureOptions.keepUndoGroupOpen) keepUndoGroupOpen(tr);
       if (!production && tr.getMeta(ySyncPluginKey)?.isChangeOrigin) tr.setMeta(marksPluginKey, { type: 'SET_METADATA', metadata: map.toJSON() });
       view.state = view.state.apply(tr); for (const pv of updates) pv.update?.(view);
     },

@@ -4,13 +4,14 @@ import { Slice, Fragment } from '@milkdown/kit/prose/model';
 import { routeKey } from '../shared/reading-keys';
 import { TextSelection } from '@milkdown/kit/prose/state';
 import { yXmlFragmentToProseMirrorRootNode } from 'y-prosemirror';
-import { pair, schema } from './review-history-fixture';
+import { pair, schema, fixtureOptions } from './review-history-fixture';
 import { setCurrentActor } from '../editor/actor';
 import { getMarks, clearResolvedMarkTombstones, modifySuggestionContent, marksPluginKey, accept } from '../editor/plugins/marks';
 import { wrapTransactionForSuggestions, clickEditDecisionsMeta, rejectionTransaction } from '../editor/plugins/suggestions';
 import { installLocalWriteResyncPolicy } from '../editor/local-write-resync';
 import { isPendingSuggestion } from '../shared/suggestion-status';
 import { commitLiveTextInput } from '../editor/live-suggestion-input';
+import { keepUndoGroupOpen } from '../editor/review-decision-history';
 import { EDIT_SESSION_POLICY } from '../shared/edit-session';
 installLocalWriteResyncPolicy();
 let passed = 0;
@@ -85,6 +86,34 @@ await test('beforeinput text still reaches handleTextInput props (input rules, t
   assert.deepEqual(seen, [[9, 9, 'a'], [10, 10, '>']]);
   assert.equal(view.state.doc.firstChild.textContent, 'Originala', 'a handler that takes a character keeps the default insert from running');
   view.someProp = someProp;
+});
+// Decorations and mark records redraw after each keystroke with addToHistory false, and
+// y-prosemirror then ends the undo step. The fixture's dispatch clears that meta on no-text
+// updates, as the editor's does (keepUndoGroupOpen). The control switches that off to prove this
+// harness still sees the split; the next test proves one Undo then removes the whole run.
+const typeWithRedraws = (peer: any, text: string) => {
+  for (const char of text) {
+    const end = 1 + peer.view.state.doc.firstChild.content.size;
+    edit(peer, 'human:Alice', end, end, char);
+    peer.view.dispatch(peer.view.state.tr.setMeta('addToHistory', false));
+  }
+};
+await test('control: without keepUndoGroupOpen a no-text redraw splits the typing run', peers => {
+  fixtureOptions.keepUndoGroupOpen = false;
+  try {
+    typeWithRedraws(peers.alice, 'abc');
+    assert.equal(peers.alice.view.state.doc.firstChild.textContent, 'Originalabc');
+    peers.alice.restore();
+    assert.notEqual(peers.alice.view.state.doc.firstChild.textContent, 'Original', 'the harness no longer reproduces the split');
+  } finally { fixtureOptions.keepUndoGroupOpen = true; }
+});
+await test('a typing run is one undo step though decorations redraw between keystrokes', peers => {
+  typeWithRedraws(peers.alice, 'abc');
+  assert.equal(peers.alice.view.state.doc.firstChild.textContent, 'Originalabc');
+  peers.alice.restore();
+  assert.equal(peers.alice.view.state.doc.firstChild.textContent, 'Original', 'one Undo must remove the whole run');
+  const redraw = peers.alice.view.state.tr.insertText('x', 1).setMeta('addToHistory', false);
+  assert.equal(keepUndoGroupOpen(redraw).getMeta('addToHistory'), false, 'a text change keeps its own history choice');
 });
 await test('native input keeps IME, replacement islands and readonly views on their own paths', peers => {
   const view = peers.alice.view;

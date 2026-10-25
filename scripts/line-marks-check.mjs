@@ -145,7 +145,8 @@ async function desktop(browser, base) {
     assert.equal(await page.locator('.plm-open-dot').count(), 0);
   });
   await check(`${tag}: Review names its scope and excludes unread lines`, async () => {
-    await waitFor(page, () => window.__proofLineMarks.myStatus(0) === 'seen');
+    // Step 3 round 2 retired Seen by dwell (REVIEW_SURFACE_POLICY.seenByDwell): wait for the load, not a read mark.
+    await waitFor(page, () => window.__proofLineMarks.debugState().loaded === true);
     assert.equal(await page.locator('#share-banner .plm-issues-count').textContent(), '0 need you');
     assert.ok(await page.locator('[data-accord-review-toggle]').isVisible());
   });
@@ -253,7 +254,7 @@ async function phone(browser, base) {
   const toast = page.locator('.proof-share-welcome-toast button');
   if (await toast.count()) await toast.first().click().catch(() => {});
   await check(`${tag}: bar stays one row with the issue button`, async () => {
-    await waitFor(page, () => window.__proofLineMarks.myStatus(0) === 'seen');
+    await waitFor(page, () => window.__proofLineMarks.debugState().loaded === true);
     const h = await page.evaluate(() => document.getElementById('share-banner').getBoundingClientRect().height);
     assert.ok(h <= 60, `bar height ${h}`);
     const btn = page.locator('[data-accord-review-toggle]');

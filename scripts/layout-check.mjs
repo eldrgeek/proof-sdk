@@ -327,7 +327,10 @@ async function desktop2(browser, base, style) {
     await page.screenshot({ path: path.join(shots, `${tag}-share.png`) });
     await dialog.getByRole('button', { name: 'Close share dialog' }).click();
     await page.locator('#accord-menubar .amb-top[data-menu="people"]').click();
-    assert.deepEqual((await menuItems(page)).map(i => i.label), ['Share…', 'Invite person…', 'Add agent…', 'Who is here']);
+    // Step 3 round 2 (brief B1): the People menu starts with who you are (and Sign in, when the server has it).
+    const people = (await menuItems(page)).map(i => i.label).filter(label => label !== 'Sign in');
+    assert.match(people[0], /— guest, unverified$|^Signed in as /, `People menu does not say who you are: ${people[0]}`);
+    assert.deepEqual(people.slice(1), ['Share…', 'Invite person…', 'Add agent…', 'Who is here']);
     await page.locator('.amb-menu .amb-item', { hasText: 'Add agent…' }).click();
     await dialog.waitFor({ state: 'visible' });
     assert.equal(await dialog.getByRole('tab', { name: 'AIs' }).getAttribute('aria-selected'), 'true');

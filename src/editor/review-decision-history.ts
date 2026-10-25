@@ -44,6 +44,19 @@ interface SyncBinding {
  * of the document) and called scrollIntoView. This runs `action` with the binding's observer
  * detached, which is exactly what the mutex does for an unwrapped local change.
  */
+/**
+ * A transaction that changes no text must not end the typing run's undo step. y-prosemirror's
+ * sync plugin calls UndoManager.stopCapturing() after every update whose addToHistory meta is
+ * false, and the view-only plugins (fold, ask, do, extras and the rest) redraw their decorations
+ * with that meta after each keystroke. So a typed sentence became one undo step per character or
+ * two (found 2026-09-24, Accord step 3 review). Without steps the meta means nothing to either
+ * history, so clear it. Remote updates (isChangeOrigin) are left alone: y-prosemirror skips them.
+ */
+export function keepUndoGroupOpen<T extends { docChanged: boolean; getMeta(key: string): unknown; setMeta(key: string, value: unknown): T }>(tr: T): T {
+  if (tr.docChanged || tr.getMeta('addToHistory') !== false) return tr;
+  return tr.setMeta('addToHistory', true);
+}
+
 export function withoutOwnEcho<T>(binding: SyncBinding | null | undefined, action: () => T): T {
   const type = binding?.type;
   const observer = binding?._observeFunction;

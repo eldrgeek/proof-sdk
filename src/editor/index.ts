@@ -33,8 +33,8 @@ import { doViewPlugin } from './plugins/do-view';
 import { proofExtrasViewPlugin } from './plugins/proof-extras-view';
 import { tierViewPlugin } from './plugins/tier-view';
 import { getReviewStyle, setReviewStyle, REVIEW_STYLE_POLICY } from './review-style';
-import { isEditing, isWriting, setDirectEditing } from './editing-guard';
-import { ReviewDecisionHistory, reconnectNativeUndoManager } from './review-decision-history';
+import { isEditing, isWriting, onWritingChange, setDirectEditing } from './editing-guard';
+import { ReviewDecisionHistory, keepUndoGroupOpen, reconnectNativeUndoManager } from './review-decision-history';
 
 import { getAgentPresenceDisplay } from '../shared/agent-presence';
 
@@ -1089,6 +1089,7 @@ class ProofEditorImpl implements ProofEditor {
   private isCliMode: boolean = false;
   private isShareMode: boolean = false;
   private shareBannerSuggestBtnEl: HTMLButtonElement | null = null;
+  private suggestToggleWritingUnsub: (() => void) | null = null;
   private shareBannerSuggestionReviewBtnEl: HTMLButtonElement | null = null;
   private shareSuggestionReviewSignature: string = '';
   private readonly shareSuggestionReviewUpdateScheduler = createShareSuggestionReviewUpdateScheduler(
@@ -1185,8 +1186,6 @@ class ProofEditorImpl implements ProofEditor {
   private clarifyUI: ClarifyUI | null = null;
   /** Accord round 2 stage A: leaving an edit posts what was typed (src/ui/edit-gesture.ts). */
   private editGesture: EditGestureUI | null = null;
-  /** When the person last typed in the document (so Cmd+Z reverses whichever came last). */
-  private lastLocalTextEditAt = 0;
   private reviewDecisionHistory: ReviewDecisionHistory | null = null;
   private reviewDecisionIds = new Set<string>();
   private capturingReviewDecision = false;
@@ -3923,21 +3922,29 @@ class ProofEditorImpl implements ProofEditor {
     this.readingWalk.mountTool(this.undoUI.controlsEl, { first: true });
   }
 
-  /** Edit › Undo / Redo: the one Undo. A typed edit that came last goes to the text's own history. */
+  /**
+   * Edit › Undo and Redo take the path Cmd/Ctrl+Z takes (PlayMakerReview.handleHistoryInput): the
+   * one Undo when its entry is newest, else the review-decision history. The raw Yjs undo manager
+   * would remove a pending proposal's text without recording its withdrawal, which the server's
+   * marks guard then restores.
+   */
   private undoFromMenu(redo: boolean): void {
     if (this.undoUI?.handleKey(redo)) return;
-    this.editor?.action(ctx => {
-      const view = ctx.get(editorViewCtx);
-      const manager = yUndoPluginKey.getState(view.state)?.undoManager as { undo(): void; redo(): void } | undefined;
-      if (redo) manager?.redo(); else manager?.undo();
-    });
+    try { this.restoreReviewDecision(redo); }
+    catch (error) { this.showErrorBanner(error instanceof Error ? error.message : 'Could not undo that.'); }
+    this.playmakerReview?.update();
   }
 
   private undoLabel(redo: boolean): { label: string; enabled: boolean } {
     const state = (this.undoUI?.debugState() ?? {}) as { next?: { description: string } | null; nextRedo?: { description: string } | null };
     const entry = redo ? state.nextRedo : state.next;
-    const text = this.lastLocalTextEditAt > 0;
     if (entry) return { label: `${redo ? 'Redo' : 'Undo'} ${entry.description}`, enabled: true };
+    // Typing lives in the text history (the Yjs undo manager the review-decision history extends).
+    let text = false;
+    this.editor?.action(ctx => {
+      const manager = yUndoPluginKey.getState(ctx.get(editorViewCtx).state)?.undoManager as { undoStack?: unknown[]; redoStack?: unknown[] } | undefined;
+      text = ((redo ? manager?.redoStack : manager?.undoStack)?.length ?? 0) > 0;
+    });
     return { label: redo ? 'Redo' : 'Undo', enabled: text };
   }
 
@@ -4266,7 +4273,7 @@ class ProofEditorImpl implements ProofEditor {
       this.mountOpenView();
       walkUi.mountTool(this.folding.controlsEl);
       // The one Undo: at the top of the right rail, above the outline controls.
-      this.undoUI = new UndoUI({ stack: () => lineMarks.undoStack(), lastTextEditAt: () => this.lastLocalTextEditAt });
+      this.undoUI = new UndoUI({ stack: () => lineMarks.undoStack() });
       (window as unknown as { __proofUndo?: UndoUI }).__proofUndo = this.undoUI;
       this.placeUndo();
       if (!this.undoPlacementQuery) {
@@ -4651,6 +4658,9 @@ class ProofEditorImpl implements ProofEditor {
     btn.classList.add('amb-seg');
     btn.onclick = () => this.setSuggestingFromChrome(isWriting());
     this.shareBannerSuggestBtnEl = btn;
+    // Writing also ends without this button (Escape, a click outside the text), so the label
+    // follows the caret rather than the last press.
+    this.suggestToggleWritingUnsub ??= onWritingChange(() => this.updateSuggestToggleDisplay());
     return btn;
   }
 
@@ -6652,6 +6662,7 @@ class ProofEditorImpl implements ProofEditor {
 
       // Override dispatchTransaction to intercept edits
       (view as any).dispatch = (tr: any) => {
+        keepUndoGroupOpen(tr);
         // Yjs restores text and records atomically. Supply the restored records
         // on that same PM update, before normalization can invent mark metadata.
         if (this.restoringReviewDecision || (tr.docChanged && tr.getMeta(ySyncPluginKey)?.isChangeOrigin && !tr.getMeta(marksPluginKey))) {

@@ -251,12 +251,14 @@ async function run(browser, style) {
     assert.match(await me.innerText(), /guest, unverified/);
     assert.equal(await me.locator('.prw-me-signin').getAttribute('href'), '/');
     await pg.page.locator('#share-banner .share-pill-overflow').tap();
-    assert.ok(await pg.page.getByRole('menuitem', { name: 'Ada — guest, unverified', exact: true }).isVisible());
-    assert.ok(await pg.page.getByRole('menuitem', { name: 'Sign in', exact: true }).isVisible());
+    await pg.page.getByRole('menuitem', { name: 'Ada — guest, unverified', exact: true }).waitFor({ state: 'visible' });
+    assert.ok(await pg.page.getByRole('menuitem', { name: 'Sign in', exact: true }).isVisible(), 'the ⋯ menu has Sign in');
     await pg.page.keyboard.press('Escape');
+    // This document's guest setting is "edit" (see the note at the top), so a guest may edit here:
+    // a tap in the text shows no "Sign in to edit" notice. invite-check covers the "comment" default.
     await pg.page.locator('.ProseMirror p').first().tap();
-    assert.ok(await pg.page.locator('.prw-guest-notice').isVisible());
-    assert.ok(await pg.page.locator('.prw-guest-notice').getByRole('link', { name: 'Sign in' }).isVisible());
+    await pg.page.waitForTimeout(300);
+    assert.equal(await pg.page.locator('.prw-guest-notice').count(), 0, 'an editing guest was told to sign in to edit');
     await attributedComment(pg.page, slug, 4, 'Phone guest comment', 'guest:Ada', clientHeaders);
     await pg.page.screenshot({ path: path.join(shots, `${ptag}-2-guest.png`) });
   });
