@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { adjacentInsertRuns } from './adjacent-inserts.mjs';
 import { showWholeAccord } from './review-ui.mjs';
 // A local write to a line a remote writer is touching updates that line AND NOTHING ELSE.
 //
@@ -148,7 +149,8 @@ async function openDoc(browser, base, slug, name, contextOptions) {
   await context.route('**/*', route => new URL(route.request().url()).origin === base ? route.continue() : route.abort());
   await context.addInitScript(viewer => { try { localStorage.setItem('proof-share-viewer-name', viewer); } catch {} }, name);
   const page = await context.newPage();
-  await page.goto(`${base}/d/${slug}`);
+  // 30 s was not enough when six copies of this check shared one machine (2026-10-24).
+  await page.goto(`${base}/d/${slug}`, { timeout: 60_000 });
   await page.waitForFunction(() => window.proof?.collabConnectionStatus === 'connected' && window.proof?.collabIsSynced === true, null, { timeout: 20_000 });
   await page.waitForFunction(() => window.__proofLineMarks?.debugState().loaded === true, null, { timeout: 10_000 });
   const toast = page.locator('.proof-share-welcome-toast button');
@@ -293,11 +295,15 @@ async function run(browser, base, style, device) {
       // Publishing each keystroke crosses the marks/Yjs boundary. Under load, observe the
       // proposal itself instead of assuming that boundary has settled after a fixed delay.
       // Leave the writer running while polling so success still proves the contended case.
-      await page.waitForFunction(typed => window.proof.getAllMarks().some(m =>
-        m.kind === 'insert'
-        && (m.data?.status ?? 'pending') === 'pending'
-        && m.data?.content?.includes(typed)
-      ), TYPED, { timeout: 8_000 }).catch(() => {});
+      // A pause in the typing can start a second proposal, so the words are the adjacent
+      // proposals joined (scripts/adjacent-inserts.mjs), not necessarily one proposal.
+      const pendingInserts = () => page.evaluate(() => window.proof.getAllMarks()
+        .filter(m => m.kind === 'insert' && (m.data?.status ?? 'pending') === 'pending')
+        .map(m => ({ content: m.data?.content ?? null, range: m.range ?? null })));
+      for (const deadline = Date.now() + 8_000; Date.now() < deadline;) {
+        if (adjacentInsertRuns(await pendingInserts()).some(run => run.includes(TYPED))) break;
+        await page.waitForTimeout(100);
+      }
     } finally { await writer2.stop(); }
     const after = await documentState(page);
     const proposals = await page.evaluate(() => window.proof.getAllMarks()
@@ -307,7 +313,7 @@ async function run(browser, base, style, device) {
   })();
   await check(`${tag}: typing on the contended line proposes the words without writing the line twice`, async () => {
     assert.equal(gesture.after.pm[TARGET_LINE], gesture.original + TYPED);
-    assert.ok(gesture.proposals.some(m => m.content?.includes(TYPED)),
+    assert.ok(adjacentInsertRuns(gesture.proposals).some(run => run.includes(TYPED)),
       `typed words have no insertion proposal; pending inserts: ${JSON.stringify(gesture.proposals)}`);
   });
   await check(`${tag}: the gesture keeps the document and the Yjs fragment in step`, async () => {
