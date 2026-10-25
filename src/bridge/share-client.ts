@@ -894,10 +894,11 @@ export class ShareClient {
   }
 
   /** Multi-party Accords (server/dispositions.ts): whether this document uses dispositions. */
-  async fetchDispositions(options?: { token?: string }): Promise<{ multiParty: boolean; proposals: Array<Record<string, unknown>>; whereWeDiffer: string[]; fullAccord: boolean } | null> {
+  async fetchDispositions(options?: { token?: string; by?: string }): Promise<{ multiParty: boolean; proposals: Array<Record<string, unknown>>; whereWeDiffer: string[]; fullAccord: boolean; roster?: Array<Record<string, unknown>>; viewer?: string | null } | null> {
     if (!this.slug) return null;
     try {
-      const response = await fetch(`${this.getApiBase()}/documents/${encodeURIComponent(this.slug)}/dispositions`, {
+      const query = options?.by ? `?by=${encodeURIComponent(options.by)}` : '';
+      const response = await fetch(`${this.getApiBase()}/documents/${encodeURIComponent(this.slug)}/dispositions${query}`, {
         credentials: 'same-origin',
         headers: { ...this.getShareAuthHeaders(options?.token) },
       });
@@ -909,6 +910,8 @@ export class ShareClient {
         proposals: Array.isArray(body.proposals) ? body.proposals as Array<Record<string, unknown>> : [],
         whereWeDiffer: Array.isArray(body.whereWeDiffer) ? body.whereWeDiffer.filter((v): v is string => typeof v === 'string') : [],
         fullAccord: body.fullAccord === true,
+        roster: Array.isArray(body.roster) ? body.roster as Array<Record<string, unknown>> : undefined,
+        viewer: typeof body.viewer === 'string' ? body.viewer : null,
       };
     } catch {
       return null;

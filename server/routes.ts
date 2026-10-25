@@ -2388,7 +2388,10 @@ apiRoutes.get('/documents/:slug/dispositions', async (req: Request, res: Respons
   if (!access.canRead) { res.status(403).json({ success: false, error: 'No read access' }); return; }
   const state = await currentDocumentState(slug);
   res.setHeader('Cache-Control', 'no-store');
-  res.json({ success: true, ...dispositionsReport(slug, state?.marks ?? doc.marks) });
+  // The page counts its own draft against the name the server records its decisions under.
+  const by = typeof req.query.by === 'string' ? req.query.by : undefined;
+  const viewer = resolvePageActor(req, slug, access, by);
+  res.json({ success: true, ...dispositionsReport(slug, state?.marks ?? doc.marks), viewer: viewer.ok ? viewer.actor : null });
 });
 pageAidRoute('/documents/:slug/dispositions', async ({ slug, by, body }) => {
   const disposition = parseDisposition(body.disposition);

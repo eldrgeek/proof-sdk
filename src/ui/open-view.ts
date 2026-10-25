@@ -13,11 +13,14 @@ export interface OpenViewHost {
   lineMarks(): LineMarksUI;
   folding(): FoldingUI | null;
   changed(): void;
+  /** Multi-party Accords: the viewer's count line ("3 in your draft · 2 where we differ"), or null. */
+  dispositionsText?(): string | null;
 }
 export class OpenViewUI {
   readonly headerEl = document.createElement('div');
   private readonly headerText = document.createElement('p');
   private readonly wholeControl = document.createElement('button');
+  private readonly dispositionsLine = document.createElement('p');
   private unsubscribeFolds: (() => void) | null = null;
   private view: AccordView = 'open';
   private chosen = false;
@@ -33,7 +36,10 @@ export class OpenViewUI {
     this.wholeControl.className = 'aov-whole-toggle';
     this.wholeControl.dataset.accordWholeToggle = '';
     this.wholeControl.onclick = () => this.host.folding()?.toggleWhole();
-    this.headerEl.append(this.headerText, this.wholeControl);
+    this.dispositionsLine.className = 'aov-dispositions';
+    this.dispositionsLine.dataset.accordDispositions = '';
+    this.dispositionsLine.hidden = true;
+    this.headerEl.append(this.headerText, this.dispositionsLine, this.wholeControl);
   }
   start(): void {
     if (this.started) return;
@@ -86,6 +92,9 @@ export class OpenViewUI {
     this.headerText.hidden = clean || !FOLDED_VIEW_POLICY.countLine;
     this.headerEl.hidden = clean || !FOLDED_VIEW_POLICY.countLine;
     this.headerEl.dataset.view = this.view;
+    const dispositions = this.host.dispositionsText?.() ?? null;
+    this.dispositionsLine.textContent = dispositions ?? '';
+    this.dispositionsLine.hidden = !dispositions;
   }
   openItems(): OpenView { return this.lastOpen; }
   header(): AccordHeader { return this.lastHeader; }
