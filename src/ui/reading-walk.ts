@@ -1,3 +1,4 @@
+import type { PileFilter } from '../shared/dispositions';
 import { REVIEW_SURFACE_POLICY, viewerLabel } from '../shared/review-surface';
 /**
  * The reading layout and reading walk.
@@ -110,6 +111,8 @@ export interface ReadingWalkHost {
   focusChanged?(lineIndex: number): void;
   /** Accord layout stage 3: the folding owner, for the Navigator's Outline. */
   folding?(): FoldingUI | null;
+  /** Multi-party Accords: the reader's piles for the Review list's switch (src/shared/dispositions.ts). */
+  piles?(): Record<PileFilter, string[]> | null;
 }
 
 const PHONE_QUERY = '(max-width: 700px)';
@@ -295,6 +298,7 @@ export class ReadingWalkUI {
       tabChanged: (tab) => this.saveRailState({ reviewTab: tab }),
       decide: (line, action) => this.decideReviewLine(line, action),
       focusDocument: (line) => this.focusDocument(line),
+      piles: () => this.host.piles?.() ?? null,
     }, saved.reviewTab ?? saved.leftTab);
     this.buildRails();
   }

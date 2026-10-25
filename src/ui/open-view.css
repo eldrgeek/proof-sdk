@@ -114,3 +114,9 @@ body.amb-on #share-banner .share-pill-hidden { display: none !important; }
 /* Multi-party Accords: the viewer's own count line (src/shared/dispositions.ts). Mike, 2026-10-24. */
 .aov-dispositions { margin: 4px 0 0; color: #3f3f46; font-weight: 600; }
 .aov-dispositions[hidden] { display: none; }
+
+/* Multi-party Accords: the reader's piles above the Review list (src/shared/dispositions.ts). */
+.anv-pile-tools { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 8px 0; }
+.anv-pile-tools[hidden] { display: none; }
+.anv-pile-tools button { min-height: 32px; padding: 2px 8px; border: 1px solid #d4d4d8; border-radius: 6px; background: white; color: #374151; cursor: pointer; }
+.anv-pile-tools button[aria-pressed="true"] { background: #eef3ff; border-color: #2563eb; }

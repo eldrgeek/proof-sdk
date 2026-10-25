@@ -271,21 +271,47 @@ export interface DispositionSummary {
   fullAccord: boolean;
 }
 
+export type PileFilter = 'draft' | 'accord' | 'cutting-room' | 'differ';
+
+/** The switch above the Review list on a multi-party Accord (plan step 1, 2026-10-24). */
+export const PILE_FILTER_POLICY = {
+  filters: [
+    { id: 'draft', label: 'Draft' },
+    { id: 'accord', label: 'My accord' },
+    { id: 'cutting-room', label: 'Cutting room' },
+    { id: 'differ', label: 'Where we differ' },
+  ] as Array<{ id: PileFilter; label: string }>,
+  /** Nothing is filtered until the reader picks a pile ("nothing moves unless the reader does it"). */
+  defaultFilter: null as PileFilter | null,
+} as const;
+
 /**
- * One person's counts. Someone who has not decided anything yet is not on the server's roster, but
- * "initially all views are the same: just the draft", so every open proposal they did not make is
- * in their draft (their first decision adds them to the roster).
+ * One person's piles over the open proposals, as mark ids. Someone who has not decided anything yet
+ * is not on the server's roster, but "initially all views are the same: just the draft", so every
+ * open proposal they did not make is in their draft, and the ones they made are in their accord.
+ * An observer has no piles of their own; they still see where we differ.
  */
-export function summarizeForViewer(report: DispositionsReportView, me: string): DispositionSummary {
+export function viewerPiles(report: DispositionsReportView, me: string): Record<PileFilter, string[]> {
   const key = actorKey(me);
+  const has = (list: string[] | undefined) => (list ?? []).some(actor => actorKey(actor) === key);
+  const out: Record<PileFilter, string[]> = { draft: [], accord: [], 'cutting-room': [], differ: [...report.whereWeDiffer] };
+  if (report.roster && roleOf(report.roster, me) === 'observer') return out;
+  for (const p of report.proposals) {
+    if ((p.status ?? 'open') !== 'open') continue;
+    if (has(p.openFor)) out.draft.push(p.markId);
+    else if (has(p.promotedBy)) out.accord.push(p.markId);
+    else if (has(p.cutBy)) out['cutting-room'].push(p.markId);
+    else if (actorKey(p.proposer ?? '') === key) out.accord.push(p.markId);
+    else out.draft.push(p.markId);
+  }
+  return out;
+}
+
+/** One person's counts for the line under the Accord's title. */
+export function summarizeForViewer(report: DispositionsReportView, me: string): DispositionSummary {
   const open = report.proposals.filter(p => (p.status ?? 'open') === 'open');
-  const role = report.roster ? roleOf(report.roster, me) : null;
-  const decided = (p: DispositionsReportView['proposals'][number]) =>
-    [...(p.openFor ?? []), ...(p.promotedBy ?? []), ...(p.cutBy ?? [])].some(a => actorKey(a) === key);
-  const draft = role === 'observer' ? 0 : open.filter(p => decided(p)
-    ? (p.openFor ?? []).some(a => actorKey(a) === key)
-    : actorKey(p.proposer ?? '') !== key).length;
-  return { draft, differ: report.whereWeDiffer.length, open: open.length, observer: role === 'observer', fullAccord: report.fullAccord };
+  const observer = Boolean(report.roster && roleOf(report.roster, me) === 'observer');
+  return { draft: viewerPiles(report, me).draft.length, differ: report.whereWeDiffer.length, open: open.length, observer, fullAccord: report.fullAccord };
 }
 
 /** The count line under the Accord's title: "3 in your draft · 2 where we differ", or "Full accord". */
