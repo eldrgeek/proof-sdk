@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, devices } from 'playwright';
+import { keepBottomChat } from './keep-bottom-chat.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const shots = path.join(root, '.preview');
@@ -309,6 +310,7 @@ async function desktop(browser, base) {
 
 const { base, stop } = await startServer();
 const browser = await chromium.launch({ headless: true });
+keepBottomChat(browser);
 try {
   await phone(browser, base, `phone-${style}`, { width: 375, height: 812 });
   await phone(browser, base, `phone-${style}`, { width: 375, height: 667 });

@@ -21,6 +21,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { keepBottomChat } from './keep-bottom-chat.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const styleArg = process.argv.indexOf('--style');
@@ -203,6 +204,8 @@ async function run(browser, base, style) {
 }
 
 const browser = await chromium.launch({ headless: true });
+
+keepBottomChat(browser);
 try {
   for (const style of styles) {
     const { base, stop } = await startServer(style);

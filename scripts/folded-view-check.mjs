@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, devices } from 'playwright';
+import { keepBottomChat } from './keep-bottom-chat.mjs';
 import { showReview } from './review-ui.mjs';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const arg = key => { const i = process.argv.indexOf(key); return i > 0 ? process.argv[i + 1] : null; };
@@ -205,5 +206,6 @@ async function delayedLoad(browser, server, style) {
   } finally { release(); await context.close(); }
 }
 const browser=await chromium.launch();
+keepBottomChat(browser);
 try { for(const style of styles) { const server=await start(style); try { for(const width of widths) await run(browser,server,style,width); await delayedLoad(browser,server,style); } finally { await server.stop(); } } }
 finally { await browser.close(); }

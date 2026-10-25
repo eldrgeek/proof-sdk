@@ -285,3 +285,38 @@ body.prw-on .pst-bar { bottom: var(--prw-chat-compact); }
 body.prw-on .prw-chat-bottom[data-expanded='false'] .pch-next-step { display: flex; align-items: baseline; gap: 8px; padding: 6px 10px; }
 body.prw-on .prw-chat-bottom[data-expanded='false'] .pch-next-step-body { margin: 0; flex: 1 1 auto; min-width: 0; }
 body.prw-on .prw-chat-bottom[data-expanded='false'] .pch-next-step-go { flex: none; white-space: nowrap; }
+
+/*
+ * Mike, 2026-10-21 (Accord 9b72a5rp): "the agreements fill the space and I cannot see the chat".
+ * Chat-main layout, as SOMA Studio lays it out: the text (the agreements) is a column at the left of
+ * the centre and scrolls with the page; the chat fills the rest of the centre at full height.
+ * reading-walk.ts sets body.prw-chat-main and --prw-doc only on desktop windows wide enough for both.
+ */
+@media (min-width: 701px) {
+  body.prw-on.prw-chat-main #editor-container {
+    width: var(--prw-doc); max-width: var(--prw-doc); margin-left: 0 !important; margin-right: 0 !important;
+    border-radius: 0; border-top: none; border-left: none; margin-top: 0 !important;
+  }
+  body.prw-on.prw-chat-main #app #editor,
+  body.prw-on.prw-chat-main[data-review-style="playmaker"] #app #editor { padding-left: 28px !important; padding-right: 56px !important; }
+  body.prw-on.prw-chat-main .prw-chat-bottom,
+  body.prw-on.prw-chat-main .prw-chat-bottom[data-expanded='true'] {
+    top: var(--prw-chrome, 72px); bottom: 0; left: calc(var(--prw-left) + var(--prw-doc)); right: var(--prw-right);
+    height: auto; max-height: none; z-index: 59; padding: 12px 20px 14px;
+    border-top: none; border-left: 1px solid var(--acc-line); background: #fff;
+  }
+  body.prw-on.prw-chat-main .prw-chat-bottom > .pch { flex: 1 1 auto; font-size: 14px; }
+  body.prw-on.prw-chat-main .prw-chat-bottom .pch-toggle { pointer-events: none; cursor: default; }
+  body.prw-on.prw-chat-main .prw-chat-bottom .pch-caret { display: none; }
+  body.prw-on.prw-chat-main .prw-chat-bottom .pch-list { gap: 10px; }
+  body.prw-on.prw-chat-main .prw-chat-bottom .pch-msg { padding: 9px 12px; }
+  body.prw-on.prw-chat-main .prw-chat-bottom .pch-input { height: 64px; font-size: 14px; }
+  body.prw-on.prw-chat-main .prw-chat-bottom .pch-input.pch-has-text { height: 88px; }
+  /* A side column reads like Studio's agreements list: headings sized for the column, not the page. */
+  body.prw-on.prw-chat-main #editor-container .ProseMirror h1 { font-size: 26px; line-height: 1.25; }
+  body.prw-on.prw-chat-main #editor-container .ProseMirror h2 { font-size: 20px; line-height: 1.3; }
+  body.prw-on.prw-chat-main #editor-container .ProseMirror h3 { font-size: 17px; line-height: 1.3; }
+  body.prw-on.prw-chat-main #editor-container .ProseMirror :is(p, li) { font-size: 15px; line-height: 1.55; }
+  /* The status bar (Line N of M · open · Reading) belongs to the text: it sits under its column. */
+  body.prw-on.prw-chat-main .pst-bar { left: var(--prw-left); right: auto; width: var(--prw-doc); bottom: 0; }
+}

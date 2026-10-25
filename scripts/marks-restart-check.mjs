@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { keepBottomChat } from './keep-bottom-chat.mjs';
 import Database from 'better-sqlite3';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -94,6 +95,7 @@ let passed = false;
 try {
   // Launch first so a restricted runner reports the actual Chromium limitation immediately.
   browser = await chromium.launch({ headless: true });
+  keepBottomChat(browser);
   const listener = createServer(); await new Promise((resolve, reject) => { listener.once('error', reject); listener.listen(0, '127.0.0.1', resolve); });
   port = listener.address().port; await new Promise(resolve => listener.close(resolve)); base = `http://127.0.0.1:${port}`;
   for (const first of [root, ...(oldBuild ? [path.resolve(oldBuild)] : [])]) {

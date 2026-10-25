@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, devices } from 'playwright';
+import { keepBottomChat } from './keep-bottom-chat.mjs';
 import { hoverChangesNothing, scrollAcceptsNothing, selectPassage } from './usability-s1-assertions.mjs';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const arg = name => { const at = process.argv.indexOf(name); return at > 0 ? process.argv[at + 1] : null; };
@@ -245,6 +246,7 @@ async function run(browser, server, style, width) {
   } finally { await context.close(); }
 }
 const browser = await chromium.launch();
+keepBottomChat(browser);
 try {
   for (const style of styles) {
     const server = await startServer(style);

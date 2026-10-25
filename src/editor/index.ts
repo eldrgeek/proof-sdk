@@ -4156,6 +4156,8 @@ class ProofEditorImpl implements ProofEditor {
           items.push(
             { id: 'view-navigator', label: `${productIdentity().documentNounPlural} list`, kind: 'checkbox', checked: walk.railShown('left'), keywords: 'left rail documents', run: () => walk.toggleRailFromMenu('left') },
             { id: 'view-margin', label: 'Review panel', kind: 'checkbox', checked: walk.railShown('right'), keywords: 'right rail open items', run: () => walk.toggleRailFromMenu('right') },
+            // Mike, 2026-10-21: the chat as the main space, the text at its side (wide desktop windows).
+            { id: 'view-chat-main', label: 'Chat as the main space', kind: 'checkbox', checked: walk.chatMainPreferred(), enabled: walk.chatMainFits(), keywords: 'chat main layout text side agreements', run: () => walk.toggleChatMain() },
           );
         }
         if (folding && this.openViewUI?.current() !== 'accord') {
