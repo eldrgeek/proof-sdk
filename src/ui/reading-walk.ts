@@ -115,6 +115,8 @@ export interface ReadingWalkHost {
   piles?(): Record<PileFilter, string[]> | null;
   /** Multi-party Accords: send these proposals back to the reader's draft. */
   toDraft?(markIds: string[]): void;
+  /** Multi-party Accords: who has a row's changes in their accord and who cut them. */
+  stance?(markIds: readonly string[]): string | null;
 }
 
 const PHONE_QUERY = '(max-width: 700px)';
@@ -302,6 +304,7 @@ export class ReadingWalkUI {
       focusDocument: (line) => this.focusDocument(line),
       piles: () => this.host.piles?.() ?? null,
       toDraft: this.host.toDraft ? (ids) => this.host.toDraft?.(ids) : undefined,
+      stance: (ids) => this.host.stance?.(ids) ?? null,
     }, saved.reviewTab ?? saved.leftTab);
     this.buildRails();
   }

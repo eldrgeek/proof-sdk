@@ -324,3 +324,24 @@ export function dispositionStatusText(summary: DispositionSummary): string {
   else if (!summary.observer && summary.draft === 0) parts.push('waiting on others');
   return parts.join(' · ');
 }
+
+/**
+ * Stance on a change, for the Review row: who has it in their accord and who cut it, in names.
+ * Everyone else still has it in their draft. Null when nobody has decided anything beyond proposing.
+ */
+export function stanceText(report: DispositionsReportView, markIds: readonly string[], name: (actor: string) => string = a => a): string | null {
+  const wanted = new Set(markIds);
+  const promoted = new Map<string, string>();
+  const cut = new Map<string, string>();
+  for (const p of report.proposals) {
+    if (!wanted.has(p.markId) || (p.status ?? 'open') !== 'open') continue;
+    for (const a of p.promotedBy ?? []) promoted.set(actorKey(a), a);
+    for (const a of p.cutBy ?? []) cut.set(actorKey(a), a);
+  }
+  if (promoted.size === 0 && cut.size === 0) return null;
+  const list = (m: Map<string, string>) => [...m.values()].map(name).join(', ');
+  const parts: string[] = [];
+  if (promoted.size) parts.push(`In accord: ${list(promoted)}`);
+  if (cut.size) parts.push(`Cut: ${list(cut)}`);
+  return parts.join(' · ');
+}

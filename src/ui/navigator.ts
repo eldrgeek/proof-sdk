@@ -25,6 +25,8 @@ export interface NavigatorHost {
   piles?(): Record<PileFilter, string[]> | null;
   /** Multi-party Accords: send these proposals back to this reader's draft. */
   toDraft?(markIds: string[]): void;
+  /** Multi-party Accords: "In accord: Mike, claude · Cut: gemini" for a row's changes, or null. */
+  stance?(markIds: readonly string[]): string | null;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -351,12 +353,14 @@ export class NavigatorUI {
       const discussion = row.done && row.line < 0 ? convertedDiscussionFor(row.markIds, lm.allThreads()) : null;
       const label = row.done ? (discussion ? convertedRowLabel(discussion.lineIndex) : row.line < 0 ? 'Done · passage removed' : `Done · line ${row.line + 1}`)
         : `${row.fresh ? 'New · ' : ''}${needsYouLabel(this.scope === 'all-open' ? { ...row, count: 1 } : row, actor => lm.displayName(actor), lm.me())}`;
-      if (b.dataset.label !== title + label) {
+      const stance = row.done ? null : this.host.stance?.(row.markIds ?? []) ?? null;
+      if (b.dataset.label !== title + label + (stance ?? '')) {
         const dot = el('span', 'anv-dot'); dot.setAttribute('aria-hidden', 'true');
         const body = el('span', 'anv-issue-body');
         body.append(el('span', 'anv-issue-title', title), el('small', 'anv-issue-kind', label));
+        if (stance) { const s = el('small', 'anv-issue-stance', stance); s.dataset.accordStance = ''; body.append(s); }
         b.replaceChildren(dot, body);
-        b.dataset.label = title + label;
+        b.dataset.label = title + label + (stance ?? '');
       }
       b.onclick = () => {
         this.keyHint.textContent = '';

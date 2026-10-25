@@ -120,3 +120,4 @@ body.amb-on #share-banner .share-pill-hidden { display: none !important; }
 .anv-pile-tools[hidden] { display: none; }
 .anv-pile-tools button { min-height: 32px; padding: 2px 8px; border: 1px solid #d4d4d8; border-radius: 6px; background: white; color: #374151; cursor: pointer; }
 .anv-pile-tools button[aria-pressed="true"] { background: #eef3ff; border-color: #2563eb; }
+.anv-issue-stance { display: block; color: #52525b; font-size: 12px; }
