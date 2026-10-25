@@ -159,6 +159,8 @@ async function run(browser, base, style) {
       assert.ok((await pendingIds(page)).some(m => m.id === review.id), 'the cut proposal disappeared from the page');
       await page.evaluate(() => window.proof?.refreshShareMultiParty?.());
       await poll(async () => /^Nothing left in your draft · 1 where we differ$/.test(await page.locator('[data-accord-dispositions]').textContent().catch(() => '')), 'the count line never showed an empty draft and where we differ', 15_000);
+      // The older count agrees: what this person cut no longer waits on them, but it waits on others.
+      await poll(async () => /^0 open for you · 1 waiting on others/.test(await page.locator('.aov-header-text').textContent().catch(() => '')), `"open for you" still counts the cut change: ${await page.locator('.aov-header-text').textContent().catch(() => '')}`, 15_000);
       await page.screenshot({ path: `.preview/dispositions-count-line-${style}.png` });
     });
 

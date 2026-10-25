@@ -1547,6 +1547,9 @@ class ProofEditorImpl implements ProofEditor {
       clearInterval(this.shareDispositionsTimer);
       this.shareDispositionsTimer = null;
     }
+    // What this reader promoted or cut no longer waits on them, so "open for you" agrees with the draft.
+    const piles = this.dispositionPiles();
+    this.lineMarks?.setDecidedByMe(piles ? [...piles.accord, ...piles['cutting-room']] : []);
     this.openViewUI?.sync();
     this.readingWalk?.navigator.render();
   }

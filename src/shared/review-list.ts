@@ -28,7 +28,8 @@ export function reviewViews(input: OpenViewInput): Record<ReviewScope, OpenView>
   // is the only known participant. The empty viewer adds those to All open only.
   for (const viewer of [...(REVIEW_LIST_POLICY.includeUnassignedOpenItems ? [''] : []), ...(input.team ?? [])]) {
     if ([input.viewer, ...(input.aliases ?? [])].some(actor => actorKey(actor) === actorKey(viewer))) continue;
-    for (const item of openView({ ...input, viewer, aliases: [] }).items) {
+    // Another reader's view: the viewer's own promotes and cuts say nothing about what waits on them.
+    for (const item of openView({ ...input, viewer, aliases: [], decided: undefined }).items) {
       const prev = byLine.get(item.line);
       byLine.set(item.line, prev ? {
         ...prev,

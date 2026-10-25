@@ -24,6 +24,17 @@ test('scopes count passages once even when multiple participants need the same p
   assert.equal(scopes['all-open'].count, 1);
   assert.deepEqual(scopes['all-open'].lines, scopes['all-open'].items.map(item => item.line));
 });
+test('multi-party: a proposal the viewer promoted or cut leaves Needs you but stays in All open', () => {
+  const suggestion: ProofIssue = { type: 'suggestion', markId: 's1', pos: 40, kind: 'replace', by: other, excerpt: 'x' };
+  const before = reviewViews(input([suggestion]));
+  assert.deepEqual(before['needs-you'].lines, [4]);
+  const after = reviewViews({ ...input([suggestion]), decided: new Set(['s1']) });
+  assert.equal(after['needs-you'].count, 0);
+  assert.deepEqual(after['all-open'].lines, [4]);
+  // Asks are not proposals: deciding a proposal never hides an ask on the same line.
+  const withAsk = reviewViews({ ...input([suggestion, ask(4)]), decided: new Set(['s1']) });
+  assert.deepEqual(withAsk['needs-you'].lines, [4]);
+});
 test('scope labels always name their scope, including zero and one', () => {
   for (const count of [0, 1, 12]) {
     assert.equal(reviewCountLabel('needs-you', count), `${count} open`);

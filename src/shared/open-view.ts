@@ -132,6 +132,12 @@ export interface OpenViewInput {
   status?: DocumentStatus;
   /** How many lines the document has, so an item can never point off the end. */
   lineCount?: number;
+  /**
+   * Multi-party Accords (src/shared/dispositions.ts): proposals the viewer has already promoted or
+   * cut. They left the viewer's draft, so they no longer wait on the viewer, but they stay open for
+   * everyone else until common accord.
+   */
+  decided?: ReadonlySet<string>;
 }
 
 const kindOfIssue = (issue: ProofIssue): OpenKind | null => {
@@ -199,6 +205,7 @@ export function openView(input: OpenViewInput): OpenView {
     if ('markId' in issue && input.threads?.some(view => typedDiscussionInsertId(view.thread.id)
       && view.thread.markId === issue.markId)) continue;
     if (!issueNeedsViewer(issue, input.viewer, aliases)) continue;
+    if (issue.type === 'suggestion' && 'markId' in issue && typeof issue.markId === 'string' && input.decided?.has(issue.markId)) continue;
     const kind = kindOfIssue(issue);
     if (!kind) continue;
     let line: number | null = 'lineIndex' in issue && typeof issue.lineIndex === 'number' ? issue.lineIndex : null;
@@ -238,6 +245,8 @@ export function openView(input: OpenViewInput): OpenView {
     if (view.lineIndex === null) continue;
     const openness: ThreadOpenness = threadOpenFor(view, input.viewer, { team: input.team });
     if (!openness.open) continue;
+    // A proposal's thread is the proposal: once the viewer promoted or cut it, it no longer waits on them.
+    if (view.thread.diff && (input.decided?.has(view.thread.id) || (view.thread.markId && input.decided?.has(view.thread.markId)))) continue;
     const at = bucket(view.lineIndex);
     if (!at) continue;
     at.threadIds.push(view.thread.id);
