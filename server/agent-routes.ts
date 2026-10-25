@@ -120,6 +120,7 @@ import {
 } from './proof-extras.js';
 import { redactIssues, serializeExplain, termsReport } from './proof-extras-eval.js';
 import { getProofSettings, listExplains } from './proof-extras-store.js';
+import { dispositionGate, dispositionsReport, getMultiPartySettings, setMultiPartySettings } from './dispositions.js';
 import { BUNDLE_POLICY } from '../src/shared/bundles.js';
 import { ALT_POLICY } from '../src/shared/alternatives.js';
 import { BLIND_POLICY, objectionLinesRevealed, proxyVisibleTo } from '../src/shared/blind.js';
@@ -5000,6 +5001,51 @@ agentRoutes.post('/:slug/chat', async (req: Request, res: Response) => {
   sendMutationResponse(res, result.status, result.body, { route, slug });
 });
 
+/**
+ * Multi-party Accords (server/dispositions.ts): on a document that opted in, accept records a
+ * promote and reject records a cut, and the suggestion is finalized only on unanimity. True when
+ * the disposition was recorded and the suggestion stays open (the response is sent).
+ */
+async function holdForDispositions(
+  req: Request,
+  res: Response,
+  slug: string,
+  role: ShareRole,
+  payload: Record<string, unknown>,
+  disposition: 'promote' | 'cut',
+  replay: Awaited<ReturnType<typeof maybeReplayIdempotentMutation>>,
+  mutationRoute: string,
+): Promise<boolean> {
+  if (!getMultiPartySettings(slug).enabled) return false;
+  const actor = resolveAgentActor(req, slug, payload, role);
+  if (!actor.ok) {
+    sendMutationResponse(res, actor.status, actor.body, { route: mutationRoute, slug });
+    return true;
+  }
+  const state = await currentAgentState(slug);
+  const gate = dispositionGate(slug, { markId: payload.markId, by: actor.by, disposition, rawMarks: state.marks, source: 'agent' });
+  if (!gate.handled) return false;
+  storeIdempotentMutationResult(replay, mutationRoute, slug, gate.status, gate.body);
+  sendMutationResponse(res, gate.status, gate.body, { route: mutationRoute, slug });
+  return true;
+}
+
+// Multi-party Accords: the roster, each open proposal's piles, where we differ, and full accord.
+agentRoutes.get('/:slug/dispositions', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  if (!checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot'])) return;
+  const state = await currentAgentState(slug);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, ...dispositionsReport(slug, state.marks) });
+});
+
+// Multi-party Accords: the owner credential turns the model on or off and names observers.
+aidRoute('/:slug/dispositions/settings', 'POST /dispositions/settings', ['owner_bot'], async ({ slug, by, payload }) => {
+  const settings = setMultiPartySettings(slug, { enabled: payload.multiParty, observers: payload.observers, by });
+  return { status: 200, body: { success: true, multiParty: settings.enabled, observers: settings.observers } };
+});
+
 agentRoutes.post('/:slug/marks/accept', async (req: Request, res: Response) => {
   const mutationRoute = 'POST /marks/accept';
   const slug = getSlug(req);
@@ -5007,13 +5053,15 @@ agentRoutes.post('/:slug/marks/accept', async (req: Request, res: Response) => {
     sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute });
     return;
   }
-  if (!checkAuth(req, res, slug, ['editor', 'owner_bot'])) return;
+  const role = checkAuth(req, res, slug, ['editor', 'owner_bot']);
+  if (!role) return;
   const routeKey = mutationRoute;
   const replay = await maybeReplayIdempotentMutation(req, res, slug, mutationRoute, routeKey);
   if (replay.handled) return;
   const payload = asPayload(req.body);
   const mutationContext = await enforceMutationPrecondition(res, slug, mutationRoute, 'suggestion.accept', payload, replay);
   if (!mutationContext) return;
+  if (await holdForDispositions(req, res, slug, role, payload, 'promote', replay, mutationRoute)) return;
   const result = await executeDocumentOperationAsync(slug, 'POST', '/marks/accept', payload, mutationContext);
   maybeLogMarkHydrationMismatch(mutationRoute, slug, payload, mutationContext, result);
   if (result.status >= 200 && result.status < 300) {
@@ -5076,13 +5124,15 @@ agentRoutes.post('/:slug/marks/reject', async (req: Request, res: Response) => {
     sendMutationResponse(res, 400, { success: false, error: 'Invalid slug' }, { route: mutationRoute });
     return;
   }
-  if (!checkAuth(req, res, slug, ['editor', 'owner_bot'])) return;
+  const role = checkAuth(req, res, slug, ['editor', 'owner_bot']);
+  if (!role) return;
   const routeKey = mutationRoute;
   const replay = await maybeReplayIdempotentMutation(req, res, slug, mutationRoute, routeKey);
   if (replay.handled) return;
   const payload = asPayload(req.body);
   const mutationContext = await enforceMutationPrecondition(res, slug, mutationRoute, 'suggestion.reject', payload, replay);
   if (!mutationContext) return;
+  if (await holdForDispositions(req, res, slug, role, payload, 'cut', replay, mutationRoute)) return;
   const result = await executeDocumentOperationAsync(slug, 'POST', '/marks/reject', payload, mutationContext);
   maybeLogMarkHydrationMismatch(mutationRoute, slug, payload, mutationContext, result);
   storeIdempotentMutationResult(replay, mutationRoute, slug, result.status, result.body);

@@ -92,3 +92,14 @@ Each line is a ruling Mike made, with its date and where it is recorded. A rulin
   - View activity leaves the Share dialog (it stays in File › View activity), so nothing under the link setting reads as a privilege level.
   - An Accord's Terms section goes at the top. On a desktop, resting the pointer on a linked term shows the definition box a click shows, and the browser's own small tooltip is gone.
   - Nothing answered the chat: an AI answering there is step 5 of the editor's build order. Until it is built, the session that builds the editor reads the chats of the Accords it watches every minute.
+
+## Accords with more people (2026-10-24)
+
+- **Mike, 2026-10-24, in the Claude project "Accords" (thread "Design the per-participant accord model"), the multi-party rule that "The Accord rules" left "still to come".** Written up, with his inline edits accepted, as the Claude Doc "Accord per-participant state model" (https://claude.ai/artifact/Gm4wXq8w38FudKChnMNuXB); the build plan is "Multi-party Accord: implementation plan" (https://claude.ai/artifact/QmuexVfGbDEfdMCcbiZedv). His words, in order:
+  - "The draft is what has been proposed and not disposed from that participant's point of view. You can dispose of something by promoting it to your Accord, or sending it to your cutting room."
+  - "When there is full Accord, everyone has the same Accord and the same cutting room and the draft is empty."
+  - "AIS are equal participants to humans. It might be possible to make someone an observer in which case they make can make comments but they don't require agreement." Observers see everyone's piles.
+  - Comments are arguments, for or against a particular change. They are not part of the Accord; once everyone agrees they are no longer needed, "unless it would be important for a new reader to hear that argument". The path to accord should be replayable.
+  - A modification is a tracked change, down to a single word. It shows as a proposal in the modifier's accord, in everyone else's draft, and in the accord of anyone who already accepted the original. It stays a proposal "until common accord". Anyone can change their mind, add sections, and break a deadlock by proposing a modification; "AIs would always be helping toward accord".
+  - "By default, consensus. Owner can overrule as a special act but the disagreement is noted."
+- Built so far: `src/shared/dispositions.ts` (`DISPOSITION_POLICY`), `server/dispositions.ts`, and the accept and reject routes, off by default per document. With two parties an accept behaves as before; a reject becomes a cut that leaves the proposal open until the proposer cuts it too, which is the 2026-09-24 rule "rejecting a proposal leaves the original standing until the proposer accepts it or proposes again".
