@@ -143,16 +143,17 @@ test('layout v2 policies: independent panels, permanent composer, proposals only
     { left: true, right: false });
 });
 
-test('list keys: A, Delete, Backspace, J, K and Enter; no line-mark R', () => {
+test('list keys: A, Delete, Backspace, U, J, K and Enter; no line-mark R', () => {
   const route = (key: string, extra = {}) => reviewListKey({ key, listFocused: true, typing: false, ...extra });
   for (const [key, action] of [['a', 'accept'], ['A', 'accept'], ['Delete', 'reject'], ['Backspace', 'reject'],
+    ['u', 'draft'], ['U', 'draft'],
     ['j', 'next'], ['J', 'next'], ['k', 'previous'], ['K', 'previous'], ['Enter', 'document']]) {
     assert.equal(route(key), action);
     assert.equal(route(key, { typing: true }), null, key + ' while typing');
     assert.equal(route(key, { listFocused: false }), null, key + ' outside list');
     for (const modifier of ['ctrlKey', 'metaKey', 'altKey', 'isComposing']) assert.equal(route(key, { [modifier]: true }), null);
   }
-  for (const key of ['a', 'j', 'k']) assert.equal(route(key, { letterShortcuts: false }), null);
+  for (const key of ['a', 'u', 'j', 'k']) assert.equal(route(key, { letterShortcuts: false }), null);
   for (const key of ['r', 'R', 'Process', 'Unidentified', 'Tab']) assert.equal(route(key), null);
 });
 

@@ -23,6 +23,8 @@ export interface NavigatorHost {
   focusDocument(line: number): void;
   /** Multi-party Accords: this reader's piles as mark ids, or null when the Accord is not multi-party. */
   piles?(): Record<PileFilter, string[]> | null;
+  /** Multi-party Accords: send these proposals back to this reader's draft. */
+  toDraft?(markIds: string[]): void;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -201,6 +203,25 @@ export class NavigatorUI {
     return !hint;
   }
 
+  /**
+   * U on a line: the changes on it that this reader promoted or cut go back to their draft. They are
+   * no longer in Needs you, so this reads All open, and only the reader's own decided changes move.
+   */
+  toDraftAtLine(line: number): boolean {
+    this.render();
+    const piles = this.host.piles?.();
+    if (!piles || !this.host.toDraft) { this.keyHint.textContent = 'U changes your mind on a multi-party Accord; this one decides by accept and reject.'; return false; }
+    const decided = new Set([...piles.accord, ...piles['cutting-room']]);
+    const ids = this.sessions['all-open'].rows
+      .filter(row => row.line === line && !row.done)
+      .flatMap(row => row.markIds ?? [])
+      .filter(id => decided.has(id));
+    if (!ids.length) { this.keyHint.textContent = 'Nothing on this line is in your accord or your cutting room.'; return false; }
+    this.keyHint.textContent = '';
+    this.host.toDraft([...new Set(ids)]);
+    return true;
+  }
+
   private focusSelected(): void {
     const li = [...this.issuesList.children].find(node => (node as HTMLElement).dataset.key === this.selectedKey);
     const button = li?.querySelector('button');
@@ -233,6 +254,7 @@ export class NavigatorUI {
     }
     if (!selected || selected.line < 0) { this.keyHint.textContent = 'Select an open item with J or K.'; return; }
     if (action === 'document') { this.host.focusDocument(selected.line); return; }
+    if (action === 'draft') { this.toDraftAtLine(selected.line); return; }
     if (selected.done) { this.keyHint.textContent = 'This item is done. Select an open item with J or K.'; return; }
     const hint = reviewItemHint(selected.kinds[0]);
     this.keyHint.textContent = hint ?? '';

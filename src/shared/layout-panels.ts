@@ -60,10 +60,12 @@ export const GUTTER_POLICY = { showLineMarks: false, showOpenDots: true, dotOpen
 /** Mike, 2026-09-24, yfbqrau4: commands belong to the focused list, never a typing surface. */
 export const REVIEW_KEYS_POLICY = {
   accept: 'a', reject: ['Delete', 'Backspace'], next: 'j', previous: 'k', enter: 'Enter',
+  /** Multi-party Accords: U sends a change you promoted or cut back to your draft (changing your mind). */
+  toDraft: 'u',
   proposalsOnly: true, bundlesAsUnit: true, lineMarkKeys: false, wrapNavigation: false,
 } as const;
 
-export type ReviewListAction = 'accept' | 'reject' | 'next' | 'previous' | 'document';
+export type ReviewListAction = 'accept' | 'reject' | 'draft' | 'next' | 'previous' | 'document';
 export function reviewListKey(input: {
   key: string; listFocused: boolean; typing: boolean; isComposing?: boolean;
   ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean; letterShortcuts?: boolean;
@@ -73,6 +75,7 @@ export function reviewListKey(input: {
   if (input.letterShortcuts === false && /^[a-z]$/.test(key)) return null;
   if (key === REVIEW_KEYS_POLICY.accept) return 'accept';
   if ((REVIEW_KEYS_POLICY.reject as readonly string[]).includes(key)) return 'reject';
+  if (key === REVIEW_KEYS_POLICY.toDraft) return 'draft';
   if (key === REVIEW_KEYS_POLICY.next) return 'next';
   if (key === REVIEW_KEYS_POLICY.previous) return 'previous';
   return key === REVIEW_KEYS_POLICY.enter ? 'document' : null;

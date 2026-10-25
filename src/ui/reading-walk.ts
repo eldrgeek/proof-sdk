@@ -113,6 +113,8 @@ export interface ReadingWalkHost {
   folding?(): FoldingUI | null;
   /** Multi-party Accords: the reader's piles for the Review list's switch (src/shared/dispositions.ts). */
   piles?(): Record<PileFilter, string[]> | null;
+  /** Multi-party Accords: send these proposals back to the reader's draft. */
+  toDraft?(markIds: string[]): void;
 }
 
 const PHONE_QUERY = '(max-width: 700px)';
@@ -299,6 +301,7 @@ export class ReadingWalkUI {
       decide: (line, action) => this.decideReviewLine(line, action),
       focusDocument: (line) => this.focusDocument(line),
       piles: () => this.host.piles?.() ?? null,
+      toDraft: this.host.toDraft ? (ids) => this.host.toDraft?.(ids) : undefined,
     }, saved.reviewTab ?? saved.leftTab);
     this.buildRails();
   }
@@ -713,6 +716,8 @@ export class ReadingWalkUI {
     if (reviewKey === 'accept' || reviewKey === 'reject') {
       event.preventDefault(); this.navigator.decideAtLine(this.cursorLine(), reviewKey); return;
     }
+    // Multi-party Accords: U changes your mind (Mike, 2026-10-24: "Yes" to changing your mind).
+    if (reviewKey === 'draft') { event.preventDefault(); this.navigator.toDraftAtLine(this.cursorLine()); return; }
     if (/^r$/i.test(key)) { event.preventDefault(); return; }
     if (key.toLowerCase() === 'j' || key === 'ArrowDown') { event.preventDefault(); this.next(); return; }
     if (key.toLowerCase() === 'k' || key === 'ArrowUp') { event.preventDefault(); this.previous(); return; }
