@@ -39,7 +39,7 @@ The estate's rule is front door first, repo file last: `~/Projects/START-HERE.md
 - `server/` — the Express routes, the collab runtime (Yjs, `server/collab.ts`), SQLite (`server/db.ts`), the library and SOMA Auth (`server/library/`), the feedback chip proxy (`server/soma-feedback.ts`), agent keys (`server/share-page-access.ts`).
 - `src/editor/`, `src/bridge/`, `src/agent/` — the ProseMirror editor, the share client and the agent bridge; mostly upstream code.
 - `src/tests/*.test.ts` — 208 files. `npm test` runs the suites wired in `package.json` (34 with this file's sync test), each with `tsx` and `node:assert`, against a server on a loopback port with a temporary database.
-- `scripts/*-check.mjs` — 44 browser checks. Each starts the server on a loopback port and drives Playwright Chromium in both review styles and at phone width; screenshots land in `.preview/`. `npm run check:all` runs every one in sequence and prints one PASS/FAIL line per check; `scripts/check-all-selftest.sh` proves the runner goes red on a broken stub.
+- `scripts/*-check.mjs` — 43 browser checks. Each starts the server on a loopback port and drives Playwright Chromium in both review styles and at phone width; screenshots land in `.preview/`. `npm run check:all` runs every one in sequence and prints one PASS/FAIL line per check; `scripts/check-all-selftest.sh` proves the runner goes red on a broken stub.
 - Every Accord behaviour has all four: a policy module, a unit suite, a browser check, and `.preview/` screenshots. Keep that pattern when you add one.
 
 ## What is ruled (do not reopen; sources in docs/accord/rulings.md)
