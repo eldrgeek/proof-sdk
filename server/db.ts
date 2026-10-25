@@ -1493,6 +1493,30 @@ function initDatabase(): void {
     )
   `);
   d.exec(`CREATE INDEX IF NOT EXISTS idx_document_alt_picks_slug ON document_alt_picks(document_slug, at)`);
+  // Multi-party Accords (src/shared/dispositions.ts): append-only, the latest row per person counts,
+  // so the path to accord can be replayed. Settings say whether a document uses the model at all.
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_mark_dispositions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      document_slug TEXT NOT NULL,
+      mark_id TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      actor_key TEXT NOT NULL,
+      disposition TEXT NOT NULL,
+      source TEXT NOT NULL,
+      at TEXT NOT NULL
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_mark_dispositions_slug ON document_mark_dispositions(document_slug, at)`);
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_multiparty_settings (
+      document_slug TEXT PRIMARY KEY,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      observers_json TEXT NOT NULL DEFAULT '[]',
+      set_by TEXT,
+      set_at TEXT
+    )
+  `);
   d.exec(`
     CREATE TABLE IF NOT EXISTS document_proof_settings (
       document_slug TEXT PRIMARY KEY,
