@@ -124,3 +124,12 @@ body.amb-on #share-banner .share-pill-hidden { display: none !important; }
 .anv-owner-tools { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 8px 8px; }
 .anv-owner-tools[hidden] { display: none; }
 .anv-owner-tools button { min-height: 32px; padding: 2px 8px; border: 1px dashed #a16207; border-radius: 6px; background: #fffbeb; color: #713f12; cursor: pointer; }
+.anv-issue-arguments { display: block; color: #52525b; font-size: 12px; }
+.anv-argue-tools { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 8px 8px; }
+.anv-argue-tools[hidden], .anv-argue-tools [hidden] { display: none; }
+.anv-argue-choices { display: flex; flex-wrap: wrap; gap: 6px; flex-basis: 100%; }
+.anv-arguments { flex-basis: 100%; margin: 0; padding: 0; list-style: none; font-size: 13px; color: #3f3f46; }
+.anv-argument { padding: 2px 0; }
+.anv-argue-tools button { min-height: 32px; padding: 2px 8px; border: 1px solid #d4d4d8; border-radius: 6px; background: #fff; color: #27272a; cursor: pointer; }
+.anv-argue-tools button[aria-pressed="true"] { border-color: #52525b; background: #f4f4f5; }
+.anv-argue-text { flex-basis: 100%; min-height: 44px; font: inherit; font-size: 13px; padding: 4px 6px; border: 1px solid #d4d4d8; border-radius: 6px; }

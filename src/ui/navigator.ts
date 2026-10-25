@@ -31,6 +31,12 @@ export interface NavigatorHost {
   canOverrule?(): boolean;
   /** The Owner's special act: settle these changes now; the disagreement is recorded. */
   overrule?(markIds: string[], outcome: 'common' | 'commonly-cut'): void;
+  /** Multi-party Accords: arguments on these changes, as a count ("2 for · 1 against") and one line each. */
+  argumentsOn?(markIds: readonly string[]): { count: string | null; lines: string[] };
+  /** Argue for or against one open change; resolves to an error message, or null when posted. */
+  argue?(markId: string, stance: 'for' | 'against', text: string): Promise<string | null>;
+  /** What a change does, to name it when a line has several. */
+  changeLabel?(markId: string): string;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -64,6 +70,16 @@ export class NavigatorUI {
   private readonly overruleAccept = el('button', 'anv-overrule', 'Overrule: put in the Accord');
   private readonly overruleCut = el('button', 'anv-overrule', 'Overrule: cut');
   private pile: PileFilter | null = PILE_FILTER_POLICY.defaultFilter;
+  private readonly argueTools = el('div', 'anv-argue-tools');
+  private readonly argueList = el('ul', 'anv-arguments');
+  private readonly argueFor = el('button', 'anv-argue', 'Argue for');
+  private readonly argueAgainst = el('button', 'anv-argue', 'Argue against');
+  private readonly argueText = el('textarea', 'anv-argue-text');
+  private readonly arguePost = el('button', 'anv-argue-post', 'Post argument');
+  private readonly argueChoices = el('div', 'anv-argue-choices');
+  private argueStance: 'for' | 'against' | null = null;
+  /** The change the argue box is about when the selected line has several. */
+  private argueChoice: string | null = null;
   private readonly clearSettledBtn = el('button', 'anv-clear-settled', 'Clear completed');
   private readonly nextBtn = el('button', 'anv-next', 'Next');
   private readonly issuesEmpty = el('p', 'prw-empty anv-empty');
@@ -158,7 +174,39 @@ export class NavigatorUI {
       };
       this.ownerTools.append(button);
     }
-    this.panes.issues.append(this.pileTools, this.scopeTools, this.ownerTools, this.keyHint, this.detailEl, this.issuesEmpty, this.issuesList);
+    // Arguments (Mike, 2026-10-24): anyone, observers included, argues for or against one open change.
+    this.argueTools.setAttribute('role', 'group');
+    this.argueTools.setAttribute('aria-label', 'Arguments');
+    this.argueTools.dataset.accordArgueTools = '';
+    this.argueTools.hidden = true;
+    this.argueText.rows = 2;
+    this.argueText.hidden = true;
+    this.arguePost.hidden = true;
+    this.argueText.dataset.accordArgueText = '';
+    this.arguePost.dataset.accordArguePost = '';
+    for (const [button, stance] of [[this.argueFor, 'for'], [this.argueAgainst, 'against']] as const) {
+      button.type = 'button';
+      button.dataset.accordArgue = stance;
+      button.onclick = () => {
+        this.argueStance = stance;
+        this.argueText.placeholder = stance === 'for' ? 'Why this change should be in the Accord' : 'Why this change should be cut';
+        this.argueText.hidden = false;
+        this.arguePost.hidden = false;
+        for (const b of [this.argueFor, this.argueAgainst]) b.setAttribute('aria-pressed', String(b === button));
+        this.argueText.focus();
+      };
+    }
+    this.arguePost.type = 'button';
+    this.arguePost.onclick = () => { void this.postArgument(); };
+    this.argueText.addEventListener('keydown', event => {
+      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void this.postArgument(); }
+      else if (event.key === 'Escape') { event.preventDefault(); this.closeArgument(); }
+      event.stopPropagation();
+    });
+    this.argueChoices.setAttribute('role', 'group');
+    this.argueChoices.setAttribute('aria-label', 'Which change');
+    this.argueTools.append(this.argueChoices, this.argueList, this.argueFor, this.argueAgainst, this.argueText, this.arguePost);
+    this.panes.issues.append(this.pileTools, this.scopeTools, this.ownerTools, this.argueTools, this.keyHint, this.detailEl, this.issuesEmpty, this.issuesList);
     this.applyTab();
   }
 
@@ -225,6 +273,65 @@ export class NavigatorUI {
     if (!hint) this.host.decide(row.line, action);
     this.render();
     return !hint;
+  }
+
+  /** The open changes on the selected row, and the one the argue box is about. */
+  private argueTargets(): { all: string[]; chosen: string | null } {
+    const piles = this.host.piles?.();
+    if (!piles) return { all: [], chosen: null };
+    const row = this.sessions['all-open'].rows.find(r => r.key === this.selectedKey && !r.done)
+      ?? this.session.rows.find(r => r.key === this.selectedKey && !r.done);
+    const open = new Set([...piles.draft, ...piles.accord, ...piles['cutting-room'], ...piles.differ]);
+    const all = [...new Set(row?.markIds ?? [])].filter(id => open.has(id));
+    if (this.argueChoice && all.includes(this.argueChoice)) return { all, chosen: this.argueChoice };
+    // Showing a change's arguments decides nothing, so the box starts on the one most in dispute.
+    return { all, chosen: all.find(id => piles.differ.includes(id)) ?? all[0] ?? null };
+  }
+
+  private closeArgument(): void {
+    this.argueStance = null;
+    this.argueText.value = '';
+    this.argueText.hidden = true;
+    this.arguePost.hidden = true;
+    for (const b of [this.argueFor, this.argueAgainst]) b.setAttribute('aria-pressed', 'false');
+  }
+
+  private async postArgument(): Promise<void> {
+    const markId = this.argueTargets().chosen;
+    const text = this.argueText.value.trim();
+    if (!markId || !this.argueStance || !text || !this.host.argue) return;
+    const error = await this.host.argue(markId, this.argueStance, text);
+    if (error) { this.keyHint.textContent = error; return; }
+    this.closeArgument();
+    this.render();
+  }
+
+  /** The selected change's arguments, and the buttons to add one. Shown only for one open change. */
+  private renderArguments(): void {
+    const { all, chosen } = this.host.argue ? this.argueTargets() : { all: [], chosen: null };
+    const markId = chosen;
+    if (this.argueTools.dataset.markId !== (markId ?? '')) this.closeArgument();
+    this.argueTools.dataset.markId = markId ?? '';
+    this.argueTools.hidden = !markId;
+    const choiceKey = all.length > 1 ? all.join(' ') + '|' + markId : '';
+    if (this.argueChoices.dataset.key !== choiceKey) {
+      this.argueChoices.replaceChildren(...(all.length > 1 ? all : []).map(id => {
+        const b = el('button', 'anv-argue-choice', this.host.changeLabel?.(id) ?? id);
+        b.type = 'button';
+        b.dataset.accordArgueTarget = id;
+        b.setAttribute('aria-pressed', String(id === markId));
+        b.onclick = () => { this.argueChoice = id; this.render(); };
+        return b;
+      }));
+      this.argueChoices.dataset.key = choiceKey;
+    }
+    this.argueChoices.hidden = all.length < 2;
+    const lines = markId ? this.host.argumentsOn?.([markId])?.lines ?? [] : [];
+    if (this.argueList.dataset.lines !== lines.join('\n')) {
+      this.argueList.replaceChildren(...lines.map(text => { const li = el('li', 'anv-argument', text); li.dataset.accordArgument = ''; return li; }));
+      this.argueList.dataset.lines = lines.join('\n');
+    }
+    this.argueList.hidden = lines.length === 0;
   }
 
   /**
@@ -334,6 +441,7 @@ export class NavigatorUI {
     if (!piles) this.pile = null;
     // The Owner's overrule shows once a change is selected (a special act, never the default path).
     this.ownerTools.hidden = !(piles && this.host.canOverrule?.() && this.overruleTargets().length > 0);
+    this.renderArguments();
     this.pileTools.hidden = !piles;
     for (const button of this.pileTools.querySelectorAll<HTMLElement>('[data-accord-pile]')) {
       const id = button.dataset.accordPile as PileFilter;
@@ -396,13 +504,15 @@ export class NavigatorUI {
       const label = row.done ? (discussion ? convertedRowLabel(discussion.lineIndex) : row.line < 0 ? 'Done · passage removed' : `Done · line ${row.line + 1}`)
         : `${row.fresh ? 'New · ' : ''}${needsYouLabel(this.scope === 'all-open' ? { ...row, count: 1 } : row, actor => lm.displayName(actor), lm.me())}`;
       const stance = row.done ? null : this.host.stance?.(row.markIds ?? []) ?? null;
-      if (b.dataset.label !== title + label + (stance ?? '')) {
+      const argued = row.done ? null : this.host.argumentsOn?.(row.markIds ?? [])?.count ?? null;
+      if (b.dataset.label !== title + label + (stance ?? '') + (argued ?? '')) {
         const dot = el('span', 'anv-dot'); dot.setAttribute('aria-hidden', 'true');
         const body = el('span', 'anv-issue-body');
         body.append(el('span', 'anv-issue-title', title), el('small', 'anv-issue-kind', label));
         if (stance) { const s = el('small', 'anv-issue-stance', stance); s.dataset.accordStance = ''; body.append(s); }
+        if (argued) { const a = el('small', 'anv-issue-arguments', `Arguments: ${argued}`); a.dataset.accordArguments = ''; body.append(a); }
         b.replaceChildren(dot, body);
-        b.dataset.label = title + label + (stance ?? '');
+        b.dataset.label = title + label + (stance ?? '') + (argued ?? '');
       }
       b.onclick = () => {
         this.keyHint.textContent = '';

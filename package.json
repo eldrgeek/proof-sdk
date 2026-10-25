@@ -65,7 +65,7 @@
     "test:moves": "tsx src/tests/moves.test.ts",
     "test:reject-insert": "tsx src/tests/reject-block-insert-keeps-anchor.test.ts",
     "test:adjacent-inserts": "tsx src/tests/adjacent-inserts.test.ts",
-    "test:dispositions": "tsx src/tests/dispositions.test.ts && tsx src/tests/dispositions-routes.test.ts",
+    "test:dispositions": "tsx src/tests/dispositions.test.ts && tsx src/tests/arguments.test.ts && tsx src/tests/dispositions-routes.test.ts",
     "check:drag": "node scripts/drag-check.mjs"
   },
   "dependencies": {

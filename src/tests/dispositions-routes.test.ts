@@ -155,6 +155,38 @@ try {
     assert.deepEqual(overruled.data.dissent, [{ actor: 'ai:gemini', pile: 'cutting-room' }]);
   });
 
+  await test('anyone argues for or against an open change, observers too; arguments retire once it is settled', async () => {
+    await call(`/api/agent/${slug}/dispositions/settings`, 'POST', { observers: ['ai:gemini'], by: MIKE }, OWNER);
+    const id = await suggest('for the quarter', 'for the year');
+    const argue = (headers: Record<string, string>, stance: string, text: string, markId = id) =>
+      call(`/api/agent/${slug}/dispositions/argue`, 'POST', { markId, stance, text }, headers);
+    assert.equal((await argue(claude, 'maybe', 'x')).body.code, 'INVALID_STANCE');
+    assert.equal((await argue(claude, 'for', '   ')).body.code, 'INVALID_TEXT');
+    const pro = await argue(claude, 'for', 'A year matches the plan cycle.');
+    assert.equal(pro.status, 200, JSON.stringify(pro.body));
+    assert.equal(pro.body.argument.stance, 'for');
+    const con = await argue(gemini, 'against', 'The quarter is what finance reports on.');
+    assert.equal(con.status, 200, 'an observer argues: ' + JSON.stringify(con.body));
+    const again = await argue(claude, 'for', 'A year matches the plan cycle.');
+    assert.equal(again.body.duplicate, true);
+    assert.equal(again.body.argument.id, pro.body.argument.id);
+    const open = await call(`/api/agent/${slug}/dispositions`, 'GET', undefined, claude);
+    const mine = (open.body.arguments as any[]).filter(a => a.markId === id);
+    assert.deepEqual(mine.map(a => [a.by, a.stance]), [['ai:claude', 'for'], ['ai:gemini', 'against']]);
+    const accepted = await decide('accept', id, OWNER, MIKE);
+    assert.equal(accepted.status, 200, JSON.stringify(accepted.body));
+    assert.match(await markdown(), /for the year/);
+    const settled = await call(`/api/agent/${slug}/dispositions`, 'GET', undefined, claude);
+    assert.equal((settled.body.arguments as any[]).filter(a => a.markId === id).length, 0, 'retired once agreed');
+    assert.ok(settled.body.retiredArguments >= 2, String(settled.body.retiredArguments));
+    const late = await argue(claude, 'against', 'Too late.');
+    assert.equal(late.status, 409);
+    assert.equal(late.body.code, 'NOT_OPEN');
+    const events = await call(`/api/agent/${slug}/events/pending?after=0`, 'GET', undefined, claude);
+    const argued = (events.body.events as any[]).filter(e => e.type === 'disposition.argued' && e.data.markId === id);
+    assert.equal(argued.length, 2, 'each argument is in the log once, so replay keeps it');
+  });
+
   await test('every disposition is an event, so the path to accord can be replayed', async () => {
     const events = await call(`/api/agent/${slug}/events/pending?after=0`, 'GET', undefined, claude);
     const recorded = (events.body.events as any[]).filter(e => e.type === 'disposition.recorded');

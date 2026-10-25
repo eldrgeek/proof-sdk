@@ -120,7 +120,8 @@ import {
 } from './proof-extras.js';
 import { redactIssues, serializeExplain, termsReport } from './proof-extras-eval.js';
 import { getProofSettings, listExplains } from './proof-extras-store.js';
-import { applyOverrule, dispositionGate, dispositionsReport, getMultiPartySettings, setMultiPartySettings } from './dispositions.js';
+import { addArgument, applyOverrule, dispositionGate, dispositionsReport, getMultiPartySettings, setMultiPartySettings } from './dispositions.js';
+import { parseArgumentText, parseStance } from '../src/shared/arguments.js';
 import { BUNDLE_POLICY } from '../src/shared/bundles.js';
 import { ALT_POLICY } from '../src/shared/alternatives.js';
 import { BLIND_POLICY, objectionLinesRevealed, proxyVisibleTo } from '../src/shared/blind.js';
@@ -5060,6 +5061,21 @@ aidRoute('/:slug/dispositions/overrule', 'POST /dispositions/overrule', ['owner_
   if (result.kind === 'refused') return { status: result.status, body: result.body };
   const next = result.action === 'accept' ? 'POST /marks/accept' : 'POST /marks/reject';
   return { status: 200, body: { success: true, action: result.action, overrule: result.overrule, next } };
+});
+
+// An argument for or against an open proposal (Mike, 2026-10-24: AIs are equal participants, and an
+// observer "can comment (argue)"). Body: { markId, stance: "for" | "against", text, by }.
+aidRoute('/:slug/dispositions/argue', 'POST /dispositions/argue', ['commenter', 'editor', 'owner_bot'], async ({ slug, by, payload }) => {
+  const stance = parseStance(payload.stance);
+  if (!stance) return { status: 400, body: { success: false, code: 'INVALID_STANCE', error: '"stance" must be "for" or "against"' } };
+  const text = parseArgumentText(payload.text);
+  if (!text) return { status: 400, body: { success: false, code: 'INVALID_TEXT', error: '"text" must be 1 to 2000 characters' } };
+  const state = await currentAgentState(slug);
+  const result = addArgument(slug, { markId: payload.markId, by, stance, text, rawMarks: state.marks, source: 'agent' });
+  if (result.kind === 'off') return { status: 409, body: { success: false, code: 'NOT_MULTI_PARTY', error: 'This Accord does not use dispositions.' } };
+  if (result.kind === 'not-open') return { status: 409, body: { success: false, code: 'NOT_OPEN', error: 'That change is settled; its arguments are retired.' } };
+  if (result.kind === 'refused') return { status: result.status, body: result.body };
+  return { status: 200, body: { success: true, argument: result.argument, duplicate: result.duplicate } };
 });
 
 agentRoutes.post('/:slug/marks/accept', async (req: Request, res: Response) => {

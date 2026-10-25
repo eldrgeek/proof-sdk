@@ -1193,7 +1193,7 @@ scroll-accepts above the line. The rail shows the counts and **Show only decisio
 folds the context lines that are not Issues for you; it is view only and marks nothing. J / K and Next
 issue skip those lines, but scrolling still reads them.
 
-## Accords with more people: promote, cut, overrule (2026-10-24)
+## Accords with more people: promote, cut, argue, overrule (2026-10-24)
 
 Off by default per document. When the Owner turns it on, a suggestion is no longer accepted or
 rejected by one person: every participant (people and AIs alike) promotes it to their own accord or
@@ -1212,6 +1212,12 @@ cuts it to their own cutting room, and the shared text changes only when everyon
   `{ "markId", "outcome": "common" | "commonly-cut", "by" }` records the decision and who disagreed
   (event `disposition.overruled`), then finalize with the `next` route it names (`/marks/accept` or
   `/marks/reject`). On the page the Owner selects the change and presses "Overrule".
+- Arguing: `POST /api/agent/<slug>/dispositions/argue` (commenter, editor or owner credential)
+  `{ "markId", "stance": "for" | "against", "text" }` argues for or against an open change.
+  Observers may argue. Arguing never promotes or cuts. `GET /dispositions` lists `arguments` on open
+  changes; once a change is settled its arguments retire (`retiredArguments` counts them) and stay
+  in the event log as `disposition.argued`. On the page, select the change in the Review list and
+  press "Argue for" or "Argue against"; Cmd/Ctrl+Enter posts.
 
 ## Presence And Event Polling
 

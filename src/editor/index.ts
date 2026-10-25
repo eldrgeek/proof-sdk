@@ -238,6 +238,7 @@ import { normalizeQuote, extractMarks, embedMarks, getThread, migrateProvenanceT
 import { proofMarkHandler } from '../formats/remark-proof-marks';
 import { remarkProofMarksPlugin } from './schema/remark-proof-marks-plugin';
 import { getCurrentActor, setCurrentActor as setCurrentActorValue, normalizeActor } from './actor';
+import { argumentLine, argumentsText, changeLabel } from '../shared/arguments';
 import { dispositionStatusText, stanceText, summarizeForViewer, viewerPiles, type DispositionsReportView, type PileFilter } from '../shared/dispositions';
 
 /** How often a multi-party Accord's count line re-reads the server (others decide too). */
@@ -1618,6 +1619,15 @@ class ProofEditorImpl implements ProofEditor {
       else this.showDispositionNotice(`Overruled: ${outcome === 'common' ? 'in the Accord' : 'cut'}. Who disagreed is recorded with the decision.`);
       await this.refreshShareMultiParty();
     })();
+  }
+
+  /** An argument for or against one open change; arguing never promotes or cuts it. */
+  private async argueDisposition(markId: string, stance: 'for' | 'against', text: string): Promise<string | null> {
+    if (!this.isShareMode || !this.shareMultiParty) return 'Arguments belong to a multi-party Accord.';
+    const result = await shareClient.argueDisposition(markId, stance, text, getCurrentActor());
+    if ('error' in result) return result.error;
+    await this.refreshShareMultiParty();
+    return null;
   }
 
   /** U: changing your mind. The changes leave your accord or cutting room and wait in your draft again. */
@@ -4435,6 +4445,16 @@ class ProofEditorImpl implements ProofEditor {
         canOverrule: () => Boolean(this.shareDispositions?.viewerIsOwner),
         overrule: (ids, outcome) => this.overruleDispositions(ids, outcome),
         stance: (ids) => this.shareDispositions ? stanceText(this.shareDispositions, ids, actor => lineMarks.displayName(actor)) : null,
+        argumentsOn: (ids) => {
+          const all = this.shareDispositions?.arguments ?? [];
+          const on = all.filter(a => ids.includes(a.markId));
+          return { count: argumentsText(all, ids), lines: on.map(a => argumentLine(a, actor => lineMarks.displayName(actor))) };
+        },
+        argue: (id, stance, text) => this.argueDisposition(id, stance, text),
+        changeLabel: (id) => {
+          const mark = this.getAllMarks().find(m => m.id === id);
+          return mark ? changeLabel({ kind: mark.kind, quote: mark.quote, content: (mark.data as { content?: string } | undefined)?.content }) : id;
+        },
         suggestChange: (line) => {
           if (EDIT_SESSION_POLICY.privateDrafts) return this.editGesture?.open(line) ?? false;
           this.readingWalk?.focusDocument(line);
