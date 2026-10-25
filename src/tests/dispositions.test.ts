@@ -12,6 +12,7 @@ import {
   dispositionStatusText,
   summarizeForViewer,
   viewerPiles,
+  stanceText,
   PILE_FILTER_POLICY,
   evaluateProposal,
   evaluateProposals,
@@ -223,6 +224,22 @@ test('the pile switch: one person\'s draft, accord, cutting room and where we di
   assert.deepEqual(viewerPiles(report, 'newcomer'), { draft: ['a', 'b', 'c'], accord: [], 'cutting-room': [], differ: ['c'] });
   assert.deepEqual(PILE_FILTER_POLICY.filters.map(f => f.label), ['Draft', 'My accord', 'Cutting room', 'Where we differ']);
   assert.equal(PILE_FILTER_POLICY.defaultFilter, null);
+});
+
+test('stance on a change names who has it in their accord and who cut it', () => {
+  const report = {
+    multiParty: true,
+    proposals: [
+      { markId: 'a', proposer: 'ai:claude', status: 'open', openFor: ['ai:gemini'], promotedBy: ['ai:claude'], cutBy: ['mike@example.com'] },
+      { markId: 'b', proposer: 'ai:claude', status: 'open', openFor: ['ai:gemini', 'mike@example.com'], promotedBy: [] },
+    ],
+    whereWeDiffer: ['a'],
+    fullAccord: false,
+  };
+  const name = (a: string) => a === 'mike@example.com' ? 'Mike' : a.replace(/^ai:/, '');
+  assert.equal(stanceText(report, ['a'], name), 'In accord: claude · Cut: Mike');
+  assert.equal(stanceText(report, ['b'], name), null);
+  assert.equal(stanceText(report, ['zzz'], name), null);
 });
 
 console.log(`\n${passed} dispositions tests passed`);

@@ -177,6 +177,9 @@ async function run(browser, base, style) {
       await poll(async () => (await page.locator('[data-accord-review-list] .anv-issue[data-settled="false"]').count()) === 1, 'Cutting room should list the one cut change');
       assert.match(await page.locator('[data-accord-review-list] .anv-issue[data-settled="false"]').first().innerText(), /September 23/);
       assert.equal(await page.locator('[data-accord-pile="cutting-room"]').getAttribute('aria-pressed'), 'true');
+      // Stance on the row: the AI that proposed it has it in its accord; this person cut it.
+      const stance = page.locator('[data-accord-review-list] .anv-issue[data-settled="false"] [data-accord-stance]').first();
+      await poll(async () => /^In accord: .+ · Cut: Mike/.test(await stance.textContent().catch(() => '') ?? ''), `no stance on the cut row: ${await stance.textContent().catch(() => '')}`);
       await page.screenshot({ path: `.preview/dispositions-piles-${style}.png` });
       await page.locator('[data-accord-pile="cutting-room"]').click();
       assert.equal(await page.locator('[data-accord-pile="cutting-room"]').getAttribute('aria-pressed'), 'false');
