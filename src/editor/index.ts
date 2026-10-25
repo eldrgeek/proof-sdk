@@ -238,6 +238,10 @@ import { normalizeQuote, extractMarks, embedMarks, getThread, migrateProvenanceT
 import { proofMarkHandler } from '../formats/remark-proof-marks';
 import { remarkProofMarksPlugin } from './schema/remark-proof-marks-plugin';
 import { getCurrentActor, setCurrentActor as setCurrentActorValue, normalizeActor } from './actor';
+import { dispositionStatusText, summarizeForViewer, type DispositionsReportView } from '../shared/dispositions';
+
+/** How often a multi-party Accord's count line re-reads the server (others decide too). */
+const DISPOSITIONS_REFRESH_MS = 10_000;
 import {
   shouldKeepalivePersistShareContent,
   shouldKeepalivePersistShareMarks,
@@ -1528,10 +1532,27 @@ class ProofEditorImpl implements ProofEditor {
    * the server applies the change only when every participant has promoted it (or cut it).
    */
   private shareMultiParty = false;
+  private shareDispositions: (DispositionsReportView & { viewer?: string | null }) | null = null;
+  private shareDispositionsTimer: ReturnType<typeof setInterval> | null = null;
 
   private async refreshShareMultiParty(): Promise<void> {
-    const report = await shareClient.fetchDispositions();
-    if (report) this.shareMultiParty = report.multiParty;
+    const report = await shareClient.fetchDispositions({ by: getCurrentActor() });
+    if (!report) return;
+    this.shareMultiParty = report.multiParty;
+    this.shareDispositions = report.multiParty ? report as unknown as DispositionsReportView & { viewer?: string | null } : null;
+    // Others decide too: keep the count line current while the Accord is multi-party.
+    if (report.multiParty && !this.shareDispositionsTimer) {
+      this.shareDispositionsTimer = setInterval(() => { void this.refreshShareMultiParty(); }, DISPOSITIONS_REFRESH_MS);
+    } else if (!report.multiParty && this.shareDispositionsTimer) {
+      clearInterval(this.shareDispositionsTimer);
+      this.shareDispositionsTimer = null;
+    }
+    this.openViewUI?.sync();
+  }
+
+  private dispositionsText(): string | null {
+    if (!this.shareDispositions) return null;
+    return dispositionStatusText(summarizeForViewer(this.shareDispositions, this.shareDispositions.viewer ?? getCurrentActor()));
   }
 
   /** Set while the page applies a decision that every participant has now agreed to. */
@@ -4416,6 +4437,7 @@ class ProofEditorImpl implements ProofEditor {
         lineMarks: () => lineMarks,
         folding: () => this.folding,
         changed: () => { this.mountOpenView(); walkUi.onFoldChange(); this.scheduleBannerLayoutUpdate(); },
+        dispositionsText: () => this.dispositionsText(),
       });
       (window as unknown as { __proofOpenView?: OpenViewUI }).__proofOpenView = this.openViewUI;
       this.openViewUI.start();

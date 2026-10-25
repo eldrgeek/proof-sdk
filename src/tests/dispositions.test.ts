@@ -9,6 +9,8 @@ import assert from 'node:assert/strict';
 import {
   DISPOSITION_POLICY,
   dispositionRefusal,
+  dispositionStatusText,
+  summarizeForViewer,
   evaluateProposal,
   evaluateProposals,
   finalizeAction,
@@ -166,6 +168,38 @@ test('parseDisposition accepts the page\'s words and the model\'s words', () => 
   assert.equal(parseDisposition('cut'), 'cut');
   assert.equal(parseDisposition('draft'), 'draft');
   assert.equal(parseDisposition('maybe'), null);
+});
+
+test('the count line reads the viewer\'s own draft and where we differ', () => {
+  const report = {
+    multiParty: true,
+    roster: [{ actor: 'mike@example.com', role: 'owner' as const }, { actor: 'ai:claude', role: 'participant' as const }, { actor: 'ai:gemini', role: 'participant' as const }, { actor: 'lea@example.com', role: 'observer' as const }],
+    proposals: [
+      { markId: 'a', proposer: 'ai:claude', status: 'open', openFor: ['Mike@example.com', 'ai:gemini'], promotedBy: ['ai:claude'] },
+      { markId: 'b', proposer: 'ai:claude', status: 'open', openFor: ['ai:gemini'], promotedBy: ['ai:claude', 'mike@example.com'] },
+      { markId: 'c', proposer: 'ai:gemini', status: 'open', openFor: [], promotedBy: ['ai:gemini', 'mike@example.com'], cutBy: ['ai:claude'] },
+    ],
+    whereWeDiffer: ['c'],
+    fullAccord: false,
+  };
+  assert.equal(dispositionStatusText(summarizeForViewer(report, 'mike@example.com')), '1 in your draft · 1 where we differ');
+  assert.equal(dispositionStatusText(summarizeForViewer({ ...report, whereWeDiffer: [] }, 'ai:claude')), 'Nothing left in your draft · waiting on others');
+  assert.equal(dispositionStatusText(summarizeForViewer(report, 'lea@example.com')), 'Observing · 3 open · 1 where we differ');
+  assert.equal(dispositionStatusText(summarizeForViewer({ ...report, proposals: [], whereWeDiffer: [], fullAccord: true }, 'ai:claude')), 'Full accord');
+});
+
+test('someone who has not decided yet has every open proposal they did not make in their draft', () => {
+  const report = {
+    multiParty: true,
+    proposals: [
+      { markId: 'a', proposer: 'ai:claude', status: 'open', openFor: ['ai:gemini'], promotedBy: ['ai:claude'] },
+      { markId: 'b', proposer: 'Eric', status: 'open', openFor: ['ai:claude'], promotedBy: ['eric'] },
+    ],
+    whereWeDiffer: [],
+    fullAccord: false,
+  };
+  assert.equal(summarizeForViewer(report, 'Mike').draft, 2);
+  assert.equal(summarizeForViewer(report, 'eric').draft, 1);
 });
 
 console.log(`\n${passed} dispositions tests passed`);

@@ -120,6 +120,12 @@ async function run(browser, base, style) {
       assert.equal(report.multiParty, true);
     });
 
+    await check(`${tag}: the count line shows this person's draft before they decide`, async () => {
+      const line = page.locator('[data-accord-dispositions]');
+      await line.waitFor({ state: 'visible', timeout: 15_000 });
+      assert.match(await line.textContent(), /^2 in your draft/);
+    });
+
     await check(`${tag}: accepting on the page promotes the change but does not apply it while others are still deciding`, async () => {
       assert.equal(await page.evaluate(id => window.proof.markAccept(id), launchId), true);
       await poll(async () => {
@@ -151,6 +157,9 @@ async function run(browser, base, style) {
       await page.waitForTimeout(600);
       assert.match(await editorText(page), /September 23/, 'the original wording should still stand');
       assert.ok((await pendingIds(page)).some(m => m.id === review.id), 'the cut proposal disappeared from the page');
+      await page.evaluate(() => window.proof?.refreshShareMultiParty?.());
+      await poll(async () => /^Nothing left in your draft · 1 where we differ$/.test(await page.locator('[data-accord-dispositions]').textContent().catch(() => '')), 'the count line never showed an empty draft and where we differ', 15_000);
+      await page.screenshot({ path: `.preview/dispositions-count-line-${style}.png` });
     });
 
     await check(`${tag}: when the page's promote is the last one, the page applies the change as it always has`, async () => {

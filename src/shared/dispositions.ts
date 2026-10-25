@@ -250,3 +250,51 @@ export function overrule(view: ProposalView, roster: RosterEntry[], by: string, 
   }
   return { markId: view.markId, by, outcome, dissent: DISPOSITION_POLICY.overruleRecordsDissent ? dissent : [], at };
 }
+
+/** What GET /dispositions reports, as the page reads it. */
+export interface DispositionsReportView {
+  multiParty: boolean;
+  roster?: RosterEntry[];
+  proposals: Array<{ markId: string; proposer?: string; status?: string; openFor?: string[]; promotedBy?: string[]; cutBy?: string[] }>;
+  whereWeDiffer: string[];
+  fullAccord: boolean;
+}
+
+export interface DispositionSummary {
+  /** Open proposals still in this person's draft. */
+  draft: number;
+  /** Open proposals someone promoted and someone else cut. */
+  differ: number;
+  /** All open proposals. */
+  open: number;
+  observer: boolean;
+  fullAccord: boolean;
+}
+
+/**
+ * One person's counts. Someone who has not decided anything yet is not on the server's roster, but
+ * "initially all views are the same: just the draft", so every open proposal they did not make is
+ * in their draft (their first decision adds them to the roster).
+ */
+export function summarizeForViewer(report: DispositionsReportView, me: string): DispositionSummary {
+  const key = actorKey(me);
+  const open = report.proposals.filter(p => (p.status ?? 'open') === 'open');
+  const role = report.roster ? roleOf(report.roster, me) : null;
+  const decided = (p: DispositionsReportView['proposals'][number]) =>
+    [...(p.openFor ?? []), ...(p.promotedBy ?? []), ...(p.cutBy ?? [])].some(a => actorKey(a) === key);
+  const draft = role === 'observer' ? 0 : open.filter(p => decided(p)
+    ? (p.openFor ?? []).some(a => actorKey(a) === key)
+    : actorKey(p.proposer ?? '') !== key).length;
+  return { draft, differ: report.whereWeDiffer.length, open: open.length, observer: role === 'observer', fullAccord: report.fullAccord };
+}
+
+/** The count line under the Accord's title: "3 in your draft · 2 where we differ", or "Full accord". */
+export function dispositionStatusText(summary: DispositionSummary): string {
+  if (summary.fullAccord) return 'Full accord';
+  const parts: string[] = [];
+  if (summary.observer) parts.push(`Observing · ${summary.open} open`);
+  else parts.push(summary.draft === 0 ? 'Nothing left in your draft' : `${summary.draft} in your draft`);
+  if (summary.differ > 0) parts.push(`${summary.differ} where we differ`);
+  else if (!summary.observer && summary.draft === 0) parts.push('waiting on others');
+  return parts.join(' · ');
+}
