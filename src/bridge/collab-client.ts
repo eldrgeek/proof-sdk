@@ -866,6 +866,20 @@ export class CollabClient {
     const marksChanged = !sameKeys || nextKeys.some((key) => !deepEqual(currentMarksSnapshot[key], mergedMarks[key]));
     if (!marksChanged) return;
 
+    const acLhcDeleted: string[] = [];
+    this.marksMap.forEach((value, key) => {
+      const v = value as { kind?: unknown; status?: unknown } | null;
+      const pending = Boolean(v && ['insert', 'delete', 'replace'].includes(String(v.kind)) && v.status !== 'accepted' && v.status !== 'rejected');
+      if (mergedMarks[key] === undefined && pending) acLhcDeleted.push(key);
+    });
+    if (acLhcDeleted.length > 0) {
+      console.warn('[ac-lhc] setMarksMetadata deletes pending suggestions', JSON.stringify({
+        deleted: acLhcDeleted,
+        argKeys: Object.keys(marks),
+        mapKeys: Object.keys(currentMarksSnapshot),
+      }), new Error('ac-lhc stack').stack);
+    }
+
     this.applyingLocalMarks = true;
     try {
       this.ydoc.transact(() => {

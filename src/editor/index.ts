@@ -1616,6 +1616,12 @@ class ProofEditorImpl implements ProofEditor {
           // Hocuspocus can emit a transient empty marks payload before initial sync
           // or during reconnect. Once synced, an empty map is authoritative even
           // while content updates are still in flight: it can be a remote resolution.
+          console.warn('[ac-lhc] onMarks', JSON.stringify({
+            incoming: Object.keys(incomingMarks).length,
+            cached: Object.keys(this.lastReceivedServerMarks).length,
+            synced: this.collabIsSynced,
+            conn: this.collabConnectionStatus,
+          }));
           if (
             Object.keys(incomingMarks).length === 0
             && Object.keys(this.lastReceivedServerMarks).length > 0
@@ -6170,6 +6176,14 @@ class ProofEditorImpl implements ProofEditor {
         const view = ctx.get(editorViewCtx);
         const localMetadata = getMarkMetadataWithQuotes(view.state);
         const metadata = mergePendingServerMarks(localMetadata, this.lastReceivedServerMarks);
+        console.warn('[ac-lhc] flushShareMarks', JSON.stringify({
+          local: Object.keys(localMetadata).length,
+          cached: Object.keys(this.lastReceivedServerMarks).length,
+          out: Object.keys(metadata).length,
+          keepalive: Boolean(_options?.keepalive),
+          synced: this.collabIsSynced,
+          conn: this.collabConnectionStatus,
+        }));
         this.lastReceivedServerMarks = { ...metadata };
         this.initialMarksSynced = true;
         const serializer = ctx.get(serializerCtx);
