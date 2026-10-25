@@ -120,7 +120,7 @@ import {
 } from './proof-extras.js';
 import { redactIssues, serializeExplain, termsReport } from './proof-extras-eval.js';
 import { getProofSettings, listExplains } from './proof-extras-store.js';
-import { dispositionGate, dispositionsReport, getMultiPartySettings, setMultiPartySettings } from './dispositions.js';
+import { applyOverrule, dispositionGate, dispositionsReport, getMultiPartySettings, setMultiPartySettings } from './dispositions.js';
 import { BUNDLE_POLICY } from '../src/shared/bundles.js';
 import { ALT_POLICY } from '../src/shared/alternatives.js';
 import { BLIND_POLICY, objectionLinesRevealed, proxyVisibleTo } from '../src/shared/blind.js';
@@ -5044,6 +5044,22 @@ agentRoutes.get('/:slug/dispositions', async (req: Request, res: Response) => {
 aidRoute('/:slug/dispositions/settings', 'POST /dispositions/settings', ['owner_bot'], async ({ slug, by, payload }) => {
   const settings = setMultiPartySettings(slug, { enabled: payload.multiParty, observers: payload.observers, by });
   return { status: 200, body: { success: true, multiParty: settings.enabled, observers: settings.observers } };
+});
+
+// The Owner's overrule (Mike, 2026-10-24: "Owner can overrule as a special act but the disagreement
+// is noted"). Body: { markId, outcome: "common" | "commonly-cut", by }. Records the overrule and the
+// dissent; the Owner then finalizes with POST /marks/accept (common) or /marks/reject (commonly-cut),
+// which the dispositions gate now lets through.
+aidRoute('/:slug/dispositions/overrule', 'POST /dispositions/overrule', ['owner_bot'], async ({ slug, by, payload }) => {
+  const outcome = payload.outcome === 'common' || payload.outcome === 'commonly-cut' ? payload.outcome : null;
+  if (!outcome) return { status: 400, body: { success: false, code: 'INVALID_OUTCOME', error: '"outcome" must be "common" or "commonly-cut"' } };
+  const state = await currentAgentState(slug);
+  const result = applyOverrule(slug, { markId: payload.markId, by, outcome, isOwner: true, rawMarks: state.marks, source: 'agent' });
+  if (result.kind === 'off') return { status: 409, body: { success: false, code: 'NOT_MULTI_PARTY', error: 'This Accord decides by accept and reject; there is nothing to overrule.' } };
+  if (result.kind === 'not-pending') return { status: 409, body: { success: false, code: 'NOT_PENDING', error: 'That change is not open.' } };
+  if (result.kind === 'refused') return { status: result.status, body: result.body };
+  const next = result.action === 'accept' ? 'POST /marks/accept' : 'POST /marks/reject';
+  return { status: 200, body: { success: true, action: result.action, overrule: result.overrule, next } };
 });
 
 agentRoutes.post('/:slug/marks/accept', async (req: Request, res: Response) => {

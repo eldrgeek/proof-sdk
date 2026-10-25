@@ -121,3 +121,6 @@ body.amb-on #share-banner .share-pill-hidden { display: none !important; }
 .anv-pile-tools button { min-height: 32px; padding: 2px 8px; border: 1px solid #d4d4d8; border-radius: 6px; background: white; color: #374151; cursor: pointer; }
 .anv-pile-tools button[aria-pressed="true"] { background: #eef3ff; border-color: #2563eb; }
 .anv-issue-stance { display: block; color: #52525b; font-size: 12px; }
+.anv-owner-tools { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 8px 8px; }
+.anv-owner-tools[hidden] { display: none; }
+.anv-owner-tools button { min-height: 32px; padding: 2px 8px; border: 1px dashed #a16207; border-radius: 6px; background: #fffbeb; color: #713f12; cursor: pointer; }

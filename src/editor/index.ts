@@ -1598,6 +1598,28 @@ class ProofEditorImpl implements ProofEditor {
     return true;
   }
 
+  /** The Owner's special act (Mike, 2026-10-24): settle now, keep the dissent, apply as usual. */
+  private overruleDispositions(ids: string[], outcome: 'common' | 'commonly-cut'): void {
+    if (!this.isShareMode || !this.shareMultiParty || ids.length === 0) return;
+    const actor = getCurrentActor();
+    const action = outcome === 'common' ? 'accept' : 'reject';
+    void (async () => {
+      const settled: string[] = [];
+      let failed = '';
+      for (const id of ids) {
+        const result = await shareClient.overruleDisposition(id, outcome, actor);
+        if ('error' in result) failed = result.error; else settled.push(id);
+      }
+      if (settled.length) {
+        this.dispositionsAgreed = true;
+        try { this.performReviewDecision(settled, action); } finally { this.dispositionsAgreed = false; }
+      }
+      if (failed) this.showErrorBanner(failed);
+      else this.showDispositionNotice(`Overruled: ${outcome === 'common' ? 'in the Accord' : 'cut'}. Who disagreed is recorded with the decision.`);
+      await this.refreshShareMultiParty();
+    })();
+  }
+
   /** U: changing your mind. The changes leave your accord or cutting room and wait in your draft again. */
   private returnToDraft(ids: string[]): void {
     if (!this.isShareMode || !this.shareMultiParty || ids.length === 0) return;
@@ -4410,6 +4432,8 @@ class ProofEditorImpl implements ProofEditor {
         slug: () => shareClient.getSlug(),
         piles: () => this.dispositionPiles(),
         toDraft: (ids) => this.returnToDraft(ids),
+        canOverrule: () => Boolean(this.shareDispositions?.viewerIsOwner),
+        overrule: (ids, outcome) => this.overruleDispositions(ids, outcome),
         stance: (ids) => this.shareDispositions ? stanceText(this.shareDispositions, ids, actor => lineMarks.displayName(actor)) : null,
         suggestChange: (line) => {
           if (EDIT_SESSION_POLICY.privateDrafts) return this.editGesture?.open(line) ?? false;

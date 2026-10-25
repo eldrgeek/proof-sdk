@@ -1508,6 +1508,20 @@ function initDatabase(): void {
     )
   `);
   d.exec(`CREATE INDEX IF NOT EXISTS idx_document_mark_dispositions_slug ON document_mark_dispositions(document_slug, at)`);
+  // Accord multi-party: the Owner's overrule, with the recorded dissent (Mike, 2026-10-24).
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS document_mark_overrules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      document_slug TEXT NOT NULL,
+      mark_id TEXT NOT NULL,
+      by_actor TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      dissent_json TEXT NOT NULL DEFAULT '[]',
+      source TEXT NOT NULL,
+      at TEXT NOT NULL
+    )
+  `);
+  d.exec(`CREATE INDEX IF NOT EXISTS idx_document_mark_overrules_slug ON document_mark_overrules(document_slug, mark_id)`);
   d.exec(`
     CREATE TABLE IF NOT EXISTS document_multiparty_settings (
       document_slug TEXT PRIMARY KEY,

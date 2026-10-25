@@ -21,9 +21,12 @@ import {
   evaluateProposals,
   finalizeAction,
   isFullAccord,
+  overrule as decideOverrule,
   whereWeDiffer,
+  withOverrule,
   type Disposition,
   type DispositionRecord,
+  type Overrule,
   type ProposalRef,
   type ProposalView,
   type RosterEntry,
@@ -82,16 +85,34 @@ export function recordDisposition(slug: string, record: DispositionRecord, sourc
   addDocumentEvent(slug, 'disposition.recorded', { markId: record.markId, disposition: record.disposition, by: record.by }, record.by);
 }
 
+export function listOverrules(slug: string): Overrule[] {
+  try {
+    const rows = getDb().prepare(`SELECT mark_id, by_actor, outcome, dissent_json, at FROM document_mark_overrules WHERE document_slug = ? ORDER BY at ASC, id ASC`)
+      .all(slug) as Array<{ mark_id: string; by_actor: string; outcome: Overrule['outcome']; dissent_json: string; at: string }>;
+    return rows.map(row => {
+      let dissent: Overrule['dissent'] = [];
+      try { const parsed = JSON.parse(row.dissent_json) as unknown; if (Array.isArray(parsed)) dissent = parsed as Overrule['dissent']; } catch { /* none */ }
+      return { markId: row.mark_id, by: row.by_actor, outcome: row.outcome, dissent, at: row.at };
+    });
+  } catch {
+    return [];
+  }
+}
+
+function overruleFor(slug: string, markId: string): Overrule | undefined {
+  return listOverrules(slug).filter(ov => ov.markId === markId).pop();
+}
+
 /**
  * The roster: the document's Owner, everyone the team computation already counts (people who
  * marked, commented, proposed or asked, and active agent keys), everyone who has disposed of a
  * proposal, and the actor deciding now.
  * Settings name observers, who argue but do not dispose.
  */
-export function rosterFor(slug: string, rawMarks: unknown, extra: string[] = []): RosterEntry[] {
+export function rosterFor(slug: string, rawMarks: unknown, extra: string[] = [], extraOwners: string[] = []): RosterEntry[] {
   const settings = getMultiPartySettings(slug);
   const observerKeys = new Set(settings.observers.map(actorKey));
-  const ownerKeys = new Set(documentOwnerActors(slug).map(actorKey));
+  const ownerKeys = new Set([...documentOwnerActors(slug), ...extraOwners].map(actorKey));
   const seen = new Set<string>();
   const roster: RosterEntry[] = [];
   const add = (actor: string) => {
@@ -100,7 +121,7 @@ export function rosterFor(slug: string, rawMarks: unknown, extra: string[] = [])
     seen.add(key);
     roster.push({ actor, role: ownerKeys.has(key) ? 'owner' : observerKeys.has(key) ? 'observer' : 'participant' });
   };
-  for (const owner of documentOwnerActors(slug)) add(owner);
+  for (const owner of [...documentOwnerActors(slug), ...extraOwners]) add(owner);
   for (const member of currentTeam(slug, rawMarks)) add(member);
   for (const member of extra) add(member);
   // Anyone who has promoted or cut before is a participant from then on.
@@ -131,6 +152,7 @@ export function serializeProposalView(view: ProposalView): Record<string, unknow
     promotedBy: view.promotedBy,
     cutBy: view.cutBy,
     disagree: view.disagree,
+    ...('overrule' in view && view.overrule ? { overrule: view.overrule } : {}),
   };
 }
 
@@ -138,7 +160,9 @@ export function serializeProposalView(view: ProposalView): Record<string, unknow
 export function dispositionsReport(slug: string, rawMarks: unknown): Record<string, unknown> {
   const settings = getMultiPartySettings(slug);
   const roster = rosterFor(slug, rawMarks);
-  const views = evaluateProposals(pendingSuggestions(rawMarks), roster, listDispositions(slug));
+  const overrules = listOverrules(slug);
+  const views = evaluateProposals(pendingSuggestions(rawMarks), roster, listDispositions(slug))
+    .map(view => withOverrule(view, overrules.filter(ov => ov.markId === view.markId).pop()));
   return {
     multiParty: settings.enabled,
     observers: settings.observers,
@@ -173,8 +197,43 @@ export function applyDisposition(slug: string, input: {
   if (refusal) return { kind: 'refused', status: 403, body: { success: false, ...refusal } };
   const record: DispositionRecord = { markId, by: input.by, disposition: input.disposition, at: new Date().toISOString() };
   recordDisposition(slug, record, input.source);
-  const view = evaluateProposal(proposal, roster, listDispositions(slug));
+  const view = withOverrule(evaluateProposal(proposal, roster, listDispositions(slug)), overruleFor(slug, markId));
   return { kind: 'recorded', record, view, action: finalizeAction(view) };
+}
+
+export type OverruleOutcome =
+  | { kind: 'off' }
+  | { kind: 'not-pending' }
+  | { kind: 'refused'; status: number; body: Record<string, unknown> }
+  | { kind: 'recorded'; overrule: Overrule; action: 'accept' | 'reject' };
+
+/**
+ * "Owner can overrule as a special act but the disagreement is noted" (Mike, 2026-10-24). The
+ * overrule settles the proposal as the Owner decided; whoever disagreed is stored with it. The
+ * caller then applies it (accept or reject) exactly as it applies a unanimous decision.
+ */
+export function applyOverrule(slug: string, input: {
+  markId: unknown;
+  by: string;
+  outcome: 'common' | 'commonly-cut';
+  isOwner: boolean;
+  rawMarks: unknown;
+  source: 'page' | 'agent';
+}): OverruleOutcome {
+  if (!getMultiPartySettings(slug).enabled) return { kind: 'off' };
+  const markId = typeof input.markId === 'string' ? input.markId : '';
+  const proposal = markId ? pendingSuggestions(input.rawMarks).find(p => p.markId === markId) : undefined;
+  if (!proposal) return { kind: 'not-pending' };
+  const roster = rosterFor(slug, input.rawMarks, [], input.isOwner ? [input.by] : []);
+  const view = evaluateProposal(proposal, roster, listDispositions(slug));
+  const decided = decideOverrule(view, roster, input.by, input.outcome, new Date().toISOString());
+  if ('code' in decided) return { kind: 'refused', status: decided.code === 'OWNER_ONLY' ? 403 : 409, body: { success: false, ...decided } };
+  assertWritesAllowed('applyOverrule');
+  getDb().prepare(`
+    INSERT INTO document_mark_overrules (document_slug, mark_id, by_actor, outcome, dissent_json, source, at) VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(slug, decided.markId, decided.by, decided.outcome, JSON.stringify(decided.dissent), input.source, decided.at);
+  addDocumentEvent(slug, 'disposition.overruled', { markId: decided.markId, outcome: decided.outcome, dissent: decided.dissent }, decided.by);
+  return { kind: 'recorded', overrule: decided, action: decided.outcome === 'common' ? 'accept' : 'reject' };
 }
 
 export type GateResult =

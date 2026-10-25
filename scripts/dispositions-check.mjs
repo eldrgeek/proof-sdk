@@ -83,12 +83,12 @@ async function poll(fn, message, timeout = 8000) {
   assert.fail(message);
 }
 
-async function openDoc(browser, base, slug) {
+async function openDoc(browser, base, slug, query = '') {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   await context.addInitScript(() => { localStorage.setItem('proof-share-viewer-name', 'Mike'); });
   await context.route('**/*', route => new URL(route.request().url()).origin === base ? route.continue() : route.abort());
   const page = await context.newPage();
-  await page.goto(`${base}/d/${slug}`);
+  await page.goto(`${base}/d/${slug}${query}`);
   await page.getByRole('button', { name: /Continue anonymously/i }).click({ timeout: 3_000 }).catch(() => {});
   await page.waitForFunction(() => window.proof?.collabConnectionStatus === 'connected' && window.proof?.collabIsSynced === true, null, { timeout: 20_000 });
   await page.waitForTimeout(800);
@@ -218,6 +218,39 @@ async function run(browser, base, style) {
     });
   } finally {
     await context.close();
+  }
+
+  // The Owner's special act, from the page opened with the owner credential.
+  const ruling = await agent('/marks/suggest-replace', { quote: 'in Boston', content: 'in Denver', by: 'ai:claude', why: 'Venue moved' });
+  const rulingId = ruling.markId ?? ruling.suggestion?.markId;
+  await agent('/marks/reject', { markId: rulingId, by: 'ai:gemini' });
+  const owner = await openDoc(browser, base, slug, `?token=${encodeURIComponent(ownerSecret)}`);
+  try {
+    await check(`${tag}: the Owner overrules a disagreement from the page, and the dissent is recorded`, async () => {
+      await owner.page.waitForFunction(() => (window.proof?.getAllMarks?.() ?? []).some(m => m.data?.status === 'pending'), null, { timeout: 10_000 });
+      await owner.page.locator('[data-accord-review-scope="all-open"]').click();
+      await owner.page.locator('[data-accord-review-list] .anv-issue[data-settled="false"]', { hasText: 'Boston' }).first().click();
+      const accept = owner.page.locator('[data-accord-overrule="common"]');
+      await accept.waitFor({ state: 'visible', timeout: 10_000 });
+      await owner.page.screenshot({ path: `.preview/dispositions-overrule-${style}.png` });
+      await accept.click();
+      await poll(async () => /in Denver/.test(await editorText(owner.page)), 'the overrule was not applied on the page');
+      await poll(async () => /in Denver/.test((await call(base, `/api/agent/${slug}/state`, undefined, ownerSecret)).markdown), 'the overrule never reached the server');
+      const events = await call(base, `/api/agent/${slug}/events/pending?after=0`, undefined, ownerSecret);
+      const ruled = events.events.find(e => e.type === 'disposition.overruled' && e.data.markId === rulingId);
+      assert.equal(events.events.filter(e => e.type === 'disposition.overruled').length, 1, 'the overrule settled more than the one disagreement');
+      assert.ok(ruled, 'no disposition.overruled event');
+      assert.ok(ruled.data.dissent.some(d => d.actor === 'ai:gemini' && d.pile === 'cutting-room'), JSON.stringify(ruled.data.dissent));
+    });
+    await check(`${tag}: a reader who is not the Owner never sees the overrule`, async () => {
+      const guest = await openDoc(browser, base, slug);
+      try {
+        await guest.page.waitForTimeout(1500);
+        assert.equal(await guest.page.locator('[data-accord-overrule]:visible').count(), 0);
+      } finally { await guest.context.close(); }
+    });
+  } finally {
+    await owner.context.close();
   }
 }
 

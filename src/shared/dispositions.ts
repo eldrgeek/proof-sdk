@@ -245,15 +245,25 @@ export function overrule(view: ProposalView, roster: RosterEntry[], by: string, 
   const wanted: Pile = outcome === 'common' ? 'accord' : 'cutting-room';
   const dissent: Array<{ actor: string; pile: Pile }> = [];
   for (const member of voters(roster)) {
+    // The Owner overruling is deciding, not dissenting.
+    if (actorKey(member) === actorKey(by)) continue;
     const pile = view.piles.get(actorKey(member)) ?? 'draft';
     if (pile !== wanted) dissent.push({ actor: member, pile });
   }
   return { markId: view.markId, by, outcome, dissent: DISPOSITION_POLICY.overruleRecordsDissent ? dissent : [], at };
 }
 
+/** A view after the Owner's overrule: settled as the Owner decided, with who disagreed. */
+export function withOverrule(view: ProposalView, ov: Overrule | undefined): ProposalView & { overrule?: Overrule } {
+  if (!ov || ov.markId !== view.markId) return view;
+  return { ...view, status: ov.outcome, openFor: [], overrule: ov };
+}
+
 /** What GET /dispositions reports, as the page reads it. */
 export interface DispositionsReportView {
   multiParty: boolean;
+  /** The reader may overrule (the Owner's special act). */
+  viewerIsOwner?: boolean;
   roster?: RosterEntry[];
   proposals: Array<{ markId: string; proposer?: string; status?: string; openFor?: string[]; promotedBy?: string[]; cutBy?: string[] }>;
   whereWeDiffer: string[];
@@ -333,8 +343,10 @@ export function stanceText(report: DispositionsReportView, markIds: readonly str
   const wanted = new Set(markIds);
   const promoted = new Map<string, string>();
   const cut = new Map<string, string>();
-  for (const p of report.proposals) {
-    if (!wanted.has(p.markId) || (p.status ?? 'open') !== 'open') continue;
+  const open = report.proposals.filter(p => wanted.has(p.markId) && (p.status ?? 'open') === 'open');
+  // A line with several changes has a stance per change, shown with each change, not merged here.
+  if (open.length !== 1) return null;
+  for (const p of open) {
     for (const a of p.promotedBy ?? []) promoted.set(actorKey(a), a);
     for (const a of p.cutBy ?? []) cut.set(actorKey(a), a);
   }
