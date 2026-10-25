@@ -114,7 +114,7 @@ import { clearFlag, clearObjection, createObjection, keepObjection, writeFlag } 
 import { listFlags, listObjections, listReviewNotes } from './review-aids-store.js';
 import { clearTtl, decideAlternative, offerAlternative, pickAlternative, recordBundleDecision, reopenBundleDecision, recordExplain, setBlindSetting, setTtl, withdrawAlternative } from './proof-extras.js';
 import { getProofSettings, listAlternatives, listBundles, listExplains, listPicks, listTtls } from './proof-extras-store.js';
-import { applyDisposition, dispositionsReport, serializeProposalView } from './dispositions.js';
+import { applyDisposition, applyOverrule, dispositionsReport, serializeProposalView } from './dispositions.js';
 import { parseDisposition } from '../src/shared/dispositions.js';
 import { closeThread, reopenThread, replyOnThread, startThreadRow, threadRows, undoStartThread } from './threads.js';
 import { lineEditor } from './agent-routes.js';
@@ -2391,7 +2391,19 @@ apiRoutes.get('/documents/:slug/dispositions', async (req: Request, res: Respons
   // The page counts its own draft against the name the server records its decisions under.
   const by = typeof req.query.by === 'string' ? req.query.by : undefined;
   const viewer = resolvePageActor(req, slug, access, by);
-  res.json({ success: true, ...dispositionsReport(slug, state?.marks ?? doc.marks), viewer: viewer.ok ? viewer.actor : null });
+  res.json({ success: true, ...dispositionsReport(slug, state?.marks ?? doc.marks), viewer: viewer.ok ? viewer.actor : null, viewerIsOwner: access.canApprove });
+});
+// The Owner's overrule (Mike, 2026-10-24). Body: { markId, outcome: "common" | "commonly-cut" }.
+pageAidRoute('/documents/:slug/dispositions/overrule', async ({ slug, by, access, body }) => {
+  const outcome = body.outcome === 'common' || body.outcome === 'commonly-cut' ? body.outcome : null;
+  if (!outcome) return { status: 400, body: { success: false, code: 'INVALID_OUTCOME', error: '"outcome" must be "common" or "commonly-cut"' } };
+  const state = await currentDocumentState(slug);
+  if (!state) return { status: 404, body: { success: false, error: 'Document not found' } };
+  const result = applyOverrule(slug, { markId: body.markId, by, outcome, isOwner: access.canApprove, rawMarks: state.marks, source: 'page' });
+  if (result.kind === 'off') return { status: 409, body: { success: false, code: 'NOT_MULTI_PARTY', error: 'This Accord decides by accept and reject; there is nothing to overrule.' } };
+  if (result.kind === 'not-pending') return { status: 409, body: { success: false, code: 'NOT_PENDING', error: 'That change is not open.' } };
+  if (result.kind === 'refused') return { status: result.status, body: result.body };
+  return { status: 200, body: { success: true, action: result.action, overrule: result.overrule } };
 });
 pageAidRoute('/documents/:slug/dispositions', async ({ slug, by, body }) => {
   const disposition = parseDisposition(body.disposition);

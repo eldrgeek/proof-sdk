@@ -1193,6 +1193,26 @@ scroll-accepts above the line. The rail shows the counts and **Show only decisio
 folds the context lines that are not Issues for you; it is view only and marks nothing. J / K and Next
 issue skip those lines, but scrolling still reads them.
 
+## Accords with more people: promote, cut, overrule (2026-10-24)
+
+Off by default per document. When the Owner turns it on, a suggestion is no longer accepted or
+rejected by one person: every participant (people and AIs alike) promotes it to their own accord or
+cuts it to their own cutting room, and the shared text changes only when everyone agrees.
+
+- `POST /api/agent/<slug>/dispositions/settings` (owner credential) `{ "multiParty": true, "observers": ["ai:…"] }`.
+  Observers argue but do not promote or cut, and nobody waits on them.
+- `POST /api/agent/<slug>/marks/accept` is a promote and `/marks/reject` is a cut. Until everyone
+  agrees the response is `200 { multiParty: true, proposal: { status: "open", openFor, promotedBy, cutBy } }`
+  and the text does not change; the last agreeing call applies the change as usual.
+- `GET /api/agent/<slug>/dispositions` returns the roster, every open proposal's piles,
+  `whereWeDiffer` (promoted by someone, cut by someone else) and `fullAccord`.
+- Changing your mind: the page's U key, or `POST /api/documents/<slug>/dispositions` with
+  `{ "markId", "disposition": "draft" }`, returns a change to your draft.
+- The Owner's overrule: `POST /api/agent/<slug>/dispositions/overrule` (owner credential)
+  `{ "markId", "outcome": "common" | "commonly-cut", "by" }` records the decision and who disagreed
+  (event `disposition.overruled`), then finalize with the `next` route it names (`/marks/accept` or
+  `/marks/reject`). On the page the Owner selects the change and presses "Overrule".
+
 ## Presence And Event Polling
 
 Poll for changes:

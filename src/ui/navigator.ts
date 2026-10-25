@@ -27,6 +27,10 @@ export interface NavigatorHost {
   toDraft?(markIds: string[]): void;
   /** Multi-party Accords: "In accord: Mike, claude · Cut: gemini" for a row's changes, or null. */
   stance?(markIds: readonly string[]): string | null;
+  /** Multi-party Accords: the reader is an Owner and may overrule. */
+  canOverrule?(): boolean;
+  /** The Owner's special act: settle these changes now; the disagreement is recorded. */
+  overrule?(markIds: string[], outcome: 'common' | 'commonly-cut'): void;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -56,6 +60,9 @@ export class NavigatorUI {
   private scope: ReviewScope = REVIEW_LIST_POLICY.defaultScope;
   private readonly scopeTools = el('div', 'anv-review-tools');
   private readonly pileTools = el('div', 'anv-pile-tools');
+  private readonly ownerTools = el('div', 'anv-owner-tools');
+  private readonly overruleAccept = el('button', 'anv-overrule', 'Overrule: put in the Accord');
+  private readonly overruleCut = el('button', 'anv-overrule', 'Overrule: cut');
   private pile: PileFilter | null = PILE_FILTER_POLICY.defaultFilter;
   private readonly clearSettledBtn = el('button', 'anv-clear-settled', 'Clear completed');
   private readonly nextBtn = el('button', 'anv-next', 'Next');
@@ -136,7 +143,22 @@ export class NavigatorUI {
       this.pileTools.append(button);
     }
     this.detailEl.setAttribute('aria-label', 'Selected passage discussion and proposals');
-    this.panes.issues.append(this.pileTools, this.scopeTools, this.keyHint, this.detailEl, this.issuesEmpty, this.issuesList);
+    this.ownerTools.setAttribute('role', 'group');
+    this.ownerTools.setAttribute('aria-label', 'Owner');
+    this.ownerTools.dataset.accordOwnerTools = '';
+    this.ownerTools.hidden = true;
+    for (const [button, outcome] of [[this.overruleAccept, 'common'], [this.overruleCut, 'commonly-cut']] as const) {
+      button.type = 'button';
+      button.dataset.accordOverrule = outcome;
+      button.title = 'The Owner decides now; everyone who disagreed is recorded with the decision.';
+      button.onclick = () => {
+        const ids = this.overruleTargets();
+        if (!ids.length) { this.keyHint.textContent = 'Select a change first.'; return; }
+        this.host.overrule?.(ids, outcome);
+      };
+      this.ownerTools.append(button);
+    }
+    this.panes.issues.append(this.pileTools, this.scopeTools, this.ownerTools, this.keyHint, this.detailEl, this.issuesEmpty, this.issuesList);
     this.applyTab();
   }
 
@@ -203,6 +225,24 @@ export class NavigatorUI {
     if (!hint) this.host.decide(row.line, action);
     this.render();
     return !hint;
+  }
+
+  /**
+   * What the Owner's overrule would settle on the selected row: its changes where we differ, or its
+   * one change when the row has exactly one. A line with several changes and no single disagreement
+   * offers no overrule, so one press never settles more than the Owner meant.
+   */
+  private overruleTargets(): string[] {
+    const piles = this.host.piles?.();
+    if (!piles) return [];
+    const row = this.sessions['all-open'].rows.find(r => r.key === this.selectedKey && !r.done)
+      ?? this.session.rows.find(r => r.key === this.selectedKey && !r.done);
+    const ids = [...new Set(row?.markIds ?? [])];
+    const open = new Set([...piles.draft, ...piles.accord, ...piles['cutting-room'], ...piles.differ]);
+    const proposals = ids.filter(id => open.has(id));
+    const differ = proposals.filter(id => piles.differ.includes(id));
+    if (differ.length) return differ;
+    return proposals.length === 1 ? proposals : [];
   }
 
   /**
@@ -292,6 +332,8 @@ export class NavigatorUI {
     }
     const piles = this.host.piles?.() ?? null;
     if (!piles) this.pile = null;
+    // The Owner's overrule shows once a change is selected (a special act, never the default path).
+    this.ownerTools.hidden = !(piles && this.host.canOverrule?.() && this.overruleTargets().length > 0);
     this.pileTools.hidden = !piles;
     for (const button of this.pileTools.querySelectorAll<HTMLElement>('[data-accord-pile]')) {
       const id = button.dataset.accordPile as PileFilter;

@@ -156,7 +156,6 @@ test('owner overrule decides an open proposal and records who disagreed', () => 
   if ('code' in result) return;
   assert.equal(result.outcome, 'common');
   assert.deepEqual(result.dissent, [
-    { actor: 'mike@example.com', pile: 'draft' },
     { actor: 'eric@example.com', pile: 'cutting-room' },
     { actor: 'ai:gemini', pile: 'draft' },
   ]);
@@ -240,6 +239,7 @@ test('stance on a change names who has it in their accord and who cut it', () =>
   assert.equal(stanceText(report, ['a'], name), 'In accord: claude · Cut: Mike');
   assert.equal(stanceText(report, ['b'], name), null);
   assert.equal(stanceText(report, ['zzz'], name), null);
+  assert.equal(stanceText(report, ['a', 'b'], name), null, 'a row with several changes shows no merged stance');
 });
 
 console.log(`\n${passed} dispositions tests passed`);

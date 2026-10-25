@@ -117,6 +117,8 @@ export interface ReadingWalkHost {
   toDraft?(markIds: string[]): void;
   /** Multi-party Accords: who has a row's changes in their accord and who cut them. */
   stance?(markIds: readonly string[]): string | null;
+  canOverrule?(): boolean;
+  overrule?(markIds: string[], outcome: 'common' | 'commonly-cut'): void;
 }
 
 const PHONE_QUERY = '(max-width: 700px)';
@@ -305,6 +307,8 @@ export class ReadingWalkUI {
       piles: () => this.host.piles?.() ?? null,
       toDraft: this.host.toDraft ? (ids) => this.host.toDraft?.(ids) : undefined,
       stance: (ids) => this.host.stance?.(ids) ?? null,
+      canOverrule: () => this.host.canOverrule?.() ?? false,
+      overrule: (ids, outcome) => this.host.overrule?.(ids, outcome),
     }, saved.reviewTab ?? saved.leftTab);
     this.buildRails();
   }

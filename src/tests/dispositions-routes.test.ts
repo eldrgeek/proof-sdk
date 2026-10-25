@@ -132,6 +132,29 @@ try {
     assert.match(await markdown(), /every paying customer/);
   });
 
+  await test('the Owner overrules as a special act, and the disagreement is recorded', async () => {
+    await call(`/api/agent/${slug}/dispositions/settings`, 'POST', { observers: [], by: MIKE }, OWNER);
+    const id = await suggest('in Boston', 'in Denver');
+    const cut = await decide('reject', id, gemini);
+    assert.equal(cut.body.proposal.disagree, true);
+    const notOwner = await call(`/api/agent/${slug}/dispositions/overrule`, 'POST', { markId: id, outcome: 'common' }, claude);
+    assert.ok(notOwner.status === 401 || notOwner.status === 403, String(notOwner.status));
+    const ruled = await call(`/api/agent/${slug}/dispositions/overrule`, 'POST', { markId: id, outcome: 'common', by: MIKE }, OWNER);
+    assert.equal(ruled.status, 200, JSON.stringify(ruled.body));
+    assert.equal(ruled.body.action, 'accept');
+    assert.deepEqual(ruled.body.overrule.dissent, [{ actor: 'ai:gemini', pile: 'cutting-room' }]);
+    const report = await call(`/api/agent/${slug}/dispositions`, 'GET', undefined, claude);
+    assert.equal((report.body.proposals as any[]).find(p => p.markId === id).status, 'common');
+    const applied = await decide('accept', id, OWNER, MIKE);
+    assert.equal(applied.status, 200, JSON.stringify(applied.body));
+    assert.equal(applied.body.multiParty, undefined, 'after an overrule the accept finalizes through the normal route');
+    assert.match(await markdown(), /in Denver/);
+    const events = await call(`/api/agent/${slug}/events/pending?after=0`, 'GET', undefined, claude);
+    const overruled = (events.body.events as any[]).find(e => e.type === 'disposition.overruled');
+    assert.ok(overruled, 'no disposition.overruled event');
+    assert.deepEqual(overruled.data.dissent, [{ actor: 'ai:gemini', pile: 'cutting-room' }]);
+  });
+
   await test('every disposition is an event, so the path to accord can be replayed', async () => {
     const events = await call(`/api/agent/${slug}/events/pending?after=0`, 'GET', undefined, claude);
     const recorded = (events.body.events as any[]).filter(e => e.type === 'disposition.recorded');

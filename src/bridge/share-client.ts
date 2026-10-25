@@ -894,7 +894,7 @@ export class ShareClient {
   }
 
   /** Multi-party Accords (server/dispositions.ts): whether this document uses dispositions. */
-  async fetchDispositions(options?: { token?: string; by?: string }): Promise<{ multiParty: boolean; proposals: Array<Record<string, unknown>>; whereWeDiffer: string[]; fullAccord: boolean; roster?: Array<Record<string, unknown>>; viewer?: string | null } | null> {
+  async fetchDispositions(options?: { token?: string; by?: string }): Promise<{ multiParty: boolean; proposals: Array<Record<string, unknown>>; whereWeDiffer: string[]; fullAccord: boolean; roster?: Array<Record<string, unknown>>; viewer?: string | null; viewerIsOwner?: boolean } | null> {
     if (!this.slug) return null;
     try {
       const query = options?.by ? `?by=${encodeURIComponent(options.by)}` : '';
@@ -912,6 +912,7 @@ export class ShareClient {
         fullAccord: body.fullAccord === true,
         roster: Array.isArray(body.roster) ? body.roster as Array<Record<string, unknown>> : undefined,
         viewer: typeof body.viewer === 'string' ? body.viewer : null,
+        viewerIsOwner: body.viewerIsOwner === true,
       };
     } catch {
       return null;
@@ -935,6 +936,24 @@ export class ShareClient {
       if (!response.ok || body.success !== true) return { error: typeof body.error === 'string' ? body.error : `HTTP ${response.status}` };
       const action = body.action === 'accept' || body.action === 'reject' ? body.action : 'hold';
       return { action, proposal: (body.proposal && typeof body.proposal === 'object') ? body.proposal as Record<string, unknown> : {} };
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : 'Network error' };
+    }
+  }
+
+  /** Multi-party Accords: the Owner's overrule. `action` is what the page then applies. */
+  async overruleDisposition(markId: string, outcome: 'common' | 'commonly-cut', by: string): Promise<{ action: 'accept' | 'reject' } | { error: string }> {
+    if (!this.slug) return { error: 'No document' };
+    try {
+      const response = await fetch(`${this.getApiBase()}/documents/${encodeURIComponent(this.slug)}/dispositions/overrule`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { ...this.getShareAuthHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ markId, outcome, by }),
+      });
+      const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+      if (!response.ok || body.success !== true) return { error: typeof body.error === 'string' ? body.error : `HTTP ${response.status}` };
+      return { action: body.action === 'reject' ? 'reject' : 'accept' };
     } catch (error) {
       return { error: error instanceof Error ? error.message : 'Network error' };
     }
