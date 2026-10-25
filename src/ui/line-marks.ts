@@ -673,6 +673,16 @@ export class LineMarksUI {
     this.resizeObserver.observe(view.dom);
   }
 
+  /** Multi-party Accords: proposals this reader promoted or cut (src/shared/dispositions.ts). */
+  private decidedByMe: ReadonlySet<string> = new Set();
+
+  setDecidedByMe(ids: Iterable<string>): void {
+    const next = new Set(ids);
+    if (next.size === this.decidedByMe.size && [...next].every(id => this.decidedByMe.has(id))) return;
+    this.decidedByMe = next;
+    this.recompute();
+  }
+
   private recompute(): void {
     const view = this.view;
     if (view) {
@@ -782,6 +792,7 @@ export class LineMarksUI {
         team: this.summary.team,
         states: this.states,
         lineCount: this.lines.length,
+        decided: this.decidedByMe,
       });
       this.open = this.surface.views['needs-you'];
       this.needsYou = this.open.lines;
