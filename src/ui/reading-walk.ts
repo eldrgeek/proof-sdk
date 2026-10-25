@@ -1094,12 +1094,12 @@ export class ReadingWalkUI {
   /** Moves the focus to a line without reading the lines on the way (Next issue, a dot). */
   focusLine(index: number): boolean {
     const walk = this.walk;
-    if (!walk || this.tops[index] === undefined) return false;
+    if (!walk || !this.view() || index < 0 || index >= walk.lineCount) return false;
     if (walk.isHidden(index)) index = this.host.visibleLineFor?.(index) ?? index;
     this.measure();
     walk.moveTo(index, performance.now(), 'jump', this.heights);
-    this.selectPassage(index);
-    this.cameraTo(index);
+    this.selectPassage(walk.focus);
+    this.cameraTo(walk.focus);
     this.rememberViewport();
     this.afterChange();
     return true;
@@ -1117,7 +1117,7 @@ export class ReadingWalkUI {
 
   private markFocus(status: 'agreed' | 'seen'): void {
     this.renderNow();
-    this.box?.choose(status, 'key');
+    this.box?.choose(status, undefined, 'key');
   }
 
   private openReason(): void {

@@ -4189,7 +4189,8 @@ class ProofEditorImpl implements ProofEditor {
         },
         playmaker: () => this.playmakerReview,
         reviewStyle: () => getReviewStyle(),
-        directEditing: () => !this.isSuggestionsEnabled(),
+        /** Letter shortcuts stay off only while the labelled Editing control is on (not when suggesting is off). */
+        directEditing: () => isWriting(),
         folding: () => this.folding,
         // Step B2 folded sections, plus line tiers' "Show only decisions" (folded context lines).
         hiddenLines: () => {
