@@ -1218,6 +1218,9 @@ cuts it to their own cutting room, and the shared text changes only when everyon
   changes; once a change is settled its arguments retire (`retiredArguments` counts them) and stay
   in the event log as `disposition.argued`. On the page, select the change in the Review list and
   press "Argue for" or "Argue against"; Cmd/Ctrl+Enter posts.
+- A page that settles a change without going through the dispositions route (an old page, or one
+  that skipped it) cannot do so silently. The server records who settled it and who disagreed
+  (event `disposition.unsanctioned`), and `GET /dispositions` lists it under `settledWithoutConsensus`.
 
 ## Presence And Event Polling
 

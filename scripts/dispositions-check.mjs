@@ -215,6 +215,25 @@ async function run(browser, base, style) {
         const state = await call(base, `/api/agent/${slug}/state`, undefined, ownerSecret);
         return /stays flat/.test(state.markdown);
       }, 'the agreed change never reached the server');
+      await page.waitForTimeout(500);
+      const report = await call(base, `/api/agent/${slug}/dispositions`, undefined, ownerSecret);
+      assert.equal(report.settledWithoutConsensus.length, 0, 'an agreed change was recorded as settled without consensus');
+    });
+
+    await check(`${tag}: a page that skips the dispositions route cannot settle a change silently`, async () => {
+      const made = await agent('/marks/suggest-replace', { quote: 'every customer', content: 'all customers', by: 'ai:claude', why: 'Shorter' });
+      const id = made.markId ?? made.suggestion?.markId;
+      await poll(async () => (await pendingIds(page)).some(m => m.id === id), 'the new proposal never reached the page');
+      // An old or modified page: it applies the accept itself instead of recording a promote.
+      await page.evaluate(() => { window.proof.shareMultiParty = false; });
+      assert.equal(await page.evaluate(i => window.proof.markAccept(i), id), true);
+      await poll(async () => {
+        const report = await call(base, `/api/agent/${slug}/dispositions`, undefined, ownerSecret);
+        return report.settledWithoutConsensus.some(s => s.markId === id && s.outcome === 'common' && s.dissent.some(d => d.actor === 'ai:gemini'));
+      }, 'the server did not record the settlement made without consensus');
+      const events = await call(base, `/api/agent/${slug}/events/pending?after=0`, undefined, ownerSecret);
+      assert.ok(events.events.some(e => e.type === 'disposition.unsanctioned' && e.data.markId === id), 'no disposition.unsanctioned event');
+      await page.evaluate(() => { window.proof.shareMultiParty = true; });
     });
   } finally {
     await context.close();
