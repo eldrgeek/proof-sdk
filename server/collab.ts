@@ -5238,8 +5238,9 @@ async function refreshMarkdownTextFromFragment(
   if (isHotSlugQuarantined(slug)) {
     return { deriveFailed: false, refreshed: false, markdown: null };
   }
-  if (getCollabQuarantineGateStatus(slug).active) {
-    setDocumentProjectionHealth(slug, 'quarantined');
+  const quarantineGate = getCollabQuarantineGateStatus(slug);
+  if (quarantineGate.active) {
+    setDocumentProjectionHealth(slug, 'quarantined', quarantineGate.reason ?? 'COLLAB_AUTO_QUARANTINED');
     return { deriveFailed: false, refreshed: false, markdown: null };
   }
   const fragmentState = ensureFragmentEditTracking(ydoc);
@@ -5315,7 +5316,7 @@ async function refreshMarkdownTextFromFragment(
           data: incidentData,
         });
         if (driftQuarantine.quarantined) {
-          setDocumentProjectionHealth(slug, 'quarantined');
+          setDocumentProjectionHealth(slug, 'quarantined', driftQuarantine.reason ?? 'fragment_drift_repeated_blocker');
         } else {
           setDocumentProjectionHealth(slug, 'projection_stale');
           recordProjectionMarkedStale('fragment_markdown_drift', 'persist');
@@ -8180,8 +8181,9 @@ async function persistDoc(
       if (isCollabQuarantined(slug)) {
         shouldWriteProjection = false;
         skipPersistedStateWrite = sourceActor === 'collab';
-        if (getCollabQuarantineGateStatus(slug).active) {
-          setDocumentProjectionHealth(slug, 'quarantined');
+        const quarantineGate = getCollabQuarantineGateStatus(slug);
+        if (quarantineGate.active) {
+          setDocumentProjectionHealth(slug, 'quarantined', quarantineGate.reason ?? 'COLLAB_AUTO_QUARANTINED');
         }
       }
       if (shouldMaterializeProjection) {
@@ -8404,12 +8406,22 @@ async function persistDoc(
           source: 'persist',
         });
       } else if (!skipPersistedStateWrite && deltaUpdate.byteLength > 0) {
-        // Still advance y_state_version even when skipping projection writes
-        // to prevent repeated stale-projection detection on startup.
+        // Still advance documents.y_state_version when skipping projection
+        // writes so startup sees the new Yjs seq. Do not advance the
+        // projection version on a derive failure unless the row is
+        // quarantined: derive failure does not write content, and a version
+        // bump would make isProjectionFresh treat lagging markdown as current
+        // once the row is healthy again. Content writes go through
+        // materializeProjection, which updates the projection version there.
         const yStateVersion = getLatestYStateVersion(slug);
         const documentUpdated = db.prepare('UPDATE documents SET y_state_version = ? WHERE slug = ? AND share_state IN (\'ACTIVE\', \'PAUSED\')').run(yStateVersion, slug);
         if (documentUpdated.changes > 0) {
-          db.prepare('UPDATE document_projections SET y_state_version = ? WHERE document_slug = ?').run(yStateVersion, slug);
+          const projectionHealth = getDocumentProjectionBySlug(slug)?.health;
+          const syncProjectionVersion = !skipProjectionWriteDueToDeriveFailure
+            || projectionHealth === 'quarantined';
+          if (syncProjectionVersion) {
+            db.prepare('UPDATE document_projections SET y_state_version = ? WHERE document_slug = ?').run(yStateVersion, slug);
+          }
         }
       }
     });

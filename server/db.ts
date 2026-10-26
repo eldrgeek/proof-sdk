@@ -674,26 +674,67 @@ function backfillDocumentProjections(): void {
 
 function syncExistingProjectionVersionsFromDocuments(): void {
   const d = getDb();
-  // The old startup upsert copied revision and y_state_version from documents.
-  // Keep that sync, and leave health, health_reason, and updated_at alone.
-  d.exec(`
+  // The old startup upsert copied revision, y_state_version, and projection
+  // content from documents. Keep the version sync for every row, and leave
+  // health, health_reason, and updated_at alone. Healthy rows also take
+  // markdown, marks, and plain_text: isProjectionFresh only compares health
+  // and y_state_version, so a version sync without content would serve a
+  // lagging healthy projection as fresh. Quarantined and stale rows stay
+  // versions-only so their stored content and quarantine survive restart.
+  const rows = d.prepare(`
+    SELECT
+      p.document_slug AS slug,
+      p.health AS health,
+      d.markdown AS markdown,
+      d.marks AS marks,
+      COALESCE(d.revision, 1) AS revision,
+      COALESCE(d.y_state_version, 0) AS y_state_version
+    FROM document_projections p
+    JOIN documents d ON d.slug = p.document_slug
+    WHERE d.share_state != 'DELETED'
+  `).all() as Array<{
+    slug: string;
+    health: string;
+    markdown: string | null;
+    marks: string | null;
+    revision: number;
+    y_state_version: number;
+  }>;
+
+  const syncVersions = d.prepare(`
+    UPDATE document_projections
+    SET revision = ?, y_state_version = ?
+    WHERE document_slug = ?
+  `);
+  const syncHealthyContent = d.prepare(`
     UPDATE document_projections
     SET
-      revision = COALESCE(
-        (SELECT revision FROM documents WHERE slug = document_projections.document_slug),
-        1
-      ),
-      y_state_version = COALESCE(
-        (SELECT y_state_version FROM documents WHERE slug = document_projections.document_slug),
-        0
-      )
-    WHERE EXISTS (
-      SELECT 1
-      FROM documents
-      WHERE slug = document_projections.document_slug
-        AND share_state != 'DELETED'
-    )
+      revision = ?,
+      y_state_version = ?,
+      markdown = ?,
+      marks_json = ?,
+      plain_text = ?
+    WHERE document_slug = ? AND health = 'healthy'
   `);
+
+  const tx = d.transaction(() => {
+    for (const row of rows) {
+      if (row.health === 'healthy') {
+        const markdown = row.markdown ?? '';
+        syncHealthyContent.run(
+          row.revision,
+          row.y_state_version,
+          markdown,
+          row.marks ?? '{}',
+          normalizeProjectionPlainText(markdown),
+          row.slug,
+        );
+      } else {
+        syncVersions.run(row.revision, row.y_state_version, row.slug);
+      }
+    }
+  });
+  tx();
 }
 
 function getDocumentRevisionForSlug(d: Database.Database, slug: string): number | null {
