@@ -637,16 +637,101 @@ function backfillDocumentProjections(): void {
     updated_at: string;
   }>;
 
+  // Insert only rows that are missing. An upsert would rewrite health,
+  // health_reason, and updated_at on every startup and clear quarantines.
+  const insertMissing = d.prepare(`
+    INSERT INTO document_projections (
+      document_slug,
+      revision,
+      y_state_version,
+      markdown,
+      marks_json,
+      plain_text,
+      updated_at,
+      health,
+      health_reason
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'healthy', NULL)
+    ON CONFLICT(document_slug) DO NOTHING
+  `);
+
   const tx = d.transaction(() => {
     for (const row of rows) {
-      upsertDocumentProjectionRow(
+      const markdown = row.markdown ?? '';
+      insertMissing.run(
         row.slug,
-        row.markdown ?? '',
-        row.marks ?? '{}',
         typeof row.revision === 'number' ? row.revision : 1,
         typeof row.y_state_version === 'number' ? row.y_state_version : 0,
+        markdown,
+        row.marks ?? '{}',
+        normalizeProjectionPlainText(markdown),
         row.updated_at,
       );
+    }
+  });
+  tx();
+}
+
+function syncExistingProjectionVersionsFromDocuments(): void {
+  const d = getDb();
+  // The old startup upsert copied revision, y_state_version, and projection
+  // content from documents. Keep the version sync for every row, and leave
+  // health, health_reason, and updated_at alone. Healthy rows also take
+  // markdown, marks, and plain_text: isProjectionFresh only compares health
+  // and y_state_version, so a version sync without content would serve a
+  // lagging healthy projection as fresh. Quarantined and stale rows stay
+  // versions-only so their stored content and quarantine survive restart.
+  const rows = d.prepare(`
+    SELECT
+      p.document_slug AS slug,
+      p.health AS health,
+      d.markdown AS markdown,
+      d.marks AS marks,
+      COALESCE(d.revision, 1) AS revision,
+      COALESCE(d.y_state_version, 0) AS y_state_version
+    FROM document_projections p
+    JOIN documents d ON d.slug = p.document_slug
+    WHERE d.share_state != 'DELETED'
+  `).all() as Array<{
+    slug: string;
+    health: string;
+    markdown: string | null;
+    marks: string | null;
+    revision: number;
+    y_state_version: number;
+  }>;
+
+  const syncVersions = d.prepare(`
+    UPDATE document_projections
+    SET revision = ?, y_state_version = ?
+    WHERE document_slug = ?
+  `);
+  const syncHealthyContent = d.prepare(`
+    UPDATE document_projections
+    SET
+      revision = ?,
+      y_state_version = ?,
+      markdown = ?,
+      marks_json = ?,
+      plain_text = ?
+    WHERE document_slug = ? AND health = 'healthy'
+  `);
+
+  const tx = d.transaction(() => {
+    for (const row of rows) {
+      if (row.health === 'healthy') {
+        const markdown = row.markdown ?? '';
+        syncHealthyContent.run(
+          row.revision,
+          row.y_state_version,
+          markdown,
+          row.marks ?? '{}',
+          normalizeProjectionPlainText(markdown),
+          row.slug,
+        );
+      } else {
+        syncVersions.run(row.revision, row.y_state_version, row.slug);
+      }
     }
   });
   tx();
@@ -1051,6 +1136,7 @@ function initDatabase(): void {
   d.exec('CREATE INDEX IF NOT EXISTS idx_document_projections_revision ON document_projections(document_slug, revision)');
   d.exec('CREATE INDEX IF NOT EXISTS idx_document_projections_health ON document_projections(health, updated_at)');
   backfillDocumentProjections();
+  syncExistingProjectionVersionsFromDocuments();
 
   d.exec(`
     CREATE TABLE IF NOT EXISTS events (
@@ -4305,6 +4391,11 @@ export function clearYjsState(documentSlug: string): { clearedUpdates: number; c
       UPDATE documents
       SET y_state_version = 0
       WHERE slug = ?
+    `).run(documentSlug);
+    d.prepare(`
+      UPDATE document_projections
+      SET y_state_version = 0
+      WHERE document_slug = ?
     `).run(documentSlug);
     return { clearedUpdates, clearedSnapshots };
   });
