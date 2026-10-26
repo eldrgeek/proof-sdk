@@ -15,6 +15,7 @@ import {
   getDb,
   getDocumentBySlug,
   getDocumentProjectionBySlug,
+  setDocumentProjectionHealth,
   getAccumulatedYUpdateBytesAfter,
   getLatestYSnapshot,
   getLatestYStateVersion,
@@ -1479,11 +1480,9 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
     const liveMarkdown = stripEphemeralCollabSpans(ydoc.getText('markdown').toString());
     const liveFragmentHash = getFragmentTextHashFromDoc(ydoc, parser.schema);
     if (liveMarkdown !== authoritativeNextMarkdown || (liveFragmentHash !== null && liveFragmentHash !== expectedFragmentHash)) {
-      getDb().prepare(`
-        UPDATE document_projections
-        SET health = 'quarantined'
-        WHERE document_slug = ?
-      `).run(args.slug);
+      // Not an integrity_warning_* reason, so this stays a durable quarantine
+      // the same way a NULL health_reason does.
+      setDocumentProjectionHealth(args.slug, 'quarantined', 'canonical_fragment_divergence');
       invalidateCollabDocument(args.slug);
       return {
         ok: false,

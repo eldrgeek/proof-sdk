@@ -637,19 +637,63 @@ function backfillDocumentProjections(): void {
     updated_at: string;
   }>;
 
+  // Insert only rows that are missing. An upsert would rewrite health,
+  // health_reason, and updated_at on every startup and clear quarantines.
+  const insertMissing = d.prepare(`
+    INSERT INTO document_projections (
+      document_slug,
+      revision,
+      y_state_version,
+      markdown,
+      marks_json,
+      plain_text,
+      updated_at,
+      health,
+      health_reason
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'healthy', NULL)
+    ON CONFLICT(document_slug) DO NOTHING
+  `);
+
   const tx = d.transaction(() => {
     for (const row of rows) {
-      upsertDocumentProjectionRow(
+      const markdown = row.markdown ?? '';
+      insertMissing.run(
         row.slug,
-        row.markdown ?? '',
-        row.marks ?? '{}',
         typeof row.revision === 'number' ? row.revision : 1,
         typeof row.y_state_version === 'number' ? row.y_state_version : 0,
+        markdown,
+        row.marks ?? '{}',
+        normalizeProjectionPlainText(markdown),
         row.updated_at,
       );
     }
   });
   tx();
+}
+
+function syncExistingProjectionVersionsFromDocuments(): void {
+  const d = getDb();
+  // The old startup upsert copied revision and y_state_version from documents.
+  // Keep that sync, and leave health, health_reason, and updated_at alone.
+  d.exec(`
+    UPDATE document_projections
+    SET
+      revision = COALESCE(
+        (SELECT revision FROM documents WHERE slug = document_projections.document_slug),
+        1
+      ),
+      y_state_version = COALESCE(
+        (SELECT y_state_version FROM documents WHERE slug = document_projections.document_slug),
+        0
+      )
+    WHERE EXISTS (
+      SELECT 1
+      FROM documents
+      WHERE slug = document_projections.document_slug
+        AND share_state != 'DELETED'
+    )
+  `);
 }
 
 function getDocumentRevisionForSlug(d: Database.Database, slug: string): number | null {
@@ -1051,6 +1095,7 @@ function initDatabase(): void {
   d.exec('CREATE INDEX IF NOT EXISTS idx_document_projections_revision ON document_projections(document_slug, revision)');
   d.exec('CREATE INDEX IF NOT EXISTS idx_document_projections_health ON document_projections(health, updated_at)');
   backfillDocumentProjections();
+  syncExistingProjectionVersionsFromDocuments();
 
   d.exec(`
     CREATE TABLE IF NOT EXISTS events (
@@ -4305,6 +4350,11 @@ export function clearYjsState(documentSlug: string): { clearedUpdates: number; c
       UPDATE documents
       SET y_state_version = 0
       WHERE slug = ?
+    `).run(documentSlug);
+    d.prepare(`
+      UPDATE document_projections
+      SET y_state_version = 0
+      WHERE document_slug = ?
     `).run(documentSlug);
     return { clearedUpdates, clearedSnapshots };
   });

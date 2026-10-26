@@ -8407,7 +8407,10 @@ async function persistDoc(
         // Still advance y_state_version even when skipping projection writes
         // to prevent repeated stale-projection detection on startup.
         const yStateVersion = getLatestYStateVersion(slug);
-        db.prepare('UPDATE documents SET y_state_version = ? WHERE slug = ? AND share_state IN (\'ACTIVE\', \'PAUSED\')').run(yStateVersion, slug);
+        const documentUpdated = db.prepare('UPDATE documents SET y_state_version = ? WHERE slug = ? AND share_state IN (\'ACTIVE\', \'PAUSED\')').run(yStateVersion, slug);
+        if (documentUpdated.changes > 0) {
+          db.prepare('UPDATE document_projections SET y_state_version = ? WHERE document_slug = ?').run(yStateVersion, slug);
+        }
       }
     });
     persistTx();
