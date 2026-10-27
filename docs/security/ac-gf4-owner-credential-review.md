@@ -95,6 +95,20 @@ I did not inspect `~/Projects/_estate`: the contractor policy requires all work 
 
 Repository evidence demonstrates the dangerous behavior independently: `src/tests/identity.test.ts:120-121` explicitly expects an owner credential to name `human:mw@mike-wolf.com`; the integration test at lines 202-204 does the same for `POST /api/agent/:slug/marks/line`. `src/tests/document-team.test.ts:147` exercises the page line-mark path with the owner secret and the same human actor. `src/tests/review-aids.test.ts:305,316,413,419,429-432` exercises additional owner-as-human review actions.
 
+### Estate callers, verified by the lead (2026-10-27, standing loop run 20261027T110006Z-morning)
+
+The builder could not read outside its worktree, so the lead ran the grep against `~/Projects/_estate` at origin/main on 2026-10-27. Result: **no current estate caller uses an owner credential to write to an Accord as a human.**
+
+| Caller | Accord write and its `by` | Effect of the proposed control |
+|---|---|---|
+| `_estate/bin/ask-mike:1426` and `:2053` | `POST .../asks` with `by: 'ai:ask-mike'`, `to: [MIKE]` | None: the actor is `ai:*`. |
+| `_estate/accord-chat/vps_chat.py:123` | chat post with `payload['by'] = 'ai:claude'` | None. |
+| `_estate/accord-chat/register.py` | holds an owner credential; sets no `by` | None found; re-check when the control is built. |
+
+One related risk lies outside the Accord. `ask-mike` writes rulings attributed to `human:mw@mike-wolf.com` into the local ledger `_estate/waiting-on-mike/answers.jsonl` (`_estate/bin/ask-mike:1853` from harvest, `:1992` from `ask-mike record --words`). Any session can run `record` with words it supplies, so that ledger trusts the session that ran it. The proposed Accord control does not cover it. It should be named in the same decision.
+
+So the only things that break under the control are proof-sdk's own tests that expect owner-as-human (`src/tests/identity.test.ts:120-121,202-204`, `src/tests/document-team.test.ts:147`).
+
 ## Proposed smallest code change (not applied)
 
 Keep owner authorization, but make its attribution rule explicit and AI-only. The following is the exact proposed production diff against `c3b62db`:
