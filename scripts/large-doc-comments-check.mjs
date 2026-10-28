@@ -3,8 +3,11 @@
 // Models the SRMW reading-room failure locally: POST /share/markdown (~320k chars, ~2500 blocks),
 // 32 POST /api/agent/<slug>/marks/comment (ai:*) before any browser, 2 suggest-insert + owner reject,
 // then Playwright asserts the editor shows no literal `data-by=` or `<span`.
+// The check also requires all 32 comments to be live in the editor and highlighted, so it cannot pass
+// because the comments never anchored. `--mutation leak` plants one literal anchor in the seeded text;
+// the check must FAIL under it, which proves the detector can see a leak.
 // Usage:
-//   node scripts/large-doc-comments-check.mjs [--variant full|no-reject|small] [--runs N] [--style proof|playmaker]
+//   node scripts/large-doc-comments-check.mjs [--variant full|no-reject|small] [--runs N] [--style proof|playmaker] [--mutation leak]
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -28,6 +31,7 @@ const arg = (name, fallback = null) => {
 const variant = arg('--variant', 'full');
 const runs = Math.max(1, Number(arg('--runs', '1')) || 1);
 const style = arg('--style', 'proof');
+const mutation = arg('--mutation', null);
 
 const clientHeaders = {
   'Content-Type': 'application/json',
@@ -50,6 +54,9 @@ function buildLargeMarkdown(blockCount, targetChars) {
     blocks.push(`Block ${i} ${anchor} ${'x'.repeat(80)}.`);
   }
   let markdown = header + blocks.join('\n\n') + '\n';
+  if (mutation === 'leak') {
+    markdown = markdown.replace('Block 1 ', 'Block 1 `<span data-by="ai:planted">` ');
+  }
   if (markdown.length < targetChars) {
     const pad = 'p'.repeat(targetChars - markdown.length);
     markdown = markdown.replace(/\.\n$/, `. ${pad}\n`);
@@ -173,7 +180,7 @@ async function seedDocument(base, { blockCount, targetChars, withReject }) {
   return { ...created, blockCount, charCount: markdown.length };
 }
 
-async function assertNoHtmlLeak(page) {
+async function assertNoHtmlLeak(page, expectedComments) {
   await page.waitForFunction(
     () => window.proof?.collabConnectionStatus === 'connected' && window.proof?.collabIsSynced === true,
     null,
@@ -186,6 +193,14 @@ async function assertNoHtmlLeak(page) {
   );
   await showWholeAccord(page);
   await page.waitForTimeout(1500);
+
+  const live = await page.evaluate(() => {
+    const marks = (window.proof?.getAllMarks?.() ?? window.proof?.getMarks?.() ?? []).filter(m => m.kind === 'comment');
+    const highlighted = marks.filter(m => document.querySelector(`.ProseMirror [data-mark-id="${CSS.escape(m.id)}"]`)).length;
+    return { comments: marks.length, highlighted };
+  });
+  assert.ok(live.comments >= expectedComments, `only ${live.comments} of ${expectedComments} comments are live in the editor`);
+  assert.ok(live.highlighted >= expectedComments, `only ${live.highlighted} of ${expectedComments} comments are highlighted in the page`);
 
   const leak = await page.evaluate(() => {
     const pm = document.querySelector('.ProseMirror');
@@ -204,7 +219,7 @@ async function runOnce(browser, runIndex) {
   const blockCount = variant === 'small' ? 40 : TARGET_BLOCKS;
   const targetChars = variant === 'small' ? 12_000 : TARGET_CHARS;
   const withReject = variant !== 'no-reject';
-  const tag = `large-doc-comments-${variant}-${style}-run${runIndex}`;
+  const tag = `large-doc-comments-${variant}-${style}${mutation ? `-mutation-${mutation}` : ''}-run${runIndex}`;
 
   const server = await startServer(style);
   try {
@@ -221,7 +236,7 @@ async function runOnce(browser, runIndex) {
 
     await page.goto(`${server.base}/d/${doc.slug}`);
     await page.getByRole('button', { name: 'Continue anonymously', exact: true }).click({ timeout: 10_000 }).catch(() => {});
-    await assertNoHtmlLeak(page);
+    await assertNoHtmlLeak(page, COMMENT_COUNT);
     await page.screenshot({ path: path.join(shots, `${tag}.png`) });
     assert.deepEqual(errors, []);
     console.log(`PASS ${tag}: ${doc.charCount} chars, ${doc.blockCount} blocks, comments=${COMMENT_COUNT}, reject=${withReject}`);
