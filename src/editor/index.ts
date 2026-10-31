@@ -6601,6 +6601,8 @@ class ProofEditorImpl implements ProofEditor {
     document.body.appendChild(banner);
     this.shareBannerResizeObserver = new ResizeObserver(() => this.scheduleBannerLayoutUpdate());
     this.shareBannerResizeObserver.observe(banner);
+    // A reload rebuilds the banner, and the lookup runs once, so the known link goes back in here.
+    this.mountMeetLiveLink();
     this.startMeetLiveLookup();
     // ac-1cv: crossing the phone width changes the offset (the menu bar shows or hides) even when the
     // banner keeps its height, so a window resize lays the top out again too.

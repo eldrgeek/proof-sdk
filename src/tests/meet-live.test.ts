@@ -3,6 +3,7 @@
  * and a stubbed fetch that fails closed.
  */
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   MEET_LIVE_POLICY,
   accordPageConnectSrc,
@@ -124,6 +125,14 @@ await test('readMeetLiveHref: the lookup aborts at the timeout and returns null'
   const href = await pending;
   assert.equal(href, null);
   assert.equal(signal?.aborted, true);
+});
+
+await test('a rebuilt banner gets the known link back, after it is attached', () => {
+  const source = readFileSync(new URL('../editor/index.ts', import.meta.url), 'utf8');
+  const body = source.slice(source.indexOf('private showShareBanner('));
+  const attached = body.indexOf('document.body.appendChild(banner)');
+  const mounted = body.indexOf('this.mountMeetLiveLink()');
+  assert.ok(attached > 0 && mounted > attached, 'mountMeetLiveLink must run after the banner is in the document');
 });
 
 console.log(`${passed} meet-live tests passed`);
