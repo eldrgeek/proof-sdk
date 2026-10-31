@@ -30,6 +30,8 @@ import { showShareDialog } from '../ui/share-dialog';
 import { FindBar, showAboutDialog, showKeysDialog, showMarksLegend, showOpenDialog, showWhoDialog } from '../ui/chrome-dialogs';
 import { SCROLL_CAMERA_POLICY, cameraScroll, deadZone } from '../shared/scroll-camera';
 import { MENU_BAR_POLICY, TOOLBAR_POLICY, type ShareTab } from '../shared/layout-chrome';
+import { readMeetLiveHref, runAfterPageLoad } from '../shared/meet-live';
+import { createMeetLiveLink } from '../ui/meet-live';
 import { ClarifyUI } from '../ui/clarify';
 import { EditGestureUI, draftViewPlugin } from '../ui/edit-gesture';
 import { lineMarksViewPlugin } from './plugins/line-marks-view';
@@ -1104,6 +1106,9 @@ class ProofEditorImpl implements ProofEditor {
   private isCliMode: boolean = false;
   private isShareMode: boolean = false;
   private shareBannerSuggestBtnEl: HTMLButtonElement | null = null;
+  /** Checked rooms URL for the top bar, or null when the lookup has nothing to show. */
+  private meetLiveHrefValue: string | null = null;
+  private meetLiveLookupStarted = false;
   private suggestToggleWritingUnsub: (() => void) | null = null;
   private shareBannerSuggestionReviewBtnEl: HTMLButtonElement | null = null;
   private shareSuggestionReviewSignature: string = '';
@@ -4060,6 +4065,7 @@ class ProofEditorImpl implements ProofEditor {
     this.updateSuggestToggleDisplay();
     this.updateShareSuggestionReviewDisplay();
     this.mountOpenView();
+    this.mountMeetLiveLink();
     this.scheduleBannerLayoutUpdate();
   }
 
@@ -6529,6 +6535,38 @@ class ProofEditorImpl implements ProofEditor {
     }
   }
 
+  /**
+   * After load, ask the rooms service whether a room attached this Accord. A rooms URL
+   * becomes one link in the top bar. Anything else, including a failure, changes nothing
+   * and is not logged.
+   */
+  private startMeetLiveLookup(): void {
+    if (this.meetLiveLookupStarted || !this.isShareMode) return;
+    const slug = shareClient.getSlug();
+    if (!slug) return;
+    this.meetLiveLookupStarted = true;
+    runAfterPageLoad(() => {
+      void readMeetLiveHref(slug, (input, init) => fetch(input, init)).then(href => {
+        this.meetLiveHrefValue = href;
+        this.mountMeetLiveLink();
+      });
+    });
+  }
+
+  private mountMeetLiveLink(): void {
+    const href = this.meetLiveHrefValue;
+    if (!href) return;
+    const banner = document.getElementById('share-banner');
+    if (!banner) return;
+    const existing = banner.querySelector<HTMLAnchorElement>('[data-meet-live]');
+    if (existing) {
+      if (existing.getAttribute('href') !== href) existing.href = href;
+      return;
+    }
+    const right = banner.querySelector('.share-pill-right') ?? banner;
+    right.append(createMeetLiveLink(href));
+  }
+
   private showShareBanner(viewers: number): void {
     this.clearShareBanner();
     const banner = document.createElement('div');
@@ -6563,6 +6601,7 @@ class ProofEditorImpl implements ProofEditor {
     document.body.appendChild(banner);
     this.shareBannerResizeObserver = new ResizeObserver(() => this.scheduleBannerLayoutUpdate());
     this.shareBannerResizeObserver.observe(banner);
+    this.startMeetLiveLookup();
     // ac-1cv: crossing the phone width changes the offset (the menu bar shows or hides) even when the
     // banner keeps its height, so a window resize lays the top out again too.
     if (!this.bannerLayoutOnResize) {

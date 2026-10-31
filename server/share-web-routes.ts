@@ -44,6 +44,7 @@ import { resolveSharePageAccess } from './share-page-access.js';
 import { getGuestAccessMode, touchInvite } from './document-team.js';
 import { renderSignInRequiredHtml } from './document-team-routes.js';
 import { productName } from '../src/shared/product-identity.js';
+import { accordPageContentSecurityPolicy, connectSrcExtrasFromEnv } from '../src/shared/meet-live.js';
 
 export { getPublicOrigin, isSecureRequest } from './public-origin.js';
 
@@ -660,6 +661,8 @@ shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
   }
   res.append('Link', `</documents/${slug}/state>; rel="agent-state"`);
   res.append('Link', '</.well-known/agent.json>; rel="agent-discovery"');
+  // The page asks the rooms service after load. connect-src names that origin and no wider source.
+  res.setHeader('Content-Security-Policy', accordPageContentSecurityPolicy(connectSrcExtrasFromEnv(process.env)));
   // Option 2: The SPA HTML includes a hidden <div id="agent-instructions"> with
   // API discovery info, visible in raw markup for readability extractors.
   const configShareToken = tokenSource === 'query:token' ? token : null;
