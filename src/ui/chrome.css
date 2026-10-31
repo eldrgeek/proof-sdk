@@ -30,6 +30,14 @@
 .amb-top:hover, .amb-top-open, .amb-top:focus-visible { background: #eef0f3; outline: none; }
 .amb-spacer { flex: 1; }
 .amb-right { display: flex; align-items: center; gap: 4px; min-width: 0; }
+/* One quiet link to the room that attached this Accord. Absent unless the rooms answer is a rooms URL. */
+.meet-live-link {
+  flex: none; color: #4b5563; font-size: 12px; font-weight: 500; text-decoration: none; white-space: nowrap;
+}
+.meet-live-link:hover, .meet-live-link:focus-visible { text-decoration: underline; outline: none; }
+@media (max-width: 700px) {
+  .meet-live-link { display: inline-flex; align-items: center; min-height: 44px; padding: 0 6px; font-size: 13px; }
+}
 /* People here: the toolbar's avatars and AI faces sit small at the menu bar's right. */
 .amb-right .share-pill-human-avatars { min-height: 26px !important; min-width: 0 !important; }
 .amb-right .share-pill-human-avatars .share-pill-human-count { display: none; }
