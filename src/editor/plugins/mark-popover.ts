@@ -605,33 +605,44 @@ class MarkPopoverController {
       }
 
       try {
+        // The selection poll calls this every 120ms and used to clear the strip
+        // signature every time. That rebuilt Comment, so the button left the DOM
+        // before a tap could land. Rebuild only when the selection actually changed.
+        let selectionChanged = false;
         if (selectionFrom !== null && selectionTo !== null && selectionFrom !== selectionTo) {
           const nextRange = { from: selectionFrom, to: selectionTo };
           const cached = this.cachedActionRange?.range;
           const changed = !cached || cached.from !== nextRange.from || cached.to !== nextRange.to;
+          if (!this.hasLiveSelection) selectionChanged = true;
           this.hasLiveSelection = true;
           if (changed) {
             const text = this.view.state.doc.textBetween(selectionFrom, selectionTo);
             this.cachedActionRange = { range: nextRange, text };
             this.cachedActionRangeAt = Date.now();
             this.mobileStripSignature = '';
+            selectionChanged = true;
           }
           if (this.mobileStripExpanded) {
             this.mobileStripExpanded = false;
+            this.mobileStripSignature = '';
+            selectionChanged = true;
           }
         } else {
           if (mobile && hasDomSelectionText) {
             // Keep action row visible while iOS selection mapping catches up.
+            if (!this.hasLiveSelection) selectionChanged = true;
             this.hasLiveSelection = true;
           } else if (!(mobile && hasFreshCache)) {
+            if (this.hasLiveSelection) selectionChanged = true;
             this.hasLiveSelection = false;
           }
+          if (selectionChanged) this.mobileStripSignature = '';
         }
-        this.mobileStripSignature = '';
+        if (!mobile) this.mobileStripSignature = '';
         // Render immediately on mobile — RAF timing races with ProseMirror
         // update cycles that can reset hasLiveSelection before render fires.
-        this.scheduleMobileStripRender(mobile);
-        if (mobile && hasDomSelectionText) {
+        if (!mobile || selectionChanged) this.scheduleMobileStripRender(mobile);
+        if (mobile && hasDomSelectionText && selectionChanged) {
           this.scheduleSelectionPolling();
         }
       } catch {
