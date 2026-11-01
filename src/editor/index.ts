@@ -5178,6 +5178,9 @@ class ProofEditorImpl implements ProofEditor {
     const arm = () => { armed = isWriting(); };
     el.addEventListener('pointerdown', arm, true);
     el.addEventListener('mousedown', (event) => { arm(); event.preventDefault(); }, true);
+    // The sample is only for the click from this press. A key activates the control
+    // on its own, so a press that ended off the control must not answer that key.
+    el.addEventListener('keydown', () => { armed = null; }, true);
     return () => {
       const writing = armed ?? isWriting();
       armed = null;
