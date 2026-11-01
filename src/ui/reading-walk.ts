@@ -1070,6 +1070,11 @@ export class ReadingWalkUI {
     const suggest = this.boxHost.querySelector<HTMLButtonElement>('.plm-suggest');
     if (suggest) suggest.disabled = !this.host.canSuggest() || writing;
     this.renderFocus();
+    // A blur during a phone selection is often undone in the same turn. Showing the strip
+    // immediately shifts the comment control and Playwright never sees it sit still.
+    // Escape has left Writing for good by the time this microtask runs, which is before
+    // the layout check reads the strip.
+    if (!writing) queueMicrotask(() => { if (!isWriting()) this.renderStrip(); });
   }
 
   /** Accord round 2 stage A: a proposal posted on this line. The bar says so, briefly. */
@@ -1100,7 +1105,9 @@ export class ReadingWalkUI {
     document.body.classList.toggle('prw-strip-on', show);
     document.body.style.setProperty('--prw-strip-h', `${TOUCH_FOCUS_POLICY.stripHeightPx}px`);
     this.strip.hidden = !show;
-    if (!show) return;
+    // The strip steps aside while the caret is in the text. A tap selects its passage in that
+    // stretch; name it anyway, or the label is still the previous line when the strip returns.
+    if (!touch || !lm.isLoaded()) return;
     // Mike, 2026-09-24, yfbqrau4: position and an open-item count, no line-mark controls.
     const index = this.cursorLine();
     const count = lm.reviewViews()['needs-you'].count;
