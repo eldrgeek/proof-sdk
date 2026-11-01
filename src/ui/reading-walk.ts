@@ -1070,6 +1070,8 @@ export class ReadingWalkUI {
     const suggest = this.boxHost.querySelector<HTMLButtonElement>('.plm-suggest');
     if (suggest) suggest.disabled = !this.host.canSuggest() || writing;
     this.renderFocus();
+    // The strip's visibility and label follow Reading in the same turn, without waiting for the queued render.
+    if (!writing) queueMicrotask(() => { if (!isWriting()) this.renderStrip(); });
   }
 
   /** Accord round 2 stage A: a proposal posted on this line. The bar says so, briefly. */

@@ -319,6 +319,26 @@ async function desktop2(browser, base, style) {
     const after = await page.evaluate(() => ({ writing: window.__proofEditingGuard().writing, mode: document.querySelector('.pst-mode')?.textContent ?? null }));
     if (after.writing || after.mode !== 'Reading') throw new Error(`Leave text left writing=${after.writing} mode=${after.mode}`);
   });
+  await check(`${tag}: a press that leaves Leave text does not stick; Enter on Edit text enters Writing`, async () => {
+    await page.getByRole('button', { name: 'Edit text', exact: true }).click();
+    await page.waitForFunction(() => window.__proofEditingGuard().writing);
+    const leave = page.getByRole('button', { name: 'Leave text', exact: true });
+    const box = await leave.boundingBox();
+    if (!box) throw new Error('Leave text has no box');
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(720, 500);
+    await page.mouse.up();
+    assert.equal(await page.evaluate(() => window.__proofEditingGuard().writing), true, 'releasing Leave text off the button ended Writing');
+    await page.keyboard.press('Escape');
+    await waitFor(page, () => !window.__proofEditingGuard().writing && document.querySelector('.share-pill-suggest-toggle')?.textContent === 'Edit text');
+    await page.getByRole('button', { name: 'Edit text', exact: true }).focus();
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(() => window.__proofEditingGuard().writing, null, { timeout: 2000 });
+    assert.equal(await modeText(page), 'Writing', 'Enter on Edit text left the page in Reading');
+    await page.keyboard.press('Escape');
+    await waitFor(page, () => !window.__proofEditingGuard().writing && document.querySelector('.pst-bar .pst-mode')?.textContent === 'Reading');
+  });
   await check(`${tag}: Edit Undo reverses live proposal typing`, async () => {
     await page.evaluate(i => window.__proofReadingWalk.focusDocument(i), L.S1 + 2);
     const before = await page.evaluate(() => window.__editorView.state.doc.textContent);

@@ -4266,11 +4266,14 @@ class ProofEditorImpl implements ProofEditor {
       menu('edit', () => {
         const undo = this.undoLabel(false);
         const redo = this.undoLabel(true);
+        const writing = isWriting();
         const items: MenuItemSpec[] = [
           { id: 'edit-undo', label: undo.label, detail: '⌘Z', keywords: 'undo', enabled: undo.enabled, run: () => this.undoFromMenu(false) },
           { id: 'edit-redo', label: redo.label, detail: '⇧⌘Z', keywords: 'redo', enabled: redo.enabled, run: () => this.undoFromMenu(true) },
           { id: 'edit-find', label: 'Find…', keywords: 'search text', separatorBefore: true, run: () => this.openFindBar() },
-          { id: 'edit-editing', label: isWriting() ? 'Leave text' : 'Edit text', enabled: canEdit, separatorBefore: true, keywords: 'mode direct', run: () => this.setSuggestingFromChrome(isWriting()) },
+          // The label and the action share one sample. A later focus move (the item itself,
+          // once the menu is open) must not make Leave text read as Edit text.
+          { id: 'edit-editing', label: writing ? 'Leave text' : 'Edit text', enabled: canEdit, separatorBefore: true, keywords: 'mode direct', run: () => this.setSuggestingFromChrome(writing) },
         ];
         if (style === 'proof' && canEdit) {
           items.push(
@@ -4647,7 +4650,10 @@ class ProofEditorImpl implements ProofEditor {
     this.renderShareOverflowBadge(btn);
     btn.setAttribute('aria-haspopup', 'menu');
     btn.setAttribute('aria-expanded', 'false');
+    // ⋯ takes focus before click, which drops the caret. Sample Writing on the press.
+    const writingAtPress = this.armWritingPress(btn);
     btn.onclick = () => {
+      const writing = writingAtPress();
       if (this.shareOverflowMenuCleanup) { this.shareOverflowMenuCleanup(); return; }
       this.closeShareMenu();
       this.closeAgentMenu();
@@ -4683,7 +4689,7 @@ class ProofEditorImpl implements ProofEditor {
       const moved = new Set<string>();
       for (const part of TOOLBAR_POLICY.phoneMenuTop) {
         if (part === 'mode' && this.isShareMode && this.collabCanEdit) {
-          const on = isWriting();
+          const on = writing;
           const seg = document.createElement('div');
           seg.className = 'apm-mode';
           seg.setAttribute('role', 'group');
@@ -5152,12 +5158,34 @@ class ProofEditorImpl implements ProofEditor {
     btn.onmouseenter = () => { btn.style.background = '#fff'; btn.style.borderColor = 'rgba(17,24,39,0.20)'; };
     btn.onmouseleave = () => { btn.style.background = 'rgba(255,255,255,0.7)'; btn.style.borderColor = 'rgba(17,24,39,0.10)'; };
     btn.classList.add('amb-seg');
-    btn.onclick = () => this.setSuggestingFromChrome(isWriting());
+    // The button takes focus before click, so a live isWriting() here would see Reading and put the caret back.
+    const writingAtPress = this.armWritingPress(btn);
+    btn.onclick = () => this.setSuggestingFromChrome(writingAtPress());
     this.shareBannerSuggestBtnEl = btn;
     // Writing also ends without this button (Escape, a click outside the text), so the label
     // follows the caret rather than the last press.
     this.suggestToggleWritingUnsub ??= onWritingChange(() => this.updateSuggestToggleDisplay());
     return btn;
+  }
+
+  /**
+   * A chrome control takes focus before its click, and the caret leaves first.
+   * Sample Writing on the press — the same isWriting(), not a second mode — and
+   * keep that press from moving the caret before the control acts.
+   */
+  private armWritingPress(el: HTMLElement): () => boolean {
+    let armed: boolean | null = null;
+    const arm = () => { armed = isWriting(); };
+    el.addEventListener('pointerdown', arm, true);
+    el.addEventListener('mousedown', (event) => { arm(); event.preventDefault(); }, true);
+    // The sample is only for the click from this press. A key activates the control
+    // on its own, so a press that ended off the control must not answer that key.
+    el.addEventListener('keydown', () => { armed = null; }, true);
+    return () => {
+      const writing = armed ?? isWriting();
+      armed = null;
+      return writing;
+    };
   }
 
   /** Retain the labelled control as another way to enter or leave the text. */
