@@ -166,8 +166,11 @@ const bar = page => page.evaluate(() => {
   };
 });
 
-// Mike, 2026-09-24, yfbqrau4: stages 1 and 3's Margin/mark UI assertions are
-// superseded by layout-v2-check.mjs. Stage 2's menu, Share and toolbar checks stay here.
+// Mike, 2026-09-24, yfbqrau4: the Margin's Line tab, the More menu, line marking and the
+// sheet's Agree are retired (layout-v2-check.mjs). The folded view replaces Outline and Since you
+// (ac-2a8). The status bar, the Editing control, the amber dots, hover, reading without Save,
+// the phone strip, a tap while reading, an open-item click, collapsing both sides, and the View
+// menu's two sides came back here, in the words the page uses now (Line N of M, N open, Reading).
 const chrome = page => page.evaluate(() => {
   const r = el => { const n = typeof el === 'string' ? document.querySelector(el) : el; if (!n) return null; const b = n.getBoundingClientRect(); return { top: b.top, bottom: b.bottom, left: b.left, right: b.right, height: b.height, width: b.width }; };
   const visible = n => { const b = n.getBoundingClientRect(); return b.width > 0 && b.height > 0 && getComputedStyle(n).visibility !== 'hidden'; };
@@ -196,6 +199,7 @@ async function reading(page) {
   await page.mouse.move(5, 450);
   await waitFor(page, () => document.querySelector('.pst-bar .pst-mode')?.textContent === 'Reading');
 }
+const modeText = page => page.locator('.pst-mode').evaluate(el => el.textContent);
 
 async function desktop2(browser, base, style) {
   const created = await createDoc(base, 'Ada');
@@ -298,16 +302,22 @@ async function desktop2(browser, base, style) {
     await panel.getByRole('button', { name: 'Close reading settings' }).click();
     assert.equal(await panel.isVisible(), false);
   });
-  await check(`${tag}: Edit and the toolbar put the caret in the text; Escape returns to Review`, async () => {
+  await check(`${tag}: the labelled Editing control and Escape return to Reading`, async () => {
     await page.locator('#accord-menubar .amb-top[data-menu="edit"]').click();
     assert.ok((await menuItems(page)).some(i => i.label === 'Edit text'));
     await page.locator('.amb-menu .amb-item', { hasText: 'Edit text' }).click();
     await page.waitForFunction(() => window.__proofEditingGuard().writing);
+    assert.equal(await modeText(page), 'Writing');
     await page.keyboard.press('Escape');
-    assert.equal(await page.evaluate(() => window.__proofEditingGuard().writing), false);
+    await waitFor(page, () => !window.__proofEditingGuard().writing && document.querySelector('.pst-bar .pst-mode')?.textContent === 'Reading');
+  });
+  await check(`${tag}: Leave text returns to Reading`, async () => {
     await page.getByRole('button', { name: 'Edit text', exact: true }).click();
     await page.waitForFunction(() => window.__proofEditingGuard().writing);
-    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: 'Leave text', exact: true }).click();
+    await page.waitForTimeout(400);
+    const after = await page.evaluate(() => ({ writing: window.__proofEditingGuard().writing, mode: document.querySelector('.pst-mode')?.textContent ?? null }));
+    if (after.writing || after.mode !== 'Reading') throw new Error(`Leave text left writing=${after.writing} mode=${after.mode}`);
   });
   await check(`${tag}: Edit Undo reverses live proposal typing`, async () => {
     await page.evaluate(i => window.__proofReadingWalk.focusDocument(i), L.S1 + 2);
@@ -376,6 +386,116 @@ async function desktop2(browser, base, style) {
     await waitFor(page, i => window.__proofReadingWalk.debugState().target === i, L.ASK2);
     await page.locator('#find-bar input').press('Escape');
   });
+  await check(`${tag}: the status bar sits at the bottom of the page column and says Line N of M, the open count and Reading`, async () => {
+    const b = await bar(page);
+    const w = await walk(page);
+    assert.ok(b, 'no status bar');
+    assert.equal(b.position, 'fixed');
+    // This check pins the chat to the foot (keep-bottom-chat.mjs). The page column is the text
+    // between the rails; the bar is its bottom edge, sitting on the chat.
+    const geo = await page.evaluate(() => {
+      const box = sel => { const n = document.querySelector(sel); const r = n.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }; };
+      return { editor: box('#editor-container'), chat: box('.prw-chat-bottom'), left: box('.prw-left'), right: box('.prw-right') };
+    });
+    assert.ok(Math.abs(b.bottom - geo.chat.top) <= 2, `bar bottom ${b.bottom} is not the chat top ${geo.chat.top}`);
+    assert.ok(Math.abs(b.left - geo.left.right) <= 8, `bar left ${b.left}, Accords list ends ${geo.left.right}`);
+    assert.ok(Math.abs(b.right - geo.right.left) <= 8, `bar right ${b.right}, Review panel starts ${geo.right.left}`);
+    assert.ok(b.left <= geo.editor.left + 8 && b.right >= geo.editor.right - 8, `bar ${b.left}-${b.right} does not span the text ${geo.editor.left}-${geo.editor.right}`);
+    assert.ok(b.height >= 24 && b.height <= 36, `bar height ${b.height}`);
+    assert.ok(b.modeRight !== null && b.right - b.modeRight <= 24, 'Reading is not at the right end of the bar');
+    assert.equal(b.line, `Line ${w.target + 1} of ${w.lines}`);
+    assert.equal(b.issues, `${b.count} open`);
+    assert.equal(b.count, (await amber(page)).length);
+    assert.equal(b.mode, 'Reading');
+    assert.notEqual(b.modeTag, 'BUTTON', 'Reading is state, not a switch');
+    assert.equal(await page.locator('.prw-rail-head .pst-mode, .prw-rail-head .prw-mode').count(), 0);
+    await page.screenshot({ path: path.join(shots, `${tag}-statusbar.png`), clip: { x: 0, y: 820, width: 1440, height: 80 } });
+  });
+  await check(`${tag}: scrolling keeps the selected passage and the status bar in place`, async () => {
+    const before = await bar(page);
+    const selected = (await walk(page)).cursor;
+    await page.evaluate(() => window.scrollBy(0, 250));
+    await page.waitForTimeout(300);
+    const after = await bar(page);
+    assert.equal((await walk(page)).cursor, selected, 'scroll moved the selected passage');
+    assert.equal(after.line, before.line, 'scroll changed the status bar line');
+    assert.equal(after.position, 'fixed');
+    assert.ok(Math.abs(after.bottom - before.bottom) <= 1 && Math.abs(after.left - before.left) <= 1 && Math.abs(after.right - before.right) <= 1, `the bar moved: ${before.bottom}/${after.bottom}`);
+  });
+  await check(`${tag}: amber dots are the lines that need you, and the open count equals their number`, async () => {
+    const lines = await amber(page);
+    assert.deepEqual(lines, [L.ASK, L.CHANGE, L.COMMENT, L.ASK2]);
+    const b = await bar(page);
+    assert.equal(b.count, lines.length);
+    assert.equal(b.issues, `${lines.length} open`);
+    const colors = await page.evaluate(() => [...document.querySelectorAll('.plm-open-dot')].map(dot => getComputedStyle(dot, '::before').backgroundColor));
+    assert.equal(colors.filter(color => color === 'rgb(217, 140, 0)').length, lines.length, `amber dots: ${colors}`);
+  });
+  await check(`${tag}: answering an ask takes its amber dot away and the count follows`, async () => {
+    const before = await amber(page);
+    await selectPassage(page, L.ASK);
+    await page.locator('.ProseMirror .pask').first().locator('button[data-choice="yes"]').click();
+    await waitFor(page, i => !document.querySelector(`.plm-open-dot[data-line="${i}"][data-needs-you="true"]`), L.ASK);
+    const lines = await amber(page);
+    assert.deepEqual(lines, before.filter(line => line !== L.ASK));
+    await waitFor(page, n => Number(document.querySelector('.pst-issues')?.dataset.count) === n, lines.length);
+    assert.equal((await bar(page)).issues, `${lines.length} open`);
+  });
+  await check(`${tag}: hover preserves the selected highlight and target`, async () => {
+    await selectPassage(page, L.S1);
+    assert.equal(await page.locator('.prw-focus').getAttribute('data-line'), String(L.S1));
+    await hoverChangesNothing(page, L.S1 + 2);
+    assert.equal(await page.locator('.prw-focus').getAttribute('data-line'), String(L.S1));
+    assert.equal((await walk(page)).target, L.S1);
+  });
+  await check(`${tag}: reading does not offer Save accepted changes`, async () => {
+    assert.equal(await page.getByRole('button', { name: /Save accepted/ }).count(), 0);
+    await scrollAcceptsNothing(page);
+  });
+  await check(`${tag}: clicking an open item moves the one cursor there`, async () => {
+    const row = page.locator(`.prw-right .anv-issue[data-line="${L.CHANGE}"][data-settled="false"]`);
+    await row.click();
+    await waitFor(page, i => window.__proofReadingWalk.debugState().focus === i, L.CHANGE);
+    const w = await walk(page);
+    assert.equal(w.cursor, L.CHANGE);
+    assert.equal(w.target, L.CHANGE);
+    assert.equal(await page.locator('.prw-focus').getAttribute('data-line'), String(L.CHANGE));
+    assert.equal((await bar(page)).line, `Line ${L.CHANGE + 1} of ${w.lines}`);
+    assert.equal(await row.getAttribute('aria-current'), 'true');
+  });
+  await check(`${tag}: both sides collapse, and the collapsed state and the Review tab are remembered on reload`, async () => {
+    await page.locator('.prw-right .anv-tab[data-tab="issues"]').click();
+    await page.locator('.prw-left .prw-collapse').click();
+    await page.locator('.prw-right .prw-collapse').click();
+    await waitFor(page, () => document.body.classList.contains('prw-left-collapsed') && document.body.classList.contains('prw-right-collapsed'));
+    const widths = await page.evaluate(() => ({ left: document.querySelector('.prw-left').getBoundingClientRect().width, right: document.querySelector('.prw-right').getBoundingClientRect().width }));
+    assert.ok(widths.left <= 48 && widths.right <= 48, `a collapsed side is still wide: ${JSON.stringify(widths)}`);
+    await page.reload();
+    await page.waitForFunction(() => window.proof?.collabIsSynced === true && window.__proofReadingWalk?.debugState().ready === true, null, { timeout: 20_000 });
+    const toast = page.locator('.proof-share-welcome-toast button');
+    if (await toast.count()) await toast.first().click().catch(() => {});
+    await showWholeAccord(page);
+    assert.equal(await page.evaluate(() => document.body.classList.contains('prw-left-collapsed') && document.body.classList.contains('prw-right-collapsed')), true, 'the collapsed state was forgotten');
+    await page.locator('.prw-left .prw-collapse').click();
+    await page.locator('.prw-right .prw-collapse').click();
+    await waitFor(page, () => !document.body.classList.contains('prw-left-collapsed') && !document.body.classList.contains('prw-right-collapsed'));
+    assert.equal(await page.locator('.prw-right .anv-tab[aria-selected="true"]').getAttribute('data-tab'), 'issues', 'the Review tab was forgotten');
+  });
+  await check(`${tag}: View › Accords list and View › Review panel show and hide both sides`, async () => {
+    const viewItem = label => page.locator('.amb-menu .amb-item').filter({ has: page.locator('.amb-label', { hasText: new RegExp(`^${label}$`) }) });
+    await page.locator('#accord-menubar .amb-top[data-menu="view"]').click();
+    await viewItem('Accords list').click();
+    await waitFor(page, () => document.body.classList.contains('prw-left-collapsed') && !document.body.classList.contains('prw-right-collapsed'));
+    await page.locator('#accord-menubar .amb-top[data-menu="view"]').click();
+    await viewItem('Accords list').click();
+    await waitFor(page, () => !document.body.classList.contains('prw-left-collapsed'));
+    await page.locator('#accord-menubar .amb-top[data-menu="view"]').click();
+    await viewItem('Review panel').click();
+    await waitFor(page, () => document.body.classList.contains('prw-right-collapsed') && !document.body.classList.contains('prw-left-collapsed'));
+    await page.locator('#accord-menubar .amb-top[data-menu="view"]').click();
+    await viewItem('Review panel').click();
+    await waitFor(page, () => !document.body.classList.contains('prw-right-collapsed'));
+  });
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.locator('#accord-menubar .amb-top[data-menu="view"]').click();
   await page.waitForTimeout(150);
@@ -419,7 +539,7 @@ async function phone2(browser, base, style) {
     // The switch and Share lead the menu (TOOLBAR_POLICY.phoneMenuTop), each only once.
     const top = await menu.evaluate(m => [...m.querySelectorAll('.apm-mode .amb-item')].map(b => ({ label: b.querySelector('.amb-label').textContent, checked: b.getAttribute('aria-checked') })));
     assert.deepEqual(top.map(t => t.label), ['Enter Editing']);
-    assert.equal(await page.locator('.pst-mode').innerText(), 'Reading');
+    assert.equal(await modeText(page), 'Reading');
     const count = label => menu.evaluate((m, l) => [...m.querySelectorAll('.amb-item .amb-label')].filter(n => n.textContent === l).length, label);
     for (const label of ['Enter Editing']) assert.equal(await count(label), 1, `${label} appears twice`);
     await page.screenshot({ path: path.join(shots, `${tag}-overflow.png`) });
@@ -437,7 +557,7 @@ async function phone2(browser, base, style) {
     await page.waitForFunction(() => window.__proofEditingGuard().writing);
     await page.keyboard.press('Escape');
     await page.waitForFunction(() => !window.__proofEditingGuard().writing);
-    assert.equal(await page.locator('.pst-mode').innerText(), 'Reading');
+    assert.equal(await modeText(page), 'Reading');
   });
   await check(`${tag}: ⋯ › Share… opens the Share dialog; it fits the phone`, async () => {
     await page.getByRole('button', { name: /^More options/ }).tap();
@@ -447,6 +567,67 @@ async function phone2(browser, base, style) {
     const r = await dialog.boundingBox();
     assert.ok(r.x >= 0 && r.x + r.width <= 390, 'the dialog runs off the phone');
     await dialog.getByRole('button', { name: 'Close share dialog' }).tap();
+  });
+  await check(`${tag}: the status bar folds into the strip (Line N of M in the strip, no second bar)`, async () => {
+    const b = await bar(page);
+    const w = await walk(page);
+    assert.ok(b, 'no status bar element');
+    assert.equal(await page.locator('.pst-bar').isVisible(), false, 'a second bar shows over the strip');
+    const strip = await page.locator('.prw-strip').boundingBox();
+    const chat = await page.locator('.prw-chat-bottom').boundingBox();
+    assert.ok(strip && chat, 'the strip or the chat is missing');
+    assert.ok(Math.abs(strip.y + strip.height - chat.y) <= 3, `the strip does not sit on the chat: strip bottom ${strip.y + strip.height}, chat top ${chat.y}`);
+    assert.equal(await page.locator('.prw-strip-where').innerText(), `Line ${w.target + 1} of ${w.lines}`);
+    assert.equal(b.line, `Line ${w.target + 1} of ${w.lines}`);
+    assert.equal(await page.locator('.prw-strip-review').innerText(), `${b.count} open ${b.count === 1 ? 'item' : 'items'}`);
+    const fits = await page.evaluate(() => { const el = document.querySelector('.prw-strip'); return el.scrollWidth <= el.clientWidth + 1; });
+    assert.ok(fits, 'the strip overflows');
+    await page.screenshot({ path: path.join(shots, `${tag}-statusbar.png`) });
+  });
+  await check(`${tag}: the strip's open count equals the amber dots`, async () => {
+    const lines = await amber(page);
+    assert.deepEqual(lines, [L.ASK, L.CHANGE, L.COMMENT, L.ASK2]);
+    assert.equal(await page.locator('.prw-strip-review').innerText(), `${lines.length} open items`);
+    assert.equal((await bar(page)).count, lines.length);
+  });
+  await check(`${tag}: a tap selects text while Reading; the strip stays on screen`, async () => {
+    await block(page, L.S1).scrollIntoViewIfNeeded();
+    const box = await block(page, L.S1).boundingBox();
+    const strip = await page.locator('.prw-strip').boundingBox();
+    assert.ok(box && strip && box.y + 10 < strip.y, 'the passage is under the strip');
+    assert.equal(await modeText(page), 'Reading', 'the tap did not start from Reading');
+    await page.touchscreen.tap(box.x + 40, box.y + 10);
+    await waitFor(page, i => window.__proofReadingWalk.debugState().focus === i, L.S1);
+    assert.equal(await page.locator('.prw-focus').evaluate(el => el.dataset.line), String(L.S1), 'the tap did not select that passage');
+    // A caret in the text is Writing, and the strip steps aside while the caret is there
+    // (Mike, 2026-09-24). Escape returns to Reading and the strip names the passage again.
+    await page.keyboard.press('Escape');
+    await waitFor(page, () => !window.__proofEditingGuard().writing && document.querySelector('.pst-bar .pst-mode')?.textContent === 'Reading');
+    const where = await page.locator('.prw-strip-where').innerText();
+    const lines = (await walk(page)).lines;
+    const focus = (await walk(page)).focus;
+    assert.equal(where, `Line ${L.S1 + 1} of ${lines}`, `a tap selected line ${L.S1 + 1}, but after Escape the strip says ${JSON.stringify(where)} and the focus is ${focus}`);
+    const after = await page.locator('.prw-strip').boundingBox();
+    const chat = await page.locator('.prw-chat-bottom').boundingBox();
+    assert.ok(after && chat && Math.abs(after.y + after.height - chat.y) <= 3, 'the strip left the screen');
+    await page.screenshot({ path: path.join(shots, `${tag}-tap.png`) });
+  });
+  await check(`${tag}: Leave Editing returns the phone to Reading`, async () => {
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => { document.activeElement?.blur(); window.scrollTo(0, 0); });
+    const choose = async (label) => {
+      await page.getByRole('button', { name: /^More options/ }).tap();
+      const menu = page.locator('.proof-share-overflow-menu');
+      await menu.waitFor({ state: 'visible' });
+      const item = menu.getByRole('menuitem', { name: label });
+      if (await item.count() !== 1) throw new Error(`wanted one ${label}, menu has ${JSON.stringify(await menu.innerText())}`);
+      await item.evaluate(el => el.click());
+    };
+    await choose('Enter Editing');
+    await page.waitForFunction(() => window.__proofEditingGuard().writing);
+    await choose('Leave Editing');
+    await waitFor(page, () => !window.__proofEditingGuard().writing);
+    assert.equal(await modeText(page), 'Reading');
   });
   await context.close();
 }
