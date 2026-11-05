@@ -14,6 +14,7 @@ import { addDocumentEvent, assertWritesAllowed, getDb } from './db.js';
 import { onClientSettlement } from './collab-marks-guard.js';
 import { documentOwnerActors } from './line-marks.js';
 import { currentTeam } from './proof-extras.js';
+import { roomRoster } from './room-surface.js';
 import { actorKey } from '../src/shared/line-marks.js';
 import {
   DISPOSITION_POLICY,
@@ -142,8 +143,14 @@ export function rosterFor(slug: string, rawMarks: unknown, extra: string[] = [],
     seen.add(key);
     roster.push({ actor, role: ownerKeys.has(key) ? 'owner' : observerKeys.has(key) ? 'observer' : 'participant' });
   };
+  // Accord as a room surface (src/shared/room-surface.ts): on an attached Accord, the room's
+  // membership is the roster. The room's host is an Owner; anyone the room names as an observer is one.
+  const room = roomRoster(slug, settings.observers);
+  if (room) for (const entry of room) if (entry.role === 'owner') ownerKeys.add(actorKey(entry.actor));
+  if (room) for (const entry of room) if (entry.role === 'observer') observerKeys.add(actorKey(entry.actor));
   for (const owner of [...documentOwnerActors(slug), ...extraOwners]) add(owner);
-  for (const member of currentTeam(slug, rawMarks)) add(member);
+  if (room) for (const entry of room) add(entry.actor);
+  else for (const member of currentTeam(slug, rawMarks)) add(member);
   for (const member of extra) add(member);
   // Anyone who has promoted or cut before is a participant from then on.
   for (const record of listDispositions(slug)) add(record.by);
