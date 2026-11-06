@@ -32,6 +32,7 @@ import { SCROLL_CAMERA_POLICY, cameraScroll, deadZone } from '../shared/scroll-c
 import { MENU_BAR_POLICY, TOOLBAR_POLICY, type ShareTab } from '../shared/layout-chrome';
 import { readMeetLiveHref, runAfterPageLoad } from '../shared/meet-live';
 import { createMeetLiveLink } from '../ui/meet-live';
+import { isRoomSurface } from '../shared/room-surface';
 import { ClarifyUI } from '../ui/clarify';
 import { EditGestureUI, draftViewPlugin } from '../ui/edit-gesture';
 import { lineMarksViewPlugin } from './plugins/line-marks-view';
@@ -1198,6 +1199,8 @@ class ProofEditorImpl implements ProofEditor {
   private readingWalk: ReadingWalkUI | null = null;
   /** Proof Documents Step B7: chat in the right rail (desktop) or a bottom sheet (phone). */
   private chat: ChatUI | null = null;
+  /** Opened inside a SOMA Room (?surface=room): the room provides chat, presence and Meet live. */
+  private readonly roomSurface = typeof window !== 'undefined' && isRoomSurface(window.location.search);
   private chatUnread = 0;
   private folding: FoldingUI | null = null;
   /** Accord round 2 stage C: the Open / Accord toggle, the honest header and the zero moment. */
@@ -4570,7 +4573,8 @@ class ProofEditorImpl implements ProofEditor {
       });
       (window as unknown as { __proofClarify?: ClarifyUI }).__proofClarify = this.clarifyUI;
       // Proof Documents Step B7: chat beside the document (its own table; never the text or Yjs).
-      this.chat = new ChatUI({
+      // As a room surface (?surface=room, src/shared/room-surface.ts) the room's chat replaces it.
+      if (!this.roomSurface) this.chat = new ChatUI({
         slug: () => shareClient.getSlug(),
         apiBase: () => shareClient.getApiBaseUrl(),
         authHeaders: () => shareClient.getShareAuthHeaders(),
@@ -4595,10 +4599,15 @@ class ProofEditorImpl implements ProofEditor {
         closeOtherSheets: () => { walkUi.closeSheets(); this.playmakerReview?.closePanel(); },
         beforePost: () => this.ensureViewerNameForWrite(),
       });
-      this.chat.mountIn(walkUi.chatSlot);
-      const chatUi = this.chat;
-      walkUi.onRoomShown(() => chatUi.roomShown());
-      (window as unknown as { __proofChat?: ChatUI }).__proofChat = this.chat;
+      if (this.chat) {
+        this.chat.mountIn(walkUi.chatSlot);
+        const chatUi = this.chat;
+        walkUi.onRoomShown(() => chatUi.roomShown());
+        (window as unknown as { __proofChat?: ChatUI }).__proofChat = this.chat;
+      } else {
+        walkUi.chatSlot.hidden = true;
+        document.documentElement.dataset.roomSurface = 'true';
+      }
     }
     if (!this.movesUI) this.movesUI = new MovesUI({
       view: () => this.lineMarks?.editorView() ?? null,
@@ -6569,7 +6578,7 @@ class ProofEditorImpl implements ProofEditor {
    * and is not logged.
    */
   private startMeetLiveLookup(): void {
-    if (this.meetLiveLookupStarted || !this.isShareMode) return;
+    if (this.meetLiveLookupStarted || !this.isShareMode || this.roomSurface) return;
     const slug = shareClient.getSlug();
     if (!slug) return;
     this.meetLiveLookupStarted = true;

@@ -120,7 +120,9 @@ import {
 } from './proof-extras.js';
 import { redactIssues, serializeExplain, termsReport } from './proof-extras-eval.js';
 import { getProofSettings, listExplains } from './proof-extras-store.js';
-import { addArgument, applyOverrule, dispositionGate, dispositionsReport, getMultiPartySettings, setMultiPartySettings } from './dispositions.js';
+import { addArgument, applyOverrule, dispositionGate, dispositionsReport, getMultiPartySettings, listArguments, setMultiPartySettings } from './dispositions.js';
+import { bindRoom, bindingHistory, currentBinding, ingestMessages, listRoomMessages, roomRoster, unbindRoom, updateMembers } from './room-surface.js';
+import { ROOM_SURFACE_POLICY, parseRoomId, parseRoomMembers, parseRoomMessages } from '../src/shared/room-surface.js';
 import { parseArgumentText, parseStance } from '../src/shared/arguments.js';
 import { BUNDLE_POLICY } from '../src/shared/bundles.js';
 import { ALT_POLICY } from '../src/shared/alternatives.js';
@@ -5076,6 +5078,86 @@ aidRoute('/:slug/dispositions/argue', 'POST /dispositions/argue', ['commenter', 
   if (result.kind === 'not-open') return { status: 409, body: { success: false, code: 'NOT_OPEN', error: 'That change is settled; its arguments are retired.' } };
   if (result.kind === 'refused') return { status: result.status, body: result.body };
   return { status: 200, body: { success: true, argument: result.argument, duplicate: result.duplicate } };
+});
+
+// Accord as a room surface (src/shared/room-surface.ts, Mike 2026-11-05): a room attaches this
+// Accord, keeps its roster current, and copies its chat in, so the chat moves with the Accord.
+// The caller is the room's bridge holding an editor or owner key for this Accord.
+// Body: { roomId, roomName?, app?, members: RoomMember[] }.
+aidRoute('/:slug/room/bind', 'POST /room/bind', ['editor', 'owner_bot'], async ({ slug, by, payload }) => {
+  const roomId = parseRoomId(payload.roomId);
+  if (!roomId) return { status: 400, body: { success: false, code: 'INVALID_ROOM', error: '"roomId" must be 1 to 80 letters, digits, "-" or "_"' } };
+  const roomName = typeof payload.roomName === 'string' && payload.roomName.trim() ? payload.roomName.trim().slice(0, ROOM_SURFACE_POLICY.maxName) : roomId;
+  const app = typeof payload.app === 'string' && payload.app.trim() ? payload.app.trim().slice(0, 80) : null;
+  const result = bindRoom(slug, { roomId, roomName, app, members: parseRoomMembers(payload.members), by });
+  return { status: 200, body: { success: true, binding: result.binding, moved: result.moved, detached: result.detached, roster: roomRoster(slug, getMultiPartySettings(slug).observers) } };
+});
+
+aidRoute('/:slug/room/unbind', 'POST /room/unbind', ['editor', 'owner_bot'], async ({ slug, by }) =>
+  ({ status: 200, body: { success: true, detached: unbindRoom(slug, by) } }));
+
+// Body: { members: RoomMember[] } — the room's full current list (people present, AIs admitted).
+aidRoute('/:slug/room/members', 'POST /room/members', ['editor', 'owner_bot'], async ({ slug, by, payload }) => {
+  if (!currentBinding(slug)) return { status: 409, body: { success: false, code: 'NOT_ATTACHED', error: 'This Accord is not attached to a room.' } };
+  const changed = updateMembers(slug, parseRoomMembers(payload.members), by);
+  return { status: 200, body: { success: true, changed, roster: roomRoster(slug, getMultiPartySettings(slug).observers) } };
+});
+
+// Body: { roomId, messages: [{ seq, kind, from?, name?, text, at }] }. Resending is a no-op.
+// "[for <markId>] …" and "[against <markId>] …" also record an argument, by the message's sender.
+aidRoute('/:slug/room/messages', 'POST /room/messages', ['editor', 'owner_bot'], async ({ slug, payload }) => {
+  const roomId = parseRoomId(payload.roomId);
+  if (!roomId) return { status: 400, body: { success: false, code: 'INVALID_ROOM', error: '"roomId" is required' } };
+  const result = ingestMessages(slug, roomId, parseRoomMessages(payload.messages));
+  if (result.kind === 'not-attached') return { status: 409, body: { success: false, code: 'NOT_ATTACHED', error: 'This Accord is not attached to a room.' } };
+  if (result.kind === 'wrong-room') return { status: 409, body: { success: false, code: 'WRONG_ROOM', error: 'This Accord is attached to another room.', attachedTo: result.attachedTo } };
+  const argued: Array<Record<string, unknown>> = [];
+  if (result.tagged.length) {
+    const state = await currentAgentState(slug);
+    for (const t of result.tagged) {
+      const outcome = addArgument(slug, { markId: t.markId, by: t.message.actor, stance: t.stance, text: t.text, rawMarks: state.marks, source: 'agent' });
+      argued.push({ seq: t.message.seq, markId: t.markId, outcome: outcome.kind, ...(outcome.kind === 'recorded' ? { argumentId: outcome.argument.id } : {}) });
+    }
+  }
+  return { status: 200, body: { success: true, added: result.added.length, duplicates: result.duplicates, argued } };
+});
+
+// The attached room, its roster, and the messages the Accord carries (?after=<id> pages on).
+agentRoutes.get('/:slug/room', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  const role = checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const after = Number(req.query.after ?? 0);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    success: true,
+    binding: currentBinding(slug),
+    roster: roomRoster(slug, getMultiPartySettings(slug).observers),
+    messages: listRoomMessages(slug, Number.isFinite(after) && after > 0 ? after : 0),
+    policy: ROOM_SURFACE_POLICY,
+  });
+});
+
+// The Accord's whole record, for replay or export: every room it has been in, the conversation it
+// carries, and the dispositions, arguments and overrules, each in time order. It travels with the
+// Accord; attaching it to another room adds to it and removes nothing.
+agentRoutes.get('/:slug/room/record', async (req: Request, res: Response) => {
+  const slug = getSlug(req);
+  if (!slug) { res.status(400).json({ success: false, error: 'Invalid slug' }); return; }
+  const role = checkAuth(req, res, slug, ['viewer', 'commenter', 'editor', 'owner_bot']);
+  if (!role) return;
+  const state = await currentAgentState(slug);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    success: true,
+    slug,
+    rooms: bindingHistory(slug),
+    messages: listRoomMessages(slug, 0, 2000),
+    ...dispositionsReport(slug, state.marks),
+    // Every argument, retired ones included, so the path to accord replays.
+    allArguments: listArguments(slug),
+  });
 });
 
 agentRoutes.post('/:slug/marks/accept', async (req: Request, res: Response) => {

@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Accord in a room</title>
+<style>
+  :root { --bg: #f7f7f5; --panel: #fff; --ink: #1f2328; --muted: #6b7280; --line: #e5e7eb; --accent: #2f6f4f; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #16181b; --panel: #1f2226; --ink: #e6e6e6; --muted: #9aa0a6; --line: #30343a; --accent: #6fbf8f; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  .shell { display: grid; grid-template-columns: 340px minmax(0, 1fr); height: 100vh; }
+  aside { background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: auto; }
+  aside header { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  aside h1 { font-size: 15px; margin: 0; }
+  aside .sub { color: var(--muted); font-size: 12px; }
+  section { padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 6px; }
+  .member { display: flex; gap: 6px; align-items: center; padding: 2px 0; }
+  .member .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .kind { font-size: 11px; color: var(--muted); }
+  select, input, button { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .row { display: flex; gap: 6px; margin-top: 6px; }
+  .row input { flex: 1; min-width: 0; }
+  .chat { flex: 1; overflow: auto; padding: 10px 14px; min-height: 0; }
+  .msg { margin: 0 0 6px; }
+  .msg .who { font-weight: 600; }
+  .msg.system { color: var(--muted); font-style: italic; }
+  .msg .tag { font-size: 11px; color: var(--accent); }
+  form.say { padding: 10px 14px; border-top: 1px solid var(--line); }
+  .record { font-size: 12px; color: var(--muted); }
+  iframe { width: 100%; height: 100%; border: 0; background: var(--bg); }
+  .empty { padding: 40px; color: var(--muted); }
+  @media (max-width: 760px) { .shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: 50vh 50vh; } .record { overflow-wrap: anywhere; } }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside>
+    <header>
+      <h1 id="room-name">Room</h1>
+      <div class="sub">A stub SOMA Room. Its members are the Accord's participants; its chat is copied into the Accord.</div>
+    </header>
+    <section>
+      <h2>In the room</h2>
+      <div id="members"></div>
+      <div class="row"><input id="new-name" placeholder="Name"><input id="new-email" placeholder="email (people)"></div>
+      <div class="row"><button id="add-person">Add person</button><button id="add-ai">Add AI</button></div>
+    </section>
+    <section>
+      <h2>Accord record</h2>
+      <div class="record" id="record">Not attached yet.</div>
+      <div class="row"><button id="move">Move the Accord to a new room</button></div>
+    </section>
+    <div class="chat" id="chat" aria-live="polite"></div>
+    <form class="say" id="say">
+      <div class="row"><select id="as"></select><input id="text" placeholder="Say something, or [for <id>] …" autocomplete="off"><button class="primary">Send</button></div>
+    </form>
+  </aside>
+  <main id="surface"></main>
+</div>
+<script type="module">
+import { StubRoom, connectRoomToAccord } from './bridge.js';
+
+const params = new URLSearchParams(location.search);
+const slug = params.get('slug');
+const token = params.get('token');
+const base = location.origin;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+let room, bridge, roomCount = 0;
+window.__roomDemo = { get room() { return room; }, get bridge() { return bridge; } };
+
+if (!slug || !token) {
+  $('surface').innerHTML = '<div class="empty">Open this page with <code>?slug=&lt;accord&gt;&amp;token=&lt;editor or owner key&gt;</code>.</div>';
+} else {
+  const frame = document.createElement('iframe');
+  frame.title = 'Accord';
+  frame.src = `/d/${encodeURIComponent(slug)}?surface=room&token=${encodeURIComponent(token)}`;
+  $('surface').append(frame);
+  await openRoom([
+    { kind: 'person', id: 'u-mike', name: 'Mike', email: 'mike@example.com', role: 'host' },
+    { kind: 'person', id: 'u-noel', name: 'Noel', email: 'noel@example.com' },
+    { kind: 'ai', id: 'a-claude', name: 'Claude', sponsor: { id: 'u-mike', name: 'Mike' } },
+  ]);
+  setInterval(refreshRecord, 3000);
+}
+
+async function openRoom(members) {
+  if (bridge) bridge.stop();
+  roomCount += 1;
+  room = new StubRoom({ roomId: `demo-room-${roomCount}-${Math.random().toString(36).slice(2, 7)}`, roomName: `Demo room ${roomCount}` });
+  room.addEventListener('soma-room-members', render);
+  room.addEventListener('soma-room-message', render);
+  for (const m of members) room.join(m);
+  bridge = connectRoomToAccord({ room, accord: { base, slug, token }, onError: (e) => console.warn('[room-surface]', e.message) });
+  await bridge.start();
+  render(); refreshRecord();
+}
+
+function render() {
+  $('room-name').textContent = room.roomName;
+  const members = room.members();
+  $('members').innerHTML = members.map((m) => `
+    <div class="member" data-id="${esc(m.id)}">
+      <span class="name">${esc(m.name)} <span class="kind">${m.kind === 'ai' ? 'AI' : esc(m.email || '')}</span></span>
+      <select data-role>${['host', 'member', 'observer'].map((r) => `<option ${r === m.role ? 'selected' : ''}>${r}</option>`).join('')}</select>
+      <button data-leave title="Leave">×</button>
+    </div>`).join('');
+  $('as').innerHTML = members.map((m) => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('');
+  room.messages().then((log) => {
+    $('chat').innerHTML = log.map((m) => m.kind === 'system'
+      ? `<p class="msg system">${esc(m.text)}</p>`
+      : `<p class="msg"><span class="who">${esc(m.name)}</span>${/^\s*\[(for|against)\s/i.test(m.text) ? ' <span class="tag">argument</span>' : ''} ${esc(m.text)}</p>`).join('');
+    $('chat').scrollTop = $('chat').scrollHeight;
+  });
+}
+
+async function refreshRecord() {
+  const res = await fetch(`/api/agent/${encodeURIComponent(slug)}/room/record`, { headers: { 'x-share-token': token } }).catch(() => null);
+  if (!res?.ok) return;
+  const r = await res.json();
+  const people = (r.roster || []).map((e) => `${e.actor} (${e.role})`).join(', ');
+  $('record').innerHTML = `${r.messages.length} room messages carried, from ${r.rooms.length} room${r.rooms.length === 1 ? '' : 's'}.<br>Roster: ${esc(people)}<br>Arguments: ${(r.allArguments || []).length}. Multi-party: ${r.multiParty ? 'on' : 'off'}.`;
+  window.__roomDemo.record = r;
+}
+
+$('members').addEventListener('change', (e) => {
+  const id = e.target.closest('[data-id]')?.dataset.id;
+  if (id && e.target.matches('[data-role]')) room.setRole(id, e.target.value);
+});
+$('members').addEventListener('click', (e) => {
+  const id = e.target.closest('[data-id]')?.dataset.id;
+  if (id && e.target.matches('[data-leave]')) room.leave(id);
+});
+const add = (kind) => {
+  const name = $('new-name').value.trim(); if (!name) return;
+  const email = $('new-email').value.trim();
+  room.join({ kind, id: `${kind === 'ai' ? 'a' : 'u'}-${name.toLowerCase().replace(/\W+/g, '-')}`, name, ...(kind === 'person' && email ? { email } : {}) });
+  $('new-name').value = ''; $('new-email').value = '';
+};
+$('add-person').addEventListener('click', () => add('person'));
+$('add-ai').addEventListener('click', () => add('ai'));
+$('say').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const text = $('text').value.trim(); if (!text) return;
+  room.say($('as').value, text); $('text').value = '';
+});
+$('move').addEventListener('click', () => openRoom(room.members()));
+</script>
+</body>
+</html>
